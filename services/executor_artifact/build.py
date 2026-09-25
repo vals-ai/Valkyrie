@@ -119,7 +119,15 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
             check=True,
         )
         verify_archive(artifact)
-        subprocess.run([sys.executable, str(artifact), "--check"], cwd=tracker_directory, check=True)
+        checked = subprocess.run(
+            [sys.executable, str(artifact), "--check"],
+            cwd=tracker_directory,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if json.loads(checked.stdout).get("protocol_version") != SUPPORTED_PROTOCOL_VERSION:
+            raise ValueError("Executor PEX protocol does not match the release manifest")
         shutil.copyfile(artifact, output_path)
         requirements_digest = sha256(requirements)
         wheel_digest = sha256(wheels[0])
@@ -127,7 +135,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
     artifact_digest = sha256(output_path)
     release_id, key = release_identity(source_revision, artifact_digest)
     manifest: dict[str, object] = {
-        "architecture": "linux-arm64",
+        "architecture": f"{platform.system().lower()}-arm64",
         "artifact_digest": artifact_digest,
         "artifact_path": output_path.name,
         "artifact_size_bytes": output_path.stat().st_size,

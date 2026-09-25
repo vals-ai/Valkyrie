@@ -1,14 +1,16 @@
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime
+from pathlib import Path
 from sqlite3 import Connection, Cursor
 from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 from dotenv import load_dotenv
-from sqlalchemy import event
+from sqlalchemy import DateTime, event
+from sqlalchemy.sql.functions import GenericFunction
 from sqlalchemy.pool import ConnectionPoolEntry
-from sqlmodel import Session, SQLModel, StaticPool, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
@@ -30,6 +32,13 @@ from tracker.types import AWSCredentials
 _ = load_dotenv()
 
 
+class clock_timestamp(GenericFunction[datetime]):
+    """Decode the SQLite clock shim with PostgreSQL's datetime result type."""
+
+    type = DateTime()
+    inherit_cache = True
+
+
 @pytest.fixture(autouse=True)
 def clear_managed_storage_validation_cache() -> None:
     """Keep one test's remembered owner-bucket validation out of the next test."""
@@ -47,9 +56,9 @@ def aws_credentials() -> AWSCredentials:
 
 
 @pytest.fixture(scope="function")
-def database_session() -> Generator[Session, None, None]:
-    """Create an in-memory database and mock the session engine."""
-    test_engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+def database_session(tmp_path: Path) -> Generator[Session, None, None]:
+    """Give concurrent task sessions separate connections to one isolated database."""
+    test_engine = create_engine(f"sqlite:///{tmp_path / 'tracker.db'}", connect_args={"check_same_thread": False})
 
     @event.listens_for(test_engine, "connect")
     def set_sqlite_pragma(dbapi_connection: Connection, _connection_record: ConnectionPoolEntry) -> None:  # type: ignore
@@ -57,6 +66,9 @@ def database_session() -> Generator[Session, None, None]:
         cursor: Cursor = cast(Cursor, dbapi_connection.cursor())  # type: ignore
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.close()
+        dbapi_connection.create_function(
+            "clock_timestamp", 0, lambda: datetime.now(UTC).replace(tzinfo=None).isoformat(" ")
+        )
 
     SQLModel.metadata.create_all(test_engine)
 
@@ -93,7 +105,7 @@ def executor_authority_kwargs(
                     id=release_id,
                     artifact_uri="s3://artifacts/authority-test-release.pex",
                     artifact_digest="a" * 64,
-                    protocol_version="1",
+                    protocol_version="4",
                     readiness_verified=True,
                 )
                 authority_session.add(release)

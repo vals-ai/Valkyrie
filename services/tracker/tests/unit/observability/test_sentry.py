@@ -28,8 +28,6 @@ from sentry_sdk.types import Event, Hint, Log
 import tracker.observability.sentry as sentry_module
 import tracker.observability.tracing as tracing_module
 import tracker.utils.task_execution as task_execution
-from tracker.database.models import Org, Task
-from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.exceptions import SandboxError, SandboxSetupError, SSLConnectionError
 from tracker.logging.context import (
     attempt_started_at_var,
@@ -357,102 +355,6 @@ async def test_sentry_export_captures_task_identities_on_roots_and_children(
 
 
 @pytest.mark.asyncio
-async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[Event] = []
-    rows: dict[str, SimpleNamespace] = {}
-
-    attempt_starts = {
-        "task-a": datetime(2026, 4, 1, 12, tzinfo=UTC),
-        "task-b": datetime(2026, 4, 1, 13, tzinfo=UTC),
-    }
-
-    class FakeSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        def __enter__(self) -> "FakeSession":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    def fetch_task(task_id: object, _session: object, _org: object) -> SimpleNamespace:
-        return rows[str(task_id)]
-
-    monkeypatch.setattr(task_execution, "Session", FakeSession)
-    monkeypatch.setattr(task_execution, "fetch_task_row", fetch_task)
-    monkeypatch.setattr(task_execution, "commit_task_error", lambda *_args, **_kwargs: None)
-
-    async def run_tasks() -> None:
-        ready = 0
-        release = asyncio.Event()
-
-        async def body(task_id: str, sandbox_id: str, *, fail: bool) -> dict[str, dict[str, object] | None]:
-            nonlocal ready
-            sentry_module.set_sandbox_context(SimpleNamespace(id=sandbox_id, name=f"{sandbox_id}-name"))
-            sentry_sdk.capture_message("sandbox event")
-            ready += 1
-            if ready == 2:
-                release.set()
-            await release.wait()
-            if fail:
-                raise RuntimeError("outer failure")
-            return {task_id: {"ok": True}}
-
-        for task_id in ("task-a", "task-b"):
-            rows[task_id] = SimpleNamespace(
-                id=task_id,
-                task_id=task_id,
-                started_at=attempt_starts[task_id],
-            )
-
-        task_a = task_execution.TrackedTask(
-            body("task-a", "sandbox-a", fail=False),
-            cast(Org, object()),
-            cast(ExecutionAuthority, object()),
-            attempt_starts["task-a"],
-        )
-        task_b = task_execution.TrackedTask(
-            body("task-b", "sandbox-b", fail=True),
-            cast(Org, object()),
-            cast(ExecutionAuthority, object()),
-            attempt_starts["task-b"],
-        )
-        await asyncio.gather(
-            task_a.run(None, cast(Task, rows["task-a"])),
-            task_b.run(None, cast(Task, rows["task-b"])),
-        )
-
-    with sentry_sdk.init(
-        dsn="https://public@example.com/1",
-        transport=events.append,
-        default_integrations=False,
-        before_send=sentry_module._before_send,
-    ):
-        await run_tasks()
-        sentry_sdk.capture_message("after tasks")
-
-    task_events = [event for event in events if event.get("tags", {}).get("task_id")]
-    assert len(task_events) == 3
-    task_tags = [cast(dict[str, str], event.get("tags", {})) for event in task_events]
-    assert {(tags["task_id"], tags["sandbox_id"], tags["attempt_started_at"]) for tags in task_tags} == {
-        ("task-a", "sandbox-a", "2026-04-01T12:00:00"),
-        ("task-b", "sandbox-b", "2026-04-01T13:00:00"),
-    }
-    exception_events = [event for event in task_events if "exception" in event]
-    assert len(exception_events) == 1
-    assert cast(dict[str, str], exception_events[0].get("tags")) == {
-        "task_id": "task-b",
-        "attempt_started_at": "2026-04-01T13:00:00",
-        "sandbox_id": "sandbox-b",
-        "sandbox_name": "sandbox-b-name",
-    }
-    assert events[-1].get("tags") == {}
-
-
-@pytest.mark.asyncio
 async def test_retry_attempt_clears_previous_sandbox_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -506,6 +408,7 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
                 sandbox_provider_config=cast(Any, object()),
                 creation_semaphore=cast(Any, object()),
                 authority=cast(Any, object()),
+                persistence=cast(Any, object()),
             )
 
     assert result == {"task-0": {"ok": True}}

@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   tracker-live-integration-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,8 +32,8 @@ jobs:
             echo "Could not compute the PR diff; treating as tracker-relevant."
             changed="services/tracker/"
           fi
-          if ! printf '%s\n' "$changed" | grep -qE '^services/tracker/'; then
-            echo "No changes under services/tracker/; skipping live integration tests."
+          if ! printf '%s\n' "$changed" | grep -qE '^services/(tracker|executor_host|executor_artifact)/'; then
+            echo "No changes to Tracker or executor services; skipping live integration tests."
             echo "relevant=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$BASE_REF" = "prod" ] || [ "${RUN_ATTEMPT:-1}" != "1" ]; then
@@ -52,6 +52,7 @@ jobs:
         if: steps.rel.outputs.relevant == 'true'
         uses: astral-sh/setup-uv@v5
         with:
+          version: "0.9.18"
           enable-cache: true
           cache-dependency-glob: "services/tracker/uv.lock"
 
@@ -61,6 +62,14 @@ jobs:
           cd services/tracker
           uv venv --python 3.12
           uv sync --group dev
+
+      - name: Build executor for continuity test
+        if: steps.rel.outputs.relevant == 'true'
+        env:
+          PYTHONPATH: services/tracker/src
+        run: |
+          uv run --project services/tracker python services/executor_artifact/build.py \
+            --output-directory "$RUNNER_TEMP/executor-continuity"
 
       - name: Validate bench account boundary
         if: steps.rel.outputs.relevant == 'true'
@@ -92,6 +101,7 @@ jobs:
           cd services/tracker
           make test-integration-live
         env:
+          TEST_EXECUTOR_PEX: ${{ runner.temp }}/executor-continuity/executor.pex
           TEST_AWS_S3_BUCKET: ${{ secrets.TEST_AWS_S3_BUCKET }}
           TEST_LOG_GROUP: ${{ secrets.TEST_LOG_GROUP }}
           TEST_DAYTONA_SECRET_NAME: ${{ secrets.TEST_DAYTONA_SECRET_NAME }}

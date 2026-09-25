@@ -66,9 +66,15 @@ def claim(dispatch_id: UUID, request: ClaimRequest, session: DispatchSession) ->
     return response
 
 
-@router.post("/{dispatch_id}/authority")
+@router.post("/{dispatch_id}/authority", response_model_exclude_none=True)
 def authority(dispatch_id: UUID, request: DispatchRequest, session: DispatchSession) -> AuthorityResponse:
-    return AuthorityResponse(current=dispatch_authority(session, dispatch_id, request.claimant_id))
+    state = dispatch_authority(session, dispatch_id, request.claimant_id)
+
+    return AuthorityResponse(
+        current=state.current,
+        lease_expires_at=state.lease_expires_at,
+        server_time=state.server_time if state.current else None,
+    )
 
 
 @router.post("/{dispatch_id}/heartbeat")

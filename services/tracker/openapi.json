@@ -407,6 +407,30 @@
           "current": {
             "title": "Current",
             "type": "boolean"
+          },
+          "lease_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lease Expires At"
+          },
+          "server_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Time"
           }
         },
         "required": [
@@ -2373,8 +2397,8 @@
         },
         "required": [
           "claimant_id",
-          "command_id",
           "expected_started_at",
+          "command_id",
           "reservation_id"
         ],
         "title": "ReleasePoolRequest",
@@ -2560,8 +2584,8 @@
         },
         "required": [
           "claimant_id",
-          "command_id",
           "expected_started_at",
+          "command_id",
           "expected_revision"
         ],
         "title": "ReservePoolRequest",
@@ -4212,10 +4236,31 @@
         },
         "required": [
           "claimant_id",
-          "command_id",
-          "expected_started_at"
+          "expected_started_at",
+          "command_id"
         ],
         "title": "TaskAttemptRequest",
+        "type": "object"
+      },
+      "TaskAuthorityRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "claimant_id": {
+            "format": "uuid",
+            "title": "Claimant Id",
+            "type": "string"
+          },
+          "expected_started_at": {
+            "format": "date-time",
+            "title": "Expected Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claimant_id",
+          "expected_started_at"
+        ],
+        "title": "TaskAuthorityRequest",
         "type": "object"
       },
       "TaskState": {
@@ -4410,8 +4455,8 @@
         },
         "required": [
           "claimant_id",
-          "command_id",
           "expected_started_at",
+          "command_id",
           "expected_revision",
           "mutation"
         ],
@@ -6888,6 +6933,74 @@
           }
         ],
         "summary": "Run State",
+        "tags": [
+          "executor-v1"
+        ]
+      }
+    },
+    "/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/authority": {
+      "post": {
+        "operationId": "authority",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Dispatch Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskAuthorityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ExecutorDispatchAuth": []
+          }
+        ],
+        "summary": "Authority",
         "tags": [
           "executor-v1"
         ]

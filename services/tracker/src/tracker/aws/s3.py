@@ -13,7 +13,14 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
-from tracker.runtime.storage import ArtifactLocations, ObjectReadSession, StoredObject, StoredObjectCopy
+from tracker.runtime.storage import (
+    ArtifactLocations,
+    ObjectReadSession,
+    StoredObject,
+    StoredObjectCopy,
+    UploadAuthority,
+    upload_is_current,
+)
 
 logger = get_logger(__name__)
 
@@ -106,7 +113,7 @@ async def upload_stream_to_s3(
     chunks: AsyncIterable[bytes],
     s3_key: str,
     runtime: AWSRuntime,
-    should_continue: Callable[[], bool] | None = None,
+    should_continue: UploadAuthority | None = None,
 ) -> int:
     """
     Upload a byte stream to S3 via multipart upload, buffering at most one part in memory.
@@ -134,7 +141,7 @@ async def upload_stream_to_s3(
             buffer = bytearray()
 
             async def _upload_part() -> None:
-                if should_continue is not None and not should_continue():
+                if not await upload_is_current(should_continue):
                     raise S3Error("S3 stream upload authority was revoked")
                 part_number = len(parts) + 1
                 response = await client.upload_part(
@@ -157,7 +164,7 @@ async def upload_stream_to_s3(
             if buffer or not parts:
                 await _upload_part()
 
-            if should_continue is not None and not should_continue():
+            if not await upload_is_current(should_continue):
                 raise S3Error("S3 stream upload authority was revoked")
 
             await client.complete_multipart_upload(
@@ -547,7 +554,7 @@ class S3ObjectStore:
         key: str,
         chunks: AsyncIterable[bytes],
         *,
-        should_continue: Callable[[], bool] | None = None,
+        should_continue: UploadAuthority | None = None,
     ) -> int:
         return await upload_stream_to_s3(chunks, key, self._runtime, should_continue=should_continue)
 

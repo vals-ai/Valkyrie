@@ -4,22 +4,37 @@ Run: uv run pytest tests/integration/local/database/test_dispatch_api.py
 Requests use literal v1 payloads so client and server schema changes cannot mask regressions.
 """
 
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from threading import Barrier
 import json
 import asyncio
+import os
+import socket
+import sys
+import tempfile
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any
+from unittest.mock import AsyncMock, Mock
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 import httpx
+import aiohttp
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
+from sqlalchemy import event
 from pydantic import SecretStr
 from sqlmodel import Session, col, select
+from benchmark_service import ImageSource, Resources, Sandbox, SandboxProvider
+from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.sandbox import DaytonaProviderConfig
+from benchmark_service.schemas import RetrieveTaskResponse
 
 from tests.factories import make_benchmark, make_task
 from tracker.aws.runtime import AWSResources
@@ -54,13 +69,23 @@ from tracker.executor.release_control import (
     QueuePoolBusyError,
 )
 from tracker.executor.dispatch_control import admit_start_dispatch, admit_recovery_dispatch
-from tracker.scheduler.store import queue_pool_lock
+from tracker.scheduler.store import queue_pool_id, queue_pool_lock
 from tracker.executor_api.v1.router import router
 from tracker.executor_api.transport import ExecutorTransport
 from tracker.executor_api.v1.client import ExecutorClient
 from tracker.executor_api.v1.schemas import ClaimRequest
 from tracker.executor_api.v1.task_schemas import BuildTask, RunTask, EvaluateTask, CompleteTask
 from tracker.executor_api.v1.finalization_schemas import CompleteRun
+from tracker.executor.task_persistence import ApiTaskPersistence
+from tracker.executor.queue_execution import ApiSandboxQueueContext
+from tracker.executor import entrypoint as executor_entrypoint
+from tracker.executor import run_execution as executor_run
+from tracker.executor.checkpoints import CheckpointCallback
+from tracker.exceptions import ExecutionAuthorityRevoked, SandboxSetupError, TrackerServiceError
+from tracker.runtime.services import RuntimeServices
+from tracker.notifications import SlackNotifier
+from tracker.types import ManagedExecutionContext, StartBenchmarkRequest
+from services.executor_host.supervisor import ApiExecutorDispatchStore, ArtifactDispatch, ExecutorProcessPayload
 
 
 @dataclass(frozen=True)
@@ -94,7 +119,7 @@ def dispatch(postgres_session: Session) -> DispatchFixture:
         id="dispatch-api-release",
         artifact_uri="s3://artifacts/executor.pex",
         artifact_digest="a" * 64,
-        protocol_version="2",
+        protocol_version="4",
         readiness_verified=True,
     )
     register_release(postgres_session, release)
@@ -287,9 +312,9 @@ def test_heartbeat_cannot_restore_revoked_authority(
     """
     assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
     assert client.post(f"{dispatch.path}/heartbeat", json=dispatch.request, headers=dispatch.headers).status_code == 200
-    assert client.post(f"{dispatch.path}/authority", json=dispatch.request, headers=dispatch.headers).json() == {
-        "current": True
-    }
+    authority = client.post(f"{dispatch.path}/authority", json=dispatch.request, headers=dispatch.headers).json()
+    assert authority["current"] is True
+    assert datetime.fromisoformat(authority["lease_expires_at"]) > datetime.fromisoformat(authority["server_time"])
     if expired:
         invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
         assert invocation is not None
@@ -1787,6 +1812,86 @@ class MockLostResponseTransport(httpx.AsyncBaseTransport):
         await self._transport.aclose()
 
 
+class MockPausedResponseTransport(httpx.ASGITransport):
+    """Hold one committed response while the executor receives cancellation."""
+
+    def __init__(self, app: FastAPI, operation: str, *, response_status: int = 200) -> None:
+        super().__init__(app)
+        self.operation = operation
+        self.response_status = response_status
+        self.committed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await super().handle_async_request(request)
+        if request.url.path.endswith(self.operation) and not self.committed.is_set():
+            assert response.status_code == 200
+            self.committed.set()
+            await self.release.wait()
+            if self.response_status != 200:
+                return httpx.Response(self.response_status)
+
+        return response
+
+
+@pytest.mark.parametrize("operation", ["claim", "write"])
+@pytest.mark.parametrize("response_fails", [False, True])
+async def test_cancelled_task_write_retains_revision(
+    app: FastAPI, dispatch: DispatchFixture, postgres_session: Session, operation: str, response_fails: bool
+) -> None:
+    """Settle a committed API write before cancellation releases the attempt lock.
+
+    Test cases:
+    - Cancellation during claim retains the claimed revision.
+    - Cancellation after a write commits does not leave the next write using an old revision.
+    - Repeated cancellation cannot let another writer pass an unfinished mutation.
+    - An error delivered after commit settles before cancellation and prevents a stale follow-up write.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    assert task is not None
+    task.status = TaskStatus.PENDING
+    postgres_session.add(task)
+    postgres_session.commit()
+    transport = MockPausedResponseTransport(
+        app, f"tasks/{task.id}/{operation}", response_status=500 if response_fails else 200
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        await api.claim(ClaimRequest.model_validate(dispatch.claim))
+        state = await api.run_state([task.task_id])
+        persistence = ApiTaskPersistence(api, state.tasks[0])
+        if operation == "claim":
+            pending = asyncio.create_task(persistence.load())
+        else:
+            assert await persistence.load() is not None
+            pending = asyncio.create_task(persistence.write(BuildTask()))
+
+        async with asyncio.timeout(5):
+            await transport.committed.wait()
+            pending.cancel()
+            await asyncio.sleep(0)
+            pending.cancel()
+            next_write = asyncio.create_task(persistence.write(BuildTask() if operation == "claim" else RunTask()))
+            await asyncio.sleep(0)
+            assert not pending.done() and not next_write.done()
+            transport.release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            assert (await next_write) is (not response_fails)
+
+    postgres_session.refresh(task)
+    if response_fails:
+        assert task.status == (TaskStatus.PENDING if operation == "claim" else TaskStatus.BUILDING)
+    else:
+        assert task.status == (TaskStatus.BUILDING if operation == "claim" else TaskStatus.IN_PROGRESS)
+    owner = postgres_session.get(ExecutorTaskAttempt, task.id)
+    assert owner is not None and owner.revision == (1 if operation == "claim" else 2) - int(response_fails)
+
+
 @pytest.mark.parametrize("operation", ["claim", "heartbeat", "finish", "fail", "run/initialize", "run/state"])
 async def test_client_recovers_a_response_lost_after_commit(
     app: FastAPI, dispatch: DispatchFixture, assigned_run: list[str], postgres_session: Session, operation: str
@@ -1865,6 +1970,485 @@ async def test_task_client_retries_after_committed_response_loss(
     assert owner is not None and owner.revision == 4
 
 
+@pytest.mark.parametrize(
+    ("queued", "retry_sandbox", "creation_unknown", "stop_at"),
+    [
+        (False, False, False, None),
+        (False, True, False, None),
+        (True, False, False, None),
+        (True, True, False, None),
+        (True, False, True, None),
+        (False, False, False, "run"),
+        (True, False, False, "queued-build"),
+        (False, False, False, "checkpoint"),
+        (False, False, False, "complete"),
+        (False, False, False, "evaluation-error"),
+        (False, False, False, "setup-error"),
+    ],
+)
+async def test_process_task_persists_through_api(
+    app: FastAPI,
+    dispatch: DispatchFixture,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    retry_sandbox: bool,
+    queued: bool,
+    creation_unknown: bool,
+    stop_at: str | None,
+) -> None:
+    """Run the task lifecycle through PostgreSQL-backed HTTP without executor SQL.
+
+    Test cases:
+    - Execution persists checkpoints, durations, and the final result using v1 commands.
+    - Losing the completion response does not duplicate the result.
+    - A fresh sandbox retry retains the task attempt and its write revision.
+    - An uncertain provider creation retains the reservation and does not retry creation.
+    - Stops during creation, checkpointing, and completion prevent later writes and settle sandbox cleanup.
+    - Configured progress and terminal webhooks reflect the stored task counts and final outcome.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert task is not None and benchmark is not None
+    resources = AWSResources(
+        region="us-east-1", s3_bucket="test-artifacts", log_group="test-logs", log_retention_days=7
+    )
+    benchmark.aws_managed = True
+    benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})
+    postgres_session.add(benchmark)
+    task.status = TaskStatus.PENDING
+    postgres_session.add(task)
+    postgres_session.commit()
+    sandbox_created = False
+    sandbox_cleaned = False
+    stopped_attempt: datetime | None = None
+
+    def stop_task() -> None:
+        nonlocal stopped_attempt
+        postgres_session.refresh(task)
+        stopped_attempt = task.started_at
+        task.status = TaskStatus.STOPPED
+        postgres_session.add(task)
+        postgres_session.commit()
+
+    @asynccontextmanager
+    async def sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Sandbox]:
+        nonlocal sandbox_created, sandbox_cleaned
+        if creation_unknown:
+            raise SandboxSetupError("Provider did not confirm whether it created the sandbox")
+        if stop_at == "setup-error":
+            stop_task()
+            raise SandboxSetupError("Provider setup failed after the task was stopped")
+        sandbox_created = True
+        instance = Mock(spec=Sandbox, id="api-sandbox")
+        instance.name = "api-sandbox"
+        if stop_at == "run":
+            stop_task()
+        try:
+            yield instance
+        finally:
+            sandbox_cleaned = True
+
+    agent_calls = 0
+
+    async def agent(
+        *_args: Any, execution_is_current: Callable[[], Awaitable[bool]], **_kwargs: Any
+    ) -> tuple[None, float]:
+        nonlocal agent_calls
+        agent_calls += 1
+        assert await execution_is_current()
+        if retry_sandbox and agent_calls == 1:
+            raise SandboxSetupError("Provider rejected the first command stream")
+        return None, 2.5
+
+    async def evaluate(*_args: Any, on_eval_resume_state: CheckpointCallback, **_kwargs: Any) -> dict[str, Any]:
+        if stop_at in ("checkpoint", "complete", "evaluation-error"):
+            stop_task()
+            if stop_at == "evaluation-error":
+                raise OSError("Evaluation stream disconnected after stop")
+            if stop_at == "complete":
+                return {"score": 1}
+        on_eval_resume_state({"cursor": 1})
+        on_eval_resume_state({"cursor": 2})
+        return {"score": 1}
+
+    monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", sandbox)
+    monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", AsyncMock())
+    monkeypatch.setattr("tracker.utils.task_execution.run_agent", agent)
+    monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate)
+    monkeypatch.setattr(BenchmarkServiceClient, "setup_task", AsyncMock())
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "retrieve_task",
+        AsyncMock(
+            return_value=RetrieveTaskResponse(
+                source=ImageSource(image="test-image:latest"),
+                problem_path="/tmp/problem.txt",
+                cwd="/testbed",
+                resources=Resources(vcpu=2, memory=4, disk=5),
+            )
+        ),
+    )
+    notifications: list[str] = []
+
+    def webhook(payload: dict[str, str]) -> dict[str, str]:
+        notifications.append(payload["text"])
+        return {"status": "ok"}
+
+    app.add_api_route("/test-webhook", webhook, methods=["POST"])
+    notify = retry_sandbox or creation_unknown
+    runtime = Mock(
+        spec=RuntimeServices,
+        logs=Mock(),
+        objects=Mock(),
+        log_locations=Mock(),
+        secrets=Mock(get=Mock(return_value="http://tracker.test/test-webhook")),
+    )
+    runtime.resolve_secrets = AsyncMock(return_value={})
+    runtime.objects.put_bytes = AsyncMock()
+    runtime.run_completion_callback = AsyncMock()
+    provider = Mock(spec=SandboxProvider, admission_pool_id="api-test-provider")
+
+    async def check_admission(*_args: object) -> bool:
+        if stop_at == "queued-build":
+            stop_task()
+        return True
+
+    provider.check_admission = check_admission
+
+    @asynccontextmanager
+    async def provider_context(*_args: object) -> AsyncGenerator[SandboxProvider]:
+        yield provider
+
+    if queued:
+        benchmark.arguments = benchmark.arguments.model_copy(
+            update={"queue_pool_id": queue_pool_id(provider.admission_pool_id)}
+        )
+        postgres_session.add(benchmark)
+        postgres_session.commit()
+    runtime.get_sandbox_provider = provider_context
+    runtime.get_sandbox_provider_config = AsyncMock(
+        return_value=DaytonaProviderConfig(
+            DAYTONA_API_KEY="test", DAYTONA_API_URL="https://app.daytona.io/api", DAYTONA_TARGET="us"
+        )
+    )
+    monkeypatch.setattr(BenchmarkServiceClient, "final_score", AsyncMock(return_value=Mock(final_score=1, metadata={})))
+    transport = MockLostResponseTransport(app, "write", mutation="complete")
+    monkeypatch.setattr(executor_entrypoint.httpx, "AsyncClient", partial(httpx.AsyncClient, transport=transport))
+    monkeypatch.setattr(
+        executor_entrypoint.CloudRuntimeFactory, "create_execution_runtime", AsyncMock(return_value=runtime)
+    )
+    context = ManagedExecutionContext(
+        version=3,
+        benchmark_id=benchmark.id,
+        verified_task_ids=[task.task_id],
+        start_benchmark_request=StartBenchmarkRequest(
+            benchmark_name=benchmark.name,
+            contract=benchmark.arguments.contract,
+            task_ids=[task.task_id],
+            concurrency=1,
+            custom_benchmark_service="http://benchmark.test",
+            sandbox_provider_secret_name="test-provider",
+            properties=resources,
+            webhook_secret_name="test-webhook" if notify else None,
+            webhook_intervals=[0] if notify else None,
+        ),
+    )
+    await executor_entrypoint._run_api_executor(  # pyright: ignore[reportPrivateUsage]
+        {
+            **dispatch.claim,
+            "execution_context_json": context.model_dump(mode="json"),
+            "executor_dispatch_id": str(dispatch.dispatch_id),
+            "executor_claimant_id": dispatch.claim["claimant_id"],
+            "executor_tracker_url": "http://tracker.test",
+            "executor_api_token": dispatch.token,
+        }
+    )
+
+    postgres_session.refresh(benchmark)
+    if stop_at is not None:
+        postgres_session.refresh(task)
+        assert benchmark.status == BenchmarkStatus.STOPPED and task.status == TaskStatus.STOPPED
+        assert stopped_attempt is not None
+        assert task.started_at.replace(tzinfo=None) == stopped_attempt.replace(tzinfo=None)
+        assert sandbox_cleaned == sandbox_created
+        assert postgres_session.exec(select(ExecutorPoolReservation)).all() == []
+        assert postgres_session.exec(select(EvaluationResult)).all() == []
+        assert postgres_session.exec(select(FinalEvaluation)).all() == []
+        runtime.objects.put_bytes.assert_not_awaited()
+        runtime.run_completion_callback.assert_not_awaited()
+        assert agent_calls == (0 if stop_at in ("run", "queued-build", "setup-error") else 1)
+        return
+    if creation_unknown:
+        postgres_session.refresh(task)
+        assert benchmark.status == BenchmarkStatus.ERROR and task.status == TaskStatus.ERROR
+        assert benchmark.error_message is not None and "requires reconciliation" in benchmark.error_message
+        assert len(postgres_session.exec(select(ExecutorPoolReservation)).all()) == 1
+        assert agent_calls == 0
+        assert any("Benchmark Error" in message for message in notifications)
+        assert not any("Benchmark Complete" in message for message in notifications)
+        return
+    assert benchmark.status == BenchmarkStatus.FINISHED
+    assert benchmark.final_evaluation is not None and benchmark.final_evaluation.final_score == 1
+    published = json.loads(runtime.objects.put_bytes.call_args.args[1])
+    assert published["status"] == "FINISHED" and published["evaluation_results"][task.task_id]["score"] == 1
+    assert transport.dropped
+    postgres_session.refresh(task)
+    assert task.status == TaskStatus.FINISHED
+    results = postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all()
+    assert len(results) == 1 and results[0].result == {"score": 1}
+    assert task.task_breakdown is not None
+    breakdown = postgres_session.get(TaskBreakdown, task.task_breakdown)
+    assert breakdown is not None and breakdown.agent_run_duration == 2.5
+    owner = postgres_session.get(ExecutorTaskAttempt, task.id)
+    assert owner is not None and owner.dispatch_id == dispatch.dispatch_id
+    assert task.eval_resume_state == {"cursor": 2}
+    assert postgres_session.exec(select(ExecutorPoolReservation)).all() == []
+    errors = postgres_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all()
+    assert len(errors) == (1 if retry_sandbox else 0)
+    if errors:
+        assert errors[0].retry_scheduled and errors[0].failed_attempt_number == 1
+    if notify:
+        assert any("In Progress" in message and "0/1 tasks" in message for message in notifications)
+        completed_messages = [message for message in notifications if "Benchmark Complete" in message]
+        assert len(completed_messages) == 1 and "Final Score: 1" in completed_messages[0]
+
+
+@pytest.mark.parametrize(
+    "failure", ["mode", "missing-resources", "different-resources", "destination", "runtime", "revoked", "stale-error"]
+)
+async def test_entrypoint_rejects_invalid_execution_before_task_work(
+    app: FastAPI,
+    dispatch: DispatchFixture,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Reject invalid queued inputs and report failures only while the dispatch is current.
+
+    Test cases:
+    - Managed mode, saved resources, and custom destinations are checked before runtime creation.
+    - A current setup failure terminalizes its dispatch and task without starting a replacement attempt.
+    - Revocation and stale runtime errors do not overwrite the dispatch's existing terminal reason.
+    """
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    task = postgres_session.get(Task, dispatch.task_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert benchmark is not None and task is not None and invocation is not None
+    original_started_at = task.started_at
+    resources = AWSResources(
+        region="us-east-1", s3_bucket="test-artifacts", log_group="test-logs", log_retention_days=7
+    )
+    benchmark.aws_managed = failure != "mode"
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={"properties": None if failure == "missing-resources" else resources}
+    )
+    postgres_session.add(benchmark)
+    postgres_session.commit()
+
+    async def create_runtime(*_args: object, **_kwargs: object) -> RuntimeServices:
+        if failure in ("revoked", "stale-error"):
+            invocation.status = ExecutorDispatchStatus.FAILED
+            invocation.failure_reason = "previous terminal reason"
+            invocation.finished_at = datetime.now(UTC)
+            postgres_session.add(invocation)
+            postgres_session.commit()
+        if failure == "revoked":
+            raise ExecutionAuthorityRevoked("Dispatch revoked during setup")
+        raise TrackerServiceError("Runtime setup failed")
+
+    runtime_factory = AsyncMock(side_effect=create_runtime)
+    monkeypatch.setattr(executor_entrypoint.CloudRuntimeFactory, "create_execution_runtime", runtime_factory)
+    monkeypatch.setattr(executor_entrypoint, "AUTH_REQUIRED", True)
+    monkeypatch.setattr(
+        executor_entrypoint.httpx,
+        "AsyncClient",
+        partial(httpx.AsyncClient, transport=httpx.ASGITransport(app=app)),
+    )
+    context = ManagedExecutionContext(
+        version=3,
+        benchmark_id=benchmark.id,
+        verified_task_ids=[task.task_id],
+        start_benchmark_request=StartBenchmarkRequest(
+            benchmark_name=benchmark.name,
+            contract=benchmark.arguments.contract,
+            sandbox_provider_secret_name="test-provider",
+            custom_benchmark_service="http://127.0.0.1" if failure == "destination" else None,
+            properties=replace(resources, s3_bucket="different-bucket")
+            if failure == "different-resources"
+            else resources,
+        ),
+    )
+    payload = {
+        **dispatch.claim,
+        "execution_context_json": context.model_dump(mode="json"),
+        "executor_dispatch_id": str(dispatch.dispatch_id),
+        "executor_claimant_id": dispatch.claim["claimant_id"],
+        "executor_tracker_url": "http://tracker.test",
+        "executor_api_token": dispatch.token,
+    }
+    if failure == "revoked":
+        await executor_entrypoint._run_api_executor(payload)  # pyright: ignore[reportPrivateUsage]
+    else:
+        expected_error = {
+            "mode": "Queued execution does not match",
+            "missing-resources": "Queued managed resources differ",
+            "different-resources": "Queued managed resources differ",
+            "destination": "Custom benchmark destination is not allowed",
+            "runtime": "Runtime setup failed",
+            "stale-error": "Runtime setup failed",
+        }[failure]
+        with pytest.raises((TrackerServiceError, ValueError), match=expected_error):
+            await executor_entrypoint._run_api_executor(payload)  # pyright: ignore[reportPrivateUsage]
+
+    postgres_session.refresh(invocation)
+    postgres_session.refresh(task)
+    assert invocation.status == ExecutorDispatchStatus.FAILED
+    assert task.status == (TaskStatus.IN_PROGRESS if failure in ("revoked", "stale-error") else TaskStatus.ERROR)
+    assert task.started_at.replace(tzinfo=None) == original_started_at.replace(tzinfo=None)
+    assert postgres_session.exec(select(ExecutorTaskAttempt)).all() == []
+    assert postgres_session.exec(select(EvaluationResult)).all() == []
+    if failure in ("revoked", "stale-error"):
+        assert invocation.failure_reason == "previous terminal reason"
+    else:
+        assert invocation.failure_reason == "EXECUTOR_FAILED"
+    if failure not in ("runtime", "revoked", "stale-error"):
+        runtime_factory.assert_not_awaited()
+
+
+@pytest.mark.parametrize("legacy_tracker", [False, True])
+async def test_task_authority_avoids_snapshot_work_and_supports_older_tracker(
+    app: FastAPI,
+    dispatch: DispatchFixture,
+    postgres_session: Session,
+    postgres_engine: Engine,
+    legacy_tracker: bool,
+) -> None:
+    """Poll attempt authority cheaply while preserving older v1 Tracker compatibility.
+
+    Test cases:
+    - Current Tracker answers without checkpoint payloads, aggregate queries, or write locks.
+    - A Tracker without the new endpoint falls back to the existing snapshot route.
+    - Both paths detect a stopped attempt.
+    """
+    if legacy_tracker:
+        app.router.routes[:] = [
+            route
+            for route in app.router.routes
+            if getattr(route, "path", "") != "/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/authority"
+        ]
+    statements: list[str] = []
+
+    def record_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement.lower())
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        await api.claim(ClaimRequest.model_validate(dispatch.claim))
+        state = await api.run_state(["task-0"])
+        persistence = ApiTaskPersistence(api, state.tasks[0])
+        event.listen(postgres_engine, "before_cursor_execute", record_statement)
+        try:
+            await api.run_state(["task-0"])
+            snapshot_query_count = len(statements)
+            statements.clear()
+            assert await persistence.current()
+            if not legacy_tracker:
+                assert len(statements) < snapshot_query_count
+                assert not any(
+                    "for update" in sql or "count(" in sql or "eval_resume_state" in sql for sql in statements
+                )
+        finally:
+            event.remove(postgres_engine, "before_cursor_execute", record_statement)
+        task = postgres_session.get(Task, dispatch.task_id)
+        assert task is not None
+        task.status = TaskStatus.STOPPED
+        postgres_session.add(task)
+        postgres_session.commit()
+        assert not await persistence.current()
+
+
+@pytest.mark.parametrize("revocation", ["dispatch", "attempt", "stop", "revision", "assignment"])
+async def test_task_persistence_rejects_stale_writes(
+    app: FastAPI, dispatch: DispatchFixture, postgres_session: Session, revocation: str
+) -> None:
+    """Keep resumed evaluation checkpoints while fencing obsolete task writers.
+
+    Test cases:
+    - A claimed evaluation resumes from its durable checkpoint.
+    - Revoked dispatches, stopped tasks, and replacement attempts reject further writes.
+    - A concurrent revision conflict stays rejected on subsequent calls.
+    - Missing task assignment revokes the writer, and unclaimed or revoked writers cannot reserve capacity.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert task is not None and invocation is not None and benchmark is not None
+    task.status = TaskStatus.EVALUATING
+    task.started_at = invocation.created_at
+    task.eval_resume_state = {"cursor": 3}
+    benchmark.started_by_email = "executor-test@example.com"
+    postgres_session.add_all([task, benchmark])
+    postgres_session.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        await api.claim(ClaimRequest.model_validate(dispatch.claim))
+        state = await api.run_state([task.task_id])
+        persistence = ApiTaskPersistence(api, state.tasks[0])
+        assert not await persistence.write(BuildTask())
+        assert not await persistence.reserve_pool()
+        await persistence.release_pool()
+        snapshot = await persistence.load()
+        assert snapshot is not None and snapshot.identity["email"] == "executor-test@example.com"
+        assert await persistence.resume() == {"cursor": 3}
+
+        if revocation == "dispatch":
+            invocation.status = ExecutorDispatchStatus.FAILED
+            postgres_session.add(invocation)
+        elif revocation == "attempt":
+            task.started_at += timedelta(seconds=1)
+            postgres_session.add(task)
+        elif revocation == "stop":
+            task.status = TaskStatus.STOPPED
+            postgres_session.add(task)
+        elif revocation == "assignment":
+            invocation.assigned_task_ids = []
+            postgres_session.add(invocation)
+        else:
+            owner = postgres_session.get(ExecutorTaskAttempt, task.id)
+            assert owner is not None
+            owner.revision += 1
+            postgres_session.add(owner)
+        postgres_session.commit()
+
+        if revocation != "revision":
+            assert not await persistence.current()
+        assert not await persistence.write(CompleteTask(result={"score": 1}))
+        assert not await persistence.write(CompleteTask(result={"score": 1}))
+        assert await persistence.load() is None
+        assert await persistence.resume() is None
+        assert not await persistence.reserve_pool()
+
+    postgres_session.refresh(task)
+    assert task.eval_resume_state == {"cursor": 3}
+    assert task.status == (TaskStatus.STOPPED if revocation == "stop" else TaskStatus.EVALUATING)
+    assert not postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all()
+
+
 @pytest.mark.parametrize("operation", ["run/finalization", "run/finalize"])
 async def test_finalization_client_recovers_lost_response(
     app: FastAPI, dispatch: DispatchFixture, finalizable_run: str, postgres_session: Session, operation: str
@@ -1889,6 +2473,270 @@ async def test_finalization_client_recovers_lost_response(
         assert (await api.finish()).status == "FINISHED"
 
     assert transport.dropped
+    assert len(postgres_session.exec(select(FinalEvaluation)).all()) == 1
+    assert len(postgres_session.exec(select(ExecutorRunReceipt)).all()) == 1
+
+
+@pytest.mark.parametrize("revocation", ["task-stop", "attempt", "run-stop", "dispatch"])
+async def test_coordinator_cancels_obsolete_work_and_waits_for_cleanup(
+    app: FastAPI,
+    dispatch: DispatchFixture,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    revocation: str,
+) -> None:
+    """Cancel only the obsolete in-flight attempt after Tracker changes its execution state.
+
+    Test cases:
+    - Explicit task stops and replacement attempts cancel the old task operation.
+    - Run stops and dispatch revocation cancel all assigned work.
+    - Cleanup finishes before the coordinator returns, without overwriting Tracker's new state.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert task is not None and benchmark is not None and invocation is not None
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def process_task(*_args: object, **_kwargs: object) -> dict[str, object]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+        return {}
+
+    monkeypatch.setattr(executor_run, "process_task", process_task)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        await api.claim(ClaimRequest.model_validate(dispatch.claim))
+        initial = await api.run_state([task.task_id])
+        request = StartBenchmarkRequest(benchmark_name=benchmark.name, contract=benchmark.arguments.contract)
+        async with asyncio.timeout(10):
+            runner = asyncio.create_task(
+                executor_run._run_tasks(  # pyright: ignore[reportPrivateUsage]
+                    api,
+                    initial,
+                    request,
+                    Mock(spec=RuntimeServices),
+                    Mock(spec=BenchmarkServiceClient),
+                    DaytonaProviderConfig(
+                        DAYTONA_API_KEY="test", DAYTONA_API_URL="https://app.daytona.io/api", DAYTONA_TARGET="us"
+                    ),
+                    Mock(spec=SandboxProvider),
+                    dispatch.dispatch_id,
+                    None,
+                )
+            )
+            try:
+                await started.wait()
+                if revocation == "task-stop":
+                    task.status = TaskStatus.STOPPED
+                elif revocation == "attempt":
+                    task.started_at += timedelta(seconds=1)
+                    task.status = TaskStatus.PENDING
+                elif revocation == "run-stop":
+                    benchmark.status = BenchmarkStatus.STOPPED
+                else:
+                    invocation.status = ExecutorDispatchStatus.FAILED
+                postgres_session.add_all([task, benchmark, invocation])
+                postgres_session.commit()
+                expected_started_at = task.started_at
+                expected_status = task.status
+                if revocation in ("run-stop", "dispatch"):
+                    with pytest.raises(ExceptionGroup) as raised:
+                        await runner
+                    assert all(isinstance(error, ExecutionAuthorityRevoked) for error in raised.value.exceptions)
+                else:
+                    await runner
+            finally:
+                if not runner.done():
+                    runner.cancel()
+                await asyncio.gather(runner, return_exceptions=True)
+
+    assert cleaned.is_set()
+    postgres_session.refresh(task)
+    assert task.status == expected_status
+    assert task.started_at.replace(tzinfo=None) == expected_started_at.replace(tzinfo=None)
+    assert postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all() == []
+
+
+@pytest.mark.parametrize("provider_pool_id", [None, "different-provider-pool"])
+async def test_coordinator_rejects_a_provider_outside_the_saved_pool(
+    app: FastAPI, dispatch: DispatchFixture, postgres_session: Session, provider_pool_id: str | None
+) -> None:
+    """Do not launch tasks using a provider outside the run's persisted admission pool.
+
+    Test cases:
+    - A provider without pool identity cannot run a queued task.
+    - A different provider pool cannot bypass the original run's admission limits.
+    """
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    task = postgres_session.get(Task, dispatch.task_id)
+    assert benchmark is not None and task is not None
+    benchmark.arguments = benchmark.arguments.model_copy(update={"queue_pool_id": queue_pool_id("saved-pool")})
+    postgres_session.add(benchmark)
+    postgres_session.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        await api.claim(ClaimRequest.model_validate(dispatch.claim))
+        initial = await api.run_state([task.task_id])
+        with pytest.raises(TrackerServiceError, match="does not match the run's queued provider pool"):
+            await executor_run._run_tasks(  # pyright: ignore[reportPrivateUsage]
+                api,
+                initial,
+                StartBenchmarkRequest(benchmark_name=benchmark.name, contract=benchmark.arguments.contract),
+                Mock(spec=RuntimeServices),
+                Mock(spec=BenchmarkServiceClient),
+                DaytonaProviderConfig(
+                    DAYTONA_API_KEY="test", DAYTONA_API_URL="https://app.daytona.io/api", DAYTONA_TARGET="us"
+                ),
+                Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id),
+                dispatch.dispatch_id,
+                None,
+            )
+
+    assert postgres_session.exec(select(ExecutorTaskAttempt)).all() == []
+    assert postgres_session.exec(select(ExecutorPoolReservation)).all() == []
+    postgres_session.refresh(task)
+    assert task.status == TaskStatus.IN_PROGRESS
+
+
+@pytest.mark.usefixtures("finalizable_run")
+@pytest.mark.parametrize("outcome", ["pending", "retry-during-score", "stop", "score-error"])
+async def test_finalization_preserves_pending_or_replaced_attempts(
+    app: FastAPI, dispatch: DispatchFixture, postgres_session: Session, outcome: str
+) -> None:
+    """Do not publish completion when tasks are unfinished or change during scoring.
+
+    Test cases:
+    - Unfinished tasks do not produce a final score or notification.
+    - A retry racing final scoring rejects the stale snapshot without overwriting the new attempt.
+    - Stopped runs receive a stopped notification, not a success report or callback.
+    - Scoring failures propagate without persisting a fabricated final score.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    assert task is not None and benchmark is not None
+    if outcome == "pending":
+        task.status = TaskStatus.PENDING
+    elif outcome == "stop":
+        task.status = TaskStatus.STOPPED
+        benchmark.status = BenchmarkStatus.STOPPING
+    postgres_session.add_all([task, benchmark])
+    postgres_session.commit()
+
+    async def score(**_kwargs: object) -> Mock:
+        if outcome == "score-error":
+            raise OSError("Scoring service disconnected")
+        if outcome == "retry-during-score":
+            task.status = TaskStatus.PENDING
+            task.started_at += timedelta(seconds=1)
+            postgres_session.add(task)
+            postgres_session.commit()
+        return Mock(final_score=1, metadata={})
+
+    service = Mock(spec=BenchmarkServiceClient, final_score=AsyncMock(side_effect=score))
+    runtime = Mock(spec=RuntimeServices, objects=Mock(put_bytes=AsyncMock()), run_completion_callback=AsyncMock())
+    notifier = Mock(spec=SlackNotifier, send_terminal_notification=AsyncMock())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        request = StartBenchmarkRequest(benchmark_name=benchmark.name, contract=benchmark.arguments.contract)
+        if outcome == "score-error":
+            with pytest.raises(OSError, match="Scoring service disconnected"):
+                await executor_run._finalize_run(api, request, runtime, service, notifier)  # pyright: ignore[reportPrivateUsage]
+        else:
+            await executor_run._finalize_run(api, request, runtime, service, notifier)  # pyright: ignore[reportPrivateUsage]
+
+    postgres_session.refresh(benchmark)
+    postgres_session.refresh(task)
+    assert benchmark.status == (BenchmarkStatus.STOPPED if outcome == "stop" else BenchmarkStatus.IN_PROGRESS)
+    assert postgres_session.exec(select(FinalEvaluation)).all() == []
+    runtime.objects.put_bytes.assert_not_awaited()
+    runtime.run_completion_callback.assert_not_awaited()
+    if outcome == "stop":
+        notification, status = notifier.send_terminal_notification.call_args.args
+        assert status == BenchmarkStatus.STOPPED
+        assert notification.total_tasks == 1 and notification.finished_tasks == 1
+    else:
+        notifier.send_terminal_notification.assert_not_awaited()
+    if outcome in ("pending", "retry-during-score"):
+        assert task.status == TaskStatus.PENDING
+
+
+@pytest.mark.usefixtures("finalizable_run")
+@pytest.mark.parametrize("revocation", ["before-upload", "after-upload"])
+async def test_finalization_fences_external_side_effects_after_revocation(
+    app: FastAPI, dispatch: DispatchFixture, postgres_session: Session, revocation: str
+) -> None:
+    """Recheck dispatch authority before publishing a report and before the completion callback.
+
+    Test cases:
+    - Revocation after finalization commits prevents report upload and the callback.
+    - Revocation during upload prevents the subsequent callback without duplicating the final score.
+    """
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert benchmark is not None and invocation is not None
+    transport = MockPausedResponseTransport(app, "run/finalize")
+    upload_started = asyncio.Event()
+    upload_release = asyncio.Event()
+    reports: list[bytes] = []
+
+    async def upload(_key: str, content: bytes, **_kwargs: object) -> None:
+        reports.append(content)
+        upload_started.set()
+        await upload_release.wait()
+
+    if revocation == "before-upload":
+        reached, release = transport.committed, transport.release
+        upload_release.set()
+    else:
+        reached, release = upload_started, upload_release
+        transport.release.set()
+    runtime = Mock(spec=RuntimeServices, objects=Mock(put_bytes=upload), run_completion_callback=AsyncMock())
+    service = Mock(spec=BenchmarkServiceClient, final_score=AsyncMock(return_value=Mock(final_score=1, metadata={})))
+    async with httpx.AsyncClient(transport=transport, base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        request = StartBenchmarkRequest(benchmark_name=benchmark.name, contract=benchmark.arguments.contract)
+        runner = asyncio.create_task(
+            executor_run._finalize_run(api, request, runtime, service, None)  # pyright: ignore[reportPrivateUsage]
+        )
+        try:
+            async with asyncio.timeout(5):
+                await reached.wait()
+                invocation.status = ExecutorDispatchStatus.FAILED
+                postgres_session.add(invocation)
+                postgres_session.commit()
+                release.set()
+                await runner
+        finally:
+            release.set()
+            if not runner.done():
+                runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+
+    assert len(reports) == (1 if revocation == "after-upload" else 0)
+    if reports:
+        assert json.loads(reports[0])["status"] == "FINISHED"
+    runtime.run_completion_callback.assert_not_awaited()
     assert len(postgres_session.exec(select(FinalEvaluation)).all()) == 1
     assert len(postgres_session.exec(select(ExecutorRunReceipt)).all()) == 1
 
@@ -1924,3 +2772,251 @@ async def test_queue_client_recovers_lost_response(
     task = postgres_session.get(Task, queued_task.id)
     assert owner is not None and owner.revision == 3
     assert task is not None and task.status == TaskStatus.IN_PROGRESS
+
+
+@pytest.mark.parametrize("outcome", ["stopped", "stale-before-create", "stale-after-create", "capacity-recovers"])
+async def test_queue_settles_creation_when_admission_or_authority_changes(
+    app: FastAPI,
+    dispatch: DispatchFixture,
+    queued_task: TaskFixture,
+    postgres_session: Session,
+    outcome: str,
+) -> None:
+    """Release confirmed reservations and clean up sandboxes after task authority changes.
+
+    Test cases:
+    - Stopped tasks never request provider admission or create a sandbox.
+    - A replaced attempt cannot start creation or adopt an already created sandbox.
+    - Temporary provider capacity rejection releases its reservation before trying again.
+    """
+    task = postgres_session.get(Task, queued_task.id)
+    assert task is not None
+    admission_calls = 0
+    created = False
+    cleaned = False
+
+    def replace_attempt() -> None:
+        task.started_at += timedelta(seconds=1)
+        postgres_session.add(task)
+        postgres_session.commit()
+
+    async def check_admission(*_args: object) -> bool:
+        nonlocal admission_calls
+        admission_calls += 1
+        if outcome == "stale-before-create":
+            replace_attempt()
+        return outcome != "capacity-recovers" or admission_calls > 1
+
+    @asynccontextmanager
+    async def create() -> AsyncGenerator[Sandbox]:
+        nonlocal created, cleaned
+        created = True
+        if outcome == "stale-after-create":
+            replace_attempt()
+        try:
+            yield Mock(spec=Sandbox, id="queue-test-sandbox")
+        finally:
+            cleaned = True
+
+    provider = Mock(spec=SandboxProvider, check_admission=check_admission)
+    queue = ApiSandboxQueueContext(provider, poll_interval_seconds=0.01)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        state = await api.run_state([task.task_id])
+        persistence = ApiTaskPersistence(api, state.tasks[0])
+        assert await persistence.load() is not None
+        if outcome == "stopped":
+            task.status = TaskStatus.STOPPED
+            postgres_session.add(task)
+            postgres_session.commit()
+        async with AsyncExitStack() as stack, asyncio.timeout(5):
+            sandbox = await queue.enter(
+                stack=stack,
+                persistence=persistence,
+                source=ImageSource(image="test-image:latest"),
+                resources=Resources(vcpu=1, memory=1, disk=1),
+                create=create,
+            )
+            assert (sandbox is not None) == (outcome == "capacity-recovers")
+            if outcome == "stale-after-create":
+                assert cleaned
+
+    assert created == (outcome in ("stale-after-create", "capacity-recovers"))
+    assert cleaned == created
+    assert admission_calls == (0 if outcome == "stopped" else 2 if outcome == "capacity-recovers" else 1)
+    assert postgres_session.exec(select(ExecutorPoolReservation)).all() == []
+    assert postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all() == []
+    postgres_session.refresh(task)
+    if outcome == "capacity-recovers":
+        assert task.status == TaskStatus.IN_PROGRESS
+    elif outcome == "stopped":
+        assert task.status == TaskStatus.STOPPED
+    else:
+        assert task.started_at.replace(tzinfo=None) > datetime.fromisoformat(
+            queued_task.request["expected_started_at"]
+        ).replace(tzinfo=None)
+
+
+async def _stop_api_process(process: asyncio.subprocess.Process) -> None:
+    if process.stdin is not None:
+        process.stdin.close()
+    if process.returncode is None:
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=10)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+
+async def _process_event(process: asyncio.subprocess.Process) -> dict[str, object]:
+    assert process.stdout is not None
+    async with asyncio.timeout(15):
+        line = await process.stdout.readline()
+        if not line:
+            assert process.stderr is not None
+            pytest.fail(f"API test process exited: {(await process.stderr.read()).decode()}")
+
+    return json.loads(line)
+
+
+async def _start_api_server(
+    stack: AsyncExitStack, database_url: str, port: int = 0, *, checkpoint_failures: int = 0
+) -> tuple[asyncio.subprocess.Process, int]:
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", port))
+        port = listener.getsockname()[1]
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(Path(__file__).with_name("api_server.py")),
+            str(listener.fileno()),
+            pass_fds=(listener.fileno(),),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={
+                **os.environ,
+                "TEST_EXECUTOR_DATABASE_URL": database_url,
+                "TEST_EXECUTOR_CHECKPOINT_FAILURES": str(checkpoint_failures),
+            },
+        )
+    stack.push_async_callback(_stop_api_process, process)
+    assert (await _process_event(process))["event"] == "ready"
+
+    return process, port
+
+
+async def test_api_server_restart_preserves_executor_process(
+    dispatch: DispatchFixture, postgres_engine: Engine, postgres_session: Session
+) -> None:
+    """Restart an actual API process while a database-free client process retains its claim.
+
+    Test cases:
+    - A new server process accepts the original client's claim and task attempt.
+    - The same client PID completes the task and run through real HTTP after restart.
+    - No executor-side database/config modules or connections are required.
+    - Checkpoint writes survive seven failed requests while heartbeat authority remains valid.
+    """
+    task = postgres_session.get(Task, dispatch.task_id)
+    assert task is not None
+    task.status = TaskStatus.PENDING
+    postgres_session.add(task)
+    postgres_session.commit()
+    database_url = postgres_engine.url.render_as_string(hide_password=False)
+    async with AsyncExitStack() as stack:
+        server, port = await _start_api_server(stack, database_url)
+        host_http = await stack.enter_async_context(aiohttp.ClientSession())
+        host_store = ApiExecutorDispatchStore(
+            host_http,
+            ExecutorProcessPayload(
+                str(dispatch.benchmark_id),
+                ["task-0"],
+                {
+                    "executor_api_token": dispatch.token,
+                    "executor_tracker_url": f"http://127.0.0.1:{port}",
+                    "executor_claimant_id": dispatch.claim["claimant_id"],
+                },
+            ),
+        )
+        authority = await host_store.claim(
+            str(dispatch.dispatch_id),
+            str(dispatch.benchmark_id),
+            ArtifactDispatch(
+                dispatch.claim["executor_release_id"],
+                dispatch.claim["executor_artifact_uri"],
+                dispatch.claim["executor_artifact_digest"],
+                dispatch.claim["executor_protocol_version"],
+            ),
+        )
+        assert authority is not None and await host_store.is_current(authority)
+        assert await host_store.heartbeat(authority)
+        compatibility_pex = os.environ.get("TEST_EXECUTOR_COMPAT_PEX")
+        worker_environment = dict(os.environ)
+        worker_command = [sys.executable]
+        if compatibility_pex:
+            worker_command.append(str(Path(compatibility_pex).resolve(strict=True)))
+            worker_environment["PEX_ROOT"] = stack.enter_context(tempfile.TemporaryDirectory(prefix="compat-pex-"))
+            worker_environment["TEST_EXECUTOR_COMPAT_ROOT"] = worker_environment["PEX_ROOT"]
+            worker_environment["PEX_INTERPRETER"] = "1"
+            worker_environment["PEX_INHERIT_PATH"] = "false"
+            worker_environment.pop("PYTHONPATH", None)
+        worker_command.append(str(Path(__file__).with_name("api_worker.py")))
+        worker = await asyncio.create_subprocess_exec(
+            *worker_command,
+            env=worker_environment,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stack.push_async_callback(_stop_api_process, worker)
+        assert worker.stdin is not None
+        worker.stdin.write(
+            json.dumps(
+                {
+                    "endpoint": f"http://127.0.0.1:{port}",
+                    "token": dispatch.token,
+                    "dispatch_id": str(dispatch.dispatch_id),
+                    "claim": dispatch.claim,
+                    "task_ids": ["task-0"],
+                }
+            ).encode()
+            + b"\n"
+        )
+        await worker.stdin.drain()
+        started = await _process_event(worker)
+        assert started["event"] == "started"
+        postgres_session.refresh(task)
+        assert task.status == TaskStatus.IN_PROGRESS
+
+        await _stop_api_process(server)
+        assert server.returncode is not None and worker.returncode is None
+        worker.stdin.write(b"read\n")
+        await worker.stdin.drain()
+        assert (await _process_event(worker))["event"] == "reading"
+        replacement, _ = await _start_api_server(stack, database_url, port, checkpoint_failures=7)
+        assert replacement.pid != server.pid
+        resumed = await _process_event(worker)
+        finished = await _process_event(worker)
+        assert resumed == {"event": "resumed", "pid": started["pid"]}
+        assert finished == {"event": "finished", "pid": started["pid"]}
+        assert await asyncio.wait_for(worker.wait(), timeout=10) == 0
+        assert await host_store.finish(authority)
+        assert not await host_store.is_current(authority)
+
+    postgres_session.expire_all()
+    task = postgres_session.get(Task, dispatch.task_id)
+    benchmark = postgres_session.get(Benchmark, dispatch.benchmark_id)
+    invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
+    assert task is not None and task.status == TaskStatus.FINISHED
+    owner = postgres_session.get(ExecutorTaskAttempt, task.id)
+    assert owner is not None and owner.dispatch_id == dispatch.dispatch_id
+    assert task.eval_resume_state == {"cursor": 2}
+    assert len(postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all()) == 1
+    assert task.started_at == datetime.fromisoformat(str(started["started_at"])).replace(tzinfo=None)
+    assert benchmark is not None and benchmark.status == BenchmarkStatus.FINISHED
+    assert invocation is not None and invocation.status == ExecutorDispatchStatus.FINISHED
+    assert benchmark.final_evaluation is not None and benchmark.final_evaluation.final_score == 1

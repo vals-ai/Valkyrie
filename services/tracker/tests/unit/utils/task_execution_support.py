@@ -7,11 +7,9 @@ from uuid import UUID
 
 from benchmark_service import ImageSource, Resources
 from benchmark_service.schemas import RetrieveTaskResponse
-import pytest
-from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session
 
-from tests.utils import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID, executor_api
 from tracker.auth import RequestIdentity
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
@@ -25,42 +23,14 @@ from tracker.database.models import (
     Task,
 )
 from tracker.executor.execution_authority import ExecutionAuthority
-from tracker.scheduler.admission import SandboxQueueContext
+from tracker.executor.queue_execution import ApiSandboxQueueContext
+from tracker.executor.task_persistence import ApiTaskPersistence, attempt_time
+from tracker.executor_api.v1.schemas import TaskState
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
 _TEST_STARTER = RequestIdentity(org=TEST_ORG, access_key_id=None, email=None, name=None)
-
-
-class _UnitEvaluationLock:
-    def __init__(self, engine: Engine) -> None:
-        self._engine = engine
-        self._connection: Connection | None = None
-
-    @property
-    def connection(self) -> Connection:
-        assert self._connection is not None
-        return self._connection
-
-    async def __aenter__(self) -> bool:
-        self._connection = self._engine.connect()
-        return True
-
-    async def __aexit__(self, *_args: object) -> None:
-        self.connection.close()
-        self._connection = None
-
-
-def install_sqlite_evaluation_lock(database_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace PostgreSQL evaluation locking for a SQLite-backed unit test."""
-    bind = database_session.get_bind()
-    assert isinstance(bind, Engine)
-
-    def evaluation_lock(_engine: Engine, _task_row_id: UUID) -> _UnitEvaluationLock:
-        return _UnitEvaluationLock(bind)
-
-    monkeypatch.setattr("tracker.utils.task_execution.task_evaluation_lock", evaluation_lock)
 
 
 class MockKicker:
@@ -127,7 +97,7 @@ def create_task_environment(
         id="task-execution-test-release",
         artifact_uri="s3://artifacts/task-execution-test.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version="4",
         readiness_verified=True,
     )
     database_session.add(release)
@@ -166,7 +136,7 @@ async def run_process_task(
     runtime_services: RuntimeServices,
     authority: ExecutionAuthority,
     *,
-    queue_context: SandboxQueueContext | None = None,
+    queue_context: ApiSandboxQueueContext | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Run process_task with the shared deterministic unit-test dependencies.
 
@@ -182,6 +152,7 @@ async def run_process_task(
     """
     sandbox_provider_config = await runtime_services.get_sandbox_provider_config()
     async with (
+        executor_api(authority) as api,
         start_benchmark_request.benchmark_service as benchmark_service,
         runtime_services.get_sandbox_provider(sandbox_provider_config) as sandbox_provider,
     ):
@@ -198,4 +169,10 @@ async def run_process_task(
             creation_semaphore=Semaphore(1),
             queue_context=queue_context,
             authority=authority,
+            persistence=ApiTaskPersistence(
+                api,
+                TaskState.model_validate(task_row, from_attributes=True).model_copy(
+                    update={"started_at": attempt_time(task_row.started_at)}
+                ),
+            ),
         )

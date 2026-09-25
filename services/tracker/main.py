@@ -114,6 +114,7 @@ from tracker.executor.dispatch_control import (
     resolve_enqueue_failure,
     validate_managed_execution_release,
 )
+from tracker.executor.dispatch_api import create_dispatch_access
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
@@ -568,6 +569,8 @@ def _commit_start(
                 session.add(Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id=task_id))
             dispatch = admit_start_dispatch(session, benchmark=benchmark, dispatch_id=dispatch_id, task_ids=task_ids)
             payload = _process_benchmark_kwargs(benchmark, request, task_ids)
+            if dispatch.executor_protocol_version == "4":
+                payload["executor_api_token"] = create_dispatch_access(session, dispatch)
             session.commit()
             return benchmark.model_dump_json(), _admission_result(dispatch, payload, task_ids)
         except Exception as exc:
@@ -1962,6 +1965,8 @@ def _apply_recovery(
             if transferred.rowcount != len(resumable_evaluations):
                 raise TrackerServiceError("Recovery evaluation ownership changed before dispatch admission")
         executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
+        if executor_dispatch.executor_protocol_version == "4":
+            executor_payload["executor_api_token"] = create_dispatch_access(session, executor_dispatch)
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()

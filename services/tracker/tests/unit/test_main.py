@@ -1013,8 +1013,8 @@ class TestTrackerAPI:
 
     @pytest.mark.parametrize(
         ("protocol_version", "aws_managed"),
-        [("1", False), (SUPPORTED_PROTOCOL_VERSION, True)],
-        ids=["protocol-1-access-key", "protocol-2-managed"],
+        [(SUPPORTED_PROTOCOL_VERSION, False), (SUPPORTED_PROTOCOL_VERSION, True)],
+        ids=["protocol-4-access-key", "protocol-4-managed"],
     )
     async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
         self,
@@ -1103,6 +1103,9 @@ class TestTrackerAPI:
             if aws_managed
             else {"start_benchmark_request_json", "benchmark_id_str", "verified_task_ids"}
         )
+        if protocol_version == "4":
+            execution_kwargs.add("executor_api_token")
+            monkeypatch.setenv("EXECUTOR_TRACKER_URL", "http://tracker.test")
         assert set(taskiq_message.kwargs) == execution_kwargs | {
             "telemetry_context_json",
             "executor_dispatch_id",
@@ -1152,7 +1155,15 @@ class TestTrackerAPI:
             assert process_payload.arguments == {
                 "execution_context_json": taskiq_message.kwargs["execution_context_json"],
                 "telemetry_context_json": child_telemetry_context,
+                "executor_api_token": taskiq_message.kwargs["executor_api_token"],
+                "executor_tracker_url": "http://tracker.test",
+                "executor_claimant_id": process_payload.arguments["executor_claimant_id"],
+                "executor_release_id": taskiq_message.kwargs["executor_release_id"],
+                "executor_artifact_uri": taskiq_message.kwargs["executor_artifact_uri"],
+                "executor_artifact_digest": taskiq_message.kwargs["executor_artifact_digest"],
+                "executor_protocol_version": "4",
             }
+            UUID(str(process_payload.arguments["executor_claimant_id"]))
         else:
             assert process_payload.arguments == {
                 "start_benchmark_request_json": request.model_copy(
@@ -1161,6 +1172,13 @@ class TestTrackerAPI:
                 "benchmark_id_str": str(benchmark.id),
                 "verified_task_ids": ["task_0"],
                 "telemetry_context_json": child_telemetry_context,
+                "executor_api_token": taskiq_message.kwargs["executor_api_token"],
+                "executor_tracker_url": "http://tracker.test",
+                "executor_claimant_id": process_payload.arguments["executor_claimant_id"],
+                "executor_release_id": taskiq_message.kwargs["executor_release_id"],
+                "executor_artifact_uri": taskiq_message.kwargs["executor_artifact_uri"],
+                "executor_artifact_digest": taskiq_message.kwargs["executor_artifact_digest"],
+                "executor_protocol_version": "4",
             }
         host_dispatch = observed_host["dispatch"]
         assert isinstance(host_dispatch, executor_host.ArtifactDispatch)
@@ -1674,7 +1692,7 @@ class TestTrackerAPI:
         benchmark_row.current_execution_release_id = "current-release"
         benchmark_row.executor_artifact_uri = "s3://artifacts/initial-release.pex"
         benchmark_row.executor_artifact_digest = "a" * 64
-        benchmark_row.executor_protocol_version = "1"
+        benchmark_row.executor_protocol_version = "4"
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -1713,7 +1731,7 @@ class TestTrackerAPI:
         assert response.json()["executor_release_id"] == "initial-release"
         assert response.json()["current_execution_release_id"] == "current-release"
         assert response.json()["executor_artifact_digest"] == "a" * 64
-        assert response.json()["executor_protocol_version"] == "1"
+        assert response.json()["executor_protocol_version"] == "4"
 
         # Test case 4. Benchmark details are updated as benchmark progresses
         # Change a few to in progress, finished and error
@@ -2275,7 +2293,7 @@ class TestTrackerAPI:
         example_benchmark_object.current_execution_release_id = "current-release"
         example_benchmark_object.executor_artifact_uri = "s3://artifacts/initial-release.pex"
         example_benchmark_object.executor_artifact_digest = "a" * 64
-        example_benchmark_object.executor_protocol_version = "1"
+        example_benchmark_object.executor_protocol_version = "4"
         database_session.add(example_benchmark_object)
         database_session.commit()
 
@@ -2344,7 +2362,7 @@ class TestTrackerAPI:
         assert persisted_row["executor_release_id"] == "initial-release"
         assert persisted_row["current_execution_release_id"] == "current-release"
         assert persisted_row["executor_artifact_digest"] == "a" * 64
-        assert persisted_row["executor_protocol_version"] == "1"
+        assert persisted_row["executor_protocol_version"] == "4"
 
         # Clear filters and search again (checking limit and total)
         fetch_benchmarks_request.benchmark_name = None  # type: ignore[assignment]
@@ -3061,7 +3079,7 @@ class TestTrackerAPI:
             executor_release_id="test-release",
             executor_artifact_uri="s3://artifacts/test-release.pex",
             executor_artifact_digest="digest-test-release",
-            executor_protocol_version="1",
+            executor_protocol_version="4",
             arguments=BenchmarkArguments(contract=contract, concurrency=1),
         )
         database_session.add(benchmark)

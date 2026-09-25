@@ -37,7 +37,7 @@ from tracker.executor.release_control import (
 )
 
 
-def _release(release_id: str, *, protocol_version: str = "1") -> ExecutorRelease:
+def _release(release_id: str, *, protocol_version: str = "4") -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
@@ -75,7 +75,8 @@ def test_managed_start_requires_a_compatible_active_release(
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
-    register_release(database_session, _release("legacy", protocol_version=protocol_version))
+    database_session.add(_release("legacy", protocol_version=protocol_version))
+    database_session.flush()
     promote_release(database_session, "legacy")
     database_session.commit()
     example_benchmark_object.aws_managed = True
@@ -112,7 +113,8 @@ def test_in_progress_managed_recovery_refuses_a_pinned_legacy_protocol(
     example_benchmark_object: Benchmark,
 ) -> None:
     legacy = _release("legacy", protocol_version="2")
-    register_release(database_session, legacy)
+    database_session.add(legacy)
+    database_session.flush()
     promote_release(database_session, legacy.id)
     example_benchmark_object.aws_managed = True
     pin_benchmark_to_release(example_benchmark_object, legacy)

@@ -5,7 +5,8 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import JsonValue
-from sqlmodel import Session, select
+from sqlalchemy import func
+from sqlmodel import Session, col, select
 
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -13,6 +14,8 @@ from tracker.database.models import (
     ErrorResult,
     EvaluationResult,
     ExecutorDispatch,
+    ExecutorDispatchAccess,
+    ExecutorDispatchStatus,
     ExecutorTaskAttempt,
     ExecutorTaskReceipt,
     ExecutorPoolReservation,
@@ -22,9 +25,36 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.executor.dispatch_api import DispatchConflict, as_utc, lock_claimed_dispatch
+from tracker.observability.tracing import observability_span
 from tracker.scheduler.store import claim_eligible_task
 
 _RUNNABLE = (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+
+
+def task_authority(session: Session, dispatch_id: UUID, claimant_id: UUID, task_id: UUID, started_at: datetime) -> bool:
+    """Observe one attempt without checkpoint payloads, aggregates, or write locks.
+
+    Writes still revalidate authority under their existing transaction locks.
+    """
+    row = session.exec(
+        select(col(Task.task_id), col(ExecutorDispatch.assigned_task_ids))
+        .join(Benchmark, col(Task.benchmark) == Benchmark.id)
+        .join(ExecutorDispatch, col(ExecutorDispatch.benchmark_id) == Benchmark.id)
+        .join(ExecutorDispatchAccess, col(ExecutorDispatchAccess.dispatch_id) == ExecutorDispatch.id)
+        .where(
+            ExecutorDispatch.id == dispatch_id,
+            ExecutorDispatchAccess.claimant_id == claimant_id,
+            ExecutorDispatch.status == ExecutorDispatchStatus.RUNNING,
+            col(ExecutorDispatch.lease_expires_at) > func.clock_timestamp(),
+            Benchmark.status != BenchmarkStatus.STOPPED,
+            Task.id == task_id,
+            Task.org_id == Benchmark.org_id,
+            Task.started_at == as_utc(started_at).replace(tzinfo=None),
+            Task.status != TaskStatus.STOPPED,
+        )
+    ).one_or_none()
+
+    return row is not None and row[1] is not None and row[0] in row[1]
 
 
 def read_task_receipt(
@@ -142,12 +172,19 @@ def write_task(
 
 
 def set_task_status(session: Session, task: Task, *, status: TaskStatus, expected: tuple[TaskStatus, ...]) -> None:
-    if task.status not in expected:
-        raise DispatchConflict("Task status does not permit this operation")
-    if status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS):
-        _require_queue_reservation(session, task, status)
-    task.status = status
-    session.add(task)
+    with observability_span(
+        "task.status_transition",
+        task_id=task.task_id,
+        benchmark_id=str(task.benchmark),
+        from_status=task.status.value,
+        to_status=status.value,
+    ):
+        if task.status not in expected:
+            raise DispatchConflict("Task status does not permit this operation")
+        if status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS):
+            _require_queue_reservation(session, task, status)
+        task.status = status
+        session.add(task)
 
 
 def _require_queue_reservation(session: Session, task: Task, status: TaskStatus) -> None:

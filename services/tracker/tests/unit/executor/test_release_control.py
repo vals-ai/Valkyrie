@@ -37,7 +37,7 @@ def _release(release_id: str) -> ExecutorRelease:
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version="4",
         readiness_verified=True,
         created_at=datetime.now(UTC),
     )
@@ -73,7 +73,7 @@ def test_activate_release_registers_verifies_and_promotes_in_one_session(databas
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version="4",
     )
 
     activated = activate_release(
@@ -97,7 +97,7 @@ def test_activate_release_is_idempotent_for_exact_active_release(database_sessio
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version="4",
     )
     client = FakeS3Client(content, key="releases/git-abc123-def456/executor.pex")
     first = activate_release(
@@ -134,13 +134,13 @@ def test_activate_release_rejects_draining_release(database_session: Session) ->
         id="git-previous",
         artifact_uri="s3://artifacts/releases/git-previous/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version="4",
     )
     current = ExecutorRelease(
         id="git-current",
         artifact_uri="s3://artifacts/releases/git-current/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version="4",
     )
     activate_release(
         database_session,
@@ -178,7 +178,7 @@ def test_activate_release_rejects_retired_release(database_session: Session) -> 
         id="git-retired",
         artifact_uri="s3://artifacts/releases/git-retired/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
-        protocol_version="1",
+        protocol_version="4",
     )
     register_release(database_session, release)
     release.status = ExecutorReleaseStatus.RETIRED
@@ -205,7 +205,7 @@ def test_activate_release_rejects_release_id_reuse_with_different_content(databa
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version="4",
     )
     register_release(database_session, existing)
 
@@ -229,7 +229,7 @@ def test_activate_release_digest_failure_rolls_back_new_candidate(database_sessi
         id="git-abc123-def456",
         artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version="4",
     )
 
     with pytest.raises(ReleaseControlError, match="digest mismatch"):
@@ -291,9 +291,10 @@ def test_verify_release_artifact_rejects_digest_mismatch(database_session: Sessi
     assert not stored.readiness_verified
 
 
-def test_register_release_rejects_unsupported_protocol(database_session: Session) -> None:
+@pytest.mark.parametrize("protocol_version", ["1", "2", "3", "unsupported"])
+def test_register_release_rejects_unsupported_protocol(database_session: Session, protocol_version: str) -> None:
     release = _release("unsupported")
-    release.protocol_version = "4"
+    release.protocol_version = protocol_version
 
     with pytest.raises(ReleaseControlError, match="Unsupported executor protocol version"):
         register_release(database_session, release)
@@ -495,7 +496,7 @@ def test_retirement_waits_for_owned_active_benchmark(
     benchmark.executor_release_id = "v1"
     benchmark.executor_artifact_uri = "s3://artifacts/v1.pex"
     benchmark.executor_artifact_digest = "digest-v1"
-    benchmark.executor_protocol_version = "1"
+    benchmark.executor_protocol_version = "4"
     database_session.add(benchmark)
     database_session.commit()
 
@@ -678,7 +679,7 @@ def test_active_retry_dispatch_blocks_its_release_across_successive_promotions(
     benchmark.executor_release_id = "v1"
     benchmark.executor_artifact_uri = "s3://artifacts/v1.pex"
     benchmark.executor_artifact_digest = "a" * 64
-    benchmark.executor_protocol_version = "1"
+    benchmark.executor_protocol_version = "4"
     benchmark.status = BenchmarkStatus.FINISHED
     benchmark.finished_at = datetime.now(UTC)
     database_session.add(benchmark)

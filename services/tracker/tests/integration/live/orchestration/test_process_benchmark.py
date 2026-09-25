@@ -5,6 +5,8 @@ Exercise tracker orchestration against real services and sandboxes.
 
 from __future__ import annotations
 
+from tests.utils import process_benchmark
+
 from asyncio import gather
 from collections.abc import AsyncGenerator, Callable
 from sqlite3 import OperationalError
@@ -15,7 +17,6 @@ from benchmark_service.schemas import SetupTaskResponse
 import pytest
 from sqlmodel import Session, select
 
-import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.aws.runtime import AWSRuntime
@@ -32,7 +33,6 @@ from tracker.database.models import (
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import start_benchmark_request_to_benchmark
 
-process_benchmark = getattr(tracker_utils, "process_benchmark")
 
 _TASK_ID: str = "astropy__astropy-12907"
 _TASK_IDS: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]

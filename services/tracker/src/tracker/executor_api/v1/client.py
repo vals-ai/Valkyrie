@@ -19,7 +19,13 @@ from tracker.executor_api.v1.schemas import (
     RunTasksRequest,
     TerminalResponse,
 )
-from tracker.executor_api.v1.task_schemas import Mutation, TaskAttemptRequest, TaskWriteRequest, TaskWriteResponse
+from tracker.executor_api.v1.task_schemas import (
+    Mutation,
+    TaskAttemptRequest,
+    TaskAuthorityRequest,
+    TaskWriteRequest,
+    TaskWriteResponse,
+)
 from tracker.executor_api.v1.finalization_schemas import (
     Finalization,
     FinalizationResponse,
@@ -98,6 +104,13 @@ class ExecutorClient:
             f"tasks/{task_id}/claim",
             TaskAttemptRequest(claimant_id=self._claimant_id, command_id=command_id, expected_started_at=started_at),
             TaskWriteResponse,
+        )
+
+    async def task_authority(self, task_id: UUID, started_at: datetime) -> AuthorityResponse:
+        return await self._post(
+            f"tasks/{task_id}/authority",
+            TaskAuthorityRequest(claimant_id=self._claimant_id, expected_started_at=started_at),
+            AuthorityResponse,
         )
 
     async def finalization_state(self) -> FinalizationResponse:

@@ -60,7 +60,7 @@ def _release(release_id: str) -> ExecutorRelease:
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version="4",
         readiness_verified=True,
     )
 
@@ -70,7 +70,7 @@ def _activation_candidate() -> ExecutorRelease:
         id="concurrent-activation",
         artifact_uri="s3://artifacts/releases/concurrent-activation/executor.pex",
         artifact_digest=_EXECUTOR_ARTIFACT_DIGEST,
-        protocol_version="1",
+        protocol_version="4",
     )
 
 

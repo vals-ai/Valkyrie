@@ -451,6 +451,28 @@ def upgrade() -> None:
         self.assertTrue(result.redeploy_required)
         self.assertEqual(result.reasons, ("executor-host-service-changed",))
 
+    def test_rolling_host_change_deploys_without_stopping_runs(self) -> None:
+        """Verify that a proven draining rollout deploys the host without maintenance.
+
+        Test cases:
+        - Host deployment remains required when maintenance is not required.
+        - A maintenance-requiring sibling stage still prevents a combined rolling classification.
+        """
+        head_sha = self._commit_file("services/executor_host/supervisor.py", "changed = True\n")
+        rolling = ExecutorHostTemplateEffect(
+            redeploy_required=True, reasons=("executor-host-task-definition-changed",), rolling_update=True
+        )
+
+        result = self._classify(head_sha, executor_effect=rolling)
+
+        self.assertTrue(result.executor_stack_deploy_required)
+        self.assertTrue(result.executor_host_redeploy_required)
+        self.assertFalse(result.executor_host_maintenance_required)
+        self.assertEqual(result.classification, "safe")
+        legacy = ExecutorHostTemplateEffect(redeploy_required=True, reasons=("executor-host-service-changed",))
+        combined = classify_repository_change.combine_executor_effects(rolling, legacy)
+        self.assertTrue(combined.maintenance_required)
+
     def test_cli_classifies_prod_worker_change_and_rejects_partial_secondary_input(self) -> None:
         templates = {
             "bench-base.json": _executor_template("WorkerStack", image="image:base"),
@@ -614,6 +636,29 @@ def upgrade() -> None:
         self.assertFalse(result.executor_stack_deploy_required)
         self.assertFalse(result.executor_release_required)
         self.assertFalse(result.database_maintenance_required)
+
+    def test_versioned_execution_changes_publish_a_new_executor(self) -> None:
+        """Verify that API clients and run orchestration cannot deploy without a new PEX.
+
+        Test cases:
+        - Executor orchestration changes require a release without replacing the host.
+        - Versioned client changes require a release without run-stopping maintenance.
+        """
+        for path in (
+            "services/tracker/src/tracker/executor/run_execution.py",
+            "services/tracker/src/tracker/executor/queue_execution.py",
+            "services/tracker/src/tracker/executor/task_persistence.py",
+            "services/tracker/src/tracker/executor_api/v1/client.py",
+            "services/tracker/src/tracker/executor_api/transport.py",
+        ):
+            with self.subTest(path=path):
+                head_sha = self._commit_file(path, "changed = True\n")
+                result = self._classify(head_sha)
+
+                self.assertTrue(result.executor_release_required)
+                self.assertFalse(result.executor_host_redeploy_required)
+                self.assertFalse(result.database_maintenance_required)
+                self.assertEqual(result.classification, "safe")
 
     def test_executor_runtime_dependency_requires_only_a_release(self) -> None:
         head_sha = self._commit_file("services/tracker/src/tracker/auth.py", "changed = True\n")

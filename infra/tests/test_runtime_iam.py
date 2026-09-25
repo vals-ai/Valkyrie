@@ -411,6 +411,7 @@ class RuntimeIamTest(unittest.TestCase):
                     "logs:CreateLogStream",
                     "logs:PutLogEvents",
                     "ecs:UpdateTaskProtection",
+                    "ecs:DescribeServices",
                     "lambda:InvokeFunction",
                 },
             ),

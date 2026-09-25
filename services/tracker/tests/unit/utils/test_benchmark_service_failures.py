@@ -7,7 +7,6 @@ import asyncio
 import socket
 import time
 from typing import Any, Never
-from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -25,21 +24,17 @@ from websockets.frames import Close
 from websockets.http11 import Response
 
 import tracker.sandbox as sandbox_module
-import tracker.utils.run_orchestration as run_orchestration_module
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import (
-    TEST_ORG,
     bind_task_to_dispatch,
     create_task_environment,
-    install_sqlite_evaluation_lock,
     run_process_task,
 )
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
     AgentCausedExitReason,
-    BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
     Task,
@@ -47,10 +42,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import HarnessConfig
-from tracker.utils import (
-    fetch_benchmark_row,
-    process_benchmark,
-)
 
 
 class TestBenchmarkServiceFailures:
@@ -248,7 +239,6 @@ class TestBenchmarkServiceFailures:
         task_row.eval_resume_state = saved_state
         database_session.commit()
         bind_task_to_dispatch(database_session, task_row, authority)
-        install_sqlite_evaluation_lock(database_session, monkeypatch)
         resume_calls = 0
 
         async def _mock_resume_evaluation(
@@ -405,47 +395,6 @@ class TestBenchmarkServiceFailures:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.STOPPED
         assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
-
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_stream_recovery_does_not_finish_a_stale_task(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-        runtime_services: RuntimeServices,
-    ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
-        commit_calls = 0
-        saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
-        original_commit_task_status_transition = utils_module.commit_task_status_transition
-
-        async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
-            on_eval_resume_state(saved_state)
-            raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
-
-        async def _mock_resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            return {"status": "success", "score": 1.0}
-
-        def _reject_finish(*args: Any, **kwargs: Any) -> bool:
-            nonlocal commit_calls
-            commit_calls += 1
-            if commit_calls == 4:
-                return False
-            return original_commit_task_status_transition(*args, **kwargs)
-
-        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
-        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
-        monkeypatch.setattr(utils_module, "commit_task_status_transition", _reject_finish)
-
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
-
-        assert result == {"task_0": None}
-        assert commit_calls == 4
-        database_session.refresh(task_row)
-        assert task_row.status == TaskStatus.EVALUATING
 
     @pytest.mark.parametrize("failure", ["dns", "raw", "stream"])
     @pytest.mark.usefixtures("process_benchmark_env")
@@ -732,78 +681,3 @@ class TestBenchmarkServiceFailures:
         assert task_row.status == TaskStatus.ERROR
         assert self._latest_task_error(database_session, task_row) == "ConnectTimeout"
         assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
-
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_process_benchmark_blocks_external_internal_custom_destination(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-    ) -> None:
-        start_benchmark_request, _task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
-        start_benchmark_request = start_benchmark_request.model_copy(
-            update={"custom_benchmark_service": "http://service.internal:8001"}
-        )
-        monkeypatch.setattr(run_orchestration_module, "AUTH_REQUIRED", True)
-        monkeypatch.setattr(
-            "tracker.runtime.services.RuntimeServices._load_sandbox_provider_config",
-            AsyncMock(side_effect=AssertionError("sandbox config resolved before destination validation")),
-        )
-
-        await process_benchmark(
-            start_benchmark_request_json=start_benchmark_request.model_dump(),
-            benchmark_id_str=str(benchmark_id),
-            verified_task_ids=["task_0"],
-            executor_dispatch_id=str(authority.dispatch_id),
-        )
-
-        with Session(bind=database_session.bind) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
-            assert benchmark_row.status == BenchmarkStatus.ERROR
-            assert benchmark_row.error_message is not None
-            assert "Custom benchmark destination is not allowed" in benchmark_row.error_message
-
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_benchmark_service_error_in_process_benchmark(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-        executor_authority_kwargs: Any,
-    ) -> None:
-        """VALKYRIE-1Z: BenchmarkServiceError from final_score is caught at the benchmark level."""
-        start_benchmark_request, _task_row, benchmark_id, _authority = create_task_environment(
-            contract, database_session, harness_config
-        )
-
-        html_error = (
-            "Final score failed with status code 404, response: <!DOCTYPE html><html><body>404 Not Found</body></html>"
-        )
-
-        async def _mock_final_score(*_args: Any, **_kwargs: Any) -> Never:
-            raise BenchmarkServiceError(html_error)
-
-        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
-        capture_exception = Mock()
-        monkeypatch.setattr(run_orchestration_module.sentry_sdk, "capture_exception", capture_exception)
-        benchmark_row = fetch_benchmark_row(benchmark_id, database_session, TEST_ORG)
-        authority_kwargs = executor_authority_kwargs(benchmark_row)
-
-        await process_benchmark(
-            start_benchmark_request_json=start_benchmark_request.model_dump(),
-            benchmark_id_str=str(benchmark_id),
-            verified_task_ids=["task_0"],
-            **authority_kwargs,
-        )
-
-        with Session(bind=database_session.bind) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
-            assert benchmark_row.status == BenchmarkStatus.ERROR
-            assert benchmark_row.error_message is not None
-            assert "Final score failed with status code 404" in benchmark_row.error_message
-        captured_error = capture_exception.call_args.args[0]
-        assert isinstance(captured_error, BenchmarkServiceError)

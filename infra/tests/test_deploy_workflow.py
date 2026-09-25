@@ -272,10 +272,19 @@ class DeployWorkflowTest(unittest.TestCase):
                     "        working-directory:", maxsplit=1
                 )[0]
                 finish = executor_job.split(f"      - name: Finish {stage} maintenance", maxsplit=1)[1]
-                self.assertIn("executor_host_redeploy_required == 'true'", begin)
+                self.assertIn("executor_host_maintenance_required == 'true'", begin)
+                self.assertNotIn("executor_host_redeploy_required == 'true'", begin)
                 self.assertNotIn("executor_stack_deploy_required == 'true'", begin)
-                self.assertIn("executor_host_redeploy_required == 'true'", finish)
+                self.assertIn("executor_host_maintenance_required == 'true'", finish)
                 self.assertNotIn("executor_stack_deploy_required == 'true'", finish)
+                drain_check = executor_job.split(f"      - name: Verify {stage} host drain support", maxsplit=1)[
+                    1
+                ].split(f"      - name: Begin {stage} maintenance", maxsplit=1)[0]
+                self.assertIn("--maintenance-operation verify-drain", drain_check)
+                self.assertIn("executor_host_redeploy_required == 'true'", drain_check)
+                self.assertIn("executor_host_maintenance_required != 'true'", drain_check)
+                self.assertNotIn("continue-on-error", drain_check)
+                self.assertLess(executor_job.index("host drain support"), executor_job.index("SCOPE=executor"))
                 self.assertLess(executor_job.index("Begin"), executor_job.index("SCOPE=executor"))
                 self.assertLess(executor_job.index("SCOPE=executor"), executor_job.index("Publish and activate"))
                 self.assertLess(executor_job.index("Publish and activate"), executor_job.index("Finish"))
@@ -319,7 +328,7 @@ class DeployWorkflowTest(unittest.TestCase):
             1
         ].split("        uses:", maxsplit=1)[0]
         self.assertIn("steps.validate.outcome == 'success'", prod_release_credentials)
-        self.assertEqual(prod_executor.count("--stage prod"), 3)
+        self.assertEqual(prod_executor.count("--stage prod"), 4)
         self.assertNotIn("production-executor-approval", workflow)
         self.assertNotIn("production-release", workflow)
         self.assertEqual(
@@ -368,7 +377,7 @@ class DeployWorkflowTest(unittest.TestCase):
 
         prod_finish = prod_executor.rsplit("      - name: Finish", maxsplit=1)[1]
         self.assertNotIn("always()", prod_finish)
-        self.assertIn("executor_host_redeploy_required == 'true'", prod_finish)
+        self.assertIn("executor_host_maintenance_required == 'true'", prod_finish)
 
     def test_executor_bootstrap_fails_closed_until_release_control_exists(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

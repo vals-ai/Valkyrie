@@ -39,6 +39,7 @@ jobs:
       classification: ${{ steps.result.outputs.classification }}
       executor_stack_deploy_required: ${{ steps.result.outputs.executor_stack_deploy_required }}
       executor_host_redeploy_required: ${{ steps.result.outputs.executor_host_redeploy_required }}
+      executor_host_maintenance_required: ${{ steps.result.outputs.executor_host_maintenance_required }}
       executor_release_required: ${{ steps.result.outputs.executor_release_required }}
       core_maintenance_required: ${{ steps.result.outputs.core_maintenance_required }}
       database_maintenance_required: ${{ steps.result.outputs.database_maintenance_required }}
@@ -113,6 +114,7 @@ jobs:
               "classification",
               "executor_stack_deploy_required",
               "executor_host_redeploy_required",
+              "executor_host_maintenance_required",
               "executor_release_required",
               "core_maintenance_required",
               "database_maintenance_required",
@@ -375,11 +377,26 @@ jobs:
           fi
           exit 1
 
+      - name: Verify prod host drain support
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' &&
+          needs.classify-deployment.outputs.executor_host_maintenance_required != 'true' &&
+          needs.classify-deployment.outputs.database_maintenance_required != 'true'
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$PRODUCTION_ACCOUNT_ID"
+          --maintenance-operation verify-drain
+          --region "$AWS_REGION"
+          --stage prod
+          --target-sha "$GITHUB_SHA"
+
       - name: Begin prod maintenance
         id: maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_maintenance_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -486,7 +503,7 @@ jobs:
       - name: Finish prod maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_maintenance_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -918,10 +935,25 @@ jobs:
           fi
           exit 1
 
+      - name: Verify dev host drain support
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' &&
+          needs.classify-deployment.outputs.executor_host_maintenance_required != 'true' &&
+          needs.classify-deployment.outputs.database_maintenance_required != 'true'
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$DEV_ACCOUNT_ID"
+          --maintenance-operation verify-drain
+          --region "$AWS_REGION"
+          --stage dev
+          --target-sha "$GITHUB_SHA"
+
       - name: Begin dev maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_maintenance_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -1010,7 +1042,7 @@ jobs:
       - name: Finish dev maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_maintenance_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -1175,10 +1207,25 @@ jobs:
           fi
           exit 1
 
+      - name: Verify bench host drain support
+        if: >-
+          steps.freshness.outputs.current == 'true' &&
+          needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' &&
+          needs.classify-deployment.outputs.executor_host_maintenance_required != 'true' &&
+          needs.classify-deployment.outputs.database_maintenance_required != 'true'
+        working-directory: infra
+        run: >-
+          PYTHONPATH=. uv run --project executor_release --frozen python executor_release/main.py
+          --account-id "$BENCH_ACCOUNT_ID"
+          --maintenance-operation verify-drain
+          --region "$AWS_REGION"
+          --stage bench
+          --target-sha "$GITHUB_SHA"
+
       - name: Begin bench maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_maintenance_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-
@@ -1284,7 +1331,7 @@ jobs:
       - name: Finish bench maintenance
         if: >-
           steps.freshness.outputs.current == 'true' &&
-          (needs.classify-deployment.outputs.executor_host_redeploy_required == 'true' ||
+          (needs.classify-deployment.outputs.executor_host_maintenance_required == 'true' ||
            needs.classify-deployment.outputs.database_maintenance_required == 'true')
         working-directory: infra
         run: >-

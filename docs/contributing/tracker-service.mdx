@@ -85,6 +85,8 @@ For Homebrew PostgreSQL 15, run from `services/tracker`:
 TEST_POSTGRES_BIN=/opt/homebrew/opt/postgresql@15/bin uv run pytest tests/integration/local/database/test_dispatch_api.py
 ```
 
+To check an older protocol-4 package against this Tracker version, set `TEST_EXECUTOR_COMPAT_PEX` to its absolute path and run `uv run pytest tests/integration/local/database/test_dispatch_api.py::test_api_server_restart_preserves_executor_process`. This uses the unchanged package's client and persistence code against a restarted HTTP server on a database created by Alembic migrations. It checks the original process and attempt finish once; it does not launch an ECS host or exercise the package entrypoint.
+
 `tests/integration/live` requires `services/tracker/.env`:
 
 ```env
@@ -98,12 +100,17 @@ AWS_SESSION_TOKEN=              # Optional, required for temporary credentials
 TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts
 TEST_LOG_GROUP=                 # CloudWatch log group
 TEST_DAYTONA_SECRET_NAME=       # Secrets Manager secret holding the Daytona provider config
+TEST_EXECUTOR_PEX=             # Absolute path to a protocol-4 executor PEX built from this checkout
 
 # Benchmark service
 BENCHMARK_SERVICE_BASE_URL=     # Domain of the benchmark service
 BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE=local  # Cloud Map namespace fallback when no base URL is set
 BENCHMARK_SERVICE_AUTH_KEY=     # Access key for authenticating with a benchmark service
 ```
+
+The executor continuity test requires Docker for isolated PostgreSQL and Redis. It starts local Tracker, benchmark-service, and host processes with real Daytona sandboxes. It compares maintenance shutdown with Tracker restart and host drain, then checks unchanged attempt identity, one result per run, and uploaded artifacts. Test-created agents, run artifacts, logs, and sandboxes are removed during teardown.
+
+Build `TEST_EXECUTOR_PEX` with `services/executor_artifact/build.py` on the same ARM64 operating system as the test. The live-test workflow builds it on Linux ARM64 before running the suite.
 
 ## Migrations
 

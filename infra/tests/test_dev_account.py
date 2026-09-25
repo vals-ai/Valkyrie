@@ -4,6 +4,7 @@ Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_dev_account.p
 """
 
 import json
+import copy
 import os
 import unittest
 from collections.abc import Mapping
@@ -32,15 +33,17 @@ from shared import SharedStack
 from executor_stack import ExecutorStack
 from stage import BENCH, DEV, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
+from classify_executor_template_change import classify_executor_host_template_change
 
 TEST_ACCOUNT = "123456789012"
 TEST_REGION = "us-east-1"
 TEST_ENV = cdk.Environment(account=TEST_ACCOUNT, region=TEST_REGION)
 TEST_CONTEXT = {
+    "aws:cdk:enable-path-metadata": True,
     f"availability-zones:account={TEST_ACCOUNT}:region={TEST_REGION}": [
         f"{TEST_REGION}a",
         f"{TEST_REGION}b",
-    ]
+    ],
 }
 BENCH_CONTEXT = {
     **TEST_CONTEXT,
@@ -155,6 +158,68 @@ def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str
 
 
 class DevAccountInfrastructureTest(unittest.TestCase):
+    def test_host_rollout_finishes_while_old_tasks_drain(self) -> None:
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
+            template = dev_executor_template()
+        host_service = next(iter(template.find_resources("AWS::ECS::Service").values()))
+        self.assertEqual(
+            host_service["Properties"]["DeploymentConfiguration"]["EarlySuccessCriteria"],
+            {"Enable": True, "HealthyPercent": 100, "SourceServiceRevisionCleanup": "DEFERRED"},
+        )
+
+    def test_synthesized_host_image_change_uses_draining(self) -> None:
+        """Verify that real CDK host paths and drain capability drive rollout classification.
+
+        Test cases:
+        - Replacing the host image requires deployment without stopping current runs.
+        """
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
+            base = dev_executor_template().to_json()
+        head = copy.deepcopy(base)
+        host = next(
+            resource
+            for resource in head["Resources"].values()
+            if resource.get("Metadata", {}).get("aws:cdk:path") == "ValkDevWorkerStack/ExecutorHostTaskDef/Resource"
+        )
+        host["Properties"]["ContainerDefinitions"][0]["Image"] = "test:replacement"
+
+        effect = classify_executor_host_template_change(base, head, expected_stack_id="ValkDevWorkerStack")
+
+        self.assertTrue(effect.redeploy_required)
+        self.assertTrue(effect.rolling_update)
+        self.assertFalse(effect.maintenance_required)
+
+    def test_host_generation_read_is_scoped_to_its_service(self) -> None:
+        """Permit deployment reads for the host service without granting reads across the account."""
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
+            template = dev_executor_template()
+        policies = template.find_resources("AWS::IAM::Policy")
+        statements = [
+            statement
+            for logical_id, policy in policies.items()
+            if logical_id.startswith("ExecutorTaskRoleDefaultPolicy")
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            if statement["Action"] == "ecs:DescribeServices"
+        ]
+        self.assertEqual(len(statements), 1)
+        resource = json.dumps(statements[0]["Resource"])
+        self.assertNotIn("*", resource)
+        self.assertIn("ExecutorHost-dev", resource)
+        self.assertIn("service/", resource)
+
+        definition_reads = [
+            statement
+            for logical_id, policy in policies.items()
+            if logical_id.startswith("ExecutorReleaseTaskRoleDefaultPolicy")
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            if statement["Action"] == "ecs:DescribeTaskDefinition"
+        ]
+        self.assertEqual(len(definition_reads), 1)
+        definition_resource = json.dumps(definition_reads[0]["Resource"])
+        self.assertIn("task-definition/", definition_resource)
+        self.assertIn("ExecutorHostTaskDef", definition_resource)
+        self.assertNotEqual(definition_reads[0]["Resource"], "*")
+
     def test_dev_buckets_are_owned_and_hardened_by_their_domains(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
@@ -328,8 +393,12 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         for task in template.find_resources("AWS::ECS::TaskDefinition").values():
             for container in task["Properties"]["ContainerDefinitions"]:
                 environment = {item["Name"]: item["Value"] for item in container.get("Environment", [])}
-                self.assertEqual(environment["DATABASE_POOL_SIZE"], "5")
-                self.assertEqual(environment["DATABASE_MAX_OVERFLOW"], "2")
+                if container["Name"] == "ExecutorHostContainer":
+                    self.assertFalse(any(name.startswith(("DB_", "DATABASE_")) for name in environment))
+                    self.assertFalse(any(item["Name"].startswith("DB_") for item in container.get("Secrets", [])))
+                else:
+                    self.assertEqual(environment["DATABASE_POOL_SIZE"], "5")
+                    self.assertEqual(environment["DATABASE_MAX_OVERFLOW"], "2")
         roles = template.find_resources("AWS::IAM::Role")
         release_role_id, release_role = next(
             (logical_id, role)

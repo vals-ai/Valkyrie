@@ -245,7 +245,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--account-id", required=True)
     parser.add_argument("--artifact", type=Path)
-    parser.add_argument("--maintenance-operation", choices=("begin", "finish"))
+    parser.add_argument("--maintenance-operation", choices=("begin", "finish", "verify-drain"))
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--region", required=True)
     parser.add_argument("--stage", choices=("bench", "dev", "prod", "release-test"), required=True)

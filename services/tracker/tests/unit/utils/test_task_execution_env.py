@@ -6,7 +6,7 @@ Run: uv run pytest tests/unit/utils/test_task_execution_env.py
 import asyncio
 import json
 import threading
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
@@ -17,7 +17,6 @@ import pytest
 from benchmark_service import SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
-from sqlalchemy.engine import Engine
 from sqlmodel import Session
 
 import tracker.utils.task_execution as utils_module
@@ -36,7 +35,9 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.scheduler.admission import SandboxQueueContext
+from tracker.executor.queue_execution import ApiSandboxQueueContext
+from tracker.executor.task_persistence import ApiTaskPersistence
+from tracker.executor_api.v1.task_schemas import BuildTask, RunTask
 from tracker.types import HarnessConfig
 
 
@@ -86,29 +87,24 @@ class TestQueuedTaskSource:
             yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
 
         async def enter_queue(
+            self: ApiSandboxQueueContext,
             *,
             stack: Any,
-            task_row_id: Any,
+            persistence: ApiTaskPersistence,
             source: SandboxSource,
             create: Callable[[], Any],
             **_kwargs: Any,
         ) -> Any:
             admission_sources.append(source)
+            assert await persistence.write(BuildTask())
             sandbox = await stack.enter_async_context(create())
-            with Session(task_engine) as task_session:
-                queued_task = task_session.get(Task, task_row_id)
-                assert queued_task is not None
-                queued_task.status = TaskStatus.IN_PROGRESS
-                task_session.add(queued_task)
-                task_session.commit()
+            assert await persistence.write(RunTask())
             return sandbox
 
-        task_engine = database_session.get_bind()
-        assert isinstance(task_engine, Engine)
-        queue_context = SandboxQueueContext(provider=Mock(), pool_id="pool_test", engine=task_engine)
+        queue_context = ApiSandboxQueueContext(provider=Mock())
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
         monkeypatch.setattr(utils_module, "create_sandbox", capture_sandbox)
-        monkeypatch.setattr(utils_module, "enter_queued_sandbox", enter_queue)
+        monkeypatch.setattr(ApiSandboxQueueContext, "enter", enter_queue)
 
         result = await run_process_task(
             start_benchmark_request,
@@ -355,7 +351,7 @@ class TestProcessTaskEnvironment:
 
         async def stop_before_output(
             *_args: Any,
-            execution_is_current: Callable[[], bool],
+            execution_is_current: Callable[[], Awaitable[bool]],
             **_kwargs: Any,
         ) -> tuple[None, float]:
             selected = database_session.get(Task, task_row.id)
@@ -371,7 +367,7 @@ class TestProcessTaskEnvironment:
             assert persisted_sibling is not None
             assert persisted_sibling.status == TaskStatus.IN_PROGRESS
 
-            output_authority_checks.append(execution_is_current())
+            output_authority_checks.append(await execution_is_current())
             return None, 0.0
 
         monkeypatch.setattr(utils_module, "run_agent", stop_before_output)

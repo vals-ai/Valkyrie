@@ -5,9 +5,11 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine import URL
 from sqlmodel import Session, SQLModel, create_engine
@@ -81,15 +83,30 @@ def postgres_url(request: pytest.FixtureRequest) -> Generator[str | URL, None, N
 def postgres_engine(postgres_url: str | URL) -> Generator[Engine, None, None]:
     """Create the tracker schema and always dispose its engine."""
     engine = create_engine(postgres_url)
-    SQLModel.metadata.create_all(engine)
+    compatibility_run = bool(os.environ.get("TEST_EXECUTOR_COMPAT_PEX"))
+    if compatibility_run:
+        subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=Path(__file__).resolve().parents[4],
+            env={**os.environ, "DATABASE_URL": engine.url.render_as_string(hide_password=False)},
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    else:
+        SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
-        session.add(ExecutorAdmission())
-        session.commit()
+        if session.get(ExecutorAdmission, 1) is None:
+            session.add(ExecutorAdmission())
+            session.commit()
 
     try:
         yield engine
     finally:
         SQLModel.metadata.drop_all(engine)
+        if compatibility_run:
+            with engine.begin() as connection:
+                connection.execute(text("DROP TABLE alembic_version"))
         engine.dispose()
 
 

@@ -29,7 +29,7 @@ def _release(release_id: str = "maintenance-release") -> ExecutorRelease:
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version="4",
         status=ExecutorReleaseStatus.ACTIVE,
         readiness_verified=True,
     )

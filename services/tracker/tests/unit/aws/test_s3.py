@@ -805,16 +805,27 @@ class TestUploadStreamToS3:
             }
         ]
 
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("before_first_part", [False, True])
     async def test_aborts_before_completion_when_authority_is_revoked(
         self,
         mock_s3_client: MockS3Client,
         aws_runtime: AWSRuntime,
+        asynchronous: bool,
+        before_first_part: bool,
     ) -> None:
         """
         Test cases:
         - Revoked upload authority aborts the multipart upload before completion.
+        - Awaitable API authority checks are resolved before publishing an object.
         """
-        authority_checks = iter([True, False])
+        authority_checks = iter([False] if before_first_part else [True, False])
+
+        def check_authority() -> bool:
+            return next(authority_checks)
+
+        async def check_authority_async() -> bool:
+            return next(authority_checks)
 
         async def chunks() -> AsyncIterator[bytes]:
             yield b"final"
@@ -824,10 +835,10 @@ class TestUploadStreamToS3:
                 chunks(),
                 "key",
                 aws_runtime,
-                should_continue=lambda: next(authority_checks),
+                should_continue=check_authority_async if asynchronous else check_authority,
             )
 
-        assert mock_s3_client.parts == [(1, b"final")]
+        assert mock_s3_client.parts == ([] if before_first_part else [(1, b"final")])
         assert mock_s3_client.completed_parts is None
         assert mock_s3_client.aborted
 

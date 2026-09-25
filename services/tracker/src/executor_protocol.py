@@ -6,9 +6,9 @@ from typing import Any, NotRequired, TypedDict, Unpack, cast
 from urllib.parse import urlparse
 
 EXECUTOR_TASK_NAME = "tracker.utils:process_benchmark"
-SUPPORTED_PROTOCOL_VERSION = "3"
-SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", SUPPORTED_PROTOCOL_VERSION})
-MANAGED_EXECUTION_PROTOCOL_VERSION = "3"
+SUPPORTED_PROTOCOL_VERSION = "4"
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({SUPPORTED_PROTOCOL_VERSION})
+MANAGED_EXECUTION_PROTOCOL_VERSION = "4"
 DEFAULT_STABLE_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
 
@@ -46,6 +46,7 @@ class ExecutorPayload(TypedDict):
     executor_artifact_uri: str
     executor_artifact_digest: str
     executor_protocol_version: str
+    executor_api_token: NotRequired[str]
 
 
 async def executor_task_signature(**_payload: Unpack[ExecutorPayload]) -> None:

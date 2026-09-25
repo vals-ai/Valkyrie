@@ -54,6 +54,11 @@ class TemplateClassificationError(ValueError):
 class ExecutorHostTemplateEffect:
     redeploy_required: bool
     reasons: tuple[str, ...]
+    rolling_update: bool = False
+
+    @property
+    def maintenance_required(self) -> bool:
+        return self.redeploy_required and not self.rolling_update
 
 
 @dataclass(frozen=True)
@@ -111,7 +116,45 @@ def classify_executor_host_template_change(
     else:
         reasons.update(_service_change_reasons(base.service, head.service))
 
-    return ExecutorHostTemplateEffect(redeploy_required=bool(reasons), reasons=tuple(sorted(reasons)))
+    task_definition_generation_changed = bool(
+        _changed_properties(base.task_definition.properties, head.task_definition.properties) - {"Tags"}
+    )
+    rolling_update = (
+        bool(reasons)
+        and task_definition_generation_changed
+        and _supports_draining(base.task_definition)
+        and _supports_draining(head.task_definition)
+        and reasons <= {"executor-host-task-definition-changed", "executor-host-service-ForceNewDeployment"}
+        and not _changed_properties(base.task_definition.properties, head.task_definition.properties)
+        - {"Cpu", "Memory", "Tags", "ContainerDefinitions"}
+        and _containers_allow_rolling_update(
+            base.task_definition.properties["ContainerDefinitions"],
+            head.task_definition.properties["ContainerDefinitions"],
+        )
+    )
+
+    return ExecutorHostTemplateEffect(
+        redeploy_required=bool(reasons), reasons=tuple(sorted(reasons)), rolling_update=rolling_update
+    )
+
+
+def _supports_draining(task: _HostResource) -> bool:
+    containers = _container_definitions(task.properties.get("ContainerDefinitions"))
+    for container in containers:
+        environment = container.get("Environment")
+        if isinstance(environment, list) and {"Name": "EXECUTOR_HOST_DRAIN_PROTOCOL", "Value": "1"} in environment:
+            return True
+
+    return False
+
+
+def _containers_allow_rolling_update(base: object, head: object) -> bool:
+    base_containers = _container_definitions(base)
+    head_containers = _container_definitions(head)
+    return len(base_containers) == len(head_containers) and all(
+        not _changed_properties(before, after) - {"Environment", "Image"}
+        for before, after in zip(base_containers, head_containers)
+    )
 
 
 def _host_resources(
@@ -130,11 +173,14 @@ def _host_resources(
     task_matches: list[_HostResource] = []
     service_matches: list[_HostResource] = []
     foreign_host_paths: list[str] = []
+    ecs_resources_present = False
 
     for logical_id, raw_resource in resources.items():
         if not isinstance(logical_id, str) or not isinstance(raw_resource, Mapping):
             raise TemplateClassificationError(f"{revision} template resources must be named objects")
         resource = cast(Mapping[str, object], raw_resource)
+        if resource.get("Type") in (_TASK_TYPE, _SERVICE_TYPE):
+            ecs_resources_present = True
         raw_metadata = resource.get("Metadata", {})
         if not isinstance(raw_metadata, Mapping):
             raise TemplateClassificationError(f"{revision} resource {logical_id} Metadata must be an object")
@@ -159,6 +205,10 @@ def _host_resources(
     if bool(task_matches) != bool(service_matches):
         raise TemplateClassificationError(
             f"{revision} template must contain both ExecutorHost task definition and service, or neither"
+        )
+    if ecs_resources_present and not task_matches:
+        raise TemplateClassificationError(
+            f"{revision} template contains ECS resources but no canonical ExecutorHost paths; enable CDK path metadata"
         )
 
     task = task_matches[0] if task_matches else None

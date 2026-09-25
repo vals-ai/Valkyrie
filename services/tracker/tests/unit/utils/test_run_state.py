@@ -5,9 +5,8 @@ Run: uv run pytest tests/unit/utils/test_run_state.py
 
 from datetime import datetime
 from typing import Any, Sequence, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
@@ -28,27 +27,20 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
-    ErrorResult,
-    EvaluationResult,
     ExecutorRelease,
     Org,
     Task,
     TaskStatus,
 )
-from tracker.exceptions import TrackerServiceError
 from tracker.executor.release_control import promote_release
 from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
+from tracker.executor.score_state import fetch_final_score_inputs
+from tracker.database.models import EvaluationResult
 from tracker.utils import (
-    commit_task_error,
-    create_task_rows,
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
-    fetch_final_score_inputs,
     fetch_harness_config,
     fetch_sandbox_provider_config,
-    has_runnable_tasks,
-    save_eval_resume_state,
-    set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
 from tracker.utils.resources import fetch_sandbox_provider_config_async
@@ -66,7 +58,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
-        protocol_version="1",
+        protocol_version="4",
         readiness_verified=True,
     )
     database_session.add(release)
@@ -505,57 +497,7 @@ class TestRunState:
         assert benchmark_row.arguments == original_arguments
         enqueue.assert_not_awaited()
 
-    def test_create_task_rows(
-        self,
-        example_benchmark_object: Benchmark,
-        database_session: Session,
-        executor_authority: Any,
-    ) -> None:
-        """Tests different scenarios for creating task rows
-
-        Test Cases:
-            - No tasks exist in the database already
-            - Some tasks exist in the database already
-            - No duplicate tasks are created
-            - All returned tasks are in the pending state
-        """
-
-        # Create benchmark in progress state
-        benchmark_row = example_benchmark_object
-        database_session.add(benchmark_row)
-        database_session.commit()
-        authority = executor_authority(benchmark_row, session=database_session)
-
-        # Verified tasks to create
-        verified_task_ids = [f"task_{i}" for i in range(5)]
-
-        # Creates all tasks in pending state
-        task_rows = create_task_rows(
-            verified_task_ids, benchmark_row, database_session, self._test_org, authority=authority
-        )
-        assert len(task_rows) == len(verified_task_ids)
-        assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
-
-        # Same order is returned as the verified task ids are passed in (must be deterministic)
-        for i, task_row in enumerate(task_rows):
-            assert task_row[0] == verified_task_ids[i]
-
-        # Try calling the same method again when the tasks already exist
-        task_rows = create_task_rows(
-            verified_task_ids, benchmark_row, database_session, self._test_org, authority=authority
-        )
-        assert len(task_rows) == len(verified_task_ids)
-        assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
-
-        # No duplicate tasks are created and they are all in the pending state
-        all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
-        assert len(all_tasks) == len(verified_task_ids)
-        assert all(task.status == TaskStatus.PENDING for task in all_tasks)
-
-        task_rows = create_task_rows(["task_1"], benchmark_row, database_session, self._test_org, authority=authority)
-        assert [task_id for task_id, _ in task_rows] == ["task_1"]
-
-    def test_fetch_final_score_inputs_waits_for_runnable_tasks(
+    def test_fetch_final_score_inputs_includes_terminal_tasks(
         self, example_benchmark_object: Benchmark, database_session: Session
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -592,275 +534,16 @@ class TestRunState:
         database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"score": 1.0}))
         database_session.commit()
 
-        assert has_runnable_tasks(database_session, benchmark_row, self._test_org)
-
         pending_task.status = TaskStatus.ERROR
         database_session.add(pending_task)
         database_session.commit()
 
-        assert not has_runnable_tasks(database_session, benchmark_row, self._test_org)
         assert fetch_final_score_inputs(database_session, benchmark_row, self._test_org) == {
             "task_finished": {"score": 1.0},
             "task_error": None,
             "task_stopped": None,
             "task_pending": None,
         }
-
-    def test_commit_task_error_spans_status_transition(
-        self,
-        example_benchmark_object: Benchmark,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        executor_authority: Any,
-    ) -> None:
-        log_records: list[dict[str, Any]] = []
-        span_records: list[dict[str, Any]] = []
-
-        def fake_info(message: str, *_args: object, extra: dict[str, Any] | None = None, **_kwargs: Any) -> None:
-            log_records.append({"message": message, **(extra or {})})
-
-        class MockSpan:
-            def __init__(self, record: dict[str, Any]) -> None:
-                self._record = record
-
-            def __enter__(self) -> "MockSpan":
-                self._record["entered"] = True
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                self._record["exited"] = True
-
-        def fake_span(message: str, **attributes: Any) -> MockSpan:
-            record = {"message": message, **attributes}
-            span_records.append(record)
-            return MockSpan(record)
-
-        monkeypatch.setattr("tracker.utils.task_execution.logger.info", fake_info)
-        monkeypatch.setattr("tracker.observability.tracing.logfire.span", fake_span)
-
-        database_session.add(example_benchmark_object)
-        database_session.commit()
-        authority = executor_authority(example_benchmark_object, session=database_session)
-
-        task_row = Task(
-            org_id=TEST_ORG_ID,
-            task_id="task_0",
-            benchmark=example_benchmark_object.id,
-            status=TaskStatus.IN_PROGRESS,
-        )
-        database_session.add(example_benchmark_object)
-        database_session.add(task_row)
-        database_session.commit()
-
-        commit_task_error(
-            task_row,
-            database_session,
-            "agent failed",
-            producer="tracker",
-            operation="process_task",
-            error_type="RuntimeError",
-            authority=authority,
-        )
-
-        database_session.refresh(task_row)
-        assert task_row.status == TaskStatus.ERROR
-        error_result = database_session.exec(
-            select(ErrorResult).where(ErrorResult.task == task_row.id).where(ErrorResult.org_id == TEST_ORG_ID)
-        ).one()
-        assert error_result.error_message == "agent failed"
-        assert error_result.producer == "tracker"
-        assert error_result.operation == "process_task"
-        assert error_result.error_type == "RuntimeError"
-        assert error_result.cause_code is None
-        assert error_result.retry_scheduled is False
-        assert error_result.failed_attempt_number is None
-        transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
-        assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
-        assert transition_record["to_status"] == TaskStatus.ERROR.value
-        assert transition_record["task_id"] == "task_0"
-        assert transition_record["benchmark_id"] == str(example_benchmark_object.id)
-        assert transition_record["entered"] and transition_record["exited"]
-        assert transition_record["has_error_message"]
-        assert not any(record["message"].startswith("task.status_transition") for record in log_records)
-
-    @pytest.mark.parametrize("status", [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED])
-    def test_commit_task_error_preserves_terminal_tasks(
-        self,
-        example_benchmark_object: Benchmark,
-        database_session: Session,
-        executor_authority: Any,
-        status: TaskStatus,
-    ) -> None:
-        task = Task(
-            org_id=TEST_ORG_ID,
-            task_id="task_0",
-            benchmark=example_benchmark_object.id,
-            status=status,
-        )
-        database_session.add_all([example_benchmark_object, task])
-        database_session.commit()
-        authority = executor_authority(example_benchmark_object, session=database_session)
-
-        assert not commit_task_error(
-            task,
-            database_session,
-            "stale failure",
-            producer="tracker",
-            operation="process_task",
-            error_type="RuntimeError",
-            authority=authority,
-        )
-
-        database_session.refresh(task)
-        assert task.status == status
-        assert database_session.exec(select(ErrorResult.id).where(ErrorResult.task == task.id)).first() is None
-
-    @pytest.mark.parametrize(
-        "status",
-        [TaskStatus.PENDING, TaskStatus.ERROR, TaskStatus.FINISHED, TaskStatus.STOPPED, TaskStatus.EVALUATING],
-    )
-    def test_eval_resume_state_rejects_non_active_rows(
-        self,
-        example_benchmark_object: Benchmark,
-        database_session: Session,
-        executor_authority: Any,
-        monkeypatch: pytest.MonkeyPatch,
-        status: TaskStatus,
-    ) -> None:
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        task_row = Task(
-            org_id=TEST_ORG_ID,
-            task_id="task_0",
-            benchmark=example_benchmark_object.id,
-            status=status,
-            started_at=datetime(2026, 6, 30) if status == TaskStatus.EVALUATING else _ACTIVE_ATTEMPT,
-        )
-        database_session.add_all([example_benchmark_object, task_row])
-        database_session.commit()
-        authority = executor_authority(example_benchmark_object, session=database_session)
-
-        updated = save_eval_resume_state(
-            task_row.id,
-            self._test_org,
-            {"cursor": "next"},
-            expected_started_at=_ACTIVE_ATTEMPT,
-            authority=authority,
-        )
-
-        database_session.refresh(task_row)
-        assert not updated
-        assert task_row.eval_resume_state is None
-
-    def test_commit_task_error_rolls_back_when_started_at_is_stale(
-        self,
-        example_benchmark_object: Benchmark,
-        database_session: Session,
-        executor_authority: Any,
-    ) -> None:
-        database_session.add(example_benchmark_object)
-        database_session.commit()
-        authority = executor_authority(example_benchmark_object, session=database_session)
-        task_row = Task(
-            org_id=TEST_ORG_ID,
-            task_id="stale-task",
-            benchmark=example_benchmark_object.id,
-            status=TaskStatus.IN_PROGRESS,
-        )
-        database_session.add(task_row)
-        database_session.commit()
-
-        committed = commit_task_error(
-            task_row,
-            database_session,
-            "stale failure",
-            producer="tracker",
-            operation="process_task",
-            error_type="RuntimeError",
-            expected_started_at=datetime(2000, 1, 1, tzinfo=ZoneInfo("UTC")),
-            authority=authority,
-        )
-
-        assert committed is False
-        database_session.expire_all()
-        persisted_task = database_session.get(Task, task_row.id)
-        assert persisted_task is not None
-        assert persisted_task.status == TaskStatus.IN_PROGRESS
-        assert persisted_task.finished_at is None
-        assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
-
-    async def test_set_benchmark_final_status(
-        self,
-        example_benchmark_object: Benchmark,
-        database_session: Session,
-        executor_authority: Any,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Tests the end to end flow when stopping and resuming a benchmark
-
-        Test Cases:
-            - Error is raised if tasks are still in the pending or in progress state
-            - Benchmark status is set to finished if all tasks are finished
-            - Benchmark status is set to stopped if any tasks are stopped
-        """
-
-        finalized_statuses: list[str] = []
-
-        def record_span(name: str, **attributes: Any) -> MagicMock:
-            if name == "run.finalized":
-                finalized_statuses.append(attributes["status"])
-            return MagicMock()
-
-        monkeypatch.setattr("tracker.utils.run_orchestration.observability_span", record_span)
-
-        # Create benchmark
-        benchmark_row = example_benchmark_object
-        database_session.add(benchmark_row)
-        database_session.commit()
-        authority = executor_authority(benchmark_row, session=database_session)
-
-        # Create some pending tasks
-        task_ids = [f"task_{i}" for i in range(5)]
-        task_rows = create_task_rows(task_ids, benchmark_row, database_session, self._test_org, authority=authority)
-        assert len(task_rows) == len(task_ids)
-        assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
-
-        # Error is raised because tasks are still in the pending state
-        with pytest.raises(TrackerServiceError):
-            set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
-
-        # Make all tasks in finished state
-        # NOTE: Need to manually set the finished_at timestamp because the event listener is not triggered with bulk updates
-        database_session.exec(
-            update(Task)
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .values(status=TaskStatus.FINISHED, finished_at=datetime.now(ZoneInfo("UTC")))
-        )
-        database_session.commit()
-
-        # Benchmark status is set to finished
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
-        database_session.refresh(benchmark_row, attribute_names=["status"])
-        assert benchmark_row.status == BenchmarkStatus.FINISHED
-
-        # Reset benchmark status to in progress
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        # Change some tasks to the stopped state
-        stopped_tasks = task_ids[:2]
-        database_session.exec(
-            update(Task)
-            .where(col(Task.task_id).in_(stopped_tasks))
-            .values(status=TaskStatus.STOPPED, finished_at=datetime.now(ZoneInfo("UTC")))
-        )
-        database_session.commit()
-
-        # Benchmark status is set to stopped when stopped tasks exist
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org, authority=authority)
-        database_session.refresh(benchmark_row, attribute_names=["status"])
-        assert benchmark_row.status == BenchmarkStatus.STOPPED
-        assert finalized_statuses == ["FINISHED", "STOPPED"]
 
 
 class TestFetchStartedByFilter:

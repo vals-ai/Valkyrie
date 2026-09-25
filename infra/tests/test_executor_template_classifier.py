@@ -176,6 +176,52 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
         self.assertTrue(effect.redeploy_required)
         self.assertEqual(effect.reasons, ("executor-host-task-definition-changed",))
 
+    def test_image_rollout_requires_draining_on_both_generations(self) -> None:
+        """Verify that only an already drain-capable host can avoid the initial cutover.
+
+        Test cases:
+        - The old host requires maintenance on the first drain-capable deployment.
+        - Later image releases replace the host without run-stopping maintenance.
+        - Rolling back to an old host does not bypass the maintenance gate.
+        """
+        for base_drains, head_drains in ((False, True), (True, True), (True, False)):
+            with self.subTest(base_drains=base_drains, head_drains=head_drains):
+                base = _template()
+                head = copy.deepcopy(base)
+                for template, enabled, image in ((base, base_drains, "base"), (head, head_drains, "head")):
+                    container: dict[str, object] = {"Name": "ExecutorHost", "Image": f"image:{image}"}
+                    if enabled:
+                        container["Environment"] = [{"Name": "EXECUTOR_HOST_DRAIN_PROTOCOL", "Value": "1"}]
+                    _properties(template, _TASK_ID)["ContainerDefinitions"] = [container]
+
+                effect = self._classify(base, head)
+
+                self.assertTrue(effect.redeploy_required)
+                self.assertEqual(effect.rolling_update, base_drains and head_drains)
+                self.assertEqual(effect.maintenance_required, not (base_drains and head_drains))
+
+    def test_draining_does_not_make_service_replacement_safe(self) -> None:
+        """Verify that draining capability cannot bypass service identity checks.
+
+        Test cases:
+        - A changed service name still requires maintenance.
+        """
+        base = _template()
+        _properties(base, _TASK_ID)["ContainerDefinitions"] = [
+            {
+                "Name": "ExecutorHost",
+                "Image": "image:base",
+                "Environment": [{"Name": "EXECUTOR_HOST_DRAIN_PROTOCOL", "Value": "1"}],
+            }
+        ]
+        head = copy.deepcopy(base)
+        _properties(head, _SERVICE_ID)["ServiceName"] = "replacement-service"
+
+        effect = self._classify(base, head)
+
+        self.assertTrue(effect.maintenance_required)
+        self.assertFalse(effect.rolling_update)
+
     def test_malformed_container_definitions_are_rejected(self) -> None:
         for containers in ("ExecutorHost", ["ExecutorHost"]):
             with self.subTest(containers=containers):
@@ -282,6 +328,32 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
 
                 self.assertEqual(self._classify(base, head).redeploy_required, expected)
 
+    def test_force_new_deployment_nonce_without_task_definition_change_requires_maintenance(self) -> None:
+        base = _template()
+        head = copy.deepcopy(base)
+        for template in (base, head):
+            _properties(template, _TASK_ID)["ContainerDefinitions"] = [
+                {
+                    "Name": "ExecutorHost",
+                    "Image": "image:base",
+                    "Environment": [{"Name": "EXECUTOR_HOST_DRAIN_PROTOCOL", "Value": "1"}],
+                }
+            ]
+        _properties(base, _SERVICE_ID)["ForceNewDeployment"] = {
+            "EnableForceNewDeployment": True,
+            "ForceNewDeploymentNonce": "one",
+        }
+        _properties(head, _SERVICE_ID)["ForceNewDeployment"] = {
+            "EnableForceNewDeployment": True,
+            "ForceNewDeploymentNonce": "two",
+        }
+
+        effect = self._classify(base, head)
+
+        self.assertTrue(effect.redeploy_required)
+        self.assertTrue(effect.maintenance_required)
+        self.assertFalse(effect.rolling_update)
+
     def test_unsupported_service_property_change_is_a_technical_error(self) -> None:
         base = _template()
         head = copy.deepcopy(base)
@@ -318,6 +390,19 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
             self._classify(_template(stack_id="ValkDevWorkerStack"), _template(stack_id="ValkDevWorkerStack"))
         with self.assertRaisesRegex(TemplateClassificationError, "Resources"):
             self._classify({}, _template())
+
+    def test_missing_path_metadata_cannot_hide_a_host_rollout(self) -> None:
+        """Reject templates that contain ECS resources without identifying the host.
+
+        Test cases:
+        - Missing path metadata is a classification error, not a safe deployment.
+        """
+        base = _template()
+        _resource(base, _TASK_ID).pop("Metadata")
+        _resource(base, _SERVICE_ID).pop("Metadata")
+
+        with self.assertRaisesRegex(TemplateClassificationError, "enable CDK path metadata"):
+            self._classify(base, _template())
 
 
 if __name__ == "__main__":

@@ -4,8 +4,9 @@ version = "0.1.0"
 description = "Stable host for content-addressed Valkyrie executor artifacts"
 requires-python = "==3.12.*"
 dependencies = [
+  "aiohttp>=3.14.1",
   "boto3==1.43.0",
-  "psycopg2-binary==2.9.11",
+  "pydantic>=2.13.4",
   "sentry-sdk==2.58.0",
   "taskiq==0.12.1",
   "taskiq-redis==1.2.2",
