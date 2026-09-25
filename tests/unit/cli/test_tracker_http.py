@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/cli/test_tracker_http.py
 """
 
 import json
+import re
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from uuid import UUID
@@ -105,19 +106,65 @@ class TestTrackerJsonEndpoints:
         assert not any(name.lower().startswith("x-harness-") for name in requests[0].headers)
 
     def test_malformed_success_response_raises_tracker_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Successful HTTP responses with an invalid tracker payload need a stable CLI error.
+        """Successful HTTP responses with an invalid tracker payload need a descriptive CLI error.
 
         Test cases:
-        - A partial fetch response raises TrackerServiceError instead of leaking model validation internals.
+        - A partial fetch response raises TrackerServiceError naming the expected schema.
+        - The error lists the offending fields and hints at a CLI/tracker version mismatch.
         """
 
         def handle_request(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"benchmark_name": "swebench"}, request=request)
 
         with _tracker_with_handler(monkeypatch, handle_request) as tracker:
+            with pytest.raises(TrackerServiceError) as raised:
+                tracker.fetch_benchmark(_RUN_ID)
+
+        message = str(raised.value)
+        assert message.startswith("Failed to fetch run: tracker response did not match this CLI's ")
+        assert "schema (" in message
+        assert "benchmark_id: Field required" in message
+        assert "CLI and tracker versions may be out of sync" in message
+        assert "malformed" not in message
+
+    def test_schema_mismatch_error_truncates_long_field_lists(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Wildly different payloads must not dump every missing field into the error.
+
+        Test cases:
+        - An empty results body lists the first five missing fields and counts the remainder.
+        """
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={}, request=request)
+
+        with _tracker_with_handler(monkeypatch, handle_request) as tracker:
+            with pytest.raises(TrackerServiceError) as raised:
+                tracker.retrieve_results(_RUN_ID, False)
+
+        message = str(raised.value)
+        assert message.startswith(
+            "Failed to retrieve results: tracker response did not match this CLI's FinalViewResponse"
+        )
+        listed = message.split("schema (", 1)[1].split(").", 1)[0].split("; ")
+        assert len(listed) == 6
+        assert re.fullmatch(r"and \d+ more", listed[-1])
+
+    def test_non_json_success_response_reports_content_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 200 with a non-JSON body must say what came back instead of a generic malformed-response error.
+
+        Test cases:
+        - An HTML body surfaces the content type in the TrackerServiceError message.
+        """
+
+        def handle_html(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, text="<html>gateway</html>", headers={"content-type": "text/html"}, request=request
+            )
+
+        with _tracker_with_handler(monkeypatch, handle_html) as tracker:
             with pytest.raises(
                 TrackerServiceError,
-                match="Failed to fetch run: tracker returned a malformed response",
+                match=r"Failed to fetch run: tracker returned a non-JSON response \(content-type text/html\)",
             ):
                 tracker.fetch_benchmark(_RUN_ID)
 

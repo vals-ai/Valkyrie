@@ -2,11 +2,14 @@ from pathlib import Path
 from uuid import UUID
 
 import click
+from tracker.database.models import BenchmarkStatus
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
+
+_UNFINISHED_STATUSES = frozenset({BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING})
 
 
 def _format_expiration(seconds: int) -> str:
@@ -81,6 +84,15 @@ def results(
 
     try:
         with TrackerService() as tracker:
+            status = tracker.fetch_benchmark(run_id).details.status
+            if status in _UNFINISHED_STATUSES:
+                click.echo(
+                    click.style(
+                        f"Run is {status.value}; results are partial and will change until the run finishes.",
+                        fg="yellow",
+                    )
+                )
+
             if s3 and not preview:
                 if tracker.check_results_exist_in_s3(run_id):
                     if not click.confirm("Results already exist in S3. Overwrite?"):

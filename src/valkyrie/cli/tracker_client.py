@@ -86,7 +86,23 @@ def _parse_response(response: Response, action: str) -> Any:
     try:
         return response.json()
     except ValueError as error:
-        raise TrackerServiceError(f"{action}: tracker returned a malformed response") from error
+        content_type = response.headers.get("content-type", "unknown")
+        raise TrackerServiceError(
+            f"{action}: tracker returned a non-JSON response (content-type {content_type}) "
+            f"from {response.url.host}{response.url.path}"
+        ) from error
+
+
+def _describe_validation_error(error: ValidationError, limit: int = 5) -> str:
+    """Summarize the offending fields of a response validation failure."""
+    problems = [
+        f"{'.'.join(str(part) for part in problem['loc']) or '<root>'}: {problem['msg']}"
+        for problem in error.errors()[:limit]
+    ]
+    remaining = error.error_count() - len(problems)
+    if remaining > 0:
+        problems.append(f"and {remaining} more")
+    return "; ".join(problems)
 
 
 def _parse_model_response(response: Response, action: str, model: type[ModelT]) -> ModelT:
@@ -94,7 +110,11 @@ def _parse_model_response(response: Response, action: str, model: type[ModelT]) 
     try:
         return model.model_validate(_parse_response(response, action))
     except ValidationError as error:
-        raise TrackerServiceError(f"{action}: tracker returned a malformed response") from error
+        raise TrackerServiceError(
+            f"{action}: tracker response did not match this CLI's {model.__name__} schema "
+            f"({_describe_validation_error(error)}). "
+            "The CLI and tracker versions may be out of sync; upgrade the CLI and retry."
+        ) from error
 
 
 def _resolve_sandbox_provider_config(
