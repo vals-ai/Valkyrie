@@ -1,6 +1,7 @@
 import click
 
 from valkyrie.cli.run.analyze import analyze
+from valkyrie.cli.run.compare import compare
 from valkyrie.cli.run.errors import errors
 from valkyrie.cli.run.filter_options import filter_options
 from valkyrie.cli.run.fetch import fetch
@@ -23,6 +24,7 @@ def run():
 
 
 run.add_command(analyze)
+run.add_command(compare)
 run.add_command(errors)
 run.add_command(fetch)
 run.add_command(filter_options)
