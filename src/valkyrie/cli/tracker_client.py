@@ -425,6 +425,7 @@ class TrackerService:
         label: str | None = None,
         lambda_function: str | None = None,
         dataset: str | None = None,
+        dataset_version: str | None = None,
         priority: int | None = None,
         service_headers: dict[str, str] | None = None,
         provider: str | None = None,
@@ -466,6 +467,7 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 dataset=dataset,
+                dataset_version=dataset_version,
                 harness_config=access_key_harness_config,
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services

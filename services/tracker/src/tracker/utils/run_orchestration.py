@@ -728,6 +728,16 @@ async def _process_benchmark(
                 f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
             )
 
+        if start_benchmark_request.dataset_version != benchmark_row.arguments.dataset_version or (
+            benchmark_row.arguments.dataset_version is not None
+            and start_benchmark_request.dataset != benchmark_row.arguments.dataset
+        ):
+            raise TrackerServiceError("Queued dataset selection does not match the saved run")
+        if benchmark_row.arguments.dataset_version is not None and (
+            start_benchmark_request.custom_benchmark_service != benchmark_row.custom_benchmark_service
+        ):
+            raise TrackerServiceError("Queued benchmark service does not match the pinned run")
+
         if start_benchmark_request.custom_benchmark_service is not None:
             validate_custom_service_destination(
                 start_benchmark_request.custom_benchmark_service,

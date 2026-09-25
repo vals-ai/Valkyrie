@@ -114,6 +114,8 @@ def format_run_identity(
         click.echo(f"│ {'Agent:':<17} {arguments.contract.name}")
         click.echo(f"│ {'Model:':<17} {arguments.contract.model or '-'}")
         click.echo(f"│ {'Dataset:':<17} {arguments.dataset or 'default'}")
+        version = arguments.dataset_version
+        click.echo(f"│ {'Dataset version:':<17} {version.label or version.id if version else 'not pinned'}")
     click.echo(f"│ {'Run ID:':<17} {benchmark_response.benchmark_id}")
     if benchmark_response.label:
         click.echo(f"│ {'Label:':<17} {benchmark_response.label}")

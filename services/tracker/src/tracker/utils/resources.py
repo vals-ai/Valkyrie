@@ -5,6 +5,7 @@ from uuid import UUID
 
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import DatasetVersion
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
@@ -51,13 +52,16 @@ async def fetch_sandbox_provider_config_async(
 def create_benchmark_service_client(
     url: str,
     service_headers: dict[str, str] | None = None,
+    dataset_version: DatasetVersion | None = None,
 ) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient with benchmark-service headers."""
     url = validate_service_url_syntax(url)
     headers = dict(service_headers or {})
     validate_service_headers(headers)
 
-    return BenchmarkServiceClient(url=url, headers=headers)
+    return BenchmarkServiceClient(
+        url=url, headers=headers, dataset_version=dataset_version.id if dataset_version is not None else None
+    )
 
 
 def start_benchmark_request_to_benchmark(
@@ -93,6 +97,7 @@ def start_benchmark_request_to_benchmark(
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,
             dataset=request.dataset,
+            dataset_version=request.dataset_version if isinstance(request.dataset_version, DatasetVersion) else None,
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=provider_secret_name,
         ),

@@ -14,6 +14,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from benchmark_service.schemas import DatasetVersion
 from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -217,6 +218,7 @@ class BenchmarkArguments(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: DatasetVersion | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
 
@@ -256,7 +258,10 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we save the value to the database."""
         if value is None:
             return None
-        serialized = value.model_dump(exclude={"priority", "queue_pool_id"})
+        excluded_fields = {"priority", "queue_pool_id"}
+        if value.dataset_version is None:
+            excluded_fields.add("dataset_version")
+        serialized = value.model_dump(exclude=excluded_fields)
         if value.priority is not None:
             serialized["priority"] = value.priority
         if value.queue_pool_id is not None:
@@ -424,6 +429,7 @@ class Benchmark(SQLModel, table=True):
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
+            dataset_version=self.arguments.dataset_version,
             harness_config=harness_config,
             sandbox_provider=self.arguments.sandbox_provider,
             custom_benchmark_service=self.custom_benchmark_service,
@@ -451,6 +457,7 @@ class Benchmark(SQLModel, table=True):
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
+            dataset_version=self.arguments.dataset_version,
             harness_config=None,
             sandbox_provider=self.arguments.sandbox_provider,
             sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
@@ -474,7 +481,9 @@ class Benchmark(SQLModel, table=True):
             if benchmark_url is not None
             else self.custom_benchmark_service or create_benchmark_service_url(self.name)
         )
-        return create_benchmark_service_client(url=url, service_headers=service_headers)
+        return create_benchmark_service_client(
+            url=url, service_headers=service_headers, dataset_version=self.arguments.dataset_version
+        )
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":

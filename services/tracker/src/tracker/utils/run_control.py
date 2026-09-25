@@ -235,6 +235,9 @@ def prepare_retry_state(
             "name": benchmark_row.name,
             "destination": benchmark_row.custom_benchmark_service,
             "dataset": benchmark_row.arguments.dataset,
+            "dataset_version": benchmark_row.arguments.dataset_version.model_dump()
+            if benchmark_row.arguments.dataset_version
+            else None,
             "queue_pool_id": benchmark_row.arguments.queue_pool_id,
             "aws_managed": benchmark_row.aws_managed,
             "properties": benchmark_row.arguments.model_dump(mode="json")["properties"],

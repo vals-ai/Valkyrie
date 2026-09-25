@@ -1706,8 +1706,10 @@ class TestRunRecovery:
         def _create_benchmark_service_client(
             url: str,
             service_headers: dict[str, str] | None = None,
+            dataset_version: object | None = None,
         ) -> BenchmarkServiceClient:
             verified_urls.append(url)
+            assert dataset_version is None
             return create_benchmark_service_client(url, service_headers)
 
         async def _verify_task_ids(

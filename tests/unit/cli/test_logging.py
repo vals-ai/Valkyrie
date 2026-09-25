@@ -150,7 +150,7 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
         env["HOME"] = str(home)
         env["PYTHONPATH"] = os.pathsep.join([str(site_packages), *filter(None, [env.get("PYTHONPATH")])])
         env["TRACKER_SERVICE_URL"] = f"http://127.0.0.1:{server.server_port}"
-        env.pop("VALKYRIE_CLI_LOGS", None)
+        env["VALKYRIE_CLI_LOGS"] = "false"
 
         result = subprocess.run(
             [

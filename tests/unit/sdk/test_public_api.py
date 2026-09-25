@@ -35,6 +35,7 @@ EXPECTED_ALL = [
     "BenchmarkStatus",
     "BenchmarkStatusEntry",
     "BenchmarkStatusResponse",
+    "DatasetVersion",
     "FetchBenchmarkResponse",
     "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
@@ -87,7 +88,7 @@ EXPECTED_SIGNATURES = {
     RunsResource.start: (
         "self, agent, benchmark, *, model=None, concurrency=5, priority=None, properties=None, "
         "managed_s3_bucket=None, task_ids=None, "
-        "slice_str=None, dataset=None, "
+        "slice_str=None, dataset=None, dataset_version=None, "
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
         "webhook_intervals=None, ignore_custom_services=False"
     ),

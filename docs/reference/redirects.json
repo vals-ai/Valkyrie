@@ -384,6 +384,10 @@
     "destination": "/reference/sdk/models/benchmarks#benchmark-status-response"
   },
   {
+    "source": "/reference/sdk/models/runs/dataset-version",
+    "destination": "/reference/sdk/models/runs#dataset-version"
+  },
+  {
     "source": "/reference/sdk/models/runs/fetch-benchmark-response",
     "destination": "/reference/sdk/models/runs#fetch-benchmark-response"
   },

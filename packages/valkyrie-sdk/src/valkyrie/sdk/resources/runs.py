@@ -91,6 +91,7 @@ class RunsResource:
         task_ids: Sequence[str] | None = None,
         slice_str: str | None = None,
         dataset: str | None = None,
+        dataset_version: str | None = None,
         label: str | None = None,
         lambda_function: str | None = None,
         provider: str | None = None,
@@ -135,6 +136,7 @@ class RunsResource:
             task_ids=list(task_ids) if task_ids else None,
             slice_str=slice_str,
             dataset=dataset,
+            dataset_version=dataset_version,
             label=label,
             lambda_function=lambda_function,
             harness_config=access_key_harness_config,
@@ -157,7 +159,7 @@ class RunsResource:
                     exclude={"environment"}
                     | {
                         name
-                        for name in ("priority", "properties", "managed_s3_bucket")
+                        for name in ("priority", "properties", "managed_s3_bucket", "dataset_version")
                         if getattr(payload, name) is None
                     },
                 ),

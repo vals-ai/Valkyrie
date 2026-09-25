@@ -633,6 +633,7 @@ valkyrie run start \
   [--task-ids-file <TEXT>] \
   [--slice <TEXT>] \
   [--dataset <TEXT>] \
+  [--dataset-version <TEXT>] \
   [--provider <TEXT>] \
   [--priority <INTEGER>] \
   [--label|-l <TEXT>] \
@@ -698,6 +699,11 @@ valkyrie run start \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--dataset"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
   <p className="mb-0 mt-1">{"Dataset name to use from the benchmark service (defaults to 'default')"}</p>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--dataset-version"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"text"}</code> · default: <code>{"None"}</code></span></div>
+  <p className="mb-0 mt-1">{"Fixed dataset version to use for this run"}</p>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

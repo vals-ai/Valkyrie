@@ -98,6 +98,8 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
     click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
     click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
+    version = start_benchmark_response.dataset_version
+    click.echo(f"│ {'Dataset version:':<17} {version.label or version.id if version else 'not pinned'}")
     click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
     click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
@@ -229,6 +231,7 @@ def resolve_webhook_config(
     default=None,
     help="Dataset name to use from the benchmark service (defaults to 'default')",
 )
+@click.option("--dataset-version", type=str, default=None, help="Fixed dataset version to use for this run")
 @click.option(
     "--provider",
     type=str,
@@ -316,6 +319,7 @@ def start(
     task_ids_file: str | None,
     slice_str: str | None,
     dataset: str | None,
+    dataset_version: str | None,
     provider: str | None,
     priority: int | None,
     label: str | None,
@@ -419,6 +423,7 @@ def start(
                         label,
                         lambda_function,
                         dataset,
+                        dataset_version,
                         priority=priority,
                         service_headers=service_headers or None,
                         provider=provider,

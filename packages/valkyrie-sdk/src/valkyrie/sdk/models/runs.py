@@ -59,6 +59,13 @@ class Order(str, Enum):
     DESC = "desc"
 
 
+class DatasetVersion(ResponseModel):
+    """Exact dataset release saved for a run."""
+
+    id: str = Field(min_length=1, max_length=1024, pattern=r"^[!-~]+$")
+    label: str | None = Field(max_length=256)
+
+
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 
@@ -74,6 +81,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: str | DatasetVersion | None = None
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -138,6 +146,7 @@ class StartBenchmarkResponse(ResponseModel):
     concurrency: int
     started_at: datetime
     task_count: int
+    dataset_version: DatasetVersion | None = None
     cloudwatch_url: str
     s3_bucket_url: str
     storage_bucket: str | None = None
@@ -219,6 +228,7 @@ class BenchmarkArguments(ResponseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: DatasetVersion | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
 

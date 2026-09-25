@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import DatasetVersion
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -94,6 +95,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: str | DatasetVersion | None = None
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -130,6 +132,7 @@ class StartBenchmarkRequest(BaseModel):
         return create_benchmark_service_client(
             url=benchmark_service_url,
             service_headers=self.service_headers,
+            dataset_version=self.dataset_version if isinstance(self.dataset_version, DatasetVersion) else None,
         )
 
 
@@ -171,6 +174,7 @@ class StartBenchmarkResponse(BaseModel):
     concurrency: int
     started_at: datetime
     task_count: int
+    dataset_version: DatasetVersion | None = None
     cloudwatch_url: str
     s3_bucket_url: str
     storage_bucket: str | None = None

@@ -101,6 +101,7 @@ _EXPECTED_TYPES = {
     ),
     "Runs": (
         "AnalyzeEvent",
+        "DatasetVersion",
         "FetchBenchmarkResponse",
         "FetchBenchmarkMetadataResponse",
         "FetchBenchmarksRequest",

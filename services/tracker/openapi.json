@@ -515,6 +515,16 @@
             ],
             "title": "Dataset"
           },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "environment": {
             "const": "aws",
             "default": "aws",
@@ -1081,6 +1091,36 @@
         "title": "Body_stop_benchmark",
         "type": "object"
       },
+      "DatasetVersion": {
+        "description": "An immutable dataset identity and its optional display label.",
+        "properties": {
+          "id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[!-~]+$",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "DatasetVersion",
+        "type": "object"
+      },
       "FetchBenchmarkMetadataResponse": {
         "properties": {
           "benchmark_arguments": {
@@ -1628,6 +1668,20 @@
               }
             ],
             "title": "Dataset"
+          },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Version"
           },
           "environment": {
             "const": "aws",
@@ -2636,6 +2690,20 @@
             ],
             "title": "Dataset"
           },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Version"
+          },
           "environment": {
             "const": "aws",
             "default": "aws",
@@ -2845,6 +2913,16 @@
               }
             ],
             "title": "Current Execution Release Id"
+          },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "executor_artifact_digest": {
             "anyOf": [
