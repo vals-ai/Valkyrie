@@ -240,6 +240,14 @@ def test_compare_reads_results_through_tracker(
             ),
         ]
     )
+    # Cross a task-list page boundary without creating evaluation results.
+    database_session.add_all(
+        Task(org_id=running.org_id, benchmark=running.id, task_id=f"unscored-{index:03}", status=TaskStatus.PENDING)
+        for index in range(501)
+    )
+    database_session.add(
+        Task(org_id=finished.org_id, benchmark=finished.id, task_id="unscored-500", status=TaskStatus.STOPPED)
+    )
     database_session.commit()
 
     result = cli_runner.invoke(cli, ["run", "compare", str(running.id), str(finished.id), "--format", "json"])
@@ -249,7 +257,14 @@ def test_compare_reads_results_through_tracker(
     payload = json.loads(result.output)
     assert payload["matched_tasks"] == 1
     assert payload["counts"]["improved"] == 1
-    assert payload["tasks"][0]["baseline"] == 0.25
-    assert payload["tasks"][0]["candidate"] == 1
+
+    tasks = {task["task_id"]: task for task in payload["tasks"]}
+    assert tasks["complete"]["baseline"] == 0.25
+    assert tasks["complete"]["candidate"] == 1
+    assert len(tasks) == 506
+    assert payload["counts"]["not comparable"] == 505
+    for task_id in ("active", "pending", "unscored-000", "unscored-500"):
+        assert tasks[task_id]["outcome"] == "not comparable"
+        assert tasks[task_id]["baseline_state"] == tasks[task_id]["candidate_state"] == "missing"
     assert payload["mean_delta"] == 0.75
     assert "must-not-leak" not in result.output

@@ -80,6 +80,6 @@ valk run compare <baseline-id> <candidate-id> --metric metrics.cost --lower-is-b
 valk run compare <baseline-id> <candidate-id> --format json
 ```
 
-Matched means use only task IDs with finite numeric metrics in both runs. Errors, absent results, and missing metrics are shown separately, never counted as zero. These means are not the benchmark's aggregate score. Benchmark versions are not verified, and unfinished runs produce partial snapshots; confirm that the runs used comparable conditions. The comparison reads results without saving or overwriting them.
+Task coverage includes persisted tasks in every state, explicitly configured task IDs, and IDs present in result or error records. Tasks with no evaluation are shown as missing, including pending and stopped tasks. Matched means use only task IDs with finite numeric metrics in both runs; booleans are not numeric scores. Errors, absent results, and missing metrics are shown separately, never counted as zero. These means are not the benchmark's aggregate score. Benchmark versions are not verified, and unfinished runs produce partial snapshots; confirm that the runs used comparable conditions. The comparison reads results without saving or overwriting them.
 
-Text output limits task details by default; JSON always includes every observed task. See [`run compare`](/reference/cli/run#compare) for display options.
+Task lists and results are read separately, so active runs can change during comparison. Text output limits task details by default; JSON includes all collected task IDs. See [`run compare`](/reference/cli/run#compare) for display options.

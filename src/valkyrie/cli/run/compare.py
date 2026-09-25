@@ -38,7 +38,7 @@ def _score(result: dict[str, object], metric: str) -> float | None:
         if not isinstance(value, dict):
             return None
         value = value.get(key)
-    if not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
         number = float(value)
@@ -63,7 +63,11 @@ def _task_score(view: FinalViewResponse, task_id: str, metric: str) -> tuple[flo
 
 
 def compare_tasks(
-    baseline: FinalViewResponse, candidate: FinalViewResponse, metric: str, lower_is_better: bool
+    baseline: FinalViewResponse,
+    candidate: FinalViewResponse,
+    metric: str,
+    lower_is_better: bool,
+    persisted_task_ids: set[str] | None = None,
 ) -> list[TaskComparison]:
     """Align observed tasks by ID and keep errors out of numeric comparisons."""
     task_ids = (
@@ -71,6 +75,9 @@ def compare_tasks(
         | set(candidate.evaluation_results or {})
         | set(baseline.task_errors or {})
         | set(candidate.task_errors or {})
+        | set(baseline.benchmark_arguments.task_ids or [])
+        | set(candidate.benchmark_arguments.task_ids or [])
+        | (persisted_task_ids or set())
     )
     rows: list[TaskComparison] = []
 
@@ -253,6 +260,7 @@ def compare(
         with TrackerService() as tracker:
             before = tracker.retrieve_results(baseline, False)
             after = tracker.retrieve_results(candidate, False)
+            task_ids = set(tracker.iter_run_task_ids(baseline)) | set(tracker.iter_run_task_ids(candidate))
     except TrackerServiceError as error:
         raise click.ClickException(str(error)) from error
 
@@ -264,7 +272,7 @@ def compare(
     ):
         raise click.ClickException("Runs must use the same benchmark and dataset.")
 
-    rows = compare_tasks(before, after, metric, lower_is_better)
+    rows = compare_tasks(before, after, metric, lower_is_better, task_ids)
     warnings = ["Matched scores only; errors and missing metrics excluded."]
     if any(row.baseline is not None and row.candidate is not None and row.delta is None for row in rows):
         warnings.append("Some metric deltas exceed the numeric range and are excluded.")

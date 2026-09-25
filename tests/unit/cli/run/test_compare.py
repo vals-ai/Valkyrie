@@ -47,7 +47,8 @@ class TestCompare:
             task_errors={"error": "private error details"},
         )
 
-        rows = {row.task_id: row for row in compare_tasks(baseline, candidate, "score", False)}
+        baseline.benchmark_arguments.task_ids = ["not-started"]
+        rows = {row.task_id: row for row in compare_tasks(baseline, candidate, "score", False, {"pending"})}
 
         assert rows["gain"].outcome == "improved"
         assert rows["loss"].outcome == "regressed"
@@ -56,8 +57,11 @@ class TestCompare:
         assert rows["new"].baseline_state == "missing"
         assert rows["error"].candidate_state == "error"
         assert rows["error"].delta is None
+        for task_id in ("pending", "not-started"):
+            assert rows[task_id].outcome == "not comparable"
+            assert rows[task_id].baseline_state == rows[task_id].candidate_state == "missing"
 
-    @pytest.mark.parametrize("value", [None, "1", float("nan"), float("inf"), {}, 10**400])
+    @pytest.mark.parametrize("value", [None, True, False, "1", float("nan"), float("inf"), {}, 10**400])
     def test_invalid_metric_is_unscored(self, value: object) -> None:
         baseline = make_final_view(_BASELINE, evaluation_results={"task": {"score": 1}})
         candidate = make_final_view(_CANDIDATE, evaluation_results={"task": {"score": value}})
@@ -164,7 +168,7 @@ class TestCompare:
         else:
             assert "No shared tasks" in result.output
 
-    @pytest.mark.parametrize("mismatch", ["benchmark", "dataset", "network"])
+    @pytest.mark.parametrize("mismatch", ["benchmark", "dataset", "network", "task-list"])
     def test_rejects_incompatible_or_unavailable_runs(
         self, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, mismatch: str
     ) -> None:
@@ -179,11 +183,15 @@ class TestCompare:
         tracker.retrieve_results.side_effect = (
             TrackerServiceError("unavailable") if mismatch == "network" else [baseline, candidate]
         )
+        if mismatch == "task-list":
+            tracker.iter_run_task_ids.side_effect = TrackerServiceError("unavailable")
         monkeypatch.setattr(_MODULE, "TrackerService", lambda: tracker)
 
         result = cli_runner.invoke(compare, [str(_BASELINE), str(_CANDIDATE)])
 
         assert result.exit_code == 1
         assert (
-            "unavailable" in result.output if mismatch == "network" else "same benchmark and dataset" in result.output
+            "unavailable" in result.output
+            if mismatch in ("network", "task-list")
+            else "same benchmark and dataset" in result.output
         )
