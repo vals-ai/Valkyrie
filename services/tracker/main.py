@@ -57,7 +57,6 @@ from tracker.aws.managed_storage import (
 from tracker.aws.resolver import (
     http_validate_saved_managed_storage_runtime,
     inspect_harness_headers,
-    resolve_agent_library_aws_runtime,
     resolve_aws_runtime_metadata,
     resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
@@ -1690,9 +1689,11 @@ async def retry_or_resume_benchmark(
     agent_copier: ObjectCopier | None = None
     if update_agent:
         run_runtime = runtime_resolution.runtime
-        # Managed agent aliases live in the deployment library bucket, not the run's owner bucket.
+        # Managed agent aliases live in the deployment library bucket; caller AWS headers never select it.
         library_runtime = (
-            resolve_agent_library_aws_runtime(http_request, org_id) if preparation.aws_managed else run_runtime
+            resolve_run_aws_runtime_and_access_key_config(http_request, aws_managed=True, org_id=org_id).runtime
+            if preparation.aws_managed
+            else run_runtime
         )
         library_store = S3ObjectStore(library_runtime)
         source_key = agent_bundle_key(preparation.agent_name)

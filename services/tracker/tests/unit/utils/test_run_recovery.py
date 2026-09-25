@@ -3301,12 +3301,15 @@ def test_owner_recovery_revalidates_saved_org_and_location_before_task_verificat
     assert benchmark.arguments.properties == resources
 
 
+@pytest.mark.parametrize("send_caller_aws_headers", [False, True])
 def test_owner_recovery_updates_agent_from_the_deployment_library(
+    send_caller_aws_headers: bool,
     managed_recovery_run: Benchmark,
     database_session: Session,
     monkeypatch: MonkeyPatch,
+    harness_headers: dict[str, str],
 ) -> None:
-    """Refresh a managed-storage run's bundle from the deployment library into its owner bucket."""
+    """Refresh a managed-storage run's bundle from the deployment library, whatever AWS headers the caller sends."""
     benchmark = managed_recovery_run
     resources = replace(deployment_aws_runtime(benchmark.org_id).resources, s3_bucket="vs-dev-owner-42")
     benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})
@@ -3335,7 +3338,10 @@ def test_owner_recovery_updates_agent_from_the_deployment_library(
     monkeypatch.setattr(main_module.S3ObjectCopier, "copy", copy)
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", AsyncMock())
 
-    response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true")
+    response = client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true",
+        headers=harness_headers if send_caller_aws_headers else None,
+    )
 
     assert response.status_code == 200, response.text
     assert checked == [("legacy-bucket", main_module.agent_bundle_key(agent_name))]
