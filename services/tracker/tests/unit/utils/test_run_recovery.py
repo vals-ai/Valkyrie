@@ -719,20 +719,29 @@ class TestRunRecovery:
         assert captured_lambda_payloads[0]["benchmark_name"] == "swebench"
 
     @pytest.mark.parametrize(
-        ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
+        ("task_status", "retry_mode", "eval_resume_state", "expected_status", "expected_state"),
         [
             (
+                TaskStatus.STOPPED,
                 RetryMode.AUTO,
                 {"artifact_prefix": "s3://bucket/run"},
                 TaskStatus.EVALUATING,
                 {"artifact_prefix": "s3://bucket/run"},
             ),
-            (RetryMode.AUTO, None, TaskStatus.PENDING, None),
-            (RetryMode.FROM_SCRATCH, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
+            (TaskStatus.STOPPED, RetryMode.AUTO, None, TaskStatus.PENDING, None),
+            (
+                TaskStatus.STOPPED,
+                RetryMode.FROM_SCRATCH,
+                {"artifact_prefix": "s3://bucket/run"},
+                TaskStatus.PENDING,
+                None,
+            ),
+            (TaskStatus.FINISHED, RetryMode.AUTO, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
         ],
     )
     async def test_reset_handles_eval_resume_state(
         self,
+        task_status: TaskStatus,
         retry_mode: RetryMode,
         eval_resume_state: dict[str, str] | None,
         expected_status: TaskStatus,
@@ -747,7 +756,7 @@ class TestRunRecovery:
             org_id=TEST_ORG_ID,
             task_id="task_0",
             benchmark=benchmark_row.id,
-            status=TaskStatus.STOPPED,
+            status=task_status,
             eval_resume_state=eval_resume_state,
         )
         database_session.add(benchmark_row)
@@ -763,9 +772,9 @@ class TestRunRecovery:
             benchmark_row=benchmark_row,
             session=database_session,
             verified_task_ids=[task_row.task_id],
-            retry=False,
+            retry=True,
             retry_mode=retry_mode,
-            rerun_task_ids=[],
+            rerun_task_ids=[task_row.task_id],
             org=self._test_org,
         )
         database_session.commit()

@@ -298,11 +298,11 @@ def reset_to_in_progress_status(
         session.add(benchmark_row)
 
         for task in existing_rows:
-            task.status = (
-                TaskStatus.EVALUATING
-                if retry_mode != RetryMode.FROM_SCRATCH and task.eval_resume_state is not None
-                else TaskStatus.PENDING
+            # Only a regrade re-evaluates a finished task; any other retry regenerates it.
+            resumes_evaluation = task.eval_resume_state is not None and (
+                retry_mode == RetryMode.REGRADE or (retry_mode == RetryMode.AUTO and task.status != TaskStatus.FINISHED)
             )
+            task.status = TaskStatus.EVALUATING if resumes_evaluation else TaskStatus.PENDING
             retry_started_at = datetime.now(ZoneInfo("UTC"))
             comparable_retry_started_at = retry_started_at
             if task.started_at.tzinfo is None and retry_started_at.tzinfo is not None:
@@ -311,7 +311,7 @@ def reset_to_in_progress_status(
                 retry_started_at = task.started_at + timedelta(microseconds=1)
             task.started_at = retry_started_at
             task.finished_at = None
-            if retry_mode == RetryMode.FROM_SCRATCH:
+            if task.status == TaskStatus.PENDING:
                 task.eval_resume_state = None
             session.add(task)
 
