@@ -83,7 +83,7 @@ from tracker.runtime.artifacts import (
     copy_agent_to_benchmark,
 )
 from tracker.runtime.secrets import resolve_secrets
-from tracker.runtime.storage import ObjectStore, StoredObjectCopy
+from tracker.runtime.storage import ObjectCopier, ObjectStore, StoredObjectCopy
 from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
@@ -1569,6 +1569,42 @@ def _commit_recovery(
         )
 
 
+async def _refresh_recovered_agent(
+    copier: ObjectCopier,
+    *,
+    benchmark_id: UUID,
+    agent_name: str,
+    session: Session,
+    admission: AdmissionResult | None,
+) -> None:
+    """Replace the run's agent bundle after recovery admission and before its executor is enqueued."""
+    try:
+        await copier.copy(agent_bundle_key(agent_name), benchmark_agent_bundle_key(str(benchmark_id), agent_name))
+    except Exception as exc:
+        if admission is None:
+            raise
+        dispatch = ExecutorDispatch.model_validate(json.loads(admission.dispatch_json))
+        logger.exception(
+            "Failed to refresh the agent bundle for an admitted recovery",
+            extra={"executor_dispatch_id": str(dispatch.id)},
+        )
+        _ = await asyncio.to_thread(
+            _resolve_enqueue_failure,
+            session.get_bind(),
+            dispatch.benchmark_id,
+            dispatch.id,
+            list(admission.verified_task_ids),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Agent bundle refresh failed; use Retry to continue",
+                "benchmark_id": str(dispatch.benchmark_id),
+                "executor_dispatch_id": str(dispatch.id),
+            },
+        ) from exc
+
+
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
 async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
@@ -1651,6 +1687,7 @@ async def retry_or_resume_benchmark(
             verified_task_ids = verified.task_ids
         finally:
             await service.close()
+    agent_copier: ObjectCopier | None = None
     if update_agent:
         run_runtime = runtime_resolution.runtime
         # Managed agent aliases live in the deployment library bucket, not the run's owner bucket.
@@ -1669,7 +1706,6 @@ async def retry_or_resume_benchmark(
             if library_runtime.resources.s3_bucket != run_runtime.resources.s3_bucket
             else library_store
         )
-        await agent_copier.copy(source_key, benchmark_agent_bundle_key(str(benchmark_id), preparation.agent_name))
     commit_task = asyncio.create_task(
         asyncio.to_thread(
             _commit_recovery,
@@ -1694,6 +1730,21 @@ async def retry_or_resume_benchmark(
         result, cancellation = await _await_before_cancellation(commit_task)
     except _TaskFailedAfterCancellation as failure:
         raise failure.cancellation from failure.task_error
+    # A rejected recovery never reaches this copy, and the executor cannot read the bundle before enqueue.
+    if agent_copier is not None:
+        refresh_task = asyncio.create_task(
+            _refresh_recovered_agent(
+                agent_copier,
+                benchmark_id=benchmark_id,
+                agent_name=preparation.agent_name,
+                session=session,
+                admission=result,
+            )
+        )
+        try:
+            _, cancellation = await _await_before_cancellation(refresh_task, cancellation)
+        except _TaskFailedAfterCancellation as failure:
+            raise failure.cancellation from failure.task_error
     if result is not None:
         enqueue_task = asyncio.create_task(
             _enqueue_executor_dispatch(
