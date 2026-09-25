@@ -32,9 +32,8 @@ from sqlalchemy.engine import Connection
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.aws.cloudwatch_logs import (
-    task_log_stream_name,
-)
+from tracker.aws.cloudwatch_logs import task_log_stream_name
+from tracker.runtime.secrets import resolve_secrets
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
 from tracker.runtime.task_logs import TaskLogBuffer
@@ -1005,7 +1004,7 @@ async def _process_task_attempt(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
+            **(await resolve_secrets(start_benchmark_request.contract.secrets, runtime.secrets)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),

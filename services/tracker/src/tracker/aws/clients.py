@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -17,11 +18,6 @@ if TYPE_CHECKING:
 _HIGH_CONCURRENCY_CLIENT_CONFIG = Config(max_pool_connections=200)
 _S3_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
 _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS = 3600
-
-
-def _boto3_client(service_name: str, **kwargs: Any) -> Any:
-    client_factory = cast(Any, boto3.client)  # pyright: ignore[reportUnknownMemberType]
-    return client_factory(service_name, **kwargs)
 
 
 class AWSClientProvider(ABC):
@@ -40,8 +36,12 @@ class AWSClientProvider(ABC):
         raise NotImplementedError
 
     @lru_cache(maxsize=32)
-    def _s3_session(self) -> aioboto3.Session:
+    def _loop_session(self, loop: asyncio.AbstractEventLoop) -> aioboto3.Session:
+        """Share one session per event loop so loop-bound credential state never crosses loops."""
         return aioboto3.Session(**self._client_kwargs())
+
+    def _s3_session(self) -> aioboto3.Session:
+        return self._loop_session(asyncio.get_running_loop())
 
     def s3_client(self) -> Any:
         return self._s3_session().client(  # pyright: ignore[reportUnknownMemberType]
@@ -51,22 +51,21 @@ class AWSClientProvider(ABC):
 
     @lru_cache(maxsize=32)
     def cloudwatch_logs_client(self) -> Any:
-        return _boto3_client(
+        client_factory = cast(Any, boto3.client)  # pyright: ignore[reportUnknownMemberType]
+        return client_factory(
             "logs",
             config=_HIGH_CONCURRENCY_CLIENT_CONFIG,
             **self._client_kwargs(),
         )
 
-    @lru_cache(maxsize=32)
-    def secretsmanager_client(self) -> Any:
-        return _boto3_client("secretsmanager", **self._client_kwargs())
-
     def secretsmanager_async_client(self) -> Any:
         return self._s3_session().client("secretsmanager")  # pyright: ignore[reportUnknownMemberType]
 
-    @lru_cache(maxsize=32)
+    def cloudwatch_logs_async_client(self) -> Any:
+        return self._s3_session().client("logs")  # pyright: ignore[reportUnknownMemberType]
+
     def lambda_client(self, config: Config | None = None) -> Any:
-        return _boto3_client("lambda", config=config, **self._client_kwargs())
+        return cast(Any, self._s3_session().client("lambda", config=config))  # pyright: ignore[reportUnknownMemberType]
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return requested_seconds
