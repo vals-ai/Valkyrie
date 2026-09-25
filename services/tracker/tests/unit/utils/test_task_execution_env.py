@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from benchmark_service import SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
@@ -37,7 +38,21 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.scheduler.admission import SandboxQueueContext
+import tracker.runtime.model_gateway as model_gateway_module
 from tracker.types import HarnessConfig
+
+
+def _install_gateway(monkeypatch: pytest.MonkeyPatch, minted: list[dict[str, Any]]) -> None:
+    """Answer the tracker's run-token mint and revoke calls in process."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/service-auth":
+            minted.append(json.loads(request.content))
+            return httpx.Response(200, json={"token": "mgwt_scoped", "lease_id": "lease-1"})
+        assert request.url.path == "/service-auth/revoke", request.url.path
+        return httpx.Response(200, json={"revoked": 1})
+
+    monkeypatch.setattr(model_gateway_module, "_client", httpx.AsyncClient(transport=httpx.MockTransport(handle)))
 
 
 @asynccontextmanager
@@ -164,6 +179,8 @@ class TestProcessTaskEnvironment:
             }
         )
         captured_env_vars: list[dict[str, str]] = []
+        minted: list[dict[str, Any]] = []
+        _install_gateway(monkeypatch, minted)
 
         def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
@@ -201,7 +218,24 @@ class TestProcessTaskEnvironment:
         }
         assert env_vars["UNRELATED_SECRET"] == "secret-value"
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
-        assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+        # The sandbox receives a task-scoped token, never the executor's key.
+        assert env_vars["MODEL_GATEWAY_API_KEY"] == "mgwt_scoped"
+        # Scoped to what the tracker resolved, not to the values the contract's
+        # own secrets tried to inject.
+        assert minted == [
+            {
+                "run_id": str(benchmark_id),
+                "task_id": "task_0",
+                "allowed_models": ["provider/model"],
+                "identity": {
+                    "benchmark_name": "swebench",
+                    "agent_name": contract.name,
+                    "email": "starter@example.com",
+                },
+                "variant": "xhigh",
+                "ttl_seconds": 7 * 24 * 60 * 60,
+            }
+        ]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_withholds_unattested_inference_settings(
@@ -242,6 +276,54 @@ class TestProcessTaskEnvironment:
         env_vars = captured_env_vars[0]
         assert "VALKYRIE_AGENT_MODEL" not in env_vars
         assert "VALKYRIE_AGENT_VARIANT" not in env_vars
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_task_does_not_scope_credentials_to_an_injected_model(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        """A contract names its own secrets' variables, so it can put anything
+        under VALKYRIE_AGENT_MODEL. Unattested, that must not mint a credential."""
+        contract = contract.model_copy(
+            update={
+                "model": "caller/model",
+                "secrets": {"VALKYRIE_AGENT_MODEL": "secret-name"},
+                "install_cmd": "echo install",
+                "run_cmd": "echo run",
+            }
+        )
+        assert contract.inference_settings_attested is False
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        captured_env_vars: list[dict[str, str]] = []
+        minted: list[dict[str, Any]] = []
+        _install_gateway(monkeypatch, minted)
+
+        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+            return {
+                "VALKYRIE_AGENT_MODEL": "anthropic/claude-4-opus",
+                "MODEL_GATEWAY_URL": "https://gateway.example.test",
+                "MODEL_GATEWAY_API_KEY": "gateway-key",
+            }
+
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr(
+            utils_module,
+            "create_sandbox",
+            partial(_capture_sandbox_environment, captured_env_vars),
+        )
+
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert minted == []
+        assert captured_env_vars[0]["MODEL_GATEWAY_API_KEY"] == "gateway-key"
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_omits_identity_email_when_unavailable(
