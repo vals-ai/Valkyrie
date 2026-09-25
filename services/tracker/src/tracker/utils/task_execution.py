@@ -24,6 +24,7 @@ from benchmark_service import (
     SandboxProvider,
     SandboxProviderConfig,
     SandboxRecoveryAttempt,
+    resolve_sandbox_env,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from pydantic import ValidationError
@@ -994,8 +995,12 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
+        run_secrets = await runtime.resolve_secrets(start_benchmark_request.contract.secrets)
         env_vars = {
-            **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
+            # The benchmark's task environment sits underneath, so the run's secrets and tracker-owned values win.
+            # Its ${VAR} templates are filled from this run's secrets, never from the benchmark service.
+            **resolve_sandbox_env(task_data.sandbox_env, run_secrets),
+            **run_secrets,
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
