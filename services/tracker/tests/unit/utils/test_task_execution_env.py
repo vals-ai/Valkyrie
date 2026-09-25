@@ -18,7 +18,7 @@ from benchmark_service import SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlalchemy.engine import Engine
-from sqlmodel import Session
+from sqlmodel import Session, desc, select
 
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import (
@@ -31,6 +31,7 @@ from tracker.auth import RequestIdentity
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
+    ErrorResult,
     ExecutorDispatch,
     ExecutorDispatchStatus,
     Task,
@@ -202,6 +203,88 @@ class TestProcessTaskEnvironment:
         assert env_vars["UNRELATED_SECRET"] == "secret-value"
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
         assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_task_fills_the_benchmark_sandbox_env_from_the_runs_secrets(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        """A benchmark's sandbox_env reaches the agent, with templates filled from this run's secrets.
+
+        Test cases:
+        - A literal value is passed as written, and `${VAR}` takes the run's secret of that name.
+        - The run's secrets and tracker-owned values win over the benchmark's variables of the same name.
+        """
+        contract = contract.model_copy(update={"secrets": {"OPENAI_API_KEY": "openai-secret-name"}})
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        captured_env_vars: list[dict[str, str]] = []
+
+        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+            return {"OPENAI_API_KEY": "sk-run"}
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response().model_copy(
+                update={"sandbox_env": {"MODE": "fast", "LLM_KEY": "${OPENAI_API_KEY}", "RUN_ID": "benchmark-run"}}
+            )
+
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(
+            utils_module,
+            "create_sandbox",
+            partial(_capture_sandbox_environment, captured_env_vars),
+        )
+
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        [env_vars] = captured_env_vars
+        assert env_vars["MODE"] == "fast"
+        assert env_vars["LLM_KEY"] == "sk-run"
+        assert env_vars["RUN_ID"] == str(benchmark_id)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_task_fails_when_the_run_lacks_a_secret_the_benchmark_needs(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        """A `${VAR}` the run did not pass fails the task, naming the variable, before a sandbox starts."""
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        created: list[dict[str, str]] = []
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response().model_copy(update={"sandbox_env": {"LLM_KEY": "${OPENAI_API_KEY}"}})
+
+        def _no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+            return {}
+
+        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _no_secrets)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(utils_module, "create_sandbox", partial(_capture_sandbox_environment, created))
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert result == {"task_0": None}
+        assert created == []
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error_message = database_session.exec(
+            select(ErrorResult.error_message)
+            .where(ErrorResult.task == task_row.id)
+            .order_by(desc(ErrorResult.created_at))
+        ).one()
+        assert "OPENAI_API_KEY, which this run does not provide" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_withholds_unattested_inference_settings(
