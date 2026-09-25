@@ -719,20 +719,29 @@ class TestRunRecovery:
         assert captured_lambda_payloads[0]["benchmark_name"] == "swebench"
 
     @pytest.mark.parametrize(
-        ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
+        ("task_status", "retry_mode", "eval_resume_state", "expected_status", "expected_state"),
         [
             (
+                TaskStatus.STOPPED,
                 RetryMode.AUTO,
                 {"artifact_prefix": "s3://bucket/run"},
                 TaskStatus.EVALUATING,
                 {"artifact_prefix": "s3://bucket/run"},
             ),
-            (RetryMode.AUTO, None, TaskStatus.PENDING, None),
-            (RetryMode.FROM_SCRATCH, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
+            (TaskStatus.STOPPED, RetryMode.AUTO, None, TaskStatus.PENDING, None),
+            (
+                TaskStatus.STOPPED,
+                RetryMode.FROM_SCRATCH,
+                {"artifact_prefix": "s3://bucket/run"},
+                TaskStatus.PENDING,
+                None,
+            ),
+            (TaskStatus.FINISHED, RetryMode.AUTO, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
         ],
     )
     async def test_reset_handles_eval_resume_state(
         self,
+        task_status: TaskStatus,
         retry_mode: RetryMode,
         eval_resume_state: dict[str, str] | None,
         expected_status: TaskStatus,
@@ -747,7 +756,7 @@ class TestRunRecovery:
             org_id=TEST_ORG_ID,
             task_id="task_0",
             benchmark=benchmark_row.id,
-            status=TaskStatus.STOPPED,
+            status=task_status,
             eval_resume_state=eval_resume_state,
         )
         database_session.add(benchmark_row)
@@ -763,9 +772,9 @@ class TestRunRecovery:
             benchmark_row=benchmark_row,
             session=database_session,
             verified_task_ids=[task_row.task_id],
-            retry=False,
+            retry=True,
             retry_mode=retry_mode,
-            rerun_task_ids=[],
+            rerun_task_ids=[task_row.task_id],
             org=self._test_org,
         )
         database_session.commit()
@@ -774,6 +783,106 @@ class TestRunRecovery:
         assert verified_task_ids == [task_row.task_id]
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
+
+    async def test_regrade_reevaluates_finished_tasks_from_eval_resume_state(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """Regrade only re-evaluates finished tasks that kept eval resume state.
+
+        Test cases:
+        - A requested task that cannot be regraded fails the request without queueing work.
+        - A task the benchmark service no longer recognizes fails the request.
+        - Finished tasks with resume state return to EVALUATING with that state intact.
+        - Finished tasks without resume state and unfinished tasks are left untouched.
+        - An in-progress run cannot be regraded.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        state = {"artifact_prefix": "s3://bucket/run"}
+        graded = Task(
+            org_id=TEST_ORG_ID,
+            task_id="graded",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+            eval_resume_state=state,
+        )
+        ungraded = Task(org_id=TEST_ORG_ID, task_id="ungraded", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+        errored = Task(
+            org_id=TEST_ORG_ID,
+            task_id="errored",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+            eval_resume_state=state,
+        )
+        database_session.add_all([benchmark_row, graded, ungraded, errored])
+        database_session.commit()
+
+        known_task_ids: list[str] = []
+
+        async def _verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task_id for task_id in task_ids if task_id in known_task_ids])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_task_ids)
+        regrade_url = f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&retry_mode=regrade"
+
+        skipped_response = client.post(regrade_url, json={"task_ids": ["graded", "ungraded"]}, headers=harness_headers)
+        unknown_response = client.post(regrade_url, headers=harness_headers)
+
+        assert skipped_response.status_code == 400
+        assert skipped_response.json() == {"detail": "Not finished with eval resume state: ungraded"}
+        assert unknown_response.status_code == 400
+        assert unknown_response.json() == {"detail": "Unknown to the benchmark service: graded"}
+        assert mock_kicker.queued_calls == []
+
+        known_task_ids.append("graded")
+
+        response = client.post(regrade_url, headers=harness_headers)
+
+        assert response.status_code == 200, response.text
+        assert mock_kicker.queued_calls[0]["verified_task_ids"] == ["graded"]
+        for task in (graded, ungraded, errored):
+            database_session.refresh(task)
+        assert [graded.status, ungraded.status, errored.status] == [
+            TaskStatus.EVALUATING,
+            TaskStatus.FINISHED,
+            TaskStatus.ERROR,
+        ]
+        assert graded.eval_resume_state == state
+
+        active_response = client.post(regrade_url, headers=harness_headers)
+
+        assert active_response.status_code == 409
+        assert len(mock_kicker.queued_calls) == 1
+
+    async def test_regrade_rejects_run_without_eval_resume_state(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        mock_kicker: MockKicker,
+        harness_headers: dict[str, str],
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add_all(
+            [
+                benchmark_row,
+                Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            ]
+        )
+        database_session.commit()
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&retry_mode=regrade", headers=harness_headers
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "No finished tasks with eval resume state to regrade."}
+        assert mock_kicker.queued_calls == []
 
     async def test_retry_preserves_previous_task_history_for_export(
         self,

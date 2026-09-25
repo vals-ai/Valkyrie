@@ -1491,6 +1491,7 @@ def _prepare_recovery(
     task_ids: list[str],
     benchmark_url: str | None,
     secrets: dict[str, str],
+    retry_mode: RetryMode,
 ) -> RecoveryPreparation:
     with Session(bind) as session:
         org = session.get(Org, org_id)
@@ -1516,7 +1517,11 @@ def _prepare_recovery(
         )
         state = None
         if benchmark.status != BenchmarkStatus.IN_PROGRESS or retry or queued:
-            state = prepare_retry_state(benchmark, session, retry, task_ids, org, queued_recovery=queued)
+            state = prepare_retry_state(
+                benchmark, session, retry, task_ids, org, queued_recovery=queued, retry_mode=retry_mode
+            )
+        if retry_mode == RetryMode.REGRADE:
+            _validate_regrade(benchmark, state, task_ids)
         return RecoveryPreparation(
             state,
             benchmark.aws_managed,
@@ -1526,6 +1531,17 @@ def _prepare_recovery(
             queued,
             benchmark.arguments.properties,
         )
+
+
+def _validate_regrade(benchmark: Benchmark, state: RetryState | None, task_ids: list[str]) -> None:
+    """Reject regrading an unfinished run, skipping a requested task, or regrading nothing."""
+    if benchmark.status not in (BenchmarkStatus.FINISHED, BenchmarkStatus.STOPPED):
+        raise HTTPException(status_code=409, detail="Only finished or stopped runs can be regraded.")
+    assert state is not None
+    if skipped := sorted(set(task_ids).difference(state.task_ids)):
+        raise HTTPException(status_code=400, detail=f"Not finished with eval resume state: {', '.join(skipped)}")
+    if not state.task_ids:
+        raise HTTPException(status_code=400, detail="No finished tasks with eval resume state to regrade.")
 
 
 def _commit_recovery(
@@ -1593,6 +1609,7 @@ async def retry_or_resume_benchmark(
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
+        retry_mode: ``regrade`` re-evaluates a terminal run's finished tasks from eval resume state
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
@@ -1621,6 +1638,7 @@ async def retry_or_resume_benchmark(
         task_ids,
         benchmark_url,
         secrets,
+        retry_mode,
     )
     runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
         http_request,
@@ -1645,6 +1663,8 @@ async def retry_or_resume_benchmark(
             verified = await service.verify_task_ids(
                 task_ids=verified_task_ids, slice_str=None, dataset=preparation.dataset
             )
+            if retry_mode == RetryMode.REGRADE and (unknown := sorted(set(verified_task_ids) - set(verified.task_ids))):
+                raise HTTPException(status_code=400, detail=f"Unknown to the benchmark service: {', '.join(unknown)}")
             verified_task_ids = verified.task_ids
         finally:
             await service.close()
@@ -1811,6 +1831,7 @@ def _apply_recovery(
                 task_ids,
                 org,
                 queued_recovery=preparation.queued_recovery,
+                retry_mode=retry_mode,
                 for_update=True,
             )
         except TrackerServiceError as exc:

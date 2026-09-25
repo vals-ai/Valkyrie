@@ -1850,7 +1850,8 @@
       "RetryMode": {
         "enum": [
           "auto",
-          "from_scratch"
+          "from_scratch",
+          "regrade"
         ],
         "title": "RetryMode",
         "type": "string"
@@ -5027,7 +5028,7 @@
     },
     "/retry-or-resume-benchmark/{benchmark_id}": {
       "post": {
-        "description": "Retry or resume a benchmark run by its id.\n\nUsage:\ncurl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20\n  -d '{\"task_ids\": [\"task_id_1\", \"task_id_2\"]}'\n\nArgs:\n    benchmark_id: The benchmark ID to retry/resume\n    retry: If true, retry failed tasks. If false, resume from where it left off\n    concurrency: Optional new concurrency level (overrides original value)\n    task_ids: Optional list of specific task IDs to run. If a task id is not yet\n        registered but is valid in the current dataset, a fresh PENDING row is created.\n    benchmark_url: Optional replacement benchmark service URL stored on the run.\n\nReturns:\n    RetryOrResumeBenchmarkResponse",
+        "description": "Retry or resume a benchmark run by its id.\n\nUsage:\ncurl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20\n  -d '{\"task_ids\": [\"task_id_1\", \"task_id_2\"]}'\n\nArgs:\n    benchmark_id: The benchmark ID to retry/resume\n    retry: If true, retry failed tasks. If false, resume from where it left off\n    retry_mode: ``regrade`` re-evaluates a terminal run's finished tasks from eval resume state\n    concurrency: Optional new concurrency level (overrides original value)\n    task_ids: Optional list of specific task IDs to run. If a task id is not yet\n        registered but is valid in the current dataset, a fresh PENDING row is created.\n    benchmark_url: Optional replacement benchmark service URL stored on the run.\n\nReturns:\n    RetryOrResumeBenchmarkResponse",
         "operationId": "retry_or_resume_benchmark",
         "parameters": [
           {

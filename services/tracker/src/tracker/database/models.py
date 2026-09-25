@@ -103,6 +103,8 @@ class AgentCausedExitReason(str, Enum):
 class RetryMode(str, Enum):
     AUTO = "auto"
     FROM_SCRATCH = "from_scratch"
+    # Re-evaluate finished tasks from their eval resume state without regenerating.
+    REGRADE = "regrade"
 
 
 MAX_OUTPUT_ARTIFACT_BYTES = 250 * 1024 * 1024
