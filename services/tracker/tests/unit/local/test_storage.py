@@ -13,7 +13,7 @@ from tracker.local.storage import FilesystemObjectStore
 
 
 async def test_cancelled_upload_removes_only_its_staging_file(tmp_path: Path) -> None:
-    store = FilesystemObjectStore(tmp_path)
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
     started = asyncio.Event()
 
     async def interrupted() -> AsyncIterator[bytes]:
@@ -28,11 +28,11 @@ async def test_cancelled_upload_removes_only_its_staging_file(tmp_path: Path) ->
     with pytest.raises(asyncio.CancelledError):
         await upload
     assert await store.get_bytes("output") == b"another writer"
-    assert not list((tmp_path / ".valkyrie/staging").iterdir())
+    assert not list((tmp_path / "staging").iterdir())
 
 
 async def test_cancellation_during_staging_creation_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    store = FilesystemObjectStore(tmp_path)
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
     created = threading.Event()
     release = threading.Event()
     temporary_directory = tempfile.TemporaryDirectory
@@ -55,11 +55,11 @@ async def test_cancellation_during_staging_creation_cleans_up(tmp_path: Path, mo
     with pytest.raises(asyncio.CancelledError):
         await upload
     assert not await store.exists("output")
-    assert not list((tmp_path / ".valkyrie/staging").iterdir())
+    assert not list((tmp_path / "staging").iterdir())
 
 
 async def test_revoked_upload_cannot_publish(tmp_path: Path) -> None:
-    store = FilesystemObjectStore(tmp_path)
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
     await store.put_bytes("output", b"previous")
     permitted = True
     checks: list[bool] = []
@@ -77,11 +77,11 @@ async def test_revoked_upload_cannot_publish(tmp_path: Path) -> None:
         await store.put_stream("output", chunks(), should_continue=should_continue)
     assert checks == [False]
     assert await store.get_bytes("output") == b"previous"
-    assert not list((tmp_path / ".valkyrie/staging").iterdir())
+    assert not list((tmp_path / "staging").iterdir())
 
 
 async def test_conditional_upload_preserves_existing_agent(tmp_path: Path) -> None:
-    store = FilesystemObjectStore(tmp_path)
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
 
     async def chunks(value: bytes) -> AsyncIterator[bytes]:
         yield value
@@ -93,12 +93,17 @@ async def test_conditional_upload_preserves_existing_agent(tmp_path: Path) -> No
     )
     assert sum(isinstance(result, FileExistsError) for result in results) == 1
     assert await store.get_bytes("agent.zip") in (b"first", b"second")
-    assert not list((tmp_path / ".valkyrie/staging").iterdir())
+    assert not list((tmp_path / "staging").iterdir())
 
 
-@pytest.mark.parametrize("key", ["../outside", "/absolute", "a/../../outside", ".valkyrie/staging/entry", "", "."])
+def test_rejects_staging_inside_the_artifact_root(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        FilesystemObjectStore(tmp_path, tmp_path / "staging")
+
+
+@pytest.mark.parametrize("key", ["../outside", "/absolute", "a/../../outside", "", "."])
 async def test_rejects_invalid_keys(tmp_path: Path, key: str) -> None:
-    store = FilesystemObjectStore(tmp_path)
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
     with pytest.raises(ValueError):
         await store.put_bytes(key, b"invalid")
 
@@ -108,5 +113,5 @@ async def test_rejects_symlink_escape(tmp_path: Path) -> None:
     root.mkdir()
     (root / "escape").symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(ValueError):
-        await FilesystemObjectStore(root).put_bytes("escape/outside", b"invalid")
+        await FilesystemObjectStore(root, tmp_path / "staging").put_bytes("escape/outside", b"invalid")
     assert not (tmp_path / "outside").exists()

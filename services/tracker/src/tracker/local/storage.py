@@ -22,8 +22,6 @@ def local_path(root: Path, key: str, *, prefix: bool = False) -> Path:
     parts = PurePosixPath(key).parts
     if (not key and not prefix) or key.startswith("/") or ".." in parts or "\x00" in key:
         raise ValueError("Local artifact keys must be relative paths without traversal")
-    if parts and parts[0] == ".valkyrie":
-        raise ValueError("Local artifact key uses the reserved metadata directory")
     root = root.resolve()
     path = (root / key).resolve()
     if not path.is_relative_to(root) or (path == root and not prefix):
@@ -39,19 +37,22 @@ async def _io(operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T
 class FilesystemObjectStore:
     """Store complete files under stable keys in a shared local directory."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, staging: Path) -> None:
         if not root.is_absolute():
             raise ValueError("Local artifact root must be absolute")
         self.root = root.resolve()
+        # Staging shares the root's filesystem so rename and link stay atomic, but never its key space.
+        self.staging = staging.resolve()
+        if self.staging.is_relative_to(self.root):
+            raise ValueError("Local staging directory must sit outside the artifact root")
 
     @asynccontextmanager
     async def _staging_file(self) -> AsyncGenerator[tuple[BinaryIO, Path]]:
         stack = ExitStack()
 
         def create() -> tuple[BinaryIO, Path]:
-            staging = self.root / ".valkyrie" / "staging"
-            staging.mkdir(parents=True, exist_ok=True)
-            directory = stack.enter_context(tempfile.TemporaryDirectory(dir=staging))
+            self.staging.mkdir(parents=True, exist_ok=True)
+            directory = stack.enter_context(tempfile.TemporaryDirectory(dir=self.staging))
             temporary = Path(directory) / "upload"
             return stack.enter_context(temporary.open("wb")), temporary
 
@@ -133,7 +134,7 @@ class FilesystemObjectStore:
             directory = self.root / prefix.rpartition("/")[0]
             for path in sorted(directory.rglob("*")):
                 key = path.relative_to(self.root).as_posix()
-                if key == ".valkyrie" or key.startswith(".valkyrie/") or not key.startswith(prefix):
+                if not key.startswith(prefix):
                     continue
                 checked = local_path(self.root, key)
                 try:
