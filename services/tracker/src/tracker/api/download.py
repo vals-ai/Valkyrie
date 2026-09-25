@@ -31,7 +31,5 @@ async def resolve_download_url(
     if url is not None:
         return url, expires_in
 
-    link = request.url_for(route_name, **route_params).include_query_params(
-        download="true", **(query_params or {})
-    )
+    link = request.url_for(route_name, **route_params).include_query_params(download="true", **(query_params or {}))
     return str(link), 0
