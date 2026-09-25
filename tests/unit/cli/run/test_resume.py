@@ -90,4 +90,3 @@ def test_resume_forwards_custom_headers(
             "update_agent": update_agent,
         }
     ]
-

@@ -99,9 +99,7 @@ async def get_agent_download_url(
         if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
         if download:
-            response = local_file_response(
-                runtime.objects, key, filename=f"{name}.zip", media_type="application/zip"
-            )
+            response = local_file_response(runtime.objects, key, filename=f"{name}.zip", media_type="application/zip")
             if response is not None:
                 return response
         url, expires_in = await resolve_download_url(
