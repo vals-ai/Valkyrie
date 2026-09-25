@@ -23,6 +23,8 @@ The tracker forwards its inbound Descope API key only when the benchmark-service
 
 Managed shared pools order waiting tasks by run priority, enqueue time, and task ID. Priority ranges from P0 (highest) to P4 (lowest), and admitted runs default to P3 when no priority is supplied. Per-run `concurrency` still limits how many tasks from that run may be active.
 
+If an executor stops while sandbox creation may still be in flight, Tracker retains that pool's reservation. Inspect outstanding reservations with `uv run python -m tracker.executor.pool_reservation_recovery list` from `services/tracker`, using the target Tracker environment's `DATABASE_URL`. Before releasing one, confirm the original creator has stopped, the provider request has settled, and the sandbox is absent or cleaned up. Use the reservation ID from the listing and run `uv run python -m tracker.executor.pool_reservation_recovery release --pool-id <pool-id> --reservation-id <reservation-id> --confirm-creator-stopped --confirm-provider-settled --provider-outcome absent` when no sandbox was created, or use `--provider-outcome cleaned` after removing it. Dispatch terminal status or lease expiry alone does not make a reservation safe to release. Provider sandbox names include random suffixes; use the run and task labels when checking provider state.
+
 Users can inspect their organization's scheduler state with [`valkyrie queue status`](/reference/cli/queue#status) or [`client.scheduler.overview()`](/reference/sdk/scheduler#overview). Both use:
 
 ```text
