@@ -36,7 +36,7 @@ class LocalRuntimeFactory:
         root = data_root / "orgs" / str(org_id)
         secrets = secrets if secrets is not None else InMemorySecretStore({}, {})
         logs = FilesystemLogs(root / "logs")
-        objects = FilesystemObjectStore(root / "objects")
+        objects = FilesystemObjectStore(root / "objects", root / "staging")
         return LocalRuntimeServices(
             objects=objects,
             secrets=secrets,

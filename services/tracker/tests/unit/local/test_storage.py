@@ -118,7 +118,7 @@ async def test_rejects_symlink_escape(tmp_path: Path) -> None:
 
 
 async def test_metadata_and_pagination(tmp_path: Path) -> None:
-    store = FilesystemObjectStore(tmp_path)
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
     for key in ("run/a.txt", "run/a/x", "run/b"):
         await store.put_bytes(key, key.encode())
     first, cursor = await store.list_objects_page("run/", cursor=None, limit=2)
