@@ -40,6 +40,21 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
 from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
 
 
+class MockProcess:
+    """Keep a child pending until a test signals its exit."""
+
+    pid = 123
+    returncode: int | None = None
+
+    def __init__(self) -> None:
+        self.done = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self.done.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+
 class FakeDispatchStore:
     def __init__(
         self,
@@ -486,6 +501,41 @@ async def test_heartbeat_lease_expires_from_last_confirmed_renewal(
     assert store.heartbeats == [authority, authority]
     assert sleep_delays == [1, 1]
     assert now == 1 + supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_authority_observation_refreshes_deadline_after_legacy_pex_renewal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use a Tracker-confirmed shared lease deadline when an older PEX renewed it.
+
+    Test cases:
+    - A current authority response can extend a host's stale local deadline.
+    - The host retains the confirmed server duration instead of its 300-second default.
+    """
+    now = 5.0
+    store = FakeDispatchStore()
+    authority = DispatchAuthority(dispatch_id="dispatch-1", benchmark_id="benchmark-1", lease_deadline=3.0)
+    lease = supervisor_module._DispatchLease(  # pyright: ignore[reportPrivateUsage]
+        last_confirmed_renewal_at=0,
+        lost=asyncio.Event(),
+        confirmed_deadline=3.0,
+    )
+
+    async def renewed_authority(_authority: DispatchAuthority) -> bool:
+        _authority.lease_deadline = 20.0
+        return True
+
+    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now)
+    monkeypatch.setattr(store, "is_current", renewed_authority)
+
+    assert await supervisor_module._is_current_with_lease(  # pyright: ignore[reportPrivateUsage]
+        store,
+        authority,
+        lease,
+    )
+    assert lease.expires_in(now) == 15.0
+    assert not lease.lost.is_set()
 
 
 @pytest.mark.asyncio
@@ -1349,18 +1399,7 @@ async def test_periodic_authority_operational_error_allows_child_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeProcess:
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
+    process = MockProcess()
     sleep_count = 0
     authority_blocker = asyncio.Event()
 
@@ -1406,19 +1445,7 @@ async def test_heartbeat_lease_loss_terminates_process_and_cleans_up_tasks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeProcess:
-        pid = 123
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
+    process = MockProcess()
     lease_lost = asyncio.Event()
     lease_lost.set()
     created_tasks: list[asyncio.Task[object]] = []
@@ -1457,19 +1484,7 @@ async def test_periodic_authority_operational_error_then_loss_terminates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeProcess:
-        pid = 123
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
+    process = MockProcess()
     checks = iter([aiohttp.ClientConnectionError("temporary"), False])
 
     async def is_current() -> bool:
@@ -1518,19 +1533,7 @@ async def test_authority_revocation_terminates_process_before_terminalization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeProcess:
-        pid = 123
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
+    process = MockProcess()
     authority_check_due = asyncio.Event()
     trigger_authority_check = asyncio.Event()
     lifecycle_events: list[str] = []

@@ -44,6 +44,20 @@ def _lease(seconds: float = 60) -> httpx.Response:
     )
 
 
+def _authority(seconds: float | None = None) -> httpx.Response:
+    server_time = datetime(2000, 1, 1, tzinfo=UTC)
+    body: dict[str, object] = {"current": True}
+    if seconds is not None:
+        body.update(
+            {
+                "server_time": server_time.isoformat(),
+                "lease_expires_at": (server_time + timedelta(seconds=seconds)).isoformat(),
+            }
+        )
+
+    return httpx.Response(200, json=body)
+
+
 @pytest.mark.parametrize("status", [401, 409, 200])
 async def test_rejected_or_expired_claim_never_starts_work(status: int) -> None:
     """Do not launch after duplicate delivery, invalid credentials, or an exhausted claim.
@@ -69,10 +83,10 @@ async def test_rejected_or_expired_claim_never_starts_work(status: int) -> None:
 
 @pytest.mark.parametrize("failure", ["unavailable", "connection", "timeout"])
 async def test_transient_heartbeat_outage_preserves_running_work(failure: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the same operation alive through a failed heartbeat request and recovery.
+    """Keep the same operation alive through failed authority observations and recovery.
 
     Test cases:
-    - HTTP failures, connection failures, and request timeouts retain a live lease.
+    - HTTP failures, connection failures, and request timeouts retain the last confirmed lease.
     - Database timestamps far from the executor clock still permit execution.
     """
 
@@ -96,7 +110,7 @@ async def test_transient_heartbeat_outage_preserves_running_work(failure: str, m
                 raise TimeoutError("Tracker request timed out")
             return httpx.Response(503)
         renewed.set()
-        return _lease()
+        return _authority(60)
 
     async def execute() -> None:
         nonlocal completed
@@ -109,6 +123,73 @@ async def test_transient_heartbeat_outage_preserves_running_work(failure: str, m
             await run_with_dispatch_lease(api, _CLAIM, execute, heartbeat_interval_seconds=0.01)
 
     assert completed and failures == 5
+
+
+async def test_authority_observation_uses_host_renewal_without_pex_heartbeat() -> None:
+    """Let the stable host renew a lease and the PEX observe its server deadline.
+
+    Test cases:
+    - A current authority response extends the short claim lease.
+    - The PEX does not send a competing heartbeat when timestamps are available.
+    """
+    authority_checks = 0
+    heartbeat_checks = 0
+    observation = asyncio.Event()
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal authority_checks, heartbeat_checks
+        if request.url.path.endswith("claim"):
+            return _lease(0.1)
+        if request.url.path.endswith("authority"):
+            authority_checks += 1
+            observation.set()
+            return _authority(60)
+        if request.url.path.endswith("heartbeat"):
+            heartbeat_checks += 1
+            return _lease()
+        return httpx.Response(404)
+
+    async def execute() -> None:
+        await observation.wait()
+        await asyncio.sleep(0.15)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://tracker.test") as http:
+        api = ExecutorClient(ExecutorTransport(http, SecretStr("test")), _DISPATCH, _CLAIM.claimant_id)
+        async with asyncio.timeout(5):
+            await run_with_dispatch_lease(api, _CLAIM, execute, heartbeat_interval_seconds=0.01)
+
+    assert authority_checks >= 1
+    assert heartbeat_checks == 0
+
+
+async def test_authority_without_lease_timestamps_keeps_legacy_heartbeat() -> None:
+    """Retain lease renewal when an older Tracker returns only boolean authority.
+
+    Test cases:
+    - A timestamp-free authority response triggers the compatibility heartbeat.
+    - The operation continues after that heartbeat confirms the lease.
+    """
+    heartbeat_seen = asyncio.Event()
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("claim"):
+            return _lease()
+        if request.url.path.endswith("authority"):
+            return _authority()
+        if request.url.path.endswith("heartbeat"):
+            heartbeat_seen.set()
+            return _lease()
+        return httpx.Response(404)
+
+    async def execute() -> None:
+        await heartbeat_seen.wait()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://tracker.test") as http:
+        api = ExecutorClient(ExecutorTransport(http, SecretStr("test")), _DISPATCH, _CLAIM.claimant_id)
+        async with asyncio.timeout(5):
+            await run_with_dispatch_lease(api, _CLAIM, execute, heartbeat_interval_seconds=0.01)
+
+    assert heartbeat_seen.is_set()
 
 
 @pytest.mark.parametrize("failure", ["revoked", "hung", "unavailable", "late", "unexpected"])

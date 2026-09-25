@@ -6,6 +6,7 @@ import os
 import sys
 from uuid import UUID, uuid4
 from typing import Any
+from pathlib import Path
 
 import httpx
 from pydantic import BaseModel, SecretStr
@@ -29,6 +30,12 @@ class WorkerInput(BaseModel):
 
 
 async def main() -> None:
+    if compatibility_pex := os.environ.get("TEST_EXECUTOR_COMPAT_PEX"):
+        module_path = Path(sys.modules[ExecutorClient.__module__].__file__ or "").resolve()
+        assert module_path.is_relative_to(Path(os.environ["TEST_EXECUTOR_COMPAT_ROOT"]).resolve()), (
+            compatibility_pex,
+            module_path,
+        )
     configuration = WorkerInput.model_validate_json(await asyncio.to_thread(sys.stdin.readline))
     async with httpx.AsyncClient(base_url=configuration.endpoint, trust_env=False) as http:
         api = ExecutorClient(

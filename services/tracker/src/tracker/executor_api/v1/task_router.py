@@ -19,9 +19,11 @@ from tracker.executor.task_api import (
     record_task_error,
     save_checkpoint,
     set_task_status,
+    task_authority,
     write_task,
 )
 from tracker.executor_api.v1.dependencies import DispatchSession
+from tracker.executor_api.v1.schemas import AuthorityResponse
 from tracker.executor_api.v1.task_schemas import (
     BuildTask,
     RunTask,
@@ -33,12 +35,22 @@ from tracker.executor_api.v1.task_schemas import (
     PendingTask,
     StopTask,
     Mutation,
+    TaskAuthorityRequest,
     TaskAttemptRequest,
     TaskWriteRequest,
     TaskWriteResponse,
 )
 
 router = APIRouter()
+
+
+@router.post("/{dispatch_id}/tasks/{task_id}/authority", response_model_exclude_none=True)
+def authority(
+    dispatch_id: UUID, task_id: UUID, request: TaskAuthorityRequest, session: DispatchSession
+) -> AuthorityResponse:
+    return AuthorityResponse(
+        current=task_authority(session, dispatch_id, request.claimant_id, task_id, request.expected_started_at)
+    )
 
 
 def task_command_digest(task_id: UUID, operation: str, request: TaskAttemptRequest) -> str:

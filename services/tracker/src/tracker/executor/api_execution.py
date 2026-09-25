@@ -27,7 +27,7 @@ class _Lease:
     deadline: float
 
 
-async def _renew_lease(api: ExecutorClient, lease: _Lease, interval_seconds: float) -> None:
+async def _observe_lease(api: ExecutorClient, lease: _Lease, interval_seconds: float) -> None:
     loop = asyncio.get_running_loop()
     delay = interval_seconds
     while True:
@@ -35,13 +35,29 @@ async def _renew_lease(api: ExecutorClient, lease: _Lease, interval_seconds: flo
             async with asyncio.timeout_at(lease.deadline):
                 await asyncio.sleep(delay)
                 started_at = loop.time()
-                renewed = await api.heartbeat()
+                authority = await api.authority()
+                if not authority.current:
+                    raise ExecutionAuthorityRevoked("Tracker revoked this executor dispatch")
+
+                if authority.lease_expires_at is None or authority.server_time is None:
+                    # Older Tracker versions expose only the boolean authority response.
+                    renewed = await api.heartbeat()
+                    lease.deadline = _lease_deadline(renewed, started_at)
+                    delay = interval_seconds
+                    continue
+
+                lease.deadline = started_at + max(
+                    (authority.lease_expires_at - authority.server_time).total_seconds(),
+                    0,
+                )
+                if loop.time() >= lease.deadline:
+                    raise ExecutionAuthorityRevoked("Executor dispatch lease expired before authority was confirmed")
+                delay = interval_seconds
         except (httpx.TransportError, TimeoutError):
             if loop.time() >= lease.deadline:
                 raise ExecutionAuthorityRevoked("Executor dispatch lease expired during Tracker outage") from None
-            logger.warning("Tracker heartbeat unavailable; retaining the last confirmed lease")
+            logger.warning("Tracker authority unavailable; retaining the last confirmed lease")
             delay = min(interval_seconds, 1)
-            continue
         except httpx.HTTPStatusError as error:
             if error.response.status_code in (502, 503, 504):
                 delay = min(interval_seconds, 1)
@@ -49,11 +65,6 @@ async def _renew_lease(api: ExecutorClient, lease: _Lease, interval_seconds: flo
             if error.response.status_code in (401, 403, 409):
                 raise ExecutionAuthorityRevoked("Tracker revoked this executor dispatch") from error
             raise
-
-        if loop.time() >= lease.deadline:
-            raise ExecutionAuthorityRevoked("Executor dispatch lease expired before renewal was confirmed")
-        lease.deadline = _lease_deadline(renewed, started_at)
-        delay = interval_seconds
 
 
 async def _settle_task(task: asyncio.Task[None]) -> None:
@@ -94,7 +105,7 @@ async def run_with_dispatch_lease(
 
     with api.retry_until(lambda: lease.deadline):
         work = asyncio.create_task(execute())
-        renewal = asyncio.create_task(_renew_lease(api, lease, heartbeat_interval_seconds))
+        renewal = asyncio.create_task(_observe_lease(api, lease, heartbeat_interval_seconds))
         try:
             done, _ = await asyncio.wait((work, renewal), return_when=asyncio.FIRST_COMPLETED)
             if work in done:

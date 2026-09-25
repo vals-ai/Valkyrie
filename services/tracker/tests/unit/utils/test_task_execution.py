@@ -106,6 +106,36 @@ class TestTaskExecution:
 class TestEvaluationCheckpoints:
     """Async persistence of the benchmark client's synchronous checkpoint callbacks."""
 
+    async def test_coalesces_burst_to_latest_pending_snapshot(self) -> None:
+        """Keep only the in-flight write and newest pending replacement snapshot."""
+        writing = asyncio.Event()
+        release = asyncio.Event()
+        burst_sent = asyncio.Event()
+        saved: list[dict[str, Any]] = []
+
+        async def evaluate(checkpoint: CheckpointCallback) -> int:
+            checkpoint({"cursor": 0})
+            await writing.wait()
+            for position in range(1, 101):
+                checkpoint({"cursor": position})
+            burst_sent.set()
+            return 42
+
+        async def persist(state: dict[str, Any]) -> None:
+            writing.set()
+            await release.wait()
+            saved.append(state)
+
+        runner = asyncio.create_task(run_with_checkpoints(evaluate, persist))
+        async with asyncio.timeout(5):
+            await writing.wait()
+            await burst_sent.wait()
+            assert not runner.done()
+            release.set()
+            assert await runner == 42
+
+        assert saved == [{"cursor": 0}, {"cursor": 100}]
+
     @pytest.mark.parametrize("stream_fails", [False, True])
     async def test_flushes_ordered_snapshots_before_returning(self, stream_fails: bool) -> None:
         """Persist snapshots in order before exposing completion or a stream error.
@@ -117,13 +147,17 @@ class TestEvaluationCheckpoints:
         """
         writing = asyncio.Event()
         release = asyncio.Event()
+        second_checkpoint_sent = asyncio.Event()
         saved: list[dict[str, Any]] = []
 
         async def evaluate(checkpoint: CheckpointCallback) -> int:
             state = {"cursor": {"position": 1}}
             checkpoint(state)
+            await writing.wait()
             state["cursor"]["position"] = 2
             checkpoint(state)
+            state["cursor"]["position"] = 3
+            second_checkpoint_sent.set()
             if stream_fails:
                 raise ConnectionError("Evaluation stream disconnected")
             return 42
@@ -136,6 +170,7 @@ class TestEvaluationCheckpoints:
         runner = asyncio.create_task(run_with_checkpoints(evaluate, persist))
         async with asyncio.timeout(5):
             await writing.wait()
+            await second_checkpoint_sent.wait()
             assert not runner.done()
             release.set()
             if stream_fails:

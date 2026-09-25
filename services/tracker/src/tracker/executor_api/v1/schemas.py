@@ -35,6 +35,8 @@ class LeaseResponse(BaseModel):
 
 class AuthorityResponse(BaseModel):
     current: bool
+    lease_expires_at: datetime | None = None
+    server_time: datetime | None = None
 
 
 class TerminalResponse(BaseModel):

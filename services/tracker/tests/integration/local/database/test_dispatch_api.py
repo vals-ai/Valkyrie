@@ -15,6 +15,7 @@ import asyncio
 import os
 import socket
 import sys
+import tempfile
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -27,6 +28,7 @@ import aiohttp
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
+from sqlalchemy import event
 from pydantic import SecretStr
 from sqlmodel import Session, col, select
 from benchmark_service import ImageSource, Resources, Sandbox, SandboxProvider
@@ -310,9 +312,9 @@ def test_heartbeat_cannot_restore_revoked_authority(
     """
     assert client.post(f"{dispatch.path}/claim", json=dispatch.claim, headers=dispatch.headers).status_code == 200
     assert client.post(f"{dispatch.path}/heartbeat", json=dispatch.request, headers=dispatch.headers).status_code == 200
-    assert client.post(f"{dispatch.path}/authority", json=dispatch.request, headers=dispatch.headers).json() == {
-        "current": True
-    }
+    authority = client.post(f"{dispatch.path}/authority", json=dispatch.request, headers=dispatch.headers).json()
+    assert authority["current"] is True
+    assert datetime.fromisoformat(authority["lease_expires_at"]) > datetime.fromisoformat(authority["server_time"])
     if expired:
         invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
         assert invocation is not None
@@ -2198,8 +2200,8 @@ async def test_process_task_persists_through_api(
     breakdown = postgres_session.get(TaskBreakdown, task.task_breakdown)
     assert breakdown is not None and breakdown.agent_run_duration == 2.5
     owner = postgres_session.get(ExecutorTaskAttempt, task.id)
-    expected_revision = (10 if retry_sandbox else 6) + ((2 if retry_sandbox else 1) if queued else 0)
-    assert owner is not None and owner.revision == expected_revision
+    assert owner is not None and owner.dispatch_id == dispatch.dispatch_id
+    assert task.eval_resume_state == {"cursor": 2}
     assert postgres_session.exec(select(ExecutorPoolReservation)).all() == []
     errors = postgres_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all()
     assert len(errors) == (1 if retry_sandbox else 0)
@@ -2311,6 +2313,69 @@ async def test_entrypoint_rejects_invalid_execution_before_task_work(
         assert invocation.failure_reason == "EXECUTOR_FAILED"
     if failure not in ("runtime", "revoked", "stale-error"):
         runtime_factory.assert_not_awaited()
+
+
+@pytest.mark.parametrize("legacy_tracker", [False, True])
+async def test_task_authority_avoids_snapshot_work_and_supports_older_tracker(
+    app: FastAPI,
+    dispatch: DispatchFixture,
+    postgres_session: Session,
+    postgres_engine: Engine,
+    legacy_tracker: bool,
+) -> None:
+    """Poll attempt authority cheaply while preserving older v1 Tracker compatibility.
+
+    Test cases:
+    - Current Tracker answers without checkpoint payloads, aggregate queries, or write locks.
+    - A Tracker without the new endpoint falls back to the existing snapshot route.
+    - Both paths detect a stopped attempt.
+    """
+    if legacy_tracker:
+        app.router.routes[:] = [
+            route
+            for route in app.router.routes
+            if getattr(route, "path", "") != "/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/authority"
+        ]
+    statements: list[str] = []
+
+    def record_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement.lower())
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://tracker.test") as http:
+        api = ExecutorClient(
+            ExecutorTransport(http, SecretStr(dispatch.token)),
+            dispatch.dispatch_id,
+            UUID(dispatch.claim["claimant_id"]),
+        )
+        await api.claim(ClaimRequest.model_validate(dispatch.claim))
+        state = await api.run_state(["task-0"])
+        persistence = ApiTaskPersistence(api, state.tasks[0])
+        event.listen(postgres_engine, "before_cursor_execute", record_statement)
+        try:
+            await api.run_state(["task-0"])
+            snapshot_query_count = len(statements)
+            statements.clear()
+            assert await persistence.current()
+            if not legacy_tracker:
+                assert len(statements) < snapshot_query_count
+                assert not any(
+                    "for update" in sql or "count(" in sql or "eval_resume_state" in sql for sql in statements
+                )
+        finally:
+            event.remove(postgres_engine, "before_cursor_execute", record_statement)
+        task = postgres_session.get(Task, dispatch.task_id)
+        assert task is not None
+        task.status = TaskStatus.STOPPED
+        postgres_session.add(task)
+        postgres_session.commit()
+        assert not await persistence.current()
 
 
 @pytest.mark.parametrize("revocation", ["dispatch", "attempt", "stop", "revision", "assignment"])
@@ -2779,7 +2844,6 @@ async def test_queue_settles_creation_when_admission_or_authority_changes(
             assert (sandbox is not None) == (outcome == "capacity-recovers")
             if outcome == "stale-after-create":
                 assert cleaned
-        await persistence.close()
 
     assert created == (outcome in ("stale-after-create", "capacity-recovers"))
     assert cleaned == created
@@ -2890,9 +2954,20 @@ async def test_api_server_restart_preserves_executor_process(
         )
         assert authority is not None and await host_store.is_current(authority)
         assert await host_store.heartbeat(authority)
+        compatibility_pex = os.environ.get("TEST_EXECUTOR_COMPAT_PEX")
+        worker_environment = dict(os.environ)
+        worker_command = [sys.executable]
+        if compatibility_pex:
+            worker_command.append(str(Path(compatibility_pex).resolve(strict=True)))
+            worker_environment["PEX_ROOT"] = stack.enter_context(tempfile.TemporaryDirectory(prefix="compat-pex-"))
+            worker_environment["TEST_EXECUTOR_COMPAT_ROOT"] = worker_environment["PEX_ROOT"]
+            worker_environment["PEX_INTERPRETER"] = "1"
+            worker_environment["PEX_INHERIT_PATH"] = "false"
+            worker_environment.pop("PYTHONPATH", None)
+        worker_command.append(str(Path(__file__).with_name("api_worker.py")))
         worker = await asyncio.create_subprocess_exec(
-            sys.executable,
-            str(Path(__file__).with_name("api_worker.py")),
+            *worker_command,
+            env=worker_environment,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -2938,7 +3013,9 @@ async def test_api_server_restart_preserves_executor_process(
     invocation = postgres_session.get(ExecutorDispatch, dispatch.dispatch_id)
     assert task is not None and task.status == TaskStatus.FINISHED
     owner = postgres_session.get(ExecutorTaskAttempt, task.id)
-    assert owner is not None and owner.revision == 6
+    assert owner is not None and owner.dispatch_id == dispatch.dispatch_id
+    assert task.eval_resume_state == {"cursor": 2}
+    assert len(postgres_session.exec(select(EvaluationResult).where(EvaluationResult.task == task.id)).all()) == 1
     assert task.started_at == datetime.fromisoformat(str(started["started_at"])).replace(tzinfo=None)
     assert benchmark is not None and benchmark.status == BenchmarkStatus.FINISHED
     assert invocation is not None and invocation.status == ExecutorDispatchStatus.FINISHED

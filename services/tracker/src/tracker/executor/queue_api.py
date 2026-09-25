@@ -130,13 +130,7 @@ def release_pool(
         )
         .with_for_update()
     ).one_or_none()
-    if (
-        reservation is None
-        or reservation.reservation_id != reservation_id
-        or reservation.dispatch_id != dispatch_id
-        or reservation.task_id != task_id
-        or as_utc(reservation.started_at) != as_utc(started_at)
-    ):
+    if reservation is None or as_utc(reservation.started_at) != as_utc(started_at):
         raise DispatchConflict("Executor does not hold this sandbox creation reservation")
     reserved = session.get(ExecutorTaskReceipt, (dispatch_id, reservation_id))
     assert reserved is not None

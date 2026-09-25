@@ -23,6 +23,7 @@ import logfire
 import sentry_sdk
 from sentry_sdk.envelope import Envelope, Item
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from services.executor_host import supervisor as host_supervisor
 from services.executor_host import observability as host_observability
 from services.executor_host.supervisor import ExecutorProcessPayload
@@ -131,7 +132,8 @@ def _run_tracker(dsn: str, context_path: str) -> None:
                 "executor_release_id": _RELEASE_ID,
                 "executor_artifact_uri": "s3://artifacts/local-smoke.pex",
                 "executor_artifact_digest": "a" * 64,
-                "executor_protocol_version": "1",
+                "executor_protocol_version": SUPPORTED_PROTOCOL_VERSION,
+                "executor_api_token": "observability-smoke-token",
             }
             Path(context_path).write_text(json.dumps(payload))
             _capture_test_error("valkyrie-tracker", span_name="run.error")
@@ -144,6 +146,7 @@ def _run_tracker(dsn: str, context_path: str) -> None:
 def _run_executor_host(dsn: str, input_path: str, output_path: str) -> None:
     _set_sentry_environment(dsn)
     os.environ["ENVIRONMENT"] = _ENVIRONMENT
+    os.environ["EXECUTOR_TRACKER_URL"] = "http://tracker.test"
     host_observability.configure_observability()
     payload = cast(dict[str, Any], json.loads(Path(input_path).read_text()))
 

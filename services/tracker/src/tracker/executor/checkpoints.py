@@ -13,21 +13,37 @@ async def run_with_checkpoints(
     operation: Callable[[CheckpointCallback], Awaitable[Result]],
     persist: Callable[[dict[str, Any]], Awaitable[None]],
 ) -> Result:
-    """Preserve checkpoint order and settle writes before returning a result or cancellation."""
-    checkpoints: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    """Persist retained snapshots in order and settle writes before returning or propagating cancellation."""
+    checkpoint_available = asyncio.Event()
+    operation_finished = asyncio.Event()
+    pending_checkpoint: dict[str, Any] | None = None
 
     def received(state: dict[str, Any]) -> None:
-        checkpoints.put_nowait(deepcopy(state))
+        nonlocal pending_checkpoint
+        pending_checkpoint = deepcopy(state)
+        checkpoint_available.set()
 
     async def execute() -> Result:
         try:
             return await operation(received)
         finally:
-            checkpoints.put_nowait(None)
+            operation_finished.set()
+            checkpoint_available.set()
 
     async def write() -> None:
-        while (state := await checkpoints.get()) is not None:
+        nonlocal pending_checkpoint
+        while True:
+            await checkpoint_available.wait()
+            checkpoint_available.clear()
+            state = pending_checkpoint
+            pending_checkpoint = None
+            if state is None:
+                if operation_finished.is_set():
+                    return
+                continue
             await persist(state)
+            if operation_finished.is_set() and pending_checkpoint is None:
+                return
 
     execution = asyncio.create_task(execute())
     writer = asyncio.create_task(write())

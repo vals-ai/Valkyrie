@@ -872,5 +872,3 @@ async def _process_task_attempt(
             producer="tracker",
             operation="process_task",
         )
-    finally:
-        await persistence.close()

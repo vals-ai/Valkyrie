@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from collections.abc import Coroutine
-from typing import Any, Protocol, TypeVar
+from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 import httpx
@@ -45,26 +45,6 @@ class TaskSnapshot:
     identity: dict[str, str]
 
 
-class TaskPersistence(Protocol):
-    async def load(self) -> TaskSnapshot | None:
-        """Load only this dispatch's original task attempt."""
-        raise NotImplementedError
-
-    async def current(self) -> bool:
-        raise NotImplementedError
-
-    async def write(self, mutation: Mutation) -> bool:
-        """Persist a replay-safe mutation, or return false after task authority is lost."""
-        raise NotImplementedError
-
-    async def resume(self) -> dict[str, Any] | None:
-        """Acquire evaluation exclusivity and return the durable checkpoint."""
-        raise NotImplementedError
-
-    async def close(self) -> None:
-        raise NotImplementedError
-
-
 class ApiTaskPersistence:
     """Serialize one attempt's mutations and retain its revision across sandbox retries."""
 
@@ -75,12 +55,13 @@ class ApiTaskPersistence:
         self._revoked = False
         self._lock = asyncio.Lock()
         self._reservation_id: UUID | None = None
+        self._task_authority_supported = True
 
-    async def _snapshot(self) -> TaskSnapshot | None:
+    async def _snapshot(self, *, include_eval_resume_state: bool = True) -> TaskSnapshot | None:
         if self._revoked:
             return None
         try:
-            state = await self._api.run_state([self._task.task_id], include_eval_resume_state=True)
+            state = await self._api.run_state([self._task.task_id], include_eval_resume_state=include_eval_resume_state)
         except httpx.HTTPStatusError as error:
             if error.response.status_code != 409:
                 raise
@@ -133,7 +114,25 @@ class ApiTaskPersistence:
 
     async def current(self) -> bool:
         async with self._lock:
-            return await self._snapshot() is not None
+            if self._revoked:
+                return False
+            if self._task_authority_supported:
+                try:
+                    authority = await self._api.task_authority(self._task.id, self._task.started_at)
+                except httpx.HTTPStatusError as error:
+                    if error.response.status_code == 404:
+                        # A rolling Tracker update may still serve the earlier v1 API.
+                        self._task_authority_supported = False
+                    elif error.response.status_code == 409:
+                        self._revoked = True
+                        return False
+                    else:
+                        raise
+                else:
+                    self._revoked = not authority.current
+                    return authority.current
+
+            return await self._snapshot(include_eval_resume_state=False) is not None
 
     async def write(self, mutation: Mutation) -> bool:
         async with self._lock:
@@ -202,6 +201,3 @@ class ApiTaskPersistence:
             command_id=uuid4(),
         )
         self._reservation_id = None
-
-    async def close(self) -> None:
-        """The dispatch claim protects API evaluation; no database lock is retained."""

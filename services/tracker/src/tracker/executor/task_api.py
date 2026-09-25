@@ -5,7 +5,8 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import JsonValue
-from sqlmodel import Session, select
+from sqlalchemy import func
+from sqlmodel import Session, col, select
 
 from tracker.database.models import (
     AgentCausedExitReason,
@@ -13,6 +14,8 @@ from tracker.database.models import (
     ErrorResult,
     EvaluationResult,
     ExecutorDispatch,
+    ExecutorDispatchAccess,
+    ExecutorDispatchStatus,
     ExecutorTaskAttempt,
     ExecutorTaskReceipt,
     ExecutorPoolReservation,
@@ -26,6 +29,32 @@ from tracker.observability.tracing import observability_span
 from tracker.scheduler.store import claim_eligible_task
 
 _RUNNABLE = (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+
+
+def task_authority(session: Session, dispatch_id: UUID, claimant_id: UUID, task_id: UUID, started_at: datetime) -> bool:
+    """Observe one attempt without checkpoint payloads, aggregates, or write locks.
+
+    Writes still revalidate authority under their existing transaction locks.
+    """
+    row = session.exec(
+        select(col(Task.task_id), col(ExecutorDispatch.assigned_task_ids))
+        .join(Benchmark, col(Task.benchmark) == Benchmark.id)
+        .join(ExecutorDispatch, col(ExecutorDispatch.benchmark_id) == Benchmark.id)
+        .join(ExecutorDispatchAccess, col(ExecutorDispatchAccess.dispatch_id) == ExecutorDispatch.id)
+        .where(
+            ExecutorDispatch.id == dispatch_id,
+            ExecutorDispatchAccess.claimant_id == claimant_id,
+            ExecutorDispatch.status == ExecutorDispatchStatus.RUNNING,
+            col(ExecutorDispatch.lease_expires_at) > func.clock_timestamp(),
+            Benchmark.status != BenchmarkStatus.STOPPED,
+            Task.id == task_id,
+            Task.org_id == Benchmark.org_id,
+            Task.started_at == as_utc(started_at).replace(tzinfo=None),
+            Task.status != TaskStatus.STOPPED,
+        )
+    ).one_or_none()
+
+    return row is not None and row[1] is not None and row[0] in row[1]
 
 
 def read_task_receipt(

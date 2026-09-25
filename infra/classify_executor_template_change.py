@@ -116,8 +116,12 @@ def classify_executor_host_template_change(
     else:
         reasons.update(_service_change_reasons(base.service, head.service))
 
+    task_definition_generation_changed = bool(
+        _changed_properties(base.task_definition.properties, head.task_definition.properties) - {"Tags"}
+    )
     rolling_update = (
         bool(reasons)
+        and task_definition_generation_changed
         and _supports_draining(base.task_definition)
         and _supports_draining(head.task_definition)
         and reasons <= {"executor-host-task-definition-changed", "executor-host-service-ForceNewDeployment"}

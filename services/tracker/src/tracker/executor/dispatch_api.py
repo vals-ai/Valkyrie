@@ -37,6 +37,13 @@ class DispatchIdentity:
     protocol_version: str
 
 
+@dataclass(frozen=True)
+class DispatchAuthorityState:
+    current: bool
+    lease_expires_at: datetime | None
+    server_time: datetime
+
+
 def create_dispatch_access(session: Session, dispatch: ExecutorDispatch) -> str:
     """Issue a credential in the admission transaction; enqueue it only after commit.
 
@@ -158,10 +165,16 @@ def claim_dispatch(
     return dispatch
 
 
-def dispatch_authority(session: Session, dispatch_id: UUID, claimant_id: UUID) -> bool:
+def dispatch_authority(session: Session, dispatch_id: UUID, claimant_id: UUID) -> DispatchAuthorityState:
     benchmark, dispatch, access = _lock_dispatch(session, dispatch_id)
+    now = database_now(session)
+    current = _is_current(benchmark, dispatch, access, claimant_id, now)
 
-    return _is_current(benchmark, dispatch, access, claimant_id, database_now(session))
+    return DispatchAuthorityState(
+        current=current,
+        lease_expires_at=as_utc(dispatch.lease_expires_at) if current and dispatch.lease_expires_at else None,
+        server_time=as_utc(now),
+    )
 
 
 def lock_claimed_dispatch(

@@ -328,6 +328,32 @@ class ExecutorTemplateClassifierTest(unittest.TestCase):
 
                 self.assertEqual(self._classify(base, head).redeploy_required, expected)
 
+    def test_force_new_deployment_nonce_without_task_definition_change_requires_maintenance(self) -> None:
+        base = _template()
+        head = copy.deepcopy(base)
+        for template in (base, head):
+            _properties(template, _TASK_ID)["ContainerDefinitions"] = [
+                {
+                    "Name": "ExecutorHost",
+                    "Image": "image:base",
+                    "Environment": [{"Name": "EXECUTOR_HOST_DRAIN_PROTOCOL", "Value": "1"}],
+                }
+            ]
+        _properties(base, _SERVICE_ID)["ForceNewDeployment"] = {
+            "EnableForceNewDeployment": True,
+            "ForceNewDeploymentNonce": "one",
+        }
+        _properties(head, _SERVICE_ID)["ForceNewDeployment"] = {
+            "EnableForceNewDeployment": True,
+            "ForceNewDeploymentNonce": "two",
+        }
+
+        effect = self._classify(base, head)
+
+        self.assertTrue(effect.redeploy_required)
+        self.assertTrue(effect.maintenance_required)
+        self.assertFalse(effect.rolling_update)
+
     def test_unsupported_service_property_change_is_a_technical_error(self) -> None:
         base = _template()
         head = copy.deepcopy(base)

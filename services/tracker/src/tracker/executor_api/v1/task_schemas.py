@@ -10,9 +10,12 @@ from tracker.executor_api.v1.schemas import DispatchRequest
 Duration = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
-class TaskAttemptRequest(DispatchRequest):
-    command_id: UUID
+class TaskAuthorityRequest(DispatchRequest):
     expected_started_at: AwareDatetime
+
+
+class TaskAttemptRequest(TaskAuthorityRequest):
+    command_id: UUID
 
 
 class TaskMutation(BaseModel):

@@ -13,6 +13,7 @@ import tempfile
 import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Protocol, Unpack, cast
 from uuid import uuid4
@@ -205,10 +206,11 @@ class ArtifactDispatch:
         )
 
 
-@dataclass(frozen=True)
+@dataclass
 class DispatchAuthority:
     dispatch_id: str
     benchmark_id: str
+    lease_deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -325,6 +327,7 @@ class ApiExecutorDispatchStore:
             return cast(dict[str, object], payload)
 
     async def claim(self, dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority | None:
+        request_started_at = _monotonic_time()
         response = await self._post(
             dispatch_id,
             "claim",
@@ -341,21 +344,39 @@ class ApiExecutorDispatchStore:
         if response.get("dispatch_id") != dispatch_id or response.get("claimant_id") != self._claimant_id:
             raise TaskProtectionError("Tracker confirmed a different executor claim")
 
-        return DispatchAuthority(dispatch_id, benchmark_id)
+        return DispatchAuthority(
+            dispatch_id,
+            benchmark_id,
+            _lease_deadline(response, request_started_at),
+        )
 
     async def is_current(self, authority: DispatchAuthority) -> bool:
+        request_started_at = _monotonic_time()
         response = await self._post(authority.dispatch_id, "authority")
+        if response is None or response.get("current") is not True:
+            return False
+        deadline = _lease_deadline(response, request_started_at)
+        if deadline is not None:
+            previous_deadline = authority.lease_deadline
+            authority.lease_deadline = deadline if previous_deadline is None else max(previous_deadline, deadline)
 
-        return response is not None and response.get("current") is True
+        return True
 
     async def heartbeat(self, authority: DispatchAuthority) -> bool:
+        request_started_at = _monotonic_time()
         response = await self._post(authority.dispatch_id, "heartbeat")
-
-        return (
+        confirmed = (
             response is not None
             and response.get("dispatch_id") == authority.dispatch_id
             and response.get("claimant_id") == self._claimant_id
         )
+        if confirmed and response is not None:
+            deadline = _lease_deadline(response, request_started_at)
+            if deadline is not None:
+                previous_deadline = authority.lease_deadline
+                authority.lease_deadline = deadline if previous_deadline is None else max(previous_deadline, deadline)
+
+        return confirmed
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await self._post(authority.dispatch_id, "fail", {"error_message": "Executor process failed"}) is not None
@@ -369,6 +390,25 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} is required")
     return value
+
+
+def _lease_deadline(response: Mapping[str, object], request_started_at: float) -> float | None:
+    expires_at = response.get("lease_expires_at")
+    server_time = response.get("server_time")
+    if expires_at is None and server_time is None:
+        return None
+    if not isinstance(expires_at, str) or not isinstance(server_time, str):
+        raise TaskProtectionError("Tracker returned an invalid executor lease response")
+    try:
+        expires_at_datetime = datetime.fromisoformat(expires_at)
+        server_time_datetime = datetime.fromisoformat(server_time)
+        if expires_at_datetime.tzinfo is None or server_time_datetime.tzinfo is None:
+            raise ValueError("Executor lease timestamps must include a timezone")
+        remaining_seconds = (expires_at_datetime - server_time_datetime).total_seconds()
+    except ValueError as error:
+        raise TaskProtectionError("Tracker returned an invalid executor lease response") from error
+
+    return request_started_at + max(remaining_seconds, 0)
 
 
 def verify_file_digest(path: Path, expected_digest: str) -> None:
@@ -385,9 +425,15 @@ def verify_file_digest(path: Path, expected_digest: str) -> None:
 class _DispatchLease:
     last_confirmed_renewal_at: float
     lost: asyncio.Event
+    confirmed_deadline: float | None = None
 
     def expires_in(self, now: float) -> float:
-        return self.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS - now
+        deadline = (
+            self.confirmed_deadline
+            if self.confirmed_deadline is not None
+            else self.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
+        )
+        return deadline - now
 
 
 def _monotonic_time() -> float:
@@ -663,9 +709,6 @@ async def _heartbeat_loop(
             )
             continue
         confirmed_at = _monotonic_time()
-        if lease.expires_in(confirmed_at) <= 0:
-            lease.lost.set()
-            return
         if not renewed:
             logger.warning(
                 "Executor dispatch %s lost heartbeat authority",
@@ -673,7 +716,36 @@ async def _heartbeat_loop(
             )
             lease.lost.set()
             return
+        if authority.lease_deadline is not None:
+            if authority.lease_deadline <= confirmed_at:
+                lease.lost.set()
+                return
+            lease.confirmed_deadline = authority.lease_deadline
+        elif lease.expires_in(confirmed_at) <= 0:
+            lease.lost.set()
+            return
         lease.last_confirmed_renewal_at = renewal_started_at
+
+
+async def _is_current_with_lease(
+    store: ExecutorDispatchStore,
+    authority: DispatchAuthority,
+    lease: _DispatchLease,
+) -> bool:
+    current = await store.is_current(authority)
+    if current and authority.lease_deadline is not None:
+        now = _monotonic_time()
+        if authority.lease_deadline > now:
+            previous_deadline = lease.confirmed_deadline
+            lease.confirmed_deadline = (
+                authority.lease_deadline
+                if previous_deadline is None
+                else max(previous_deadline, authority.lease_deadline)
+            )
+        else:
+            lease.lost.set()
+
+    return current
 
 
 async def run_executor_dispatch(
@@ -714,6 +786,7 @@ async def run_executor_dispatch(
         lease = _DispatchLease(
             last_confirmed_renewal_at=claim_started_at,
             lost=asyncio.Event(),
+            confirmed_deadline=authority.lease_deadline,
         )
         heartbeat_task = asyncio.create_task(
             _heartbeat_loop(
@@ -730,7 +803,7 @@ async def run_executor_dispatch(
                 dispatch,
                 process_payload=process_payload,
                 authority=authority,
-                is_current=lambda: store.is_current(authority),
+                is_current=lambda: _is_current_with_lease(store, authority, lease),
                 lease_lost=lease.lost,
             )
             if not await store.finish(authority):
