@@ -79,6 +79,7 @@ from tracker.types import (
 from tracker.utils import update_benchmark_concurrency
 
 client = TestClient(app)
+local_client = TestClient(app, base_url="http://localhost")
 _create_cloudwatch_benchmark = CloudWatchBenchmarkLogSink.create_benchmark
 _write_cloudwatch_log = CloudWatchBenchmarkLogSink.write
 
@@ -3315,6 +3316,8 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     for operation, arguments in storage.calls:
         expected_bucket = "shared-library" if arguments.get("Key", "").startswith("agents/") else "vs-dev-acme-123"
         assert arguments["Bucket"] == expected_bucket, (operation, arguments)
+
+
 async def test_local_start_persists_server_root_without_credentials(
     tmp_path: Path,
     contract: AgentContractRequest,
@@ -3334,7 +3337,7 @@ async def test_local_start_persists_server_root_without_credentials(
     contract = contract.model_copy(update={"secrets": {"MODEL_KEY": "model-key"}})
     request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench")
 
-    response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+    response = local_client.post("/start-benchmark", json=request.model_dump(mode="json"))
 
     assert response.status_code == 200, response.text
     benchmark_id = UUID(response.json()["benchmark_id"])
@@ -3380,10 +3383,88 @@ async def test_local_start_rejects_invalid_root_before_admission(
     elif failure == "missing-agent":
         request["contract"] = {"name": "missing-agent"}
 
-    response = client.post("/start-benchmark", json=request)
+    response = local_client.post("/start-benchmark", json=request)
 
     expected_status = {"server-unconfigured": 400, "caller-root": 422, "missing-agent": 404}[failure]
     assert response.status_code == expected_status, response.text
     assert not database_session.exec(select(Benchmark)).all()
     assert not database_session.exec(select(ExecutorDispatch)).all()
     assert not mock_kicker.queued_calls
+
+
+async def test_local_start_rejects_managed_storage_before_admission(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+
+    response = local_client.post(
+        "/start-benchmark-with-storage",
+        json={
+            "benchmark_name": "swebench",
+            "contract": contract.model_dump(mode="json"),
+            "managed_s3_bucket": "vs-dev-acme-123",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Local execution does not support managed storage buckets"
+    assert not database_session.exec(select(Benchmark)).all()
+    assert not database_session.exec(select(ExecutorDispatch)).all()
+    assert not mock_kicker.queued_calls
+
+
+async def test_local_run_metadata_ignores_client_aws_headers(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    harness_headers: dict[str, str],
+    monkeypatch: MonkeyPatch,
+    mock_kicker: Any,
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+    monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
+    started = local_client.post(
+        "/start-benchmark",
+        json=StartBenchmarkRequest(contract=contract, benchmark_name="swebench").model_dump(mode="json"),
+    )
+    assert started.status_code == 200, started.text
+    benchmark_id = started.json()["benchmark_id"]
+
+    for headers in ({}, harness_headers):
+        response = local_client.get(f"/fetch-benchmark-metadata/{benchmark_id}", headers=headers)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["storage_bucket"] is None
+
+
+@pytest.mark.parametrize(
+    ("local", "base_url", "expected_status"),
+    [
+        (True, "http://localhost", 200),
+        (True, "http://127.0.0.1:8000", 200),
+        (True, "http://rebound.example", 400),
+        (False, "http://tracker.example", 200),
+    ],
+)
+def test_local_tracker_accepts_only_loopback_hosts(
+    tmp_path: Path, monkeypatch: MonkeyPatch, local: bool, base_url: str, expected_status: int
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path) if local else None)
+    monkeypatch.setattr("main.check_database_connection", lambda: True)
+
+    response = TestClient(app, base_url=base_url).get("/health")
+
+    assert response.status_code == expected_status

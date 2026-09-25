@@ -47,7 +47,6 @@ from tracker.auth import (
     get_current_starter,
     resolve_descope_identity,
 )
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.managed_storage import (
     ManagedStorageError,
     load_managed_storage_policy,
@@ -125,7 +124,7 @@ from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
-from tracker.middleware import RequestContextMiddleware
+from tracker.middleware import LocalTrustedHostMiddleware, RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import validate_custom_service_destination, validate_service_url_syntax
 from tracker.scheduler.store import queue_pool_id, try_task_evaluation_transaction_lock
@@ -213,6 +212,7 @@ app = FastAPI(generate_unique_id_function=_operation_id, redirect_slashes=False,
 logfire.instrument_fastapi(app, excluded_urls="/health$")
 
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(LocalTrustedHostMiddleware)
 
 app.include_router(agents_router)
 app.include_router(benchmark_services_router)
@@ -642,6 +642,8 @@ async def _start_benchmark(
     if local_config.resources is not None:
         if request.properties is not None:
             raise HTTPException(status_code=400, detail="Local resources are configured by the server")
+        if request.managed_s3_bucket is not None:
+            raise HTTPException(status_code=400, detail="Local execution does not support managed storage buckets")
         try:
             request = StartBenchmarkRequest.model_validate(
                 {
@@ -755,9 +757,7 @@ async def _start_benchmark(
     request = request.model_copy(
         update={
             **(
-                {"properties": aws_runtime.resources, "managed_s3_bucket": None}
-                if request.environment == "aws"
-                else {}
+                {"properties": aws_runtime.resources, "managed_s3_bucket": None} if request.environment == "aws" else {}
             ),
             "harness_config": effective_harness_config,
             "service_headers": forward_tracker_api_key(
@@ -2201,7 +2201,10 @@ async def fetch_benchmark_metadata(
         FetchBenchmarkMetadataResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    if benchmark_row.arguments.environment == "local":
+        return benchmark_row.benchmark_metadata
 
+    assert not isinstance(benchmark_row.arguments.properties, LocalResources)
     aws_runtime = resolve_run_metadata_aws_runtime(
         request,
         aws_managed=benchmark_row.aws_managed,

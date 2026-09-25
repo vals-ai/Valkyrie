@@ -321,28 +321,29 @@ class TestAgentRoutes:
         """
         org = app.dependency_overrides[get_current_org]()
         monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+        local_client = TestClient(app, base_url="http://localhost")
         archive = tmp_path / "orgs" / str(org.id) / "objects/agents/demo.zip"
         archive.parent.mkdir(parents=True)
         archive.write_bytes(b"agent bundle")
 
-        response = _client.get("/agents/demo/download-url")
+        response = local_client.get("/agents/demo/download-url")
 
         assert response.status_code == 200, response.text
         assert response.json()["expires_in"] == 0
         download_url = response.json()["download_url"]
-        assert download_url.startswith("http://testserver/agents/demo/download-url?")
-        download = _client.get(download_url)
+        assert download_url.startswith("http://localhost/agents/demo/download-url?")
+        download = local_client.get(download_url)
         assert download.status_code == 200
         assert download.content == b"agent bundle"
-        assert _client.get("/agents/invalid%3Aname/download-url", params={"download": "true"}).status_code == 400
+        assert local_client.get("/agents/invalid%3Aname/download-url", params={"download": "true"}).status_code == 400
 
         with monkeypatch.context() as scoped:
             scoped.setitem(app.dependency_overrides, get_current_org, lambda: Org(id=uuid4(), name="other"))
-            assert _client.get(download_url).status_code == 404
+            assert local_client.get(download_url).status_code == 404
         with monkeypatch.context() as scoped:
             scoped.delitem(app.dependency_overrides, get_current_org)
             scoped.setattr(auth, "AUTH_REQUIRED", True)
-            assert _client.get(download_url).status_code == 401
+            assert local_client.get(download_url).status_code == 401
 
         archive.unlink()
-        assert _client.get(download_url).status_code == 404
+        assert local_client.get(download_url).status_code == 404
