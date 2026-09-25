@@ -96,7 +96,6 @@ _EXPECTED_TYPES = {
     "Agents": (
         "AgentContractRequest",
         "AgentDownloadURLResponse",
-        "AgentEgressPlan",
         "AgentEntry",
         "AgentsResponse",
     ),

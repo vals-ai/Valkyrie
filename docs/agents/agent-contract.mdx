@@ -29,10 +29,9 @@ output_artifacts:
   - artifacts/summary.json
   - artifacts/turns.jsonl
 
-egress:
-  install:
-    - https://pypi.org
-    - https://files.pythonhosted.org
+install_egress:
+  - https://pypi.org
+  - https://files.pythonhosted.org
 
 secrets:
   ANTHROPIC_API_KEY: AnthropicApiKey
@@ -194,24 +193,23 @@ benchmarks/run_id/task_0/artifacts/config.json
 benchmarks/run_id/task_0/artifacts/result.json
 ```
 
-### `egress: object`
+### `install_egress: "*" | list[str]`
 
 Set the outbound network policy used while Valkyrie installs the agent:
 
 ```yaml
-egress:
-  install:
-    - https://pypi.org
-    - https://files.pythonhosted.org
+install_egress:
+  - https://pypi.org
+  - https://files.pythonhosted.org
 ```
 
-`install` accepts one of these values:
+`install_egress` accepts one of these values:
 
 - `"*"` keeps outbound access unrestricted.
 - `[]` blocks all outbound access.
 - A non-empty list allows only the listed URLs, domains, IP addresses, or CIDRs.
 
-Installation defaults to `"*"`. Agent contracts cannot set `egress.run`; the benchmark owns setup, agent-run, and evaluation policies. The benchmark also chooses whether agent installation occurs before or after setup. Compose tasks always run setup first so setup can start the service that receives agent commands. Each policy remains active until Valkyrie applies the next stage's policy.
+Installation defaults to `"*"`. Nested `egress` configuration is not supported. The benchmark owns setup, agent-run, and evaluation policies. The benchmark also chooses whether agent installation occurs before or after setup. Compose tasks always run setup first so setup can start the service that receives agent commands. Each policy remains active until Valkyrie applies the next stage's policy.
 
 Existing contracts can keep using `egress_allowlist` as a legacy agent-run request. A missing or empty legacy allowlist adds no destinations. A non-empty legacy allowlist is unioned with the benchmark's run allowlist. When the benchmark has no run-policy opinion, a missing or empty legacy allowlist preserves unrestricted execution and a non-empty list preserves the old allowlist behavior. `"*"` from the benchmark keeps execution unrestricted.
 

@@ -2,18 +2,8 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
-
 
 EgressPolicy = Literal["*"] | list[str]
-
-
-class AgentEgressPlan(BaseModel):
-    """Agent-owned network policy for dependency installation."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    install: EgressPolicy = "*"
 
 
 def combine_run_egress_policies(

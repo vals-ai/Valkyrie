@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from valkyrie.sdk.models._base import ResponseModel
 
@@ -55,14 +55,6 @@ OutputArtifactSpec = str | OutputArtifact
 EgressPolicy = Literal["*"] | list[str]
 
 
-class AgentEgressPlan(BaseModel):
-    """Network policy for agent installation."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    install: EgressPolicy = "*"
-
-
 class AgentContractRequest(BaseModel):
     """Agent definition submitted when starting a run."""
 
@@ -73,11 +65,18 @@ class AgentContractRequest(BaseModel):
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = Field(default_factory=list)
     egress_allowlist: list[str] = Field(default_factory=list)
-    egress: AgentEgressPlan | None = None
+    install_egress: EgressPolicy | None = None
     secrets: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, str] = Field(default_factory=dict)
     # Tracker-owned; cleared on every incoming request.
     inference_settings_attested: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_egress(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "egress" in value:
+            raise ValueError("'egress' is no longer supported; use 'install_egress'")
+        return value
 
     @field_validator("output_artifacts")
     @classmethod

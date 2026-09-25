@@ -38,7 +38,7 @@ from tracker.database.models import (
     ExecutorDispatchStatus,
     TaskStatus,
 )
-from tracker.egress import AgentEgressPlan, EgressPolicy
+from tracker.egress import EgressPolicy
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
@@ -237,9 +237,7 @@ class TestTaskExecutionRetry:
         """Benchmarks choose install order; Compose always bootstraps first."""
         contract = contract.model_copy(
             update={
-                "egress": AgentEgressPlan(
-                    install=["https://packages.example.com"],
-                ),
+                "install_egress": ["https://packages.example.com"],
                 "egress_allowlist": ["https://agent-runtime.example.com"],
             }
         )

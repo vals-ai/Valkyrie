@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from valkyrie.sdk.models import (
     AWSCredentials,
     AgentContractRequest,
-    AgentEgressPlan,
     FetchBenchmarkResponse,
     FetchBenchmarksResponse,
     FinalViewResponse,
@@ -30,42 +29,41 @@ def load_fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def test_agent_contract_preserves_legacy_egress_and_serializes_install_policy() -> None:
+def test_agent_contract_serializes_install_egress() -> None:
     legacy_contract = AgentContractRequest(name="legacy")
     staged_contract = AgentContractRequest(
         name="staged",
-        egress=AgentEgressPlan(
-            install=["https://packages.example.com"],
-        ),
+        install_egress=["https://packages.example.com"],
     )
 
-    assert legacy_contract.model_dump(mode="json")["egress"] is None
-    assert AgentEgressPlan().model_dump(mode="json") == {"install": "*"}
-    assert staged_contract.model_dump(mode="json")["egress"] == {
-        "install": ["https://packages.example.com"],
-    }
+    assert legacy_contract.model_dump(mode="json")["install_egress"] is None
+    assert staged_contract.model_dump(mode="json")["install_egress"] == ["https://packages.example.com"]
 
 
-@pytest.mark.parametrize("policy", ["packages.example.com", None, ["packages.example.com", 1]])
-def test_agent_egress_plan_rejects_invalid_policies(policy: object) -> None:
+@pytest.mark.parametrize(
+    "policy",
+    ["packages.example.com", ["packages.example.com", 1], {"install": "*"}],
+)
+def test_agent_contract_rejects_invalid_install_egress(policy: object) -> None:
     with pytest.raises(ValidationError):
-        AgentEgressPlan.model_validate({"install": policy})
+        AgentContractRequest.model_validate({"name": "agent", "install_egress": policy})
 
 
 def test_agent_contract_allows_install_and_legacy_run_egress_together() -> None:
     contract = AgentContractRequest(
         name="combined",
         egress_allowlist=["legacy.example.com"],
-        egress=AgentEgressPlan(install=["packages.example.com"]),
+        install_egress=["packages.example.com"],
     )
 
     assert contract.egress_allowlist == ["legacy.example.com"]
-    assert contract.egress == AgentEgressPlan(install=["packages.example.com"])
+    assert contract.install_egress == ["packages.example.com"]
 
 
-def test_agent_egress_plan_rejects_run_policy() -> None:
-    with pytest.raises(ValidationError):
-        AgentEgressPlan.model_validate({"run": []})
+@pytest.mark.parametrize("egress", [None, {"install": "*"}, {"run": []}])
+def test_agent_contract_rejects_obsolete_egress(egress: object) -> None:
+    with pytest.raises(ValidationError, match="install_egress"):
+        AgentContractRequest.model_validate({"name": "agent", "egress": egress})
 
 
 def test_agent_contract_normalizes_output_artifacts() -> None:

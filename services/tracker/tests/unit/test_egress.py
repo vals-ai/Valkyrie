@@ -1,11 +1,10 @@
 """Unit tests for staged egress policy ownership and composition."""
 
-from typing import Any
-
 import pytest
 from pydantic import ValidationError
 
-from tracker.egress import AgentEgressPlan, EgressPolicy, combine_run_egress_policies
+from tracker.database.models import AgentContractRequest
+from tracker.egress import EgressPolicy, combine_run_egress_policies
 
 
 @pytest.mark.parametrize(
@@ -33,8 +32,25 @@ def test_combine_run_egress_policies(
     assert combine_run_egress_policies(benchmark_policy, legacy_agent_allowlist) == expected
 
 
-def test_agent_egress_plan_rejects_run_policy() -> None:
-    payload: dict[str, Any] = {"install": "*", "run": []}
+@pytest.mark.parametrize("egress", [None, {"install": "*"}, {"run": []}])
+def test_agent_contract_rejects_obsolete_egress(egress: object) -> None:
+    with pytest.raises(ValidationError, match="install_egress"):
+        AgentContractRequest.model_validate({"name": "agent", "egress": egress})
 
-    with pytest.raises(ValidationError):
-        AgentEgressPlan.model_validate(payload)
+
+@pytest.mark.parametrize(
+    ("install_egress", "expected"),
+    [
+        (None, "*"),
+        ("*", "*"),
+        ([], []),
+        (["packages.example.com"], ["packages.example.com"]),
+    ],
+)
+def test_agent_install_egress_policy(
+    install_egress: EgressPolicy | None,
+    expected: EgressPolicy,
+) -> None:
+    contract = AgentContractRequest(name="agent", install_egress=install_egress)
+
+    assert contract.install_egress_policy == expected

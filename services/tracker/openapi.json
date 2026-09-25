@@ -141,16 +141,6 @@
       },
       "AgentContractRequest-Input": {
         "properties": {
-          "egress": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentEgressPlan"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "egress_allowlist": {
             "default": [],
             "items": {
@@ -179,6 +169,24 @@
             "default": "",
             "title": "Install Cmd",
             "type": "string"
+          },
+          "install_egress": {
+            "anyOf": [
+              {
+                "const": "*",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Egress"
           },
           "kwargs": {
             "additionalProperties": {
@@ -240,16 +248,6 @@
       },
       "AgentContractRequest-Output": {
         "properties": {
-          "egress": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentEgressPlan"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "egress_allowlist": {
             "default": [],
             "items": {
@@ -278,6 +276,24 @@
             "default": "",
             "title": "Install Cmd",
             "type": "string"
+          },
+          "install_egress": {
+            "anyOf": [
+              {
+                "const": "*",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Egress"
           },
           "kwargs": {
             "additionalProperties": {
@@ -358,30 +374,6 @@
           "expires_in"
         ],
         "title": "AgentDownloadURLResponse",
-        "type": "object"
-      },
-      "AgentEgressPlan": {
-        "additionalProperties": false,
-        "description": "Agent-owned network policy for dependency installation.",
-        "properties": {
-          "install": {
-            "anyOf": [
-              {
-                "const": "*",
-                "type": "string"
-              },
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              }
-            ],
-            "default": "*",
-            "title": "Install"
-          }
-        },
-        "title": "AgentEgressPlan",
         "type": "object"
       },
       "AgentEntry": {

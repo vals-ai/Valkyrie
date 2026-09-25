@@ -12,6 +12,7 @@ from pydantic import (
     field_serializer,
     field_validator,
     model_serializer,
+    model_validator,
 )
 from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
@@ -32,7 +33,7 @@ from sqlmodel import (
 
 from tracker.aws.runtime import AWSResources
 from tracker.database.utils import has_field_changed
-from tracker.egress import AgentEgressPlan, EgressPolicy
+from tracker.egress import EgressPolicy
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
 if TYPE_CHECKING:
@@ -159,15 +160,22 @@ class AgentContractRequest(BaseModel):
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     egress_allowlist: list[str] = []
-    egress: AgentEgressPlan | None = None
+    install_egress: EgressPolicy | None = None
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
     # Set only by the tracker, after rebuilding this contract from the bundle.
     inference_settings_attested: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_egress(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "egress" in value:
+            raise ValueError("'egress' is no longer supported; use 'install_egress'")
+        return value
+
     @property
     def install_egress_policy(self) -> EgressPolicy:
-        return self.egress.install if self.egress is not None else "*"
+        return self.install_egress if self.install_egress is not None else "*"
 
     @field_validator("output_artifacts")
     @classmethod

@@ -451,14 +451,14 @@ class TestParseYamlContract:
             name: my_agent
             install_cmd: bash setup.sh
             run_cmd: "agent --task {problem_statement_path}"
-            egress:
-              install:
-                - https://packages.example.com
+            install_egress:
+              - https://packages.example.com
         """,
         )
 
         result = _parse_yaml_contract(path, AgentConfig())
 
+        assert result.install_egress == ["https://packages.example.com"]
         assert result.install_egress_policy == ["https://packages.example.com"]
         assert result.egress_allowlist == []
 
@@ -473,6 +473,7 @@ class TestParseYamlContract:
         )
         unrestricted_result = _parse_yaml_contract(unrestricted, AgentConfig())
 
+        assert unrestricted_result.install_egress is None
         assert unrestricted_result.install_egress_policy == "*"
         assert unrestricted_result.egress_allowlist == []
 
@@ -501,30 +502,30 @@ class TestParseYamlContract:
             run_cmd: "agent --task {problem_statement_path}"
             egress_allowlist:
               - https://api.openai.com
-            egress:
-              install:
-                - https://packages.example.com
+            install_egress:
+              - https://packages.example.com
         """,
         )
 
         result = _parse_yaml_contract(path, AgentConfig())
 
+        assert result.install_egress == ["https://packages.example.com"]
         assert result.install_egress_policy == ["https://packages.example.com"]
         assert result.egress_allowlist == ["https://api.openai.com"]
 
-    def test_rejects_agent_run_egress_policy(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("egress_value", ["null", '{install: "*"}', "{run: []}"])
+    def test_rejects_obsolete_agent_egress(self, tmp_path: Path, egress_value: str) -> None:
         path = self._write_yaml(
             tmp_path,
-            """\
+            f"""\
             name: my_agent
             install_cmd: bash setup.sh
-            run_cmd: "agent --task {problem_statement_path}"
-            egress:
-              run: []
+            run_cmd: "agent --task {{problem_statement_path}}"
+            egress: {egress_value}
         """,
         )
 
-        with pytest.raises(ValueError, match="run"):
+        with pytest.raises(ValueError, match="install_egress"):
             _parse_yaml_contract(path, AgentConfig())
 
     def test_model_from_agent_config(self, tmp_path: Path) -> None:

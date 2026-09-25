@@ -5,17 +5,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ValidationError, create_model, field_validator
+from pydantic import BaseModel, ValidationError, create_model, field_validator, model_validator
 
 from tracker.database.models import OutputArtifact, OutputArtifactSpec
-from tracker.egress import AgentEgressPlan
+from tracker.egress import EgressPolicy
 from tracker.exceptions import ContractValidationError
 
 
 __all__ = [
     "AgentConfig",
     "AgentContract",
-    "AgentEgressPlan",
     "OutputArtifact",
     "OutputArtifactSpec",
     "Parameter",
@@ -69,12 +68,19 @@ class AgentContract(BaseModel):
     final_output: Path | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     egress_allowlist: list[str] = []
-    egress: AgentEgressPlan | None = None
+    install_egress: EgressPolicy | None = None
     secrets: dict[str, str] = {}
     ingest_lambda: str | None = None
     defaults: dict[str, Parameter] = {}
     kwargs: dict[str, Parameter] = {}
     run_cmd: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_egress(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "egress" in value:
+            raise ValueError("'egress' is no longer supported; use 'install_egress'")
+        return value
 
     @field_validator("name")
     @classmethod

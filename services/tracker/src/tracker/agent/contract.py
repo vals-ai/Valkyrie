@@ -87,7 +87,7 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
             final_output=str(agent_contract.final_output) if agent_contract.final_output is not None else None,
             output_artifacts=agent_contract.output_artifacts,
             egress_allowlist=agent_contract.egress_allowlist,
-            egress=agent_contract.egress,
+            install_egress=agent_contract.install_egress,
             secrets=agent_contract.secrets,
         )
     except ContractValidationError:

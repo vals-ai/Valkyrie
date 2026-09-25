@@ -25,7 +25,6 @@ EXPECTED_ALL = [
     "RunArtifactDownloadResponse",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
-    "AgentEgressPlan",
     "AgentEntry",
     "AgentsResponse",
     "AnalyzeEvent",
