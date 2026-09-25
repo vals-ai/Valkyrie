@@ -11,12 +11,12 @@ from uuid import UUID
 import pytest
 from click.testing import CliRunner
 from tracker.database.models import BenchmarkStatus
-from tracker.types import FinalViewResponse, RetrieveResultsResponse, S3UploadResultsResponse
+from tracker.types import FetchBenchmarkResponse, FinalViewResponse, RetrieveResultsResponse, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.results import results
 
-from tests.unit.cli.factories import make_final_view
+from tests.unit.cli.factories import make_fetch_response, make_final_view
 
 results_module = import_module("valkyrie.cli.run.results")
 
@@ -31,9 +31,11 @@ class MockResultsTracker:
         response: RetrieveResultsResponse | TrackerServiceError,
         *,
         results_exist: bool = False,
+        status: BenchmarkStatus = BenchmarkStatus.FINISHED,
     ) -> None:
         self.response = response
         self.results_exist = results_exist
+        self.status = status
         self.retrieve_calls: list[tuple[UUID, bool, list[str] | None, bool]] = []
 
     def __enter__(self) -> "MockResultsTracker":
@@ -41,6 +43,9 @@ class MockResultsTracker:
 
     def __exit__(self, *_exc_info: object) -> None:
         return None
+
+    def fetch_benchmark(self, run_id: UUID) -> FetchBenchmarkResponse:
+        return make_fetch_response(run_id, status=self.status)
 
     def check_results_exist_in_s3(self, _run_id: UUID) -> bool:
         return self.results_exist
@@ -127,9 +132,10 @@ class TestResultsCommand:
         Test cases:
         - IN_PROGRESS and STOPPING runs print a partial-results warning naming the status.
         - Terminal statuses save results without the warning.
-        - The file is still written in every case.
+        - The warning appears for local files and for S3 uploads, before the overwrite prompt.
         """
-        tracker = MockResultsTracker(make_final_view(_RUN_ID, status=status))
+        warning = f"Run is {status.value}; results are partial"
+        tracker = MockResultsTracker(make_final_view(_RUN_ID, status=status), status=status)
         output_path = tmp_path / "results.json"
         monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
 
@@ -137,7 +143,22 @@ class TestResultsCommand:
 
         assert result.exit_code == 0, result.output
         assert output_path.exists()
-        assert (f"Run is {status.value}; results are partial" in result.output) is warns
+        assert (warning in result.output) is warns
+
+        s3_response = S3UploadResultsResponse(
+            s3_url="s3://bucket/results.json",
+            presigned_url="https://download.example/results",
+            console_url="https://console.aws.amazon.com/s3/object/results",
+        )
+        s3_tracker = MockResultsTracker(s3_response, results_exist=True, status=status)
+        monkeypatch.setattr(results_module, "TrackerService", lambda: s3_tracker)
+
+        s3_result = cli_runner.invoke(results, [str(_RUN_ID), "--s3"], input="n\n")
+
+        assert s3_result.exit_code == 1
+        assert (warning in s3_result.output) is warns
+        if warns:
+            assert s3_result.output.index(warning) < s3_result.output.index("Overwrite")
 
     def test_s3_results_render_links_and_protect_existing_uploads(
         self,

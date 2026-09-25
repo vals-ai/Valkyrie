@@ -84,6 +84,15 @@ def results(
 
     try:
         with TrackerService() as tracker:
+            status = tracker.fetch_benchmark(run_id).details.status
+            if status in _UNFINISHED_STATUSES:
+                click.echo(
+                    click.style(
+                        f"Run is {status.value}; results are partial and will change until the run finishes.",
+                        fg="yellow",
+                    )
+                )
+
             if s3 and not preview:
                 if tracker.check_results_exist_in_s3(run_id):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
@@ -97,14 +106,6 @@ def results(
             )
 
             if isinstance(results_response, FinalViewResponse):
-                if results_response.status in _UNFINISHED_STATUSES:
-                    click.echo(
-                        click.style(
-                            f"Run is {results_response.status.value}; results are partial and will change "
-                            "until the run finishes.",
-                            fg="yellow",
-                        )
-                    )
                 if subset_task_ids:
                     scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
                     click.echo(
