@@ -7,13 +7,8 @@ from math import isfinite
 from typing import Literal
 from uuid import UUID
 
-from tracker.database.models import BenchmarkStatus, TaskStatus
-from tracker.types import (
-    BenchmarkStatusEntry,
-    BenchmarkTableRow,
-    FetchBenchmarkMetadataResponse,
-    FetchBenchmarkResponse,
-)
+from tracker.database.models import TaskStatus
+from tracker.types import GetRunResponse, RunMetadataResponse, RunStatus, RunStatusEntry, RunSummary
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_client import TrackerService
@@ -21,10 +16,10 @@ from valkyrie.cli.tracker_client import TrackerService
 RunEvent = Literal["snapshot", "update", "complete", "error", "stopped", "disconnect", "interrupted"]
 
 
-def fetch_run_metadata(tracker: TrackerService, run_id: UUID) -> FetchBenchmarkMetadataResponse | None:
+def fetch_run_metadata(tracker: TrackerService, run_id: UUID) -> RunMetadataResponse | None:
     """Fetch optional identity metadata without making status monitoring fail."""
     try:
-        return tracker.fetch_benchmark_metadata(run_id)
+        return tracker.fetch_run_metadata(run_id)
     except TrackerServiceError:
         return None
 
@@ -45,15 +40,15 @@ def _format_json(payload: Mapping[str, object]) -> str:
 
 
 def build_run_snapshot(
-    response: FetchBenchmarkResponse,
-    metadata: FetchBenchmarkMetadataResponse | None,
+    response: GetRunResponse,
+    metadata: RunMetadataResponse | None,
     *,
     event: RunEvent,
     observed_at: datetime | None = None,
 ) -> dict[str, object]:
     """Build a versioned allowlisted view that excludes stored contract secrets and kwargs."""
     details = response.details
-    arguments = metadata.benchmark_arguments if metadata is not None else None
+    arguments = metadata.run_arguments if metadata is not None else None
     contract = arguments.contract if arguments is not None else None
     progress_percent = (details.finished_tasks / details.total_tasks * 100) if details.total_tasks else 0.0
 
@@ -61,7 +56,7 @@ def build_run_snapshot(
         "schema_version": 1,
         "event": event,
         "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
-        "run_id": str(response.benchmark_id),
+        "run_id": str(response.run_id),
         "benchmark_name": response.benchmark_name,
         "agent_name": contract.name if contract is not None else None,
         "model": contract.model if contract is not None else None,
@@ -78,7 +73,7 @@ def build_run_snapshot(
         "progress_percent": round(progress_percent, 4),
         "max_concurrency": arguments.concurrency if arguments is not None else None,
         "final_score": _finite_score_or_none(response.final_score),
-        "error_message": response.error_message if details.status == BenchmarkStatus.ERROR else None,
+        "error_message": response.error_message if details.status == RunStatus.ERROR else None,
         "s3_bucket_url": response.s3_bucket_url,
         "docent_reading_status": details.docent_reading_status.value,
         "docent_reading_url": details.docent_reading_url,
@@ -87,8 +82,8 @@ def build_run_snapshot(
 
 
 def format_run_snapshot_json(
-    response: FetchBenchmarkResponse,
-    metadata: FetchBenchmarkMetadataResponse | None,
+    response: GetRunResponse,
+    metadata: RunMetadataResponse | None,
     *,
     event: RunEvent,
 ) -> str:
@@ -96,12 +91,12 @@ def format_run_snapshot_json(
     return _format_json(build_run_snapshot(response, metadata, event=event))
 
 
-def build_run_summary(run: BenchmarkTableRow) -> dict[str, object]:
+def build_run_summary(run: RunSummary) -> dict[str, object]:
     """Build a stable allowlisted run summary for list output."""
     progress_percent = (run.finished_tasks / run.total_tasks * 100) if run.total_tasks else 0.0
     return {
-        "run_id": str(run.id),
-        "benchmark_name": run.name,
+        "run_id": str(run.run_id),
+        "benchmark_name": run.benchmark_name,
         "agent_name": run.agent_name,
         "model": run.model,
         "dataset": run.dataset or "default",
@@ -120,7 +115,7 @@ def build_run_summary(run: BenchmarkTableRow) -> dict[str, object]:
     }
 
 
-def format_run_list_json(runs: list[BenchmarkTableRow], *, observed_at: datetime | None = None) -> str:
+def format_run_list_json(runs: list[RunSummary], *, observed_at: datetime | None = None) -> str:
     """Serialize a complete set of matching runs as one compact JSON document."""
     payload = {
         "schema_version": 1,
@@ -132,11 +127,11 @@ def format_run_list_json(runs: list[BenchmarkTableRow], *, observed_at: datetime
     return _format_json(payload)
 
 
-def build_run_status(entry: BenchmarkStatusEntry) -> dict[str, object]:
+def build_run_status(entry: RunStatusEntry) -> dict[str, object]:
     """Build a stable allowlisted batch-status record."""
     progress_percent = (entry.finished_tasks / entry.total_tasks * 100) if entry.total_tasks else 0.0
     return {
-        "run_id": str(entry.id),
+        "run_id": str(entry.run_id),
         "status": entry.status.value,
         "finished_at": _utc_isoformat(entry.finished_at) if entry.finished_at is not None else None,
         "total_tasks": entry.total_tasks,
@@ -149,7 +144,7 @@ def build_run_status(entry: BenchmarkStatusEntry) -> dict[str, object]:
 
 
 def format_run_status_json(
-    entries: list[BenchmarkStatusEntry],
+    entries: list[RunStatusEntry],
     missing_run_ids: list[UUID],
     *,
     requested_count: int,

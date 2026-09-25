@@ -1,4 +1,4 @@
-"""Benchmark log operations for the async Valkyrie SDK."""
+"""Run log operations for the async Valkyrie SDK."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class LogsResource:
-    """Fetch, filter, and follow benchmark logs through the tracker."""
+    """Fetch, filter, and follow run logs through the tracker."""
 
     def __init__(self, client: ValkyrieClient) -> None:
         self._sdk = client
@@ -37,7 +37,7 @@ class LogsResource:
         params["task_id"] = task_id
         return await self._sdk.request_model(
             "GET",
-            f"/benchmarks/{run_id}/logs",
+            f"/runs/{run_id}/logs",
             LogPage,
             params=params,
         )
@@ -85,7 +85,7 @@ class LogsResource:
         params = _request_params(query, start_time, end_time, cursor, limit)
         return await self._sdk.request_model(
             "GET",
-            f"/benchmarks/{run_id}/logs",
+            f"/runs/{run_id}/logs",
             LogPage,
             params=params,
         )
@@ -133,7 +133,7 @@ class LogsResource:
         params["task_id"] = task_id
         async with self._sdk.stream_response(
             "GET",
-            f"/benchmarks/{run_id}/logs/stream",
+            f"/runs/{run_id}/logs/stream",
             params=params,
         ) as response:
             if not response.is_success:

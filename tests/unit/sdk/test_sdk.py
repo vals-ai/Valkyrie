@@ -19,8 +19,8 @@ from valkyrie.sdk.models import AWSResources
 
 from valkyrie.sdk import (
     AgentContractRequest,
-    FetchBenchmarksRequest,
-    FinalViewResponse,
+    ListRunsRequest,
+    RunResultsResponse,
     S3UploadResultsResponse,
     ValkyrieAPIError,
     ValkyrieClient,
@@ -214,10 +214,10 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
             webhook_intervals=[25, 100],
         )
 
-    assert response.benchmark_id == run_id
+    assert response.run_id == run_id
     request = requests[0]
     body = json.loads(request.content)
-    assert request.url.path == "/start-benchmark"
+    assert request.url.path == "/runs"
     assert request.headers["x-api-key"] == "vals-key"
     assert request.headers["x-harness-aws-session-token"] == "aws-session"
     contract = body["contract"]
@@ -314,7 +314,7 @@ async def test_start_with_managed_storage_uses_guarded_route(make_client, sdk_co
     assert response.storage_bucket == "vs-dev-acme-123"
     assert len(requests) == 1
     request = requests[0]
-    assert request.url.path == "/start-benchmark-with-storage"
+    assert request.url.path == "/runs"
     body = json.loads(request.content)
     assert body["managed_s3_bucket"] == "vs-dev-acme-123"
     assert "properties" not in body
@@ -344,7 +344,7 @@ async def test_start_without_managed_storage_uses_ordinary_route(make_client) ->
         response = await client.runs.start("sweagent", "swebench")
 
     assert response.storage_bucket is None
-    assert [request.url.path for request in requests] == ["/start-benchmark"]
+    assert [request.url.path for request in requests] == ["/runs"]
 
 
 @pytest.mark.parametrize("returned_bucket", [None, "vs-dev-other-456"])
@@ -546,13 +546,13 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
-        if request.url.path == "/fetch-benchmark":
+        if request.url.path == f"/runs/{run_id}":
             return httpx.Response(200, json=fetch_response(run_id))
-        if request.url.path == "/fetch-benchmarks":
-            return httpx.Response(200, json={"benchmarks": [], "total_count": 0, "next_cursor": None})
-        if request.url.path == f"/stop-benchmark/{run_id}":
+        if request.url.path == "/runs":
+            return httpx.Response(200, json={"runs": [], "total_count": 0, "next_cursor": None})
+        if request.url.path == f"/runs/{run_id}/stop":
             return httpx.Response(200, json={"status": "success"})
-        if request.url.path == "/preview-results":
+        if request.url.path == f"/runs/{run_id}/results/preview":
             preview_query.extend(request.url.params.multi_items())
             return httpx.Response(
                 200,
@@ -562,7 +562,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
                     "console_url": "https://console.aws.test/preview.json",
                 },
             )
-        if request.url.path == "/retrieve-results":
+        if request.url.path == f"/runs/{run_id}/results":
             if request.url.params["s3"] == "false":
                 return httpx.Response(
                     200,
@@ -597,42 +597,40 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     client = make_client(handler)
     async with client:
         fetched = await client.runs.fetch(run_id)
-        listed = await client.runs.list(FetchBenchmarksRequest(limit=25))
+        listed = await client.runs.list(ListRunsRequest(limit=25))
         stopped = await client.runs.stop(run_id, force=True)
         inline_results = await client.runs.results(run_id)
         results = await client.runs.results(run_id, task_ids=["task-1"], upload_to_s3=True)
         preview = await client.runs.preview(run_id, task_ids=["task-1"])
 
-    assert fetched.benchmark_id == run_id
+    assert fetched.run_id == run_id
     assert listed.total_count == 0
     assert stopped.status == "success"
-    assert_type(inline_results, FinalViewResponse)
+    assert_type(inline_results, RunResultsResponse)
     assert_type(results, S3UploadResultsResponse)
-    assert inline_results.benchmark_id == run_id
+    assert inline_results.run_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert results.expires_in == 86400
     assert preview.presigned_url == "https://download.test/preview.json"
-    assert preview_query == [("benchmark_id", str(run_id)), ("task_ids", "task-1")]
+    assert preview_query == [("task_ids", "task-1")]
     assert paths == [
-        "/fetch-benchmark",
-        "/fetch-benchmarks",
-        f"/stop-benchmark/{run_id}",
-        "/retrieve-results",
-        "/retrieve-results",
-        "/preview-results",
+        f"/runs/{run_id}",
+        "/runs",
+        f"/runs/{run_id}/stop",
+        f"/runs/{run_id}/results",
+        f"/runs/{run_id}/results",
+        f"/runs/{run_id}/results/preview",
     ]
 
 
-@pytest.mark.parametrize(("method_name", "retry"), [("resume", "false"), ("retry", "true")])
-async def test_resume_and_retry_resolve_run_service_auth(
-    method_name: str, retry: str, make_client, fetch_response
-) -> None:
+@pytest.mark.parametrize("method_name", ["resume", "retry"])
+async def test_resume_and_retry_resolve_run_service_auth(method_name: str, make_client, fetch_response) -> None:
     run_id = uuid4()
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/fetch-benchmark":
+        if request.url.path == f"/runs/{run_id}":
             return httpx.Response(200, json=fetch_response(run_id))
         return httpx.Response(200, json={"status": "success"})
 
@@ -651,7 +649,8 @@ async def test_resume_and_retry_resolve_run_service_auth(
 
     assert response.status == "success"
     request = requests[1]
-    assert request.url.params["retry"] == retry
+    assert request.url.path == f"/runs/{run_id}/{method_name}"
+    assert "retry" not in request.url.params
     assert request.url.params["retry_mode"] == "from_scratch"
     assert request.url.params["concurrency"] == "4"
     assert json.loads(request.content) == {
@@ -668,7 +667,7 @@ async def test_resume_without_optional_overrides_uses_empty_payload(make_client,
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/fetch-benchmark":
+        if request.url.path == f"/runs/{run_id}":
             return httpx.Response(200, json=fetch_response(run_id))
         return httpx.Response(200, json={"status": "success"})
 
@@ -688,7 +687,7 @@ async def test_resume_request_matches_canonical_wire_fixture(make_client, sdk_co
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/fetch-benchmark":
+        if request.url.path == f"/runs/{run_id}":
             response = load_sdk_fixture("fetch.json")["response"]
             response["benchmark_id"] = str(run_id)
             return httpx.Response(200, json=response)
@@ -704,7 +703,6 @@ async def test_resume_request_matches_canonical_wire_fixture(make_client, sdk_co
 
     request = requests[1]
     assert dict(request.url.params) == {
-        "retry": str(fixture["query"]["retry"]).lower(),
         "retry_mode": fixture["query"]["retry_mode"],
         "concurrency": str(fixture["query"]["concurrency"]),
     }
@@ -726,7 +724,7 @@ async def test_stream_yields_snapshots_and_stops_on_complete(make_client, fetch_
     async with client:
         snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
 
-    assert [str(snapshot.benchmark_id) for snapshot in snapshots] == [run_id]
+    assert [str(snapshot.run_id) for snapshot in snapshots] == [run_id]
     assert timeout == {"connect": 120, "read": None, "write": 120, "pool": 120}
 
 

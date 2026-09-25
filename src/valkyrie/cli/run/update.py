@@ -25,7 +25,7 @@ def update(run_id: UUID, concurrency: int) -> None:
     """Update the concurrency limit for an active run."""
     try:
         with TrackerService() as tracker:
-            response = tracker.update_benchmark_concurrency(run_id, concurrency)
+            response = tracker.update_run_concurrency(run_id, concurrency)
         click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
     except TrackerServiceError as e:
         raise click.ClickException(str(e)) from e

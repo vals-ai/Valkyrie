@@ -9,6 +9,7 @@ from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -239,6 +240,12 @@ class S3UploadResultsResponse(BaseModel):
     presigned_url: str
     console_url: str
     expires_in: int = 86400
+
+
+class ResultsExistResponse(BaseModel):
+    """Whether a run's canonical result file exists."""
+
+    exists: bool
 
 
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
@@ -534,6 +541,291 @@ class SingleTaskResponse(BaseModel):
     @field_serializer("finished_at")
     def _serialize_finished_at(self, value: datetime | None) -> str | None:
         return _serialize_utc(value)
+
+
+class RunStatus(str, Enum):
+    """Lifecycle states for one run."""
+
+    IN_PROGRESS = "IN_PROGRESS"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    FINISHED = "FINISHED"
+    ERROR = "ERROR"
+
+
+class RunDetails(BaseModel):
+    """Canonical progress details for one run."""
+
+    status: RunStatus
+    started_at: datetime
+    total_tasks: int
+    finished_tasks: int
+    task_breakdown: dict[TaskStatus, int]
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None = None
+
+
+class RunArguments(BenchmarkArguments):
+    """Canonical persisted arguments for one run."""
+
+
+class ListRunsRequest(BaseModel):
+    """Canonical filters and pagination for listing runs."""
+
+    agent_name: list[str] | None = None
+    benchmark_name: list[str] | None = None
+    model: str | None = None
+    dataset: str | None = None
+    label: str | None = None
+    status: list[RunStatus] | None = None
+    started_by: list[str] | None = None
+    started_after: datetime | None = None
+    started_before: datetime | None = None
+    order_by: Order = Order.DESC
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class StartRunRequest(StartBenchmarkRequest):
+    """Canonical request for starting a run."""
+
+
+class StartRunResponse(StartBenchmarkResponse):
+    """Canonical start response with a run identifier."""
+
+    benchmark_id: UUID = Field(
+        validation_alias=AliasChoices("run_id", "benchmark_id"),
+        serialization_alias="run_id",
+    )
+
+    @property
+    def run_id(self) -> UUID:
+        return self.benchmark_id
+
+
+class GetRunResponse(BaseModel):
+    """Canonical run detail response."""
+
+    benchmark_name: str
+    benchmark_id: UUID = Field(
+        validation_alias=AliasChoices("run_id", "benchmark_id"),
+        serialization_alias="run_id",
+    )
+    details: RunDetails
+    s3_bucket_url: str
+    storage_bucket: str | None = None
+    label: str | None = None
+    final_score: float | None = None
+    error_message: str | None = None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
+
+    @property
+    def run_id(self) -> UUID:
+        return self.benchmark_id
+
+
+class RunSummary(BaseModel):
+    """Canonical summary for one run."""
+
+    id: UUID = Field(validation_alias=AliasChoices("run_id", "id"), serialization_alias="run_id")
+    name: str = Field(
+        validation_alias=AliasChoices("benchmark_name", "name"),
+        serialization_alias="benchmark_name",
+    )
+    agent_name: str
+    label: str | None = None
+    model: str | None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
+    dataset: str = "default"
+    started_by_email: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    status: RunStatus
+    total_tasks: int
+    finished_tasks: int
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
+    final_score: float | None = None
+    error_message: str | None = None
+
+    @property
+    def run_id(self) -> UUID:
+        return self.id
+
+    @property
+    def benchmark_name(self) -> str:
+        return self.name
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class ListRunsResponse(BaseModel):
+    """Canonical paginated run list."""
+
+    benchmarks: list[RunSummary] = Field(
+        validation_alias=AliasChoices("runs", "benchmarks"),
+        serialization_alias="runs",
+    )
+    total_count: int | None = None
+    next_cursor: str | None = None
+
+    @property
+    def runs(self) -> list[RunSummary]:
+        return self.benchmarks
+
+
+class RunFinalEvaluation(BaseModel):
+    """Canonical final evaluation embedded in run results."""
+
+    id: UUID
+    org_id: UUID
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark"))
+    final_score: float
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunResultsResponse(BaseModel):
+    """Canonical final view for one run."""
+
+    benchmark_id: UUID = Field(
+        validation_alias=AliasChoices("run_id", "benchmark_id"),
+        serialization_alias="run_id",
+    )
+    benchmark_name: str
+    started_at: datetime
+    finished_at: datetime | None
+    status: RunStatus
+    error_message: str | None
+    benchmark_arguments: RunArguments = Field(
+        validation_alias=AliasChoices("run_arguments", "benchmark_arguments"),
+        serialization_alias="run_arguments",
+    )
+    tasks_stopped: int | None
+    final_evaluation: RunFinalEvaluation | None
+    average_task_breakdown: AverageTaskBreakdown | None
+    evaluation_results: dict[str, dict[str, Any]] | None
+    task_errors: dict[str, str] | None
+
+    @property
+    def run_id(self) -> UUID:
+        return self.benchmark_id
+
+    @property
+    def run_arguments(self) -> RunArguments:
+        return self.benchmark_arguments
+
+
+RetrieveRunResultsResponse = RunResultsResponse | S3UploadResultsResponse
+
+
+class RunMetadataResponse(BaseModel):
+    """Canonical metadata for one run."""
+
+    benchmark_id: UUID = Field(
+        validation_alias=AliasChoices("run_id", "benchmark_id"),
+        serialization_alias="run_id",
+    )
+    benchmark_name: str
+    benchmark_arguments: RunArguments = Field(
+        validation_alias=AliasChoices("run_arguments", "benchmark_arguments"),
+        serialization_alias="run_arguments",
+    )
+    storage_bucket: str | None = None
+    started_by_email: str | None = None
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_uri: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
+
+    @property
+    def run_id(self) -> UUID:
+        return self.benchmark_id
+
+    @property
+    def run_arguments(self) -> RunArguments:
+        return self.benchmark_arguments
+
+
+class AnalyzeRunRequest(AnalyzeBenchmarkRequest):
+    """Canonical run analysis request."""
+
+
+class StopRunResponse(StopBenchmarkResponse):
+    """Canonical stop response."""
+
+
+class RetryOrResumeRunResponse(RetryOrResumeBenchmarkResponse):
+    """Canonical retry or resume response."""
+
+
+class UpdateRunConcurrencyRequest(UpdateBenchmarkConcurrencyRequest):
+    """Canonical concurrency update request."""
+
+
+class UpdateRunConcurrencyResponse(BaseModel):
+    """Canonical concurrency update response."""
+
+    benchmark_id: UUID = Field(
+        validation_alias=AliasChoices("run_id", "benchmark_id"),
+        serialization_alias="run_id",
+    )
+    status: RunStatus
+    concurrency: int
+
+    @property
+    def run_id(self) -> UUID:
+        return self.benchmark_id
+
+
+class RunStatusEntry(BaseModel):
+    """Canonical status snapshot for one run."""
+
+    id: UUID = Field(validation_alias=AliasChoices("run_id", "id"), serialization_alias="run_id")
+    status: RunStatus
+    finished_at: datetime | None
+    total_tasks: int
+    executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
+    finished_tasks: int
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
+
+    @property
+    def run_id(self) -> UUID:
+        return self.id
+
+    @field_serializer("finished_at")
+    def _serialize_dt(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class RunStatusResponse(BaseModel):
+    """Canonical status snapshots."""
+
+    entries: list[RunStatusEntry] = Field(
+        validation_alias=AliasChoices("runs", "entries"),
+        serialization_alias="runs",
+    )
+
+    @property
+    def runs(self) -> list[RunStatusEntry]:
+        return self.entries
 
 
 class AgentEntry(BaseModel):

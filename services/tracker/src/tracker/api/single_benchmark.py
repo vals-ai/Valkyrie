@@ -8,7 +8,7 @@ from sqlalchemy import case
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.api.parsing import parse_csv
-from tracker.api.dependencies import TrackedBenchmarkId
+from tracker.api.dependencies import TrackedBenchmarkId, TrackedRunId
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import http_validate_saved_managed_storage_runtime, resolve_run_metadata_aws_runtime
@@ -19,6 +19,7 @@ from tracker.database.session import get_session
 from tracker.types import SingleBenchmarkResponse, TasksResponse, TaskSummary
 
 router = APIRouter(prefix="/benchmarks")
+run_router = APIRouter(prefix="/runs")
 
 
 def _escape_sql_like_pattern(value: str) -> str:
@@ -173,3 +174,19 @@ def get_benchmark_tasks(
         ],
         total_count=total,
     )
+
+
+@run_router.get("/{run_id}/tasks", response_model=TasksResponse)
+def get_run_tasks(
+    run_id: TrackedRunId,
+    status: str = Query(default=""),
+    task_id_search: str | None = None,
+    sort: Literal["task_id", "started_at", "duration", "status"] = Query(default="started_at"),
+    sort_dir: Literal["asc", "desc"] = Query(default="desc"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> TasksResponse:
+    """Canonical task list for one run."""
+    return get_benchmark_tasks(run_id, status, task_id_search, sort, sort_dir, limit, offset, org, session)

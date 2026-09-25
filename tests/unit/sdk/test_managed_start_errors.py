@@ -39,7 +39,7 @@ async def test_managed_start_preserves_accepted_run_identity_and_api_cause(
     assert isinstance(cause, ValkyrieAPIError)
     assert cause.status_code == 503
     assert cause.detail == _ACCEPTED_DETAIL
-    assert paths == ["/start-benchmark-with-storage"]
+    assert paths == ["/runs"]
 
 
 @pytest.mark.parametrize(
@@ -94,4 +94,4 @@ async def test_start_keeps_unconfirmed_api_failures_distinct(
     assert raised.value.status_code == status_code
     assert raised.value.detail == detail
     assert raised.value.__cause__ is None
-    assert paths == ["/start-benchmark-with-storage" if managed else "/start-benchmark"]
+    assert paths == ["/runs"]

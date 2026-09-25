@@ -46,9 +46,21 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
+    GetRunResponse,
     HarnessConfig,
+    ListRunsRequest,
+    ListRunsResponse,
     LogEventResponse,
     RetryOrResumeBenchmarkResponse,
+    RetryOrResumeRunResponse,
+    RunArguments,
+    RunDetails,
+    RunFinalEvaluation,
+    RunMetadataResponse,
+    RunResultsResponse,
+    RunStatusEntry,
+    RunStatusResponse,
+    RunSummary,
     S3UploadResultsResponse,
     SchedulerActiveEntryResponse,
     SchedulerOverviewResponse,
@@ -59,10 +71,15 @@ from tracker.types import (
     SingleTaskResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
+    StartRunRequest,
+    StartRunResponse,
     StopBenchmarkResponse,
+    StopRunResponse,
     TaskArtifactsResponse,
     TasksResponse,
     TaskSummary,
+    UpdateRunConcurrencyRequest,
+    UpdateRunConcurrencyResponse,
 )
 from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
@@ -89,12 +106,24 @@ from valkyrie.sdk.models import (
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
     FinalEvaluation as SDKFinalEvaluation,
+    GetRunResponse as SDKGetRunResponse,
     FilterOptionsResponse as SDKFilterOptionsResponse,
     FinalViewResponse as SDKFinalViewResponse,
     HarnessConfig as SDKHarnessConfig,
+    ListRunsRequest as SDKListRunsRequest,
+    ListRunsResponse as SDKListRunsResponse,
     LogEvent as SDKLogEvent,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
+    RetryOrResumeRunResponse as SDKRetryOrResumeRunResponse,
+    RunArguments as SDKRunArguments,
+    RunDetails as SDKRunDetails,
+    RunFinalEvaluation as SDKRunFinalEvaluation,
+    RunMetadataResponse as SDKRunMetadataResponse,
+    RunResultsResponse as SDKRunResultsResponse,
+    RunStatusEntry as SDKRunStatusEntry,
+    RunStatusResponse as SDKRunStatusResponse,
+    RunSummary as SDKRunSummary,
     S3UploadResultsResponse as SDKS3ResultsResponse,
     SchedulerActiveEntryResponse as SDKSchedulerActiveEntryResponse,
     SchedulerOverviewResponse as SDKSchedulerOverviewResponse,
@@ -105,11 +134,16 @@ from valkyrie.sdk.models import (
     SingleTaskResponse as SDKSingleTaskResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
     StartBenchmarkResponse as SDKStartBenchmarkResponse,
+    StartRunRequest as SDKStartRunRequest,
+    StartRunResponse as SDKStartRunResponse,
     StopBenchmarkResponse as SDKStopBenchmarkResponse,
+    StopRunResponse as SDKStopRunResponse,
     TaskArtifactsResponse as SDKTaskArtifactsResponse,
     TaskIDsResponse as SDKTaskIDsResponse,
     TasksResponse as SDKTasksResponse,
     TaskSummary as SDKTaskSummary,
+    UpdateRunConcurrencyRequest as SDKUpdateRunConcurrencyRequest,
+    UpdateRunConcurrencyResponse as SDKUpdateRunConcurrencyResponse,
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
@@ -161,6 +195,33 @@ ROUTES = (
     ("/check-results-exist", "get", "benchmark_id"),
     ("/fetch-benchmark-metadata/{benchmark_id}", "get", "benchmark_id"),
     ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id task_ids"),
+    ("/runs/filter-options", "get", ""),
+    ("/runs/status", "get", "ids"),
+    ("/runs", "post", ""),
+    (
+        "/runs",
+        "get",
+        "agent_name benchmark_name model dataset label status started_by started_after started_before order_by cursor limit offset",
+    ),
+    ("/runs/{run_id}", "get", "run_id"),
+    ("/runs/{run_id}/events", "get", "run_id"),
+    ("/runs/{run_id}/results", "get", "run_id s3 task_ids"),
+    ("/runs/{run_id}/results/preview", "get", "run_id task_ids"),
+    ("/runs/{run_id}/results/exists", "get", "run_id"),
+    ("/runs/{run_id}/metadata", "get", "run_id"),
+    ("/runs/{run_id}/outputs", "get", "run_id task_ids"),
+    ("/runs/{run_id}/analysis", "post", "run_id"),
+    ("/runs/{run_id}/stop", "post", "run_id force"),
+    ("/runs/{run_id}/concurrency", "patch", "run_id"),
+    ("/runs/{run_id}/resume", "post", "run_id retry_mode concurrency"),
+    ("/runs/{run_id}/retry", "post", "run_id retry_mode concurrency"),
+    ("/runs/{run_id}/tasks", "get", "run_id status task_id_search sort sort_dir limit offset"),
+    ("/runs/{run_id}/tasks/{task_id}", "get", "run_id task_id"),
+    ("/runs/{run_id}/tasks/{task_id}/artifacts", "get", "run_id task_id"),
+    ("/runs/{run_id}/artifacts", "get", "run_id prefix cursor limit"),
+    ("/runs/{run_id}/artifacts/download-url", "get", "run_id path"),
+    ("/runs/{run_id}/logs", "get", "run_id task_id query start_time end_time cursor limit"),
+    ("/runs/{run_id}/logs/stream", "get", "run_id task_id query start_time end_time"),
 )
 RESPONSE_MODELS = {
     ("/benchmarks/filter-options", "get"): "FilterOptionsResponse",
@@ -185,6 +246,24 @@ RESPONSE_MODELS = {
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
     ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
     ("/preview-results", "get"): "S3UploadResultsResponse",
+    ("/runs/filter-options", "get"): "FilterOptionsResponse",
+    ("/runs/status", "get"): "RunStatusResponse",
+    ("/runs", "post"): "StartRunResponse",
+    ("/runs", "get"): "ListRunsResponse",
+    ("/runs/{run_id}", "get"): "GetRunResponse",
+    ("/runs/{run_id}/results/preview", "get"): "S3UploadResultsResponse",
+    ("/runs/{run_id}/results/exists", "get"): "ResultsExistResponse",
+    ("/runs/{run_id}/metadata", "get"): "RunMetadataResponse",
+    ("/runs/{run_id}/stop", "post"): "StopRunResponse",
+    ("/runs/{run_id}/concurrency", "patch"): "UpdateRunConcurrencyResponse",
+    ("/runs/{run_id}/resume", "post"): "RetryOrResumeRunResponse",
+    ("/runs/{run_id}/retry", "post"): "RetryOrResumeRunResponse",
+    ("/runs/{run_id}/tasks", "get"): "TasksResponse",
+    ("/runs/{run_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
+    ("/runs/{run_id}/tasks/{task_id}/artifacts", "get"): "TaskArtifactsResponse",
+    ("/runs/{run_id}/artifacts", "get"): "RunArtifactsResponse",
+    ("/runs/{run_id}/artifacts/download-url", "get"): "RunArtifactDownloadResponse",
+    ("/runs/{run_id}/logs", "get"): "LogPageResponse",
 }
 MODEL_PAIRS = (
     (FilterOptionsResponse, SDKFilterOptionsResponse),
@@ -231,6 +310,23 @@ MODEL_PAIRS = (
     (VerifyTaskIdsResponse, SDKTaskIDsResponse),
     (AnalyzeBenchmarkRequest, SDKAnalyzeBenchmarkRequest),
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
+    (StartRunRequest, SDKStartRunRequest),
+    (RunDetails, SDKRunDetails),
+    (StartRunResponse, SDKStartRunResponse),
+    (GetRunResponse, SDKGetRunResponse),
+    (RunSummary, SDKRunSummary),
+    (ListRunsRequest, SDKListRunsRequest),
+    (ListRunsResponse, SDKListRunsResponse),
+    (RunArguments, SDKRunArguments),
+    (RunFinalEvaluation, SDKRunFinalEvaluation),
+    (RunResultsResponse, SDKRunResultsResponse),
+    (RunMetadataResponse, SDKRunMetadataResponse),
+    (StopRunResponse, SDKStopRunResponse),
+    (RetryOrResumeRunResponse, SDKRetryOrResumeRunResponse),
+    (UpdateRunConcurrencyRequest, SDKUpdateRunConcurrencyRequest),
+    (UpdateRunConcurrencyResponse, SDKUpdateRunConcurrencyResponse),
+    (RunStatusEntry, SDKRunStatusEntry),
+    (RunStatusResponse, SDKRunStatusResponse),
 )
 INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
@@ -303,14 +399,18 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
 ) -> None:
     tracker_schema = tracker_model.model_json_schema()
     sdk_schema = sdk_model.model_json_schema()
-    tracker_properties = {
-        name: tracker_schema["properties"][name]
-        for name, field in tracker_model.model_fields.items()
-        if not field.exclude
-    }
-    sdk_properties = {
-        name: sdk_schema["properties"][name] for name, field in sdk_model.model_fields.items() if not field.exclude
-    }
+
+    def wire_fields(model: type[BaseModel], schema: dict[str, Any]) -> dict[str, tuple[dict[str, Any], Any]]:
+        return {
+            field.serialization_alias or name: (schema["properties"][field.serialization_alias or name], field)
+            for name, field in model.model_fields.items()
+            if not field.exclude
+        }
+
+    tracker_fields = wire_fields(tracker_model, tracker_schema)
+    sdk_fields = wire_fields(sdk_model, sdk_schema)
+    tracker_properties = {name: value[0] for name, value in tracker_fields.items()}
+    sdk_properties = {name: value[0] for name, value in sdk_fields.items()}
     assert tracker_properties.keys() == sdk_properties.keys()
     assert (
         set(tracker_schema.get("required", [])) & tracker_properties.keys()
@@ -322,8 +422,8 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
         sdk_property = _normalized_wire_schema(sdk_properties[name])
         assert tracker_property == sdk_property
 
-        tracker_field = tracker_model.model_fields[name]
-        sdk_field = sdk_model.model_fields[name]
+        tracker_field = tracker_fields[name][1]
+        sdk_field = sdk_fields[name][1]
         if tracker_field.is_required() or (tracker_field.default_factory and sdk_field.default_factory):
             continue
         tracker_default = tracker_field.get_default(call_default_factory=True)

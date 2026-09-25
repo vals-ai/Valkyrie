@@ -179,10 +179,10 @@ async def test_sdk_iterates_run_and_task_pages(
     seeded_runs: tuple[Benchmark, Benchmark], local_tracker_app: FastAPI
 ) -> None:
     from valkyrie.cli.runtime_config import config_location
-    from valkyrie.sdk import FetchBenchmarksRequest, FetchTasksRequest
+    from valkyrie.sdk import ListRunsRequest, FetchTasksRequest
 
     running, finished = seeded_runs
-    request = FetchBenchmarksRequest(limit=1)
+    request = ListRunsRequest(limit=1)
     async with ValkyrieClient(
         ValkyrieConfig.from_yaml(config_location()),
         base_url="http://tracker.test",

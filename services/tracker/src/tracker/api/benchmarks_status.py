@@ -11,9 +11,10 @@ from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.database.session import get_session
-from tracker.types import BenchmarkStatusEntry, BenchmarkStatusResponse
+from tracker.types import BenchmarkStatusEntry, BenchmarkStatusResponse, RunStatusResponse
 
 router = APIRouter(prefix="/benchmarks")
+run_router = APIRouter(prefix="/runs")
 
 
 @router.get("/status", response_model=BenchmarkStatusResponse)
@@ -63,3 +64,14 @@ def get_benchmarks_status(
         )
 
     return BenchmarkStatusResponse(entries=entries)
+
+
+@run_router.get("/status", response_model=RunStatusResponse)
+def get_runs_status(
+    ids: str = Query(default=""),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> RunStatusResponse:
+    """Return canonical status snapshots for the listed run ids."""
+    response = get_benchmarks_status(ids, org, session)
+    return RunStatusResponse.model_validate(response.model_dump())

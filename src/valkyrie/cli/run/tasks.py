@@ -86,7 +86,7 @@ def tasks(
 
 async def _tasks(run_id: UUID, request: FetchTasksRequest) -> TasksResponse:
     async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
-        return await client.benchmarks.tasks(run_id, request)
+        return await client.runs.tasks(run_id, request)
 
 
 @click.command(name="task")
@@ -139,5 +139,5 @@ def _print_detail(response: BaseModel, output_format: str) -> None:
 async def _task(run_id: UUID, task_id: str, *, artifacts: bool) -> SingleTaskResponse | TaskArtifactsResponse:
     async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
         if artifacts:
-            return await client.benchmarks.artifacts(run_id, task_id)
-        return await client.benchmarks.task(run_id, task_id)
+            return await client.runs.artifacts(run_id, task_id)
+        return await client.runs.task(run_id, task_id)

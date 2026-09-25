@@ -41,6 +41,7 @@ from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
+    GetRunResponse,
     FinalViewResponse,
     Order,
 )
@@ -247,7 +248,12 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, aws_runtime: AWSRuntime, org: Org
+    benchmark_id: UUID,
+    session: Session,
+    aws_runtime: AWSRuntime,
+    org: Org,
+    *,
+    canonical: bool = False,
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -295,7 +301,12 @@ async def stream_benchmark_results(
                     else None,
                 )
 
-                yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
+                response_json = (
+                    GetRunResponse.model_validate(response_data.model_dump()).model_dump_json(by_alias=True)
+                    if canonical
+                    else response_data.model_dump_json()
+                )
+                yield f"{DATA_PREFIX} {response_json}\n\n"
 
                 if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
                     yield EVENT_COMPLETE

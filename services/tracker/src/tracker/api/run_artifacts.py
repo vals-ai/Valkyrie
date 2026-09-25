@@ -9,11 +9,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId
+from tracker.api.dependencies import CanonicalRunAWSDependency, RunAWSDependency, TrackedBenchmarkId, TrackedRunId
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, s3_owner_arguments
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/benchmarks")
+run_router = APIRouter(prefix="/runs")
 
 
 class RunArtifactEntry(BaseModel):
@@ -116,3 +117,25 @@ async def get_run_artifact_url(
                 "get_object", Params={"Bucket": runtime.resources.s3_bucket, "Key": key}, ExpiresIn=ttl
             )
     return RunArtifactDownloadResponse(path=path, download_url=url, expires_in=ttl, size=metadata["ContentLength"])
+
+
+@run_router.get("/{run_id}/artifacts", response_model=RunArtifactsResponse)
+async def list_canonical_run_artifacts(
+    run_id: TrackedRunId,
+    run_context: CanonicalRunAWSDependency,
+    prefix: str = "",
+    cursor: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> RunArtifactsResponse:
+    """Canonical artifact listing for one run."""
+    return await list_run_artifacts(run_id, run_context, prefix, cursor, limit)
+
+
+@run_router.get("/{run_id}/artifacts/download-url", response_model=RunArtifactDownloadResponse)
+async def get_canonical_run_artifact_url(
+    run_id: TrackedRunId,
+    run_context: CanonicalRunAWSDependency,
+    path: str = Query(min_length=1),
+) -> RunArtifactDownloadResponse:
+    """Canonical artifact download URL for one run."""
+    return await get_run_artifact_url(run_id, run_context, path)

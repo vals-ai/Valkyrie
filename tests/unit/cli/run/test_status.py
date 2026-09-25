@@ -10,19 +10,18 @@ from uuid import UUID
 
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import BenchmarkStatus
-from tracker.types import BenchmarkStatusEntry, BenchmarkStatusResponse
+from tracker.types import RunStatus, RunStatusEntry, RunStatusResponse
 
 from valkyrie.cli.run.status import status_runs
 
 status_module = import_module("valkyrie.cli.run.status")
 
 
-def make_entry(index: int, *, status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS) -> BenchmarkStatusEntry:
-    return BenchmarkStatusEntry(
-        id=UUID(int=index + 1),
+def make_entry(index: int, *, status: RunStatus = RunStatus.IN_PROGRESS) -> RunStatusEntry:
+    return RunStatusEntry(
+        run_id=UUID(int=index + 1),
         status=status,
-        finished_at=datetime(2026, 7, 9, 13, 0, tzinfo=timezone.utc) if status == BenchmarkStatus.FINISHED else None,
+        finished_at=datetime(2026, 7, 9, 13, 0, tzinfo=timezone.utc) if status == RunStatus.FINISHED else None,
         total_tasks=4,
         finished_tasks=1,
         task_state_counts={"FINISHED": 1, "IN_PROGRESS": 3},
@@ -30,7 +29,7 @@ def make_entry(index: int, *, status: BenchmarkStatus = BenchmarkStatus.IN_PROGR
 
 
 class StubStatusTracker:
-    def __init__(self, entries: list[BenchmarkStatusEntry]) -> None:
+    def __init__(self, entries: list[RunStatusEntry]) -> None:
         self.entries = entries
         self.calls: list[list[UUID]] = []
 
@@ -40,10 +39,10 @@ class StubStatusTracker:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def fetch_benchmark_statuses(self, run_ids: list[UUID]) -> BenchmarkStatusResponse:
+    def fetch_run_statuses(self, run_ids: list[UUID]) -> RunStatusResponse:
         self.calls.append(run_ids)
         requested = set(run_ids)
-        return BenchmarkStatusResponse(entries=[entry for entry in self.entries if entry.id in requested])
+        return RunStatusResponse(runs=[entry for entry in self.entries if entry.run_id in requested])
 
 
 def invoke_with_tracker(monkeypatch: pytest.MonkeyPatch, tracker: StubStatusTracker, args: list[str]) -> Result:
@@ -53,7 +52,7 @@ def invoke_with_tracker(monkeypatch: pytest.MonkeyPatch, tracker: StubStatusTrac
 
 def test_status_json_deduplicates_and_restores_requested_order(monkeypatch: pytest.MonkeyPatch) -> None:
     first = make_entry(0)
-    second = make_entry(1, status=BenchmarkStatus.FINISHED)
+    second = make_entry(1, status=RunStatus.FINISHED)
     tracker = StubStatusTracker([second, first])
 
     result = invoke_with_tracker(
@@ -102,7 +101,7 @@ def test_status_json_chunks_large_id_sets(monkeypatch: pytest.MonkeyPatch) -> No
     result = invoke_with_tracker(
         monkeypatch,
         tracker,
-        ["--ids", ",".join(str(entry.id) for entry in entries), "--format", "json"],
+        ["--ids", ",".join(str(entry.run_id) for entry in entries), "--format", "json"],
     )
 
     assert result.exit_code == 0, result.output

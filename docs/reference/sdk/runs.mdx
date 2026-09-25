@@ -32,7 +32,7 @@ async def start(
     service_headers: Mapping[str, str] | None = None,
     webhook_intervals: Sequence[int] | None = None,
     ignore_custom_services: bool = False,
-) -> StartBenchmarkResponse
+) -> StartRunResponse
 ```
 
 **Parameters**
@@ -111,7 +111,7 @@ async def start(
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#start-benchmark-response"><code>StartBenchmarkResponse</code></a>
+<a href="/reference/sdk/models/runs#start-run-response"><code>StartRunResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -120,7 +120,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 Fetch the latest state of a run.
 
 ```python Signature
-async def fetch(run_id: UUID) -> FetchBenchmarkResponse
+async def fetch(run_id: UUID) -> GetRunResponse
 ```
 
 **Parameters**
@@ -131,7 +131,7 @@ async def fetch(run_id: UUID) -> FetchBenchmarkResponse
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#fetch-benchmark-response"><code>FetchBenchmarkResponse</code></a>
+<a href="/reference/sdk/models/runs#get-run-response"><code>GetRunResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -154,18 +154,134 @@ For examples, see the [Python SDK guide](/sdk/runs).
 List runs using typed filters and pagination.
 
 ```python Signature
-async def list(request: FetchBenchmarksRequest | None = None) -> FetchBenchmarksResponse
+async def list(request: ListRunsRequest | None = None) -> ListRunsResponse
 ```
 
 **Parameters**
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/runs#fetch-benchmarks-request"><code>FetchBenchmarksRequest</code></a> | None · default: <code>{"None"}</code></span></div>
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/runs#list-runs-request"><code>ListRunsRequest</code></a> | None · default: <code>{"None"}</code></span></div>
 </div>
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#fetch-benchmarks-response"><code>FetchBenchmarksResponse</code></a>
+<a href="/reference/sdk/models/runs#list-runs-response"><code>ListRunsResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.statuses` {#statuses}
+
+Fetch lightweight status and task counts for several runs.
+
+```python Signature
+async def statuses(run_ids: Sequence[UUID]) -> RunStatusResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_ids"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · Sequence[UUID]</span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/runs#run-status-response"><code>RunStatusResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.tasks` {#tasks}
+
+Fetch a filtered and paginated page of tasks for one run.
+
+```python Signature
+async def tasks(run_id: UUID, request: FetchTasksRequest | None = None) -> TasksResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/benchmarks#fetch-tasks-request"><code>FetchTasksRequest</code></a> | None · default: <code>{"None"}</code></span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/benchmarks#tasks-response"><code>TasksResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.iter_tasks` {#iter-tasks}
+
+Iterate matching tasks from the requested offset.
+
+```python Signature
+async def iter_tasks(run_id: UUID, request: FetchTasksRequest | None = None) -> AsyncIterator[TaskSummary]
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/benchmarks#fetch-tasks-request"><code>FetchTasksRequest</code></a> | None · default: <code>{"None"}</code></span></div>
+</div>
+
+**Returns**
+
+AsyncIterator[<a href="/reference/sdk/models/benchmarks#task-summary"><code>TaskSummary</code></a>]
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.task` {#task}
+
+Fetch detailed state and evaluation output for one task.
+
+```python Signature
+async def task(run_id: UUID, task_id: str) -> SingleTaskResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str</span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/benchmarks#single-task-response"><code>SingleTaskResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.artifacts` {#artifacts}
+
+Fetch temporary output and log links for one task.
+
+```python Signature
+async def artifacts(run_id: UUID, task_id: str) -> TaskArtifactsResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str</span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/benchmarks#task-artifacts-response"><code>TaskArtifactsResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -176,18 +292,18 @@ Iterate matching runs using cursor pagination, starting at the supplied cursor.
 Use list() for explicit offset pagination. Filters and page size are preserved.
 
 ```python Signature
-async def iter(request: FetchBenchmarksRequest | None = None) -> AsyncIterator[BenchmarkTableRow]
+async def iter(request: ListRunsRequest | None = None) -> AsyncIterator[RunSummary]
 ```
 
 **Parameters**
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/runs#fetch-benchmarks-request"><code>FetchBenchmarksRequest</code></a> | None · default: <code>{"None"}</code></span></div>
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"request"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <a href="/reference/sdk/models/runs#list-runs-request"><code>ListRunsRequest</code></a> | None · default: <code>{"None"}</code></span></div>
 </div>
 
 **Returns**
 
-AsyncIterator[BenchmarkTableRow]
+AsyncIterator[<a href="/reference/sdk/models/runs#run-summary"><code>RunSummary</code></a>]
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -196,7 +312,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 Yield typed updates until the run completes or disconnects.
 
 ```python Signature
-async def stream(run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]
+async def stream(run_id: UUID) -> AsyncIterator[GetRunResponse]
 ```
 
 **Parameters**
@@ -207,7 +323,7 @@ async def stream(run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]
 
 **Returns**
 
-AsyncIterator[<a href="/reference/sdk/models/runs#fetch-benchmark-response"><code>FetchBenchmarkResponse</code></a>]
+AsyncIterator[<a href="/reference/sdk/models/runs#get-run-response"><code>GetRunResponse</code></a>]
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -221,7 +337,7 @@ async def results(
     *,
     task_ids: Sequence[str] | None = None,
     upload_to_s3: Literal[False] = False,
-) -> FinalViewResponse
+) -> RunResultsResponse
 ```
 
 ```python Overload 2
@@ -239,7 +355,7 @@ async def results(
     *,
     task_ids: Sequence[str] | None = None,
     upload_to_s3: bool,
-) -> RetrieveResultsResponse
+) -> RetrieveRunResultsResponse
 ```
 
 **Parameters**
@@ -262,9 +378,9 @@ The selected overload determines the return type.
 
 | Overload | Return type |
 | ---: | --- |
-| 1 | <a href="/reference/sdk/models/runs#final-view-response"><code>FinalViewResponse</code></a> |
+| 1 | <a href="/reference/sdk/models/runs#run-results-response"><code>RunResultsResponse</code></a> |
 | 2 | <a href="/reference/sdk/models/runs#s3-upload-results-response"><code>S3UploadResultsResponse</code></a> |
-| 3 | RetrieveResultsResponse |
+| 3 | RetrieveRunResultsResponse |
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -297,7 +413,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 Fetch the stored launch metadata for a run.
 
 ```python Signature
-async def metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse
+async def metadata(run_id: UUID) -> RunMetadataResponse
 ```
 
 **Parameters**
@@ -308,7 +424,7 @@ async def metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#fetch-benchmark-metadata-response"><code>FetchBenchmarkMetadataResponse</code></a>
+<a href="/reference/sdk/models/runs#run-metadata-response"><code>RunMetadataResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -444,7 +560,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 Change an active run's concurrency limit. Existing tasks continue running.
 
 ```python Signature
-async def update_concurrency(run_id: UUID, *, concurrency: int) -> UpdateBenchmarkConcurrencyResponse
+async def update_concurrency(run_id: UUID, *, concurrency: int) -> UpdateRunConcurrencyResponse
 ```
 
 **Parameters**
@@ -459,7 +575,7 @@ async def update_concurrency(run_id: UUID, *, concurrency: int) -> UpdateBenchma
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#update-benchmark-concurrency-response"><code>UpdateBenchmarkConcurrencyResponse</code></a>
+<a href="/reference/sdk/models/runs#update-run-concurrency-response"><code>UpdateRunConcurrencyResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -468,12 +584,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 Stop a run or selected tasks.
 
 ```python Signature
-async def stop(
-    run_id: UUID,
-    *,
-    force: bool = False,
-    task_ids: Sequence[str] | None = None,
-) -> StopBenchmarkResponse
+async def stop(run_id: UUID, *, force: bool = False, task_ids: Sequence[str] | None = None) -> StopRunResponse
 ```
 
 **Parameters**
@@ -492,7 +603,7 @@ async def stop(
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#stop-benchmark-response"><code>StopBenchmarkResponse</code></a>
+<a href="/reference/sdk/models/runs#stop-run-response"><code>StopRunResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -510,7 +621,7 @@ async def resume(
     service_headers: Mapping[str, str] | None = None,
     from_scratch: bool = False,
     benchmark_url: str | None = None,
-) -> RetryOrResumeBenchmarkResponse
+) -> RetryOrResumeRunResponse
 ```
 
 **Parameters**
@@ -545,7 +656,7 @@ async def resume(
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#retry-or-resume-benchmark-response"><code>RetryOrResumeBenchmarkResponse</code></a>
+<a href="/reference/sdk/models/runs#retry-or-resume-run-response"><code>RetryOrResumeRunResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -563,7 +674,7 @@ async def retry(
     service_headers: Mapping[str, str] | None = None,
     from_scratch: bool = False,
     benchmark_url: str | None = None,
-) -> RetryOrResumeBenchmarkResponse
+) -> RetryOrResumeRunResponse
 ```
 
 **Parameters**
@@ -598,6 +709,6 @@ async def retry(
 
 **Returns**
 
-<a href="/reference/sdk/models/runs#retry-or-resume-benchmark-response"><code>RetryOrResumeBenchmarkResponse</code></a>
+<a href="/reference/sdk/models/runs#retry-or-resume-run-response"><code>RetryOrResumeRunResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/runs).

@@ -2,7 +2,7 @@ from pathlib import Path
 from uuid import UUID
 
 import click
-from tracker.types import FinalViewResponse, RetrieveResultsResponse
+from tracker.types import RetrieveRunResultsResponse, RunResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.task_ids import resolve_task_ids
@@ -86,14 +86,14 @@ def results(
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(
+            results_response: RetrieveRunResultsResponse = tracker.retrieve_results(
                 run_id,
                 save_to_s3,
                 task_ids=subset_task_ids,
                 preview=preview,
             )
 
-            if isinstance(results_response, FinalViewResponse):
+            if isinstance(results_response, RunResultsResponse):
                 if subset_task_ids:
                     scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
                     click.echo(
@@ -122,7 +122,7 @@ def results(
         raise click.ClickException(str(e))
 
 
-def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
+def download_final_view(path: Path, final_view: RunResultsResponse) -> None:
     if not path.parent.exists():
         raise click.ClickException(f"'{path.parent}' directory does not exist! Please create it first.")
 
@@ -136,6 +136,7 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
                 indent=4,
                 exclude_none=True,
                 exclude={"benchmark_arguments": {"contract": {"secrets", "kwargs"}}},
+                by_alias=True,
             )
         )
 

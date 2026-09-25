@@ -35,7 +35,7 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert request.url.path == f"/fetch-benchmark-metadata/{run_id}"
+        assert request.url.path == f"/runs/{run_id}/metadata"
         return httpx.Response(
             200,
             json={
@@ -68,8 +68,7 @@ async def test_results_exist_returns_typed_s3_state(make_client) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert request.url.path == "/check-results-exist"
-        assert request.url.params["benchmark_id"] == str(run_id)
+        assert request.url.path == f"/runs/{run_id}/results/exists"
         return httpx.Response(200, json={"exists": True})
 
     async with make_client(handler) as client:
@@ -100,7 +99,7 @@ async def test_stop_sends_optional_task_scope(
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
         assert (request.url.path, request.url.params["force"], body) == (
-            f"/stop-benchmark/{_STOP_RUN_ID}",
+            f"/runs/{_STOP_RUN_ID}/stop",
             "true",
             expected_body,
         )
@@ -119,7 +118,7 @@ async def test_analyze_normalizes_cached_json_to_a_done_event(make_client) -> No
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url.path == f"/analyze-benchmark/{run_id}"
+        assert request.url.path == f"/runs/{run_id}/analysis"
         captured_body.update(json.loads(request.content))
         return httpx.Response(
             200,
@@ -206,7 +205,7 @@ async def test_stream_outputs_yields_archive_chunks_and_repeated_task_filters(ma
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert request.url.path == f"/fetch-run-outputs/{run_id}"
+        assert request.url.path == f"/runs/{run_id}/outputs"
         assert request.url.params.get_list("task_ids") == ["task-1", "task-2"]
         return httpx.Response(200, headers={"content-type": "application/x-tar"}, stream=ChunkStream())
 
@@ -236,7 +235,7 @@ async def test_update_concurrency(make_client) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "PATCH"
-        assert request.url.path == f"/benchmarks/{run_id}/concurrency"
+        assert request.url.path == f"/runs/{run_id}/concurrency"
         assert json.loads(request.content) == {"concurrency": 7}
         return httpx.Response(200, json={"benchmark_id": str(run_id), "status": "IN_PROGRESS", "concurrency": 7})
 

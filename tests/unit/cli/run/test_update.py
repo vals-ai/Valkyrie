@@ -10,8 +10,7 @@ from uuid import UUID
 
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import BenchmarkStatus
-from tracker.types import UpdateBenchmarkConcurrencyResponse
+from tracker.types import RunStatus, UpdateRunConcurrencyResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run import run
@@ -24,7 +23,7 @@ class MockUpdateTracker:
 
     def __init__(
         self,
-        response: UpdateBenchmarkConcurrencyResponse | TrackerServiceError,
+        response: UpdateRunConcurrencyResponse | TrackerServiceError,
     ) -> None:
         self.response = response
         self.calls: list[tuple[UUID, int]] = []
@@ -35,11 +34,11 @@ class MockUpdateTracker:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def update_benchmark_concurrency(
+    def update_run_concurrency(
         self,
         run_id: UUID,
         concurrency: int,
-    ) -> UpdateBenchmarkConcurrencyResponse:
+    ) -> UpdateRunConcurrencyResponse:
         self.calls.append((run_id, concurrency))
         if isinstance(self.response, TrackerServiceError):
             raise self.response
@@ -53,9 +52,9 @@ def test_update_uses_effective_tracker_concurrency(
     """Print the effective concurrency returned by the tracker."""
     run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
     tracker = MockUpdateTracker(
-        UpdateBenchmarkConcurrencyResponse(
-            benchmark_id=run_id,
-            status=BenchmarkStatus.IN_PROGRESS,
+        UpdateRunConcurrencyResponse(
+            run_id=run_id,
+            status=RunStatus.IN_PROGRESS,
             concurrency=6,
         )
     )

@@ -5,7 +5,7 @@ from typing import Any
 from taskiq import TaskiqMessage, TaskiqMiddleware, TaskiqResult
 
 from executor_protocol import executor_payload_benchmark_id
-from tracker.logging import benchmark_id_var, request_id_var, task_id_var
+from tracker.logging import benchmark_id_var, request_id_var, run_id_var, task_id_var
 
 
 class LoggingContextMiddleware(TaskiqMiddleware):
@@ -14,11 +14,13 @@ class LoggingContextMiddleware(TaskiqMiddleware):
     async def pre_execute(self, message: TaskiqMessage) -> TaskiqMessage:
         request_id_var.set("")
         benchmark_id_var.set("")
+        run_id_var.set("")
         task_id_var.set("")
 
         benchmark_id = executor_payload_benchmark_id(message.kwargs)
         if benchmark_id:
             benchmark_id_var.set(benchmark_id)
+            run_id_var.set(benchmark_id)
 
         request_id = message.labels.get("request_id", "")
         if request_id:
@@ -40,4 +42,5 @@ class LoggingContextMiddleware(TaskiqMiddleware):
     def _clear(self) -> None:
         request_id_var.set("")
         benchmark_id_var.set("")
+        run_id_var.set("")
         task_id_var.set("")

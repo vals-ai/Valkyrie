@@ -11,8 +11,8 @@ from uuid import UUID
 import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, BenchmarkArguments
-from tracker.types import FetchBenchmarkMetadataResponse
+from tracker.database.models import AgentContractRequest
+from tracker.types import RunArguments, RunMetadataResponse
 
 from valkyrie.cli.run.outputs import output_path, outputs
 
@@ -34,11 +34,11 @@ class MockOutputsTracker:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def fetch_benchmark_metadata(self, _run_id: UUID) -> FetchBenchmarkMetadataResponse:
-        return FetchBenchmarkMetadataResponse(
-            benchmark_id=_RUN_ID,
+    def fetch_run_metadata(self, _run_id: UUID) -> RunMetadataResponse:
+        return RunMetadataResponse(
+            run_id=_RUN_ID,
             benchmark_name="swebench",
-            benchmark_arguments=BenchmarkArguments(
+            run_arguments=RunArguments(
                 contract=AgentContractRequest(name="agent", install_cmd="install", run_cmd="run"),
                 concurrency=1,
             ),

@@ -189,3 +189,84 @@ async def test_task_methods_reject_normalized_dot_segments(make_client, method_n
         method = getattr(client.benchmarks, method_name)
         with pytest.raises(ValueError, match=r"task_id must not be '\.' or '\.\.'"):
             await method(uuid4(), task_id)
+
+
+async def test_runs_resource_uses_canonical_status_and_task_routes(make_client) -> None:
+    run_id = uuid4()
+    task_row_id = uuid4()
+    raw_paths: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw_paths.append(request.url.raw_path)
+        if request.url.path == "/runs/status":
+            return httpx.Response(
+                200,
+                json={
+                    "runs": [
+                        {
+                            "run_id": str(run_id),
+                            "status": "FINISHED",
+                            "finished_at": "2026-07-08T13:00:00Z",
+                            "total_tasks": 1,
+                            "finished_tasks": 1,
+                            "task_state_counts": {"FINISHED": 1},
+                        }
+                    ]
+                },
+            )
+        if request.url.path == f"/runs/{run_id}/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [
+                        {
+                            "id": str(task_row_id),
+                            "task_id": "task one",
+                            "status": "FINISHED",
+                            "started_at": "2026-07-08T12:00:00Z",
+                            "finished_at": "2026-07-08T12:05:00Z",
+                            "error_message": None,
+                        }
+                    ],
+                    "total_count": 1,
+                },
+            )
+        if request.url.path.endswith("/artifacts"):
+            return httpx.Response(
+                200,
+                json={
+                    "cloudwatch_url": "https://logs.test/task",
+                    "agent_output_url": "https://download.test/output",
+                    "agent_output_expires_in": 300,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": str(task_row_id),
+                "task_id": "task one",
+                "status": "FINISHED",
+                "started_at": "2026-07-08T12:00:00Z",
+                "finished_at": "2026-07-08T12:05:00Z",
+                "error_message": None,
+                "evaluation_result": {"score": 1.0},
+                "agent_caused_exit_reason": None,
+            },
+        )
+
+    async with make_client(handler) as client:
+        statuses = await client.runs.statuses([run_id])
+        tasks = await client.runs.tasks(run_id)
+        task = await client.runs.task(run_id, "task one")
+        artifacts = await client.runs.artifacts(run_id, "task one")
+
+    assert raw_paths == [
+        b"/runs/status?ids=" + str(run_id).encode(),
+        f"/runs/{run_id}/tasks?sort=started_at&sort_dir=desc&limit=50&offset=0".encode(),
+        f"/runs/{run_id}/tasks/task%20one".encode(),
+        f"/runs/{run_id}/tasks/task%20one/artifacts".encode(),
+    ]
+    assert statuses.runs[0].run_id == run_id
+    assert tasks.tasks[0].status is TaskStatus.FINISHED
+    assert task.evaluation_result == {"score": 1.0}
+    assert artifacts.agent_output_expires_in == 300

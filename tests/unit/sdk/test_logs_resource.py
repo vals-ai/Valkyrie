@@ -58,7 +58,7 @@ async def test_fetch_run_follows_empty_pages_and_sorts_events(make_client) -> No
         )
 
     assert [event.message for event in events] == ["first", "second"]
-    assert [request.url.path for request in requests] == [f"/benchmarks/{run_id}/logs"] * 2
+    assert [request.url.path for request in requests] == [f"/runs/{run_id}/logs"] * 2
     assert requests[0].url.params["query"] == "needle"
     assert requests[1].url.params["cursor"] == "page-2"
 
@@ -94,7 +94,7 @@ async def test_task_page_validates_bounds_and_builds_provider_neutral_request(ma
         await client.logs.page_task(run_id, "provider/model:fast")
 
     request = requests[0]
-    assert request.url.path == f"/benchmarks/{run_id}/logs"
+    assert request.url.path == f"/runs/{run_id}/logs"
     params = parse_qs(request.url.query.decode())
     assert params == {
         "task_id": ["task-1"],
@@ -128,7 +128,7 @@ async def test_stream_task_parses_log_and_error_events(make_client) -> None:
         events = [event async for event in client.logs.stream_task(run_id, "provider/model:fast", query="hello")]
 
     assert [event.message for event in events] == ["hello"]
-    assert requests[0].url.path == f"/benchmarks/{run_id}/logs/stream"
+    assert requests[0].url.path == f"/runs/{run_id}/logs/stream"
     assert requests[0].url.params["task_id"] == "provider/model:fast"
 
     def error_handler(_request: httpx.Request) -> httpx.Response:
