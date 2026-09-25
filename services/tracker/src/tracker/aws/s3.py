@@ -172,7 +172,11 @@ async def upload_stream_to_s3(
                     **({} if overwrite else {"IfNoneMatch": "*"}),
                 )
             except ClientError as error:
-                if not overwrite and error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 412:
+                status_code = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                if not overwrite and status_code == 412:
+                    raise FileExistsError(s3_key) from error
+                # A concurrent conditional write returns 409; the key exists when that write won.
+                if not overwrite and status_code == 409 and await s3_object_exists(s3_key, runtime):
                     raise FileExistsError(s3_key) from error
                 raise
         except BaseException:
