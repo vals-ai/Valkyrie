@@ -64,3 +64,22 @@ Use `valkyrie run artifacts <run_id> --format json` to list one page of availabl
 Python callers can inspect a page with `await client.artifacts.list(run_id, prefix="task-id")`, request an individual temporary URL with `await client.artifacts.download_url(run_id, "task-id/result.json")`, or download a path with `await client.artifacts.download(run_id, "./artifacts", path="task-id")`. See the [artifact SDK reference](/reference/sdk/artifacts) for limits and pagination.
 
 Hosted runs use the deployment's storage permissions. Legacy runs started with caller-supplied AWS credentials still require that configuration. Tracker checks access to the run before listing or signing an artifact.
+
+## Compare two runs
+
+```bash
+valk run compare <baseline-id> <candidate-id>
+```
+
+Compare runs from the same benchmark and dataset. The terminal summary counts improvements, regressions, unchanged tasks, and tasks that cannot be compared. Regressions appear first, with the largest score changes first within each group.
+
+The default metric is the numeric `score` field, with higher values considered better. For another metric, use a dotted path and change the direction when needed:
+
+```bash
+valk run compare <baseline-id> <candidate-id> --metric metrics.cost --lower-is-better
+valk run compare <baseline-id> <candidate-id> --format json
+```
+
+Task coverage includes persisted tasks in every state, explicitly configured task IDs, and IDs present in result or error records. Tasks with no evaluation are shown as missing, including pending and stopped tasks. Matched means use only task IDs with finite numeric metrics in both runs; booleans are not numeric scores. Errors, absent results, and missing metrics are shown separately, never counted as zero. These means are not the benchmark's aggregate score. Benchmark versions are not verified, and unfinished runs produce partial snapshots; confirm that the runs used comparable conditions. The comparison reads results without saving or overwriting them.
+
+Task lists and results are read separately, so active runs can change during comparison. Text output limits task details by default; JSON includes all collected task IDs. See [`run compare`](/reference/cli/run#compare) for display options.

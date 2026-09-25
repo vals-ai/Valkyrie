@@ -8,6 +8,10 @@
     "destination": "/reference/cli/run#analyze"
   },
   {
+    "source": "/reference/cli/run/compare",
+    "destination": "/reference/cli/run#compare"
+  },
+  {
     "source": "/reference/cli/run/errors",
     "destination": "/reference/cli/run#errors"
   },

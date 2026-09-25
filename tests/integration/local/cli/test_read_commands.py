@@ -11,7 +11,7 @@ import pytest
 from click.testing import CliRunner
 from fastapi import FastAPI
 from sqlmodel import Session
-from tracker.database.models import Benchmark
+from tracker.database.models import Benchmark, EvaluationResult, Task, TaskStatus
 from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 
 from valkyrie.cli.main import cli
@@ -219,3 +219,52 @@ def test_cli_discovers_run_filters(cli_runner: CliRunner, seeded_runs: tuple[Ben
     text = cli_runner.invoke(cli, ["run", "filter-options"])
     assert text.exit_code == 0, text.output
     assert "swebench" in text.output
+
+
+def test_compare_reads_results_through_tracker(
+    cli_runner: CliRunner,
+    seeded_runs: tuple[Benchmark, Benchmark],
+    database_session: Session,
+) -> None:
+    """Compare two persisted results through the real read-only endpoint."""
+    running, finished = seeded_runs
+    running.name = finished.name
+    running.arguments = finished.arguments.model_copy(deep=True)
+    baseline_task = Task(org_id=running.org_id, benchmark=running.id, task_id="complete", status=TaskStatus.FINISHED)
+    database_session.add_all(
+        [
+            running,
+            baseline_task,
+            EvaluationResult(
+                org_id=running.org_id, task=baseline_task.id, instance_id="baseline-complete", result={"score": 0.25}
+            ),
+        ]
+    )
+    # Cross a task-list page boundary without creating evaluation results.
+    database_session.add_all(
+        Task(org_id=running.org_id, benchmark=running.id, task_id=f"unscored-{index:03}", status=TaskStatus.PENDING)
+        for index in range(501)
+    )
+    database_session.add(
+        Task(org_id=finished.org_id, benchmark=finished.id, task_id="unscored-500", status=TaskStatus.STOPPED)
+    )
+    database_session.commit()
+
+    result = cli_runner.invoke(cli, ["run", "compare", str(running.id), str(finished.id), "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.output)
+    assert payload["matched_tasks"] == 1
+    assert payload["counts"]["improved"] == 1
+
+    tasks = {task["task_id"]: task for task in payload["tasks"]}
+    assert tasks["complete"]["baseline"] == 0.25
+    assert tasks["complete"]["candidate"] == 1
+    assert len(tasks) == 506
+    assert payload["counts"]["not comparable"] == 505
+    for task_id in ("active", "pending", "unscored-000", "unscored-500"):
+        assert tasks[task_id]["outcome"] == "not comparable"
+        assert tasks[task_id]["baseline_state"] == tasks[task_id]["candidate_state"] == "missing"
+    assert payload["mean_delta"] == 0.75
+    assert "must-not-leak" not in result.output

@@ -32,6 +32,7 @@ from tracker.types import (
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
+    TasksResponse,
     UpdateBenchmarkConcurrencyRequest,
     UpdateBenchmarkConcurrencyResponse,
 )
@@ -612,6 +613,29 @@ class TrackerService:
 
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
+
+    def iter_run_task_ids(self, run_id: UUID) -> Iterator[str]:
+        """Read persisted task IDs in stable order, including unfinished tasks."""
+        offset = 0
+        while True:
+            try:
+                response = self._client.get(
+                    f"{self._base_url}/benchmarks/{run_id}/tasks",
+                    params={"sort": "task_id", "sort_dir": "asc", "limit": 500, "offset": offset},
+                )
+            except httpx.HTTPError as error:
+                raise TrackerServiceError(f"Failed to retrieve task IDs: {error}") from error
+
+            page = _parse_model_response(response, "Failed to retrieve task IDs", TasksResponse)
+            if not page.tasks:
+                return
+
+            for task in page.tasks:
+                yield task.task_id
+
+            offset += len(page.tasks)
+            if offset >= page.total_count:
+                return
 
     def fetch_benchmark_tasks(
         self,

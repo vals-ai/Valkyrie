@@ -25,6 +25,7 @@ from scripts.reference_docs import collect
 
 _EXPECTED_CLI_PATHS = (
     "run analyze",
+    "run compare",
     "run errors",
     "run fetch",
     "run filter-options",
