@@ -525,6 +525,55 @@ def test_capacity_route_enriches_active_only_pool(
     provider.close.assert_awaited_once()
 
 
+def test_capacity_route_enriches_idle_pool_from_most_recent_benchmark(
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    stale = _provider_queue(
+        make_benchmark(name="stale", status=BenchmarkStatus.FINISHED, started_at=now - timedelta(days=45)),
+        pool_id="pool_stale",
+    )
+    older = _provider_queue(
+        make_benchmark(name="older", status=BenchmarkStatus.FINISHED, started_at=now - timedelta(days=2)),
+        secret_name="older-secret",
+    )
+    newest = _provider_queue(
+        make_benchmark(name="newest", status=BenchmarkStatus.STOPPED, started_at=now - timedelta(days=1)),
+    )
+    database_session.add_all([stale, older, newest])
+    database_session.commit()
+    provider, fetch_config = _capacity_provider(
+        monkeypatch,
+        [
+            SandboxCapacityDomain(
+                target_id="region-a",
+                sandbox_class="container",
+                capacity=SandboxCapacity(
+                    cpu=ResourceCapacity(total=8, used=2),
+                    memory=ResourceCapacity(total=32, used=4),
+                    disk=ResourceCapacity(total=50, used=10),
+                ),
+            )
+        ],
+    )
+
+    response = _client.get("/scheduler/overview", params={"include_capacity": "true"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == {"waiting": 0, "building": 0, "in_progress": 0, "evaluating": 0}
+    (pool,) = body["pools"]
+    assert pool["pool_id"] == _QUEUE_POOL_ID
+    assert pool["waiting"] == 0
+    assert pool["provider"] == "daytona"
+    assert pool["capacity_domains"][0]["capacity"]["cpu"] == {"available": 6.0, "total": 8.0}
+    assert fetch_config.await_args is not None
+    assert fetch_config.await_args.args[0] == "provider-secret"
+    provider.get_capacity_domains.assert_awaited_once()
+    provider.close.assert_awaited_once()
+
+
 def test_access_key_and_ambiguous_pools_never_use_deployment_aws(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,

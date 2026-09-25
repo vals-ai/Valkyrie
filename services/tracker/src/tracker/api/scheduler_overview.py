@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID
 
@@ -44,6 +44,7 @@ _CAPACITY_READ_TIMEOUT_SECONDS = 2.0
 _CAPACITY_REQUEST_TIMEOUT_SECONDS = 3.0
 _PROVIDER_CLOSE_TIMEOUT_SECONDS = 1.0
 _CAPACITY_MAX_CONCURRENCY = 4
+_IDLE_POOL_LOOKBACK = timedelta(days=30)
 
 
 @dataclass(frozen=True)
@@ -124,8 +125,14 @@ def _read_pool_references(
     *,
     session: Session,
     org_id: UUID,
+    now: datetime,
 ) -> dict[str, set[_PoolProviderReference]]:
-    """Return every distinct provider reference contributing waiting or active work."""
+    """Return provider references per pool.
+
+    Pools with waiting or active work contribute every distinct reference. Pools that are
+    idle fall back to the most recently started benchmark within the lookback window so
+    capacity stays visible between runs.
+    """
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     pool_id = arguments["queue_pool_id"].as_string()
     provider_type = arguments["sandbox_provider"].as_string()
@@ -167,6 +174,43 @@ def _read_pool_references(
                 secret_name=stored_secret_name,
             )
         )
+
+    recent_benchmarks = (
+        sa_select(
+            pool_id.label("pool_id"),
+            cast(ColumnElement[bool], col(Benchmark.aws_managed).label("aws_managed")),
+            provider_type.label("provider_type"),
+            secret_name.label("secret_name"),
+            func.row_number()
+            .over(partition_by=pool_id, order_by=(col(Benchmark.started_at).desc(), col(Benchmark.id).desc()))
+            .label("recency"),
+        )
+        .where(
+            col(Benchmark.org_id) == org_id,
+            col(Benchmark.started_at) >= now - _IDLE_POOL_LOOKBACK,
+            _queued_benchmarks_expression(),
+        )
+        .subquery()
+    )
+    idle_statement = cast(
+        Select[tuple[str, bool, str | None, str | None]],
+        sa_select(
+            recent_benchmarks.c.pool_id,
+            recent_benchmarks.c.aws_managed,
+            recent_benchmarks.c.provider_type,
+            recent_benchmarks.c.secret_name,
+        ).where(recent_benchmarks.c.recency == 1),
+    )
+    for stored_pool_id, aws_managed, stored_provider_type, stored_secret_name in session.exec(idle_statement).all():
+        if stored_pool_id in references:
+            continue
+        references[stored_pool_id] = {
+            _PoolProviderReference(
+                aws_managed=aws_managed,
+                provider_type=stored_provider_type,
+                secret_name=stored_secret_name,
+            )
+        }
 
     return references
 
@@ -447,11 +491,12 @@ async def get_scheduler_overview(
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> SchedulerOverviewResponse:
+    now = datetime.now(UTC)
     overview = await run_in_threadpool(
         read_scheduler_overview,
         session=session,
         org_id=org.id,
-        now=datetime.now(UTC),
+        now=now,
         waiting_limit=waiting_limit,
         active_limit=active_limit,
         waiting_offset=waiting_offset,
@@ -459,7 +504,7 @@ async def get_scheduler_overview(
     )
     if not include_capacity:
         return overview
-    references = await run_in_threadpool(_read_pool_references, session=session, org_id=org.id)
+    references = await run_in_threadpool(_read_pool_references, session=session, org_id=org.id, now=now)
     waiting_pools = {pool.pool_id: pool for pool in overview.pools}
     pool_ids = sorted(waiting_pools.keys() | references.keys())
     overview = overview.model_copy(
