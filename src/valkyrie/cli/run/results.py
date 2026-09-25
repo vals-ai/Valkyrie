@@ -2,11 +2,14 @@ from pathlib import Path
 from uuid import UUID
 
 import click
+from tracker.database.models import BenchmarkStatus
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
+
+_UNFINISHED_STATUSES = frozenset({BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING})
 
 
 def _format_expiration(seconds: int) -> str:
@@ -94,6 +97,14 @@ def results(
             )
 
             if isinstance(results_response, FinalViewResponse):
+                if results_response.status in _UNFINISHED_STATUSES:
+                    click.echo(
+                        click.style(
+                            f"Run is {results_response.status.value}; results are partial and will change "
+                            "until the run finishes.",
+                            fg="yellow",
+                        )
+                    )
                 if subset_task_ids:
                     scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
                     click.echo(

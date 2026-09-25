@@ -103,6 +103,41 @@ class TestResultsCommand:
         assert saved_payload["task_errors"] == {"task-b": "evaluation failed"}
         assert "secrets" not in saved_payload["benchmark_arguments"]["contract"]
         assert "kwargs" not in saved_payload["benchmark_arguments"]["contract"]
+        assert "results are partial" not in result.output
+
+    @pytest.mark.parametrize(
+        ("status", "warns"),
+        [
+            (BenchmarkStatus.IN_PROGRESS, True),
+            (BenchmarkStatus.STOPPING, True),
+            (BenchmarkStatus.STOPPED, False),
+            (BenchmarkStatus.ERROR, False),
+        ],
+    )
+    def test_unfinished_runs_warn_that_results_are_partial(
+        self,
+        status: BenchmarkStatus,
+        warns: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        """Users retrieving results mid-run must learn the payload is incomplete.
+
+        Test cases:
+        - IN_PROGRESS and STOPPING runs print a partial-results warning naming the status.
+        - Terminal statuses save results without the warning.
+        - The file is still written in every case.
+        """
+        tracker = MockResultsTracker(make_final_view(_RUN_ID, status=status))
+        output_path = tmp_path / "results.json"
+        monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
+
+        result = cli_runner.invoke(results, [str(_RUN_ID), "--path", str(output_path)])
+
+        assert result.exit_code == 0, result.output
+        assert output_path.exists()
+        assert (f"Run is {status.value}; results are partial" in result.output) is warns
 
     def test_s3_results_render_links_and_protect_existing_uploads(
         self,
