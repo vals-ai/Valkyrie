@@ -28,6 +28,7 @@ from executor_protocol import (
     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
     DEFAULT_STABLE_QUEUE_NAME,
+    EXECUTOR_ENTRYPOINT_MODULE,
     EXECUTOR_TASK_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
     ExecutorPayload,
@@ -37,6 +38,7 @@ from executor_protocol import (
     validate_executor_artifact_uri,
     validate_executor_digest,
     validate_local_executor_artifact_uri,
+    validate_source_executor_artifact_uri,
 )
 from services.executor_host.observability import (
     capture_dispatch_error,
@@ -552,6 +554,7 @@ class ExecutorSupervisor:
         *,
         s3_client: S3Client | None = None,
         release_root: Path | None = None,
+        source_root: Path | None = None,
         python_executable: str = sys.executable,
         artifact_bucket: str | None = None,
         artifact_prefix: str | None = None,
@@ -569,11 +572,14 @@ class ExecutorSupervisor:
         if release_root is not None and not release_root.is_absolute():
             raise ValueError("Local executor release root must be absolute")
         self.release_root = release_root.resolve() if release_root is not None else None
+        if source_root is not None and not source_root.is_absolute():
+            raise ValueError("Executor source root must be absolute")
+        self.source_root = source_root.resolve() if source_root is not None else None
         self.authority_check_interval = authority_check_interval
         self.sleep = sleep
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        if urlparse(dispatch.artifact_uri).scheme == "file":
+        if urlparse(dispatch.artifact_uri).scheme in ("file", "source"):
             return await asyncio.to_thread(self._prepare_local_artifact, dispatch)
         bucket, key = validate_executor_artifact_uri(
             dispatch.artifact_uri,
@@ -615,6 +621,10 @@ class ExecutorSupervisor:
         return artifact_path
 
     def _prepare_local_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        if urlparse(dispatch.artifact_uri).scheme == "source":
+            if self.source_root is None:
+                raise ValueError("Source executor releases require EXECUTOR_SOURCE_ROOT on this host")
+            return validate_source_executor_artifact_uri(dispatch.artifact_uri, self.source_root)
         if self.release_root is None:
             raise ValueError("Local executor releases require EXECUTOR_RELEASE_ROOT on this host")
         artifact_path = validate_local_executor_artifact_uri(dispatch.artifact_uri, self.release_root)
@@ -649,13 +659,8 @@ class ExecutorSupervisor:
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
             )
-            process = await asyncio.create_subprocess_exec(
-                self.python_executable,
-                str(artifact_path),
-                str(payload_path),
-                start_new_session=True,
-                env={**os.environ, "SENTRY_RELEASE": dispatch.release_id},
-            )
+            command, environment = self._executor_command(artifact_path, dispatch, payload_path)
+            process = await asyncio.create_subprocess_exec(*command, start_new_session=True, env=environment)
             try:
                 return_code = await self._wait_with_authority(process, is_current, lease_lost)
             except BaseException:
@@ -663,6 +668,22 @@ class ExecutorSupervisor:
                 raise
             if return_code != 0:
                 raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
+
+    def _executor_command(
+        self,
+        artifact_path: Path,
+        dispatch: ArtifactDispatch,
+        payload_path: Path,
+    ) -> tuple[list[str], dict[str, str]]:
+        environment = {**os.environ, "SENTRY_RELEASE": dispatch.release_id}
+        if urlparse(dispatch.artifact_uri).scheme != "source":
+            return [self.python_executable, str(artifact_path), str(payload_path)], environment
+
+        existing_path = os.environ.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            f"{artifact_path}{os.pathsep}{existing_path}" if existing_path else str(artifact_path)
+        )
+        return [self.python_executable, "-m", EXECUTOR_ENTRYPOINT_MODULE, str(payload_path)], environment
 
     async def _wait_with_authority(
         self,
@@ -767,6 +788,7 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
 supervisor = ExecutorSupervisor(
     CACHE_DIR,
     release_root=Path(os.environ["EXECUTOR_RELEASE_ROOT"]) if os.environ.get("EXECUTOR_RELEASE_ROOT") else None,
+    source_root=Path(os.environ["EXECUTOR_SOURCE_ROOT"]) if os.environ.get("EXECUTOR_SOURCE_ROOT") else None,
 )
 dispatch_store = PostgresExecutorDispatchStore.from_environment()
 

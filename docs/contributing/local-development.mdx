@@ -43,7 +43,14 @@ The API is available at `http://localhost:8000`. Local Compose runs the tracker,
 
 ### Initialize a filesystem executor release
 
-After applying database migrations, register an executor artifact built for the ARM64 machine that will run it using its generated `manifest.json`:
+`python -m tracker.serve --config` registers the checkout's executor source as the active release at startup, so local runs need no executor build. A retry or resume runs the current checkout. To run a built artifact instead, build it on the ARM64 machine that will run it:
+
+```bash
+PYTHONPATH=services/tracker/src uv run --project services/tracker python \
+  services/executor_artifact/build.py --output-directory /absolute/path/to/build
+```
+
+After applying database migrations, register it using its generated `manifest.json`:
 
 ```bash
 uv run --project services/tracker python -m tracker.local.releases \
@@ -51,7 +58,7 @@ uv run --project services/tracker python -m tracker.local.releases \
   --release-root /absolute/path/to/releases
 ```
 
-Set `DATABASE_URL` to the local PostgreSQL database. Set `EXECUTOR_RELEASE_ROOT` on ExecutorHost to the same absolute release directory. Containerized services must mount that directory at the same path.
+Set `DATABASE_URL` to the local PostgreSQL database. Start Tracker with `--prebuilt-executor` so it keeps this release, and set `EXECUTOR_RELEASE_ROOT` on ExecutorHost to the same absolute release directory. Containerized services must mount that directory at the same path.
 
 The initializer verifies and activates the supplied build for future runs. Repeating the command with the same build reuses its active release. Existing runs keep their saved release and artifacts. This command configures executor releases only; the Compose stack above does not yet start ExecutorHost or a local sandbox provider.
 
@@ -98,13 +105,7 @@ custom_benchmark_services:
 
 Start PostgreSQL and Redis with `docker compose -f services/tracker/docker-compose.yml up -d postgres redis`.
 Set `DATABASE_URL` and `REDIS_URL` for those services, then run the existing migrations
-from `services/tracker` with `uv run alembic upgrade head`. Build the executor on the
-machine where it will run, then initialize its release as shown above:
-
-```bash
-PYTHONPATH=services/tracker/src uv run --project services/tracker python \
-  services/executor_artifact/build.py --output-directory /absolute/path/to/build
-```
+from `services/tracker` with `uv run alembic upgrade head`.
 
 Use the same Docker daemon for Tracker, ExecutorHost, and your local benchmark
 service. Set `DOCKER_HOST` when needed to select it. Start Tracker from `services/tracker`:
@@ -120,7 +121,7 @@ In another terminal at the repository root, start ExecutorHost. Set `DB_HOST`,
 Tracker. ExecutorHost uses these settings in addition to the executor's `DATABASE_URL`.
 
 ```bash
-EXECUTOR_RELEASE_ROOT=/absolute/path/to/releases \
+EXECUTOR_SOURCE_ROOT=$PWD/services/tracker/src \
 EXECUTOR_CACHE_DIR=/absolute/path/to/executor-cache \
 PYTHONPATH=services/tracker/src uv run --project services/tracker python -m taskiq worker \
   --workers 1 --no-configure-logging services.executor_host.supervisor:broker services.executor_host.supervisor

@@ -35,7 +35,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     run_executor_dispatch,
     verify_file_digest,
 )
-from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
+from executor_protocol import ExecutorTelemetryContext, source_executor_artifact_uri, validate_executor_artifact_uri
 
 
 class FakeDispatchStore:
@@ -1509,6 +1509,69 @@ async def test_local_release_digest_and_location_validation(tmp_path: Path) -> N
     artifact.write_bytes(b"damaged release")
     with pytest.raises(ValueError, match="digest mismatch"):
         await supervisor.prepare_artifact(dispatch)
+
+
+def _source_root(tmp_path: Path, entrypoint: str) -> Path:
+    root = tmp_path / "src"
+    package = root / "tracker" / "executor"
+    package.mkdir(parents=True)
+    (root / "tracker" / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "entrypoint.py").write_text(entrypoint)
+    return root
+
+
+def _source_dispatch(root: Path) -> ArtifactDispatch:
+    return replace(_dispatch(digest="0" * 64), artifact_uri=source_executor_artifact_uri(root))
+
+
+async def test_source_release_runs_the_entrypoint_module_from_the_configured_root(tmp_path: Path) -> None:
+    """
+    Verify that a source release runs the checkout's executor module instead of a packaged artifact.
+
+    Test cases:
+    - Preparing a source dispatch resolves to the configured root without creating a cache.
+    - The dispatch runs `tracker.executor.entrypoint` from that root with the dispatch payload.
+    """
+    received_payload = tmp_path / "received.json"
+    root = _source_root(
+        tmp_path,
+        f"import pathlib, sys\npathlib.Path({str(received_payload)!r}).write_text(pathlib.Path(sys.argv[1]).read_text())\n",
+    )
+    supervisor = ExecutorSupervisor(tmp_path / "cache", source_root=root)
+    dispatch = _source_dispatch(root)
+
+    assert await supervisor.prepare_artifact(dispatch) == root
+    store = FakeDispatchStore()
+    await run_executor_dispatch(
+        supervisor,
+        store,
+        executor_dispatch_id="dispatch-1",
+        dispatch=dispatch,
+        process_payload=_process_payload(),
+    )
+
+    assert store.finished == [store.authority]
+    assert json.loads(received_payload.read_text())["executor_dispatch_id"] == "dispatch-1"
+    assert not (tmp_path / "cache").exists()
+
+
+async def test_source_release_requires_the_host_to_serve_that_root(tmp_path: Path) -> None:
+    """
+    Verify that only a host configured with the same source root runs a source release.
+
+    Test cases:
+    - A host without a source root, such as an AWS host, rejects the dispatch.
+    - A host configured with a different root rejects the dispatch.
+    """
+    dispatch = _source_dispatch(_source_root(tmp_path, ""))
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+
+    with pytest.raises(ValueError, match="EXECUTOR_SOURCE_ROOT"):
+        await _supervisor(tmp_path, content=b"").prepare_artifact(dispatch)
+    with pytest.raises(ValueError, match="configured source root"):
+        await ExecutorSupervisor(tmp_path / "cache", source_root=other_root).prepare_artifact(dispatch)
 
 
 async def test_local_host_still_downloads_saved_s3_releases(tmp_path: Path) -> None:

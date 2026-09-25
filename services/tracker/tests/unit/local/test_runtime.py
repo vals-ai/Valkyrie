@@ -5,18 +5,32 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from sqlmodel import Session
 
+from executor_protocol import source_executor_artifact_uri
+from tracker.database.models import ExecutorAdmission, ExecutorRelease
 from tracker.exceptions import SecretsError
 from tracker.runtime.secrets import resolve_secrets
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.local.secrets import InMemorySecretStore
 
 
-@pytest.mark.parametrize("local", [False, True])
+@pytest.mark.parametrize(("local", "prebuilt_executor"), [(False, False), (True, False), (True, True)])
 def test_server_configuration_selects_execution_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    database_session: Session,
+    local: bool,
+    prebuilt_executor: bool,
 ) -> None:
-    """Select local execution from the supplied file, or AWS when no file is supplied."""
+    """
+    Verify that the supplied file selects local execution and its executor release.
+
+    Test cases:
+    - Without a file, the server runs AWS execution and registers no release.
+    - With a file, the server runs local execution and activates a source release for this checkout.
+    - With `--prebuilt-executor`, local execution keeps the existing release.
+    """
     from tracker import serve
     from tracker.local import config
 
@@ -26,7 +40,10 @@ def test_server_configuration_selects_execution_mode(
         configuration = tmp_path / "server.yaml"
         configuration.write_text(f"data_root: {tmp_path}\n")
         argv.extend(["--config", str(configuration)])
+    if prebuilt_executor:
+        argv.append("--prebuilt-executor")
     monkeypatch.setattr("sys.argv", argv)
+    monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
     run = Mock()
     monkeypatch.setattr(serve.uvicorn, "run", run)
 
@@ -38,6 +55,15 @@ def test_server_configuration_selects_execution_mode(
         assert config.resources.secrets_file is None
     assert run.call_args.kwargs["host"] == ("127.0.0.1" if local else "0.0.0.0")
     assert run.call_args.kwargs["workers"] == (1 if local else 2)
+
+    database_session.expire_all()
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    assert (admission.release_id is not None) == (local and not prebuilt_executor)
+    if admission.release_id is not None:
+        release = database_session.get(ExecutorRelease, admission.release_id)
+        assert release is not None
+        assert release.artifact_uri == source_executor_artifact_uri(Path(serve.__file__).resolve().parents[1])
 
 
 async def test_local_runtime_scopes_files_and_keeps_secrets_in_memory(tmp_path: Path) -> None:

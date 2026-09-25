@@ -10,7 +10,12 @@ from uuid import uuid4
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from executor_protocol import SUPPORTED_PROTOCOL_VERSIONS, validate_executor_digest
+from executor_protocol import (
+    SUPPORTED_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
+    source_executor_artifact_uri,
+    validate_executor_digest,
+)
 from tracker.database.models import ExecutorRelease
 from tracker.executor.release_control import (
     ReleaseControlError,
@@ -58,20 +63,63 @@ def initialize_release(
         raise ReleaseControlError(f"Unsupported executor protocol version: {manifest.protocol_version}")
     artifact = local_path(manifest_path.parent, manifest.artifact_path)
     destination = _publish_artifact(artifact, release_root.resolve(), digest)
+
+    return _activate_or_reuse(
+        session,
+        artifact_uri=destination.as_uri(),
+        artifact_digest=digest,
+        protocol_version=manifest.protocol_version,
+        id_prefix="local",
+    )
+
+
+def register_source_release(session: Session, source_root: Path) -> ExecutorRelease:
+    """Activate a release that runs the executor from this checkout, reusing it until the source changes."""
+    root = source_root.resolve()
+
+    return _activate_or_reuse(
+        session,
+        artifact_uri=source_executor_artifact_uri(root),
+        artifact_digest=_source_tree_digest(root),
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
+        id_prefix="source",
+    )
+
+
+def _source_tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if "__pycache__" in relative.parts or not path.is_file():
+            continue
+        content_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest.update(f"{relative.as_posix()}\0{content_digest}\n".encode())
+    return digest.hexdigest()
+
+
+def _activate_or_reuse(
+    session: Session,
+    *,
+    artifact_uri: str,
+    artifact_digest: str,
+    protocol_version: str,
+    id_prefix: str,
+) -> ExecutorRelease:
     admission = lock_executor_admission(session)
     if admission.release_id is not None:
         active = select_active_release(session)
         if (
-            active.artifact_uri == destination.as_uri()
-            and active.artifact_digest == digest
-            and active.protocol_version == manifest.protocol_version
+            active.artifact_uri == artifact_uri
+            and active.artifact_digest == artifact_digest
+            and active.protocol_version == protocol_version
         ):
             return active
+
     candidate = ExecutorRelease(
-        id=f"local-{uuid4()}",
-        artifact_uri=destination.as_uri(),
-        artifact_digest=digest,
-        protocol_version=manifest.protocol_version,
+        id=f"{id_prefix}-{uuid4()}",
+        artifact_uri=artifact_uri,
+        artifact_digest=artifact_digest,
+        protocol_version=protocol_version,
         readiness_verified=True,
     )
     register_release(session, candidate)

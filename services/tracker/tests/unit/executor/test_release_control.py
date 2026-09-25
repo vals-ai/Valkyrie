@@ -20,8 +20,8 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
-from executor_protocol import validate_local_executor_artifact_uri
-from tracker.local.releases import initialize_release
+from executor_protocol import validate_local_executor_artifact_uri, validate_source_executor_artifact_uri
+from tracker.local.releases import initialize_release, register_source_release
 from tracker.executor.release_control import (
     ReleaseControlError,
     activate_release,
@@ -764,6 +764,41 @@ def test_local_release_restart_reuses_matching_build_and_activates_changed_build
     assert second.status == ExecutorReleaseStatus.DRAINING
     for directory in root.iterdir():
         assert list(directory.iterdir()) == [directory / "executor.pex"]
+
+
+def test_source_release_restart_reuses_unchanged_checkout_and_activates_edits(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    """
+    Verify that registering the checkout at startup reuses its release until the source changes.
+
+    Test cases:
+    - The first registration activates a source release that names the checkout.
+    - Restarting after only bytecode caches changed reuses the active release.
+    - Editing a source file activates a new release and drains the previous one.
+    """
+    root = tmp_path / "src"
+    (root / "tracker").mkdir(parents=True)
+    module = root / "tracker" / "module.py"
+    module.write_text("VALUE = 1\n")
+
+    first = register_source_release(database_session, root)
+    database_session.commit()
+    assert first.status == ExecutorReleaseStatus.ACTIVE
+    assert validate_source_executor_artifact_uri(first.artifact_uri, root.resolve()) == root.resolve()
+
+    (root / "tracker" / "__pycache__").mkdir()
+    (root / "tracker" / "__pycache__" / "module.cpython-312.pyc").write_bytes(b"bytecode")
+    restarted = register_source_release(database_session, root)
+    assert restarted.id == first.id
+
+    module.write_text("VALUE = 2\n")
+    edited = register_source_release(database_session, root)
+    database_session.commit()
+    assert edited.id != first.id
+    assert edited.status == ExecutorReleaseStatus.ACTIVE
+    assert first.status == ExecutorReleaseStatus.DRAINING
 
 
 def test_local_release_rejects_changed_build_and_preserves_admission(database_session: Session, tmp_path: Path) -> None:
