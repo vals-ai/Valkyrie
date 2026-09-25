@@ -30,6 +30,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     ExecutorRelease,
     Org,
     Task,
@@ -659,6 +660,7 @@ class TestRunState:
             producer="tracker",
             operation="process_task",
             error_type="RuntimeError",
+            category=FailureCategory.UNKNOWN,
             authority=authority,
         )
 
@@ -708,6 +710,7 @@ class TestRunState:
             producer="tracker",
             operation="process_task",
             error_type="RuntimeError",
+            category=FailureCategory.UNKNOWN,
             authority=authority,
         )
 
@@ -776,6 +779,7 @@ class TestRunState:
             producer="tracker",
             operation="process_task",
             error_type="RuntimeError",
+            category=FailureCategory.UNKNOWN,
             expected_started_at=datetime(2000, 1, 1, tzinfo=ZoneInfo("UTC")),
             authority=authority,
         )

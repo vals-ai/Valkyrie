@@ -16,6 +16,7 @@ from tracker.database.models import (
     Benchmark,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     Org,
     Task,
     TaskStatus,
@@ -43,7 +44,9 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
-def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
+def _fetch_result_objects(
+    session: Session, task: Task, org: Org
+) -> tuple[EvaluationResult | None, tuple[str, FailureCategory | None] | None]:
     """Fetches a task's evaluation result or error message depending on its status."""
     if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
         return None, None
@@ -58,14 +61,16 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
     if task.status == TaskStatus.FINISHED:
         result_select = select(EvaluationResult)
     else:
-        result_select = select(ErrorResult.error_message).where(col(ErrorResult.retry_scheduled).is_(False))
+        result_select = select(ErrorResult.error_message, ErrorResult.category).where(
+            col(ErrorResult.retry_scheduled).is_(False)
+        )
 
     result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
 
     if task.status == TaskStatus.FINISHED:
         return cast(EvaluationResult | None, result), None
 
-    return None, cast(str | None, result)
+    return None, cast(tuple[str, FailureCategory | None] | None, result)
 
 
 @router.get(
@@ -81,7 +86,7 @@ def get_single_task(
     """Fetch a single task's status + evaluation result for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
-    eval_row, error_message = _fetch_result_objects(session, task, org)
+    eval_row, error = _fetch_result_objects(session, task, org)
 
     return SingleTaskResponse(
         id=task.id,
@@ -89,7 +94,8 @@ def get_single_task(
         status=task.status,
         started_at=task.started_at,
         finished_at=task.finished_at,
-        error_message=error_message,
+        error_message=error[0] if error else None,
+        failure_category=error[1] if error else None,
         evaluation_result=eval_row.result if eval_row else None,
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None

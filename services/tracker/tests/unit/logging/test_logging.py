@@ -256,11 +256,13 @@ class TestDevelopmentFormatter:
         context_record.request_id = "req-1"
         context_record.benchmark_id = ""
         context_record.task_id = "task-2"
+        context_record.failure_category = "infrastructure"
 
         context_output = formatter.format(context_record)
 
         assert "request_id=req-1" in context_output
         assert "task_id=task-2" in context_output
+        assert "failure_category=infrastructure" in context_output
         assert "benchmark_id" not in context_output
 
         plain_record = _log_record(name="tracker.test", level=logging.WARNING, message="no ctx")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import case
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.api.parsing import parse_csv
@@ -131,17 +132,18 @@ def get_benchmark_tasks(
         escaped_search = _escape_sql_like_pattern(task_id_search)
         base_filters.append(col(Task.task_id).ilike(f"%{escaped_search}%", escape="\\"))
 
-    latest_error_subquery = (
-        select(ErrorResult.error_message)
-        .where(ErrorResult.task == Task.id)
-        .where(ErrorResult.org_id == org.id)
-        .where(col(ErrorResult.retry_scheduled).is_(False))
-        .order_by(desc(ErrorResult.created_at))
+    latest_error = aliased(ErrorResult)
+    latest_error_id = (
+        select(latest_error.id)
+        .where(latest_error.task == Task.id)
+        .where(latest_error.org_id == org.id)
+        .where(col(latest_error.retry_scheduled).is_(False))
+        .order_by(desc(latest_error.created_at))
         .limit(1)
         .scalar_subquery()
     )
-    latest_error_message = case(
-        (col(Task.status) == TaskStatus.ERROR, latest_error_subquery),
+    terminal_error_id = case(
+        (col(Task.status) == TaskStatus.ERROR, latest_error_id),
         else_=None,
     )
     sort_expr = {
@@ -155,7 +157,12 @@ def get_benchmark_tasks(
     order_by = [primary, col(Task.started_at).desc()]
 
     rows = session.exec(
-        select(Task, latest_error_message).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)
+        select(Task, col(ErrorResult.error_message), col(ErrorResult.category))
+        .outerjoin(ErrorResult, col(ErrorResult.id) == terminal_error_id)
+        .where(*base_filters)
+        .order_by(*order_by)
+        .limit(limit)
+        .offset(offset)
     ).all()
     total = session.exec(select(func.count()).select_from(Task).where(*base_filters)).one()
 
@@ -168,8 +175,9 @@ def get_benchmark_tasks(
                 started_at=task.started_at,
                 finished_at=task.finished_at,
                 error_message=error_message if task.status == TaskStatus.ERROR else None,
+                failure_category=category if task.status == TaskStatus.ERROR else None,
             )
-            for task, error_message in rows
+            for task, error_message, category in rows
         ],
         total_count=total,
     )

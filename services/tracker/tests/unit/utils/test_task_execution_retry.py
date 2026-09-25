@@ -781,3 +781,46 @@ class TestTaskExecutionRetry:
         assert evaluation_start_record["task_id"] == "task_0"
         assert evaluation_start_record["benchmark_id"] == str(benchmark_id)
         assert evaluation_start_record["sandbox_id"] == "mock-sandbox-id"
+
+
+def test_task_retry_telemetry_carries_failure_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    increments: list[tuple[str, dict[str, str]]] = []
+    spans: list[dict[str, Any]] = []
+    log_records: list[dict[str, Any]] = []
+
+    def fake_incr(name: str, _value: float = 1, tags: dict[str, str] | None = None) -> None:
+        increments.append((name, tags or {}))
+
+    @contextmanager
+    def fake_span(name: str, **attributes: Any) -> Generator[None, None, None]:
+        spans.append({"name": name, **attributes})
+        yield
+
+    def fake_warning(message: str, *_args: object, extra: dict[str, Any] | None = None, **_kwargs: Any) -> None:
+        log_records.append({"message": message, **(extra or {})})
+
+    monkeypatch.setattr(task_execution_module, "incr", fake_incr)
+    monkeypatch.setattr(task_execution_module, "observability_span", fake_span)
+    monkeypatch.setattr(task_execution_module.logger, "warning", fake_warning)
+
+    task_execution_module._observe_task_retry(  # pyright: ignore[reportPrivateUsage]
+        Mock(number=2), SandboxSetupError("sandbox setup failed")
+    )
+
+    assert increments == [
+        ("valkyrie.task.retry", {"error_class": "SandboxSetupError", "failure_category": "infrastructure"})
+    ]
+    assert spans == [
+        {"name": "task.retry", "attempt": 2, "error_class": "SandboxSetupError", "failure_category": "infrastructure"}
+    ]
+    assert log_records == [
+        {
+            "message": "retry.before_sleep",
+            "metric": "valkyrie.task",
+            "fn": "_process_task_attempt",
+            "attempt": 2,
+            "idle_for": task_execution_module._SANDBOX_RETRY_DELAY_SECONDS,  # pyright: ignore[reportPrivateUsage]
+            "error_class": "SandboxSetupError",
+            "failure_category": "infrastructure",
+        }
+    ]

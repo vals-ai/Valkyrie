@@ -5,13 +5,14 @@ Run: uv run pytest tests/unit/observability/test_sentry.py
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 import sentry_sdk
@@ -27,8 +28,9 @@ from sentry_sdk.types import Event, Hint, Log
 
 import tracker.observability.sentry as sentry_module
 import tracker.observability.tracing as tracing_module
+import tracker.utils.run_orchestration as run_orchestration
 import tracker.utils.task_execution as task_execution
-from tracker.database.models import Org, Task
+from tracker.database.models import FailureCategory, Org, Task
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.exceptions import SandboxError, SandboxSetupError, SSLConnectionError
 from tracker.logging.context import (
@@ -49,6 +51,13 @@ def _before_send() -> BeforeSend:
 
 def _before_send_log() -> BeforeSendLog:
     return cast(BeforeSendLog, getattr(sentry_module, "_before_send_log"))
+
+
+@pytest.fixture(autouse=True)
+def isolated_sentry_scopes() -> Iterator[None]:
+    """Direct process-task tests must not supply tags to these scope assertions."""
+    with sentry_scope.use_isolation_scope(sentry_sdk.Scope()), sentry_scope.use_scope(sentry_sdk.Scope()):
+        yield
 
 
 class TestBeforeSend:
@@ -448,6 +457,7 @@ async def test_task_scope_isolates_concurrent_sandbox_events_and_outer_capture(
         "attempt_started_at": "2026-04-01T13:00:00",
         "sandbox_id": "sandbox-b",
         "sandbox_name": "sandbox-b-name",
+        "failure_category": "unknown",
     }
     assert events[-1].get("tags") == {}
 
@@ -513,3 +523,81 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
     retry_tags = cast(dict[str, str], retry_event.get("tags", {}))
     assert retry_tags == {"task_id": "task-0", "attempt_started_at": "2026-04-01T12:00:00+00:00"}
     assert "sandbox" not in retry_event.get("contexts", {})
+
+
+@pytest.mark.asyncio
+async def test_unhandled_task_error_tags_sentry_and_log_with_stored_category(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    events: list[Event] = []
+    committed: dict[str, Any] = {}
+
+    class FakeSession:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "FakeSession":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    def commit_task_error(*_args: Any, **kwargs: Any) -> None:
+        committed.update(kwargs)
+
+    row = SimpleNamespace(id="task-0", task_id="task-0", started_at=datetime(2026, 4, 1, 12, tzinfo=UTC))
+
+    def fetch_task(*_args: object) -> SimpleNamespace:
+        return row
+
+    monkeypatch.setattr(task_execution, "Session", FakeSession)
+    monkeypatch.setattr(task_execution, "fetch_task_row", fetch_task)
+    monkeypatch.setattr(task_execution, "commit_task_error", commit_task_error)
+
+    async def body() -> dict[str, dict[str, object] | None]:
+        raise SandboxSetupError("provider rejected the sandbox request")
+
+    with sentry_sdk.init(
+        dsn="https://public@example.com/1",
+        transport=events.append,
+        default_integrations=False,
+        before_send=_before_send(),
+    ):
+        task_execution.logger.addHandler(caplog.handler)
+        try:
+            tracked = task_execution.TrackedTask(
+                body(), cast(Org, object()), cast(ExecutionAuthority, object()), row.started_at
+            )
+            await tracked.run(None, cast(Task, row))
+        finally:
+            task_execution.logger.removeHandler(caplog.handler)
+
+    stored_category = committed["category"]
+    assert stored_category == FailureCategory.INFRASTRUCTURE
+    (exception_event,) = [event for event in events if "exception" in event]
+    assert cast(dict[str, str], exception_event.get("tags", {}))["failure_category"] == stored_category.value
+    (record,) = [r for r in caplog.records if "Task error was not handled" in r.getMessage()]
+    assert getattr(record, "failure_category") == stored_category.value
+
+
+def test_run_error_failure_category_tag_does_not_leak_to_later_events() -> None:
+    events: list[Event] = []
+
+    with sentry_sdk.init(
+        dsn="https://public@example.com/1",
+        transport=events.append,
+        default_integrations=False,
+        before_send=_before_send(),
+    ):
+        run_orchestration._capture_run_error(  # pyright: ignore[reportPrivateUsage]
+            RuntimeError("runtime resolution failed"),
+            UUID("00000000-0000-0000-0000-000000000811"),
+            producer="tracker",
+            operation="process_benchmark",
+            category=FailureCategory.INFRASTRUCTURE,
+        )
+        sentry_sdk.capture_exception(RuntimeError("unrelated later failure in the same worker"))
+
+    run_event, later_event = events
+    assert cast(dict[str, str], run_event.get("tags", {}))["failure_category"] == "infrastructure"
+    assert "failure_category" not in later_event.get("tags", {})

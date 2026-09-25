@@ -1101,6 +1101,7 @@ def _filter_final_view_to_tasks(final_view: FinalViewResponse, task_ids: set[str
 
     final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
     final_view.task_errors = _filter_task_map(final_view.task_errors)
+    final_view.task_failure_categories = _filter_task_map(final_view.task_failure_categories)
 
 
 async def _recompute_final_evaluation(

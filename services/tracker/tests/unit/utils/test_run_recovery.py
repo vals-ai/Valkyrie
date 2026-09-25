@@ -51,6 +51,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     AgentCausedExitReason,
     ExecutorDispatch,
     ExecutorDispatchKind,
@@ -906,6 +907,7 @@ class TestRunRecovery:
                     {
                         "created_at": _created_at(2).replace(tzinfo=None).isoformat(),
                         "error_message": "retry failed before",
+                        "failure_category": None,
                     },
                     {
                         "created_at": _created_at(1).replace(tzinfo=None).isoformat(),
@@ -1228,6 +1230,7 @@ class TestRunRecovery:
                     producer="tracker",
                     operation="process_task",
                     error_type="RuntimeError",
+                    category=FailureCategory.UNKNOWN,
                     expected_started_at=task_row.started_at,
                     expected_status=TaskStatus.EVALUATING,
                     authority=authority,

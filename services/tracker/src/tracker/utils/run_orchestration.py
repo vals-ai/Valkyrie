@@ -25,6 +25,7 @@ from tracker.database.models import (
     DocentReadingStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     FinalEvaluation,
     Org,
     Task,
@@ -33,6 +34,7 @@ from tracker.database.models import (
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
+from tracker.utils.failure_classification import classify_failure
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
@@ -234,6 +236,7 @@ def _capture_run_error(
     *,
     producer: str,
     operation: str,
+    category: FailureCategory,
     cause_code: str | None = None,
 ) -> None:
     with error_span(
@@ -244,6 +247,7 @@ def _capture_run_error(
         operation=operation,
         error_type=type(exc).__name__,
         cause_code=cause_code or "",
+        failure_category=category.value,
     ):
         logger.error(
             "Run execution failed",
@@ -254,9 +258,12 @@ def _capture_run_error(
                 "operation": operation,
                 "error_type": type(exc).__name__,
                 "cause_code": cause_code or "",
+                "failure_category": category.value,
             },
         )
-        capture_exception(exc)
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("failure_category", category.value)
+            capture_exception(exc)
 
 
 def _record_run_finalized(benchmark_id: UUID, status: BenchmarkStatus, authority: ExecutionAuthority) -> None:
@@ -533,6 +540,7 @@ async def finalize_all_error_run(
             producer="tracker",
             operation="summarize_task_errors",
             error_type="AllTasksFailed",
+            category=FailureCategory.UNKNOWN,
             authority=authority,
         )
         return False
@@ -946,6 +954,7 @@ async def _process_benchmark(
                     producer="tracker",
                     operation="process_benchmark",
                     error_type=asyncio.CancelledError.__name__,
+                    category=FailureCategory.CANCELLED,
                     authority=authority,
                     task_ids=verified_task_ids,
                 )
@@ -958,6 +967,7 @@ async def _process_benchmark(
             benchmark_id,
             producer="benchmark_service",
             operation="authenticate",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="authentication_failed",
         )
         with Session(bind=engine) as session:
@@ -971,6 +981,7 @@ async def _process_benchmark(
                 producer="benchmark_service",
                 operation="authenticate",
                 error_type=type(e).__name__,
+                category=FailureCategory.BENCHMARK_SERVICE,
                 cause_code="authentication_failed",
                 authority=authority,
                 task_ids=verified_task_ids,
@@ -981,6 +992,7 @@ async def _process_benchmark(
             benchmark_id,
             producer="benchmark_service",
             operation="process_benchmark",
+            category=FailureCategory.BENCHMARK_SERVICE,
         )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
@@ -992,11 +1004,14 @@ async def _process_benchmark(
                 producer="benchmark_service",
                 operation="process_benchmark",
                 error_type=type(e).__name__,
+                category=FailureCategory.BENCHMARK_SERVICE,
                 authority=authority,
                 task_ids=verified_task_ids,
             )
     except Exception as e:
-        _capture_run_error(e, benchmark_id, producer="tracker", operation="process_benchmark")
+        _capture_run_error(
+            e, benchmark_id, producer="tracker", operation="process_benchmark", category=classify_failure(e)
+        )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -1007,6 +1022,7 @@ async def _process_benchmark(
                 producer="tracker",
                 operation="process_benchmark",
                 error_type=type(e).__name__,
+                category=classify_failure(e),
                 authority=authority,
                 task_ids=verified_task_ids,
             )
@@ -1050,6 +1066,7 @@ def commit_benchmark_error(
     producer: str,
     operation: str,
     error_type: str,
+    category: FailureCategory,
     authority: ExecutionAuthority,
     cause_code: str | None = None,
     task_ids: list[str] | None = None,
@@ -1069,6 +1086,7 @@ def commit_benchmark_error(
         operation=operation,
         error_type=error_type,
         cause_code=cause_code,
+        category=category,
     )
     session.commit()
     if committed and benchmark_row.status == BenchmarkStatus.ERROR:
@@ -1109,7 +1127,17 @@ def _commit_queued_cancellation(
             )
             if task_row.started_at != owned_attempts[task_row.id] or not irrecoverable:
                 continue
-            session.add(ErrorResult(org_id=org.id, task=task_row.id, error_message=error_message))
+            session.add(
+                ErrorResult(
+                    org_id=org.id,
+                    task=task_row.id,
+                    error_message=error_message,
+                    producer="tracker",
+                    operation="process_benchmark",
+                    error_type=asyncio.CancelledError.__name__,
+                    category=FailureCategory.CANCELLED,
+                )
+            )
             task_row.status = TaskStatus.ERROR
             transitioned_task = True
 
@@ -1185,6 +1213,7 @@ def catch_errors_during_cleanup(
         producer="tracker",
         operation="cleanup",
         error_type="UndetectedExecutorExit",
+        category=FailureCategory.INFRASTRUCTURE,
     )
     session.commit()
     if committed and benchmark_row.status == BenchmarkStatus.ERROR:

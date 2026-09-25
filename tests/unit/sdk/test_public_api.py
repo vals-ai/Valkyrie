@@ -35,6 +35,7 @@ EXPECTED_ALL = [
     "BenchmarkStatus",
     "BenchmarkStatusEntry",
     "BenchmarkStatusResponse",
+    "FailureCategory",
     "FetchBenchmarkResponse",
     "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
