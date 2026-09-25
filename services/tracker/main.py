@@ -57,6 +57,7 @@ from tracker.aws.managed_storage import (
 from tracker.aws.resolver import (
     http_validate_saved_managed_storage_runtime,
     inspect_harness_headers,
+    resolve_agent_library_aws_runtime,
     resolve_aws_runtime_metadata,
     resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
@@ -1651,14 +1652,24 @@ async def retry_or_resume_benchmark(
         finally:
             await service.close()
     if update_agent:
-        object_store = S3ObjectStore(runtime_resolution.runtime)
+        run_runtime = runtime_resolution.runtime
+        # Managed agent aliases live in the deployment library bucket, not the run's owner bucket.
+        library_runtime = (
+            resolve_agent_library_aws_runtime(http_request, org_id) if preparation.aws_managed else run_runtime
+        )
+        library_store = S3ObjectStore(library_runtime)
         source_key = agent_bundle_key(preparation.agent_name)
-        if not await object_store.exists(source_key):
+        if not await library_store.exists(source_key):
             raise HTTPException(
                 status_code=404,
                 detail=f"Agent {preparation.agent_name!r} was not found. Push the agent before using --update-agent.",
             )
-        await object_store.copy(source_key, benchmark_agent_bundle_key(str(benchmark_id), preparation.agent_name))
+        agent_copier = (
+            S3ObjectCopier(library_runtime, run_runtime)
+            if library_runtime.resources.s3_bucket != run_runtime.resources.s3_bucket
+            else library_store
+        )
+        await agent_copier.copy(source_key, benchmark_agent_bundle_key(str(benchmark_id), preparation.agent_name))
     commit_task = asyncio.create_task(
         asyncio.to_thread(
             _commit_recovery,

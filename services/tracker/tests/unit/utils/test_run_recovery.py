@@ -3225,3 +3225,51 @@ def test_owner_recovery_revalidates_saved_org_and_location_before_task_verificat
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.STOPPED
     assert benchmark.arguments.properties == resources
+
+
+def test_owner_recovery_updates_agent_from_the_deployment_library(
+    managed_recovery_run: Benchmark,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Refresh a managed-storage run's bundle from the deployment library into its owner bucket."""
+    benchmark = managed_recovery_run
+    resources = replace(deployment_aws_runtime(benchmark.org_id).resources, s3_bucket="vs-dev-owner-42")
+    benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})
+    database_session.add(benchmark)
+    database_session.commit()
+    agent_name = benchmark.arguments.contract.name
+    checked: list[tuple[str, str]] = []
+    copied: list[tuple[str, str, str, str]] = []
+
+    async def exists(store: Any, key: str) -> bool:
+        checked.append((store._runtime.resources.s3_bucket, key))
+        return True
+
+    async def copy(copier: Any, source_key: str, destination_key: str) -> None:
+        copied.append(
+            (
+                copier._source.resources.s3_bucket,
+                copier._destination.resources.s3_bucket,
+                source_key,
+                destination_key,
+            )
+        )
+
+    monkeypatch.setattr(main_module, "http_validate_saved_managed_storage_runtime", AsyncMock())
+    monkeypatch.setattr(main_module.S3ObjectStore, "exists", exists)
+    monkeypatch.setattr(main_module.S3ObjectCopier, "copy", copy)
+    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", AsyncMock())
+
+    response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true")
+
+    assert response.status_code == 200, response.text
+    assert checked == [("legacy-bucket", main_module.agent_bundle_key(agent_name))]
+    assert copied == [
+        (
+            "legacy-bucket",
+            "vs-dev-owner-42",
+            main_module.agent_bundle_key(agent_name),
+            main_module.benchmark_agent_bundle_key(str(benchmark.id), agent_name),
+        )
+    ]
