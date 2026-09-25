@@ -1,9 +1,9 @@
 """Agent contract models used by SDK run requests."""
 
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
 from valkyrie.sdk.models._base import ResponseModel
 
@@ -54,10 +54,20 @@ class OutputArtifact(BaseModel):
 OutputArtifactSpec = str | OutputArtifact
 
 
+class GenerationContainment(BaseModel):
+    """Agent-selected process-containment mechanism and contract version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["linux_pid_namespace"]
+    version: int = Field(strict=True, ge=1)
+
+
 class AgentContractRequest(BaseModel):
     """Agent definition submitted when starting a run."""
 
     name: str
+    generation_containment: GenerationContainment | None = None
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""

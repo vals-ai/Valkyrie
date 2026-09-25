@@ -5,6 +5,7 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 
 import asyncio
 import shlex
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
@@ -27,18 +28,28 @@ from benchmark_service import (
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
+from tracker.external_service_gateway import (
+    AccountingSessionSnapshot,
+    AccountingSessionState,
+    ExternalServiceAccountingSummary,
+    ExternalServiceDeadlineController,
+)
 from tracker import sandbox as sandbox_module
 from tracker.aws.runtime import AWSRuntime
 from tracker.runtime.storage import ObjectStore
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
+    GenerationContainment,
     MAX_OUTPUT_ARTIFACT_BYTES,
     OutputArtifact,
 )
 from tracker.exceptions import (
     AgentRunFailedError,
+    ControlledGenerationError,
+    ControlledGenerationTerminationUnconfirmedError,
     DependencySetupExhaustedError,
+    GenerationTerminationUnconfirmedError,
     InvalidSandboxConfigurationError,
     OutputArtifactError,
     SSLConnectionError,
@@ -47,6 +58,10 @@ from tracker.exceptions import (
 )
 from tracker.sandbox import (
     OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
+    _controlled_completion_precedes_deadline,  # pyright: ignore[reportPrivateUsage]
+    _controlled_generation_selected,  # pyright: ignore[reportPrivateUsage]
+    _stream_controlled_output,  # pyright: ignore[reportPrivateUsage]
+    _stream_controlled_output_with_egress_allowlist,  # pyright: ignore[reportPrivateUsage]
     create_sandbox,
     run_agent,
     upload_agent_artifacts,
@@ -570,6 +585,167 @@ class TestArchiveAndUploadOutput:
         assert exec_commands[-1].startswith("rm -f ")
 
 
+class _CompletedControlledWorkload:
+    def __init__(self, exit_code: int, absence_confirmed_at: float) -> None:
+        self.result = ExecResult(exit_code=exit_code)
+        self.absence_confirmed_at = absence_confirmed_at
+
+
+class _FakeControlledWorkload:
+    def __init__(
+        self,
+        *,
+        exit_code: int = 0,
+        wait_error: BaseException | None = None,
+        wait_release: asyncio.Event | None = None,
+        kill_release: asyncio.Event | None = None,
+        natural: bool = True,
+        absence_confirmed_at: float | None = None,
+    ) -> None:
+        self.exit_code = exit_code
+        self.wait_error = wait_error
+        self.wait_release = wait_release
+        self.kill_release = kill_release
+        self.absence_confirmed_at = absence_confirmed_at
+        self.closed = asyncio.Event()
+        self.wait_finished = asyncio.Event()
+        self.output_started = asyncio.Event()
+        self.output_drain_started = asyncio.Event()
+        self.output_finished = asyncio.Event()
+        self.kill_started = asyncio.Event()
+        self.kill_calls = 0
+        self.kill_error: BaseException | None = None
+        self.output_error: BaseException | None = None
+        self.block_kill = False
+        if natural:
+            self.closed.set()
+
+    async def output(self) -> AsyncIterator[str]:
+        try:
+            self.output_started.set()
+            yield "agent output"
+            await self.closed.wait()
+            self.output_drain_started.set()
+            if self.output_error is not None:
+                raise self.output_error
+        finally:
+            self.output_finished.set()
+
+    async def wait(self) -> _CompletedControlledWorkload:
+        try:
+            if self.wait_release is not None:
+                await self.wait_release.wait()
+            if self.wait_error is not None:
+                raise self.wait_error
+            confirmed_at = self.absence_confirmed_at
+            if confirmed_at is None:
+                confirmed_at = asyncio.get_running_loop().time()
+            return _CompletedControlledWorkload(self.exit_code, confirmed_at)
+        finally:
+            self.wait_finished.set()
+
+    async def kill(self) -> None:
+        self.kill_calls += 1
+        self.kill_started.set()
+        if self.block_kill:
+            await asyncio.Event().wait()
+        if self.kill_release is not None:
+            await self.kill_release.wait()
+        if self.kill_error is not None:
+            raise self.kill_error
+        self.closed.set()
+        if self.wait_release is not None:
+            self.wait_release.set()
+
+
+class _FakeControlledSandbox:
+    id = "sandbox-123"
+    name = "task-alias"
+    generation_containment: GenerationContainment | None
+
+    def __init__(self, workload: _FakeControlledWorkload) -> None:
+        self.workload = workload
+        self.generation_containment = GenerationContainment(type="linux_pid_namespace", version=1)
+        self.probe_calls = 0
+        self.controlled_calls: list[tuple[str, str | None]] = []
+
+    async def probe_generation_containment(self) -> None:
+        self.probe_calls += 1
+
+    def controlled_workload(self, command: str, *, cwd: str | None = None) -> _FakeControlledWorkload:
+        self.controlled_calls.append((command, cwd))
+        return self.workload
+
+
+def _accounting_snapshot(
+    *,
+    state: AccountingSessionState = AccountingSessionState.OPEN,
+    overhead_ms: int = 0,
+    revision: int = 0,
+    epoch: int = 0,
+) -> AccountingSessionSnapshot:
+    return AccountingSessionSnapshot(
+        session_id="session-1",
+        state=state,
+        cumulative_neutral_overhead_ms=overhead_ms,
+        revision=revision,
+        accounting_epoch=epoch,
+    )
+
+
+class _FakeAccountingClient:
+    def __init__(
+        self,
+        *,
+        overhead_ms: int = 0,
+        read_error: BaseException | None = None,
+        begin_overhead_ms: int | None = None,
+    ) -> None:
+        self.overhead_ms = overhead_ms
+        self.begin_overhead_ms = begin_overhead_ms
+        self.read_error = read_error
+        self.decisions: list[str] = []
+        self.read_calls = 0
+        self.begin_calls = 0
+
+    async def read_session(self, _session_id: str) -> AccountingSessionSnapshot:
+        self.read_calls += 1
+        if self.read_error is not None:
+            raise self.read_error
+        return _accounting_snapshot(overhead_ms=self.overhead_ms, revision=1)
+
+    async def begin_arbitration(self, _session_id: str) -> AccountingSessionSnapshot:
+        self.begin_calls += 1
+        if self.begin_overhead_ms is not None:
+            self.overhead_ms = self.begin_overhead_ms
+            self.begin_overhead_ms = None
+        return _accounting_snapshot(
+            state=AccountingSessionState.ARBITRATING,
+            overhead_ms=self.overhead_ms,
+            revision=1,
+            epoch=1,
+        )
+
+    async def resolve_arbitration(self, _session_id: str, decision: Any) -> AccountingSessionSnapshot:
+        self.decisions.append(str(decision))
+        state = AccountingSessionState.OPEN if str(decision) == "RESUME" else AccountingSessionState.SEALED
+        return _accounting_snapshot(
+            state=state,
+            overhead_ms=self.overhead_ms,
+            revision=1,
+            epoch=1,
+        )
+
+
+def _controlled_contract(*, version: int = 1) -> AgentContractRequest:
+    return AgentContractRequest(
+        name="test-agent",
+        install_cmd="",
+        run_cmd="echo done",
+        generation_containment=GenerationContainment(type="linux_pid_namespace", version=version),
+    )
+
+
 class TestRunAgent:
     """Agent execution, output collection, and runtime command construction."""
 
@@ -891,6 +1067,1207 @@ class TestRunAgent:
         )
 
         assert observed_commands == [f"cd /workspace && PYTHONSAFEPATH=1 timeout 2.5 sh -c {shlex.quote(run_cmd)}"]
+
+    async def test_run_agent_none_timeout_keeps_controlled_capability_dormant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class LegacyOnlySandbox:
+            id = "sandbox-123"
+            name = "task-alias"
+
+            @property
+            def generation_containment(self) -> Never:
+                raise AssertionError("runtime capability must stay dormant")
+
+            async def probe_generation_containment(self) -> Never:
+                raise AssertionError("runtime probe must stay dormant")
+
+            def controlled_workload(self, *_args: Any, **_kwargs: Any) -> Never:
+                raise AssertionError("controlled factory must stay dormant")
+
+        legacy_stream = AsyncMock(return_value=(None, 0.0))
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "_stream_command_output_with_egress_allowlist", legacy_stream)
+
+        await run_agent(
+            cast(Any, LegacyOnlySandbox()),
+            _controlled_contract(),
+            "/tmp/problem.txt",
+            "task_0",
+            _ignore_output,
+            "/workspace",
+            object_store=_mock_object_store(),
+            agent_timeout=None,
+            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+        )
+
+        legacy_stream.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("agent_version", "task_version", "expected"),
+        [
+            (None, 1, False),
+            (1, None, False),
+            (1, 2, False),
+            (2, 2, False),
+            (1, 1, True),
+        ],
+    )
+    def test_controlled_generation_requires_exact_bilateral_v1(
+        self, agent_version: int | None, task_version: int | None, expected: bool
+    ) -> None:
+        contract = (
+            _controlled_contract(version=agent_version)
+            if agent_version is not None
+            else AgentContractRequest(name="test-agent", install_cmd="", run_cmd="echo done")
+        )
+        task_containment = (
+            GenerationContainment(type="linux_pid_namespace", version=task_version)
+            if task_version is not None
+            else None
+        )
+
+        assert _controlled_generation_selected(contract, task_containment, agent_timeout=10.0) is expected
+
+    async def test_mismatched_declarations_preserve_legacy_timeout_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        legacy_stream = AsyncMock(return_value=(AgentCausedExitReason.TIMEOUT, 2.5))
+        controlled_stream = AsyncMock(side_effect=AssertionError("controlled path selected"))
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "_stream_command_output_with_egress_allowlist", legacy_stream)
+        monkeypatch.setattr(sandbox_module, "_stream_controlled_output_with_egress_allowlist", controlled_stream)
+        sandbox = Mock(id="sandbox-123", name="task-alias")
+
+        reason, _ = await run_agent(
+            sandbox,
+            _controlled_contract(),
+            "/tmp/problem.txt",
+            "task_0",
+            _ignore_output,
+            "/workspace",
+            object_store=_mock_object_store(),
+            agent_timeout=2.5,
+            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=2),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        controlled_stream.assert_not_awaited()
+        assert legacy_stream.await_args is not None
+        assert "timeout 2.5 sh -c" in legacy_stream.await_args.args[1]
+
+    @pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
+    def test_controlled_generation_rejects_invalid_matched_timeout(self, timeout: float) -> None:
+        with pytest.raises(InvalidSandboxConfigurationError, match="positive finite"):
+            _controlled_generation_selected(
+                _controlled_contract(),
+                GenerationContainment(type="linux_pid_namespace", version=1),
+                timeout,
+            )
+
+    async def test_run_agent_selects_supported_controlled_workload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+
+        reason, duration = await run_agent(
+            cast(Any, sandbox),
+            _controlled_contract(),
+            "/tmp/problem.txt",
+            "task_0",
+            _ignore_output,
+            "/workspace",
+            object_store=_mock_object_store(),
+            agent_timeout=10.0,
+            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+        )
+
+        assert reason is None
+        assert duration >= 0
+        assert sandbox.probe_calls == 1
+        assert sandbox.controlled_calls == [("PYTHONSAFEPATH=1 echo done", "/workspace")]
+
+    async def test_run_agent_timeout_collects_only_after_confirmed_kill(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={"final_output": "/logs", "egress_allowlist": ["example.com"]}
+        )
+        archive = AsyncMock()
+
+        async def fake_exec(_sandbox: Any, _command: str) -> ExecResult:
+            if _command == "test -e /logs":
+                assert workload.kill_calls == 1
+                assert workload.closed.is_set()
+            return ExecResult(exit_code=0)
+
+        async def fake_clear(_sandbox: Any, fail_on_error: bool) -> None:
+            assert fail_on_error
+            assert workload.kill_calls == 1
+            assert workload.closed.is_set()
+
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_apply_egress_allowlist", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_clear_egress_allowlist", fake_clear)
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+
+        reason, _ = await run_agent(
+            cast(Any, sandbox),
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            _ignore_output,
+            "/workspace",
+            object_store=_mock_object_store(),
+            agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+            agent_timeout=0.001,
+            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        archive.assert_awaited_once()
+
+    async def test_run_agent_unconfirmed_timeout_suppresses_collection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.block_kill = True
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={
+                "final_output": "/logs",
+                "egress_allowlist": ["example.com"],
+            }
+        )
+        archive = AsyncMock()
+        apply_egress = AsyncMock()
+        clear_egress = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        monkeypatch.setattr(sandbox_module, "_apply_egress_allowlist", apply_egress)
+        monkeypatch.setattr(sandbox_module, "_clear_egress_allowlist", clear_egress)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.01)
+
+        with pytest.raises(GenerationTerminationUnconfirmedError):
+            await run_agent(
+                cast(Any, sandbox),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                agent_timeout=0.001,
+                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+            )
+
+        archive.assert_not_awaited()
+        apply_egress.assert_awaited_once()
+        clear_egress.assert_not_awaited()
+
+    async def test_controlled_nonzero_exit_collects_outputs_after_seal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        workload = _FakeControlledWorkload(exit_code=23)
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={"final_output": "/logs", "output_artifacts": ["artifacts/result.json"]}
+        )
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, _FakeAccountingClient()),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        sealed: list[ExternalServiceAccountingSummary] = []
+
+        async def save_summary(summary: ExternalServiceAccountingSummary) -> None:
+            sealed.append(summary)
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -e /logs":
+                assert workload.closed.is_set()
+                assert len(sealed) == 1
+            return ExecResult(exit_code=0)
+
+        async def collect_after_seal(*_args: Any, **_kwargs: Any) -> None:
+            assert len(sealed) == 1
+            assert workload.closed.is_set()
+
+        archive = AsyncMock(side_effect=collect_after_seal)
+        artifacts = AsyncMock(side_effect=collect_after_seal)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", artifacts)
+
+        with pytest.raises(AgentRunFailedError, match="exit code 23"):
+            await run_agent(
+                cast(Any, sandbox),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                benchmark_id="benchmark-123",
+                agent_timeout=10.0,
+                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                external_service_deadline=controller,
+                on_external_service_sealed=save_summary,
+            )
+
+        assert len(sealed) == 1
+        archive.assert_awaited_once()
+        artifacts.assert_awaited_once()
+
+    async def test_accounting_persistence_failure_skips_output_collection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(update={"final_output": "/logs"})
+        archive = AsyncMock()
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persistence_error = RuntimeError("summary persistence failed")
+
+        async def fail_persistence(
+            _summary: ExternalServiceAccountingSummary,
+        ) -> None:
+            raise persistence_error
+
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+
+        with pytest.raises(RuntimeError, match="summary persistence failed") as raised:
+            await run_agent(
+                cast(Any, sandbox),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                agent_timeout=10.0,
+                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                external_service_deadline=controller,
+                on_external_service_sealed=fail_persistence,
+            )
+
+        assert raised.value is persistence_error
+        archive.assert_not_awaited()
+
+    async def test_run_agent_rejects_unsupported_effective_sandbox_before_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = _FakeControlledSandbox(_FakeControlledWorkload())
+        sandbox.generation_containment = None
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+
+        with pytest.raises(InvalidSandboxConfigurationError, match="does not support"):
+            await run_agent(
+                cast(Any, sandbox),
+                _controlled_contract(),
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_timeout=10.0,
+                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+            )
+
+        assert sandbox.controlled_calls == []
+
+    async def test_run_agent_probe_failure_prevents_controlled_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = _FakeControlledSandbox(_FakeControlledWorkload())
+        probe = AsyncMock(side_effect=ProviderSandboxError("probe failed"))
+        monkeypatch.setattr(sandbox, "probe_generation_containment", probe)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+
+        with pytest.raises(ProviderSandboxError, match="probe failed"):
+            await run_agent(
+                cast(Any, sandbox),
+                _controlled_contract(),
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_timeout=10.0,
+                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+            )
+
+        assert sandbox.controlled_calls == []
+
+    def test_controlled_completion_at_deadline_belongs_to_timeout(self) -> None:
+        result = _CompletedControlledWorkload(exit_code=0, absence_confirmed_at=10.0)
+
+        assert not _controlled_completion_precedes_deadline(result, 10.0)
+        assert _controlled_completion_precedes_deadline(result, 10.1)
+
+    async def test_controlled_completion_at_deadline_runs_timeout_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_loop = asyncio.get_running_loop()
+        started_at = real_loop.time()
+        clock = Mock()
+        clock.time.return_value = started_at
+        monkeypatch.setattr(sandbox_module.asyncio, "get_running_loop", lambda: clock)
+
+        workload = _FakeControlledWorkload(absence_confirmed_at=started_at + 1.0)
+        sandbox = _FakeControlledSandbox(workload)
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 1.0
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration == 1.0
+        assert workload.kill_calls == 1
+
+    async def test_controlled_delayed_arbitration_uses_recorded_confirmation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        real_wait = asyncio.wait
+
+        async def delayed_wait(
+            tasks: set[asyncio.Task[Any]], *, return_when: str
+        ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+            await asyncio.sleep(0.01)
+            return await real_wait(tasks, timeout=0, return_when=return_when)
+
+        monkeypatch.setattr(asyncio, "wait", delayed_wait)
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 0.005
+        )
+
+        assert reason is None
+        assert workload.kill_calls == 0
+
+    async def test_controlled_timeout_freezes_cause_over_losing_os_kill(self) -> None:
+        workload = _FakeControlledWorkload(exit_code=137, wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 0.001
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration == 0.001
+        assert workload.kill_calls == 1
+
+    @pytest.mark.parametrize(
+        ("exit_code", "expected"),
+        [(0, None), (137, AgentCausedExitReason.OS_KILLED)],
+    )
+    async def test_controlled_predeadline_exit_classification(
+        self, exit_code: int, expected: AgentCausedExitReason | None
+    ) -> None:
+        workload = _FakeControlledWorkload(exit_code=exit_code)
+        sandbox = _FakeControlledSandbox(workload)
+
+        reason, _ = await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
+
+        assert reason == expected
+        assert workload.kill_calls == 0
+
+    async def test_controlled_natural_exit_124_is_not_timeout(self) -> None:
+        workload = _FakeControlledWorkload(exit_code=124)
+        sandbox = _FakeControlledSandbox(workload)
+
+        with pytest.raises(AgentRunFailedError, match="exit code 124"):
+            await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
+
+    async def test_controlled_creation_consumes_generation_allowance(self) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        original_factory = sandbox.controlled_workload
+
+        def delayed_factory(command: str, *, cwd: str | None = None) -> _FakeControlledWorkload:
+            time.sleep(0.02)
+            return original_factory(command, cwd=cwd)
+
+        sandbox.controlled_workload = delayed_factory  # type: ignore[method-assign]
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 0.001
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert workload.kill_calls == 1
+
+    async def test_natural_completion_drains_buffered_tail_output(self) -> None:
+        class CompletedProducerWithTail(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__()
+                self.buffered_output: asyncio.Queue[str] = asyncio.Queue()
+
+            async def output(self) -> AsyncIterator[str]:
+                await self.wait_finished.wait()
+                await asyncio.sleep(0.02)
+                while not self.buffered_output.empty():
+                    yield self.buffered_output.get_nowait()
+
+        workload = CompletedProducerWithTail()
+        workload.buffered_output.put_nowait("already-buffered tail")
+        messages: list[str] = []
+        reason, _ = await asyncio.wait_for(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)), "echo done", "/workspace", messages.append, 10.0
+            ),
+            timeout=0.2,
+        )
+
+        assert reason is None
+        assert messages == ["already-buffered tail"]
+        assert workload.kill_calls == 0
+
+    async def test_confirmed_timeout_drains_buffered_output_before_seal(self) -> None:
+        class BufferedOutputAfterKill(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__(wait_release=asyncio.Event(), natural=False)
+                self.buffered_output: asyncio.Queue[str] = asyncio.Queue()
+
+            async def output(self) -> AsyncIterator[str]:
+                self.output_started.set()
+                try:
+                    await self.closed.wait()
+                    await asyncio.sleep(0.02)
+                    while not self.buffered_output.empty():
+                        yield self.buffered_output.get_nowait()
+                finally:
+                    self.output_finished.set()
+
+        workload = BufferedOutputAfterKill()
+        workload.buffered_output.put_nowait("queued before confirmed kill")
+        messages: list[str] = []
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=0.0,
+        )
+        sealed: list[ExternalServiceAccountingSummary] = []
+
+        async def persist_summary(summary: ExternalServiceAccountingSummary) -> None:
+            assert messages == ["queued before confirmed kill"]
+            sealed.append(summary)
+
+        reason, _ = await asyncio.wait_for(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                messages.append,
+                0.001,
+                controller,
+                persist_summary,
+            ),
+            timeout=0.2,
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert client.decisions == ["SEAL"]
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        assert len(sealed) == 1
+
+    async def test_controlled_deadline_kill_succeeds_within_absolute_grace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), kill_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        real_timeout_at = asyncio.timeout_at
+        timeout_calls: list[tuple[float, float]] = []
+
+        def observed_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_calls.append((when, asyncio.get_running_loop().time()))
+            return real_timeout_at(when)
+
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", observed_timeout_at)
+        task = asyncio.create_task(
+            _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 0.001)
+        )
+        await workload.kill_started.wait()
+        assert timeout_calls
+        absolute_deadline, kill_started_at = timeout_calls[0]
+        generation_deadline = absolute_deadline - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
+        while asyncio.get_running_loop().time() <= generation_deadline:
+            await asyncio.sleep(0)
+        assert workload.kill_release is not None
+        workload.kill_release.set()
+        reason, duration = await task
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration == 0.001
+        assert absolute_deadline > kill_started_at
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    async def test_controlled_deadline_requires_kill_confirmation_within_grace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.block_kill = True
+        sandbox = _FakeControlledSandbox(workload)
+        original_factory = sandbox.controlled_workload
+        real_timeout_at = asyncio.timeout_at
+        timeout_calls: list[tuple[float, float]] = []
+
+        def delayed_factory(command: str, *, cwd: str | None = None) -> _FakeControlledWorkload:
+            time.sleep(0.02)
+            return original_factory(command, cwd=cwd)
+
+        def observed_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_calls.append((when, asyncio.get_running_loop().time()))
+            return real_timeout_at(when)
+
+        sandbox.controlled_workload = delayed_factory  # type: ignore[method-assign]
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", observed_timeout_at)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.01)
+
+        with pytest.raises(GenerationTerminationUnconfirmedError):
+            await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 0.001)
+
+        assert len(timeout_calls) == 1
+        absolute_deadline, kill_started_at = timeout_calls[0]
+        assert absolute_deadline < kill_started_at
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    async def test_external_credit_at_deadline_resumes_then_seals(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_timeout_at = asyncio.timeout_at
+        timeout_deadlines: list[float] = []
+
+        def capture_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_deadlines.append(when)
+            return real_timeout_at(when)
+
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", capture_timeout_at)
+        started_before = asyncio.get_running_loop().time()
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        client = _FakeAccountingClient(overhead_ms=0, begin_overhead_ms=20)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.01,
+            credit_cap_seconds=0.02,
+        )
+        persisted_after_kill: list[tuple[ExternalServiceAccountingSummary, int, bool]] = []
+
+        async def persist(summary: ExternalServiceAccountingSummary) -> None:
+            persisted_after_kill.append((summary, workload.kill_calls, workload.wait_finished.is_set()))
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.01,
+            controller,
+            persist,
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert abs(duration - 0.03) < 1e-9
+        effective_kill_deadline = timeout_deadlines[-1] - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
+        assert 0.03 <= effective_kill_deadline - started_before < 0.05
+        assert client.decisions == ["RESUME", "SEAL"]
+        assert workload.kill_calls == 1
+        assert persisted_after_kill[0][1] == 1
+        assert persisted_after_kill[0][2] is True
+        assert persisted_after_kill[0][0].external_service_credit_applied_seconds == 0.02
+
+    async def test_delayed_arbitration_with_expired_credit_seals_at_frozen_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[str] = []
+
+        class OrderedWorkload(_FakeControlledWorkload):
+            async def kill(self) -> None:
+                events.append("kill")
+                await super().kill()
+
+        workload = OrderedWorkload(wait_release=asyncio.Event(), natural=False)
+
+        class DelayedCreditClient(_FakeAccountingClient):
+            async def begin_arbitration(self, _session_id: str) -> AccountingSessionSnapshot:
+                self.begin_calls += 1
+                await asyncio.sleep(0.02)
+                self.overhead_ms = 10
+                return _accounting_snapshot(
+                    state=AccountingSessionState.ARBITRATING,
+                    overhead_ms=10,
+                    revision=1,
+                    epoch=1,
+                )
+
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                events.append(str(decision))
+                return await super().resolve_arbitration(session_id, decision)
+
+        client = DelayedCreditClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.005,
+            credit_cap_seconds=0.01,
+        )
+        real_timeout_at = asyncio.timeout_at
+        timeout_deadlines: list[float] = []
+
+        def capture_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_deadlines.append(when)
+            return real_timeout_at(when)
+
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", capture_timeout_at)
+        started_before = asyncio.get_running_loop().time()
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.005,
+            controller,
+            AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert abs(duration - 0.015) < 1e-9
+        assert client.decisions == ["SEAL"]
+        assert events == ["SEAL", "kill"]
+        post_deadline_timeouts = [value for value in timeout_deadlines if value - started_before > 1.0]
+        assert len(post_deadline_timeouts) == 3
+        assert post_deadline_timeouts[0] == post_deadline_timeouts[1]
+        assert (
+            post_deadline_timeouts[-1] - post_deadline_timeouts[0]
+            == sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS - sandbox_module.GENERATION_ARBITRATION_GRACE_SECONDS
+        )
+        apparent_deadline = post_deadline_timeouts[-1] - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
+        assert 0.005 <= apparent_deadline - started_before < 0.015
+
+    async def test_eight_second_arbitration_seals_then_confirms_absence_within_absolute_window(self) -> None:
+        class DelayedAccountingClient(_FakeAccountingClient):
+            async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
+                await asyncio.sleep(3.9)
+                return await super().begin_arbitration(session_id)
+
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                await asyncio.sleep(3.9)
+                return await super().resolve_arbitration(session_id, decision)
+
+        class AwaitingKillWorkload(_FakeControlledWorkload):
+            async def kill(self) -> None:
+                await asyncio.sleep(0)
+                await super().kill()
+
+        workload = AwaitingKillWorkload(wait_release=asyncio.Event(), natural=False)
+        client = DelayedAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=0.0,
+        )
+        persist = AsyncMock()
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.001,
+            controller,
+            persist,
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert abs(duration - 0.001) < 1e-9
+        assert client.begin_calls == 1
+        assert client.decisions == ["SEAL"]
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        persist.assert_awaited_once()
+
+    async def test_shared_arbitration_budget_exhaustion_kills_without_grading(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class SlowResolutionClient(_FakeAccountingClient):
+            resolve_calls = 0
+
+            async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
+                await asyncio.sleep(0.04)
+                return await super().begin_arbitration(session_id)
+
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                self.resolve_calls += 1
+                await asyncio.sleep(0.15)
+                return await super().resolve_arbitration(session_id, decision)
+
+        monkeypatch.setattr(sandbox_module, "GENERATION_ARBITRATION_GRACE_SECONDS", 0.1, raising=False)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.2)
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        client = SlowResolutionClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=0.0,
+        )
+        persist = AsyncMock()
+
+        with pytest.raises(TimeoutError):
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                0.001,
+                controller,
+                persist,
+            )
+
+        assert client.begin_calls == 1
+        assert client.resolve_calls == 1
+        assert client.decisions == []
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        persist.assert_not_awaited()
+
+    async def test_failed_resume_keeps_original_absolute_termination_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class SlowResumeClient(_FakeAccountingClient):
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                await asyncio.sleep(0.15)
+                return await super().resolve_arbitration(session_id, decision)
+
+        real_timeout_at = asyncio.timeout_at
+        timeout_deadlines: list[float] = []
+
+        def capture_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_deadlines.append(when)
+            return real_timeout_at(when)
+
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", capture_timeout_at)
+        monkeypatch.setattr(sandbox_module, "GENERATION_ARBITRATION_GRACE_SECONDS", 0.1)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.2)
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        client = SlowResumeClient(begin_overhead_ms=1000)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=1.0,
+        )
+        started_before = asyncio.get_running_loop().time()
+        persist = AsyncMock()
+
+        with pytest.raises(TimeoutError):
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                0.001,
+                controller,
+                persist,
+            )
+
+        assert client.decisions == []
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert 0.001 <= timeout_deadlines[-1] - 0.2 - started_before < 0.02
+        persist.assert_not_awaited()
+
+    async def test_refresh_credit_extends_from_immutable_start(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        client = _FakeAccountingClient(overhead_ms=20)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.01,
+            credit_cap_seconds=0.02,
+        )
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.01,
+            controller,
+            AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert abs(duration - 0.03) < 1e-9
+        assert client.read_calls >= 1
+        assert client.decisions == ["SEAL"]
+
+    async def test_transient_refresh_error_retries_within_lead_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+
+        class TransientRefreshClient(_FakeAccountingClient):
+            async def read_session(self, _session_id: str) -> AccountingSessionSnapshot:
+                self.read_calls += 1
+                if self.read_calls == 1:
+                    raise RuntimeError("transient refresh")
+                return _accounting_snapshot(revision=1)
+
+        client = TransientRefreshClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.01,
+            credit_cap_seconds=1.0,
+        )
+        monkeypatch.setattr(sandbox_module, "EXTERNAL_SERVICE_REFRESH_RETRY_SECONDS", 0.0)
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.01,
+            controller,
+            AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert client.read_calls == 2
+        assert client.begin_calls == 1
+
+    async def test_exhausted_refresh_window_proceeds_to_arbitration(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+
+        class BlockingRefreshClient(_FakeAccountingClient):
+            async def read_session(self, _session_id: str) -> AccountingSessionSnapshot:
+                self.read_calls += 1
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+        client = BlockingRefreshClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.005,
+            credit_cap_seconds=1.0,
+        )
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.005,
+            controller,
+            AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert client.read_calls == 1
+        assert client.begin_calls == 1
+        assert client.decisions == ["SEAL"]
+        assert workload.kill_calls == 1
+
+    async def test_failed_refresh_task_cannot_defeat_natural_completion(self) -> None:
+        workload = _FakeControlledWorkload()
+        client = _FakeAccountingClient(read_error=asyncio.CancelledError())
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted = AsyncMock()
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            10.0,
+            controller,
+            persisted,
+        )
+
+        assert reason is None
+        assert workload.kill_calls == 0
+        assert client.decisions == ["SEAL"]
+        persisted.assert_awaited_once()
+
+    async def test_completion_during_arbitration_within_credit_is_natural(self) -> None:
+        wait_release = asyncio.Event()
+        workload = _FakeControlledWorkload(wait_release=wait_release, natural=False)
+
+        class CompletingArbitrationClient(_FakeAccountingClient):
+            async def begin_arbitration(self, _session_id: str) -> AccountingSessionSnapshot:
+                self.begin_calls += 1
+                self.overhead_ms = 20
+                wait_release.set()
+                workload.closed.set()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                return _accounting_snapshot(
+                    state=AccountingSessionState.ARBITRATING,
+                    overhead_ms=20,
+                    revision=1,
+                    epoch=1,
+                )
+
+        client = CompletingArbitrationClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.005,
+            credit_cap_seconds=0.02,
+        )
+        persisted = AsyncMock()
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.005,
+            controller,
+            persisted,
+        )
+
+        assert reason is None
+        assert workload.kill_calls == 0
+        assert client.decisions == ["SEAL"]
+        persisted.assert_awaited_once()
+
+    async def test_accounting_termination_error_is_not_masked_by_cleanup(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.kill_error = ProviderSandboxError("kill failed")
+        client = _FakeAccountingClient(read_error=RuntimeError("refresh failed"))
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.005,
+            credit_cap_seconds=1.0,
+        )
+
+        with pytest.raises(GenerationTerminationUnconfirmedError) as raised:
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                0.005,
+                controller,
+                AsyncMock(),
+            )
+
+        assert isinstance(raised.value.__cause__, ProviderSandboxError)
+
+    async def test_natural_completion_seals_before_return(self) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        client = _FakeAccountingClient(overhead_ms=5)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted: list[ExternalServiceAccountingSummary] = []
+
+        async def persist_natural(
+            summary: ExternalServiceAccountingSummary,
+        ) -> None:
+            persisted.append(summary)
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            10.0,
+            controller,
+            persist_natural,
+        )
+
+        assert reason is None
+        assert client.decisions == ["SEAL"]
+        assert workload.wait_finished.is_set()
+        assert workload.kill_calls == 0
+        assert persisted[0].external_service_overhead_seconds == 0.005
+
+    async def test_deadline_control_error_kills_then_propagates_raw_error(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        control_error = RuntimeError("gateway unavailable")
+
+        class FailingArbitrationClient(_FakeAccountingClient):
+            async def begin_arbitration(self, _session_id: str) -> AccountingSessionSnapshot:
+                raise control_error
+
+        client = FailingArbitrationClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=1.0,
+        )
+
+        with pytest.raises(RuntimeError, match="gateway unavailable") as raised:
+            await _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                0.001,
+                controller,
+                AsyncMock(),
+            )
+
+        assert raised.value is control_error
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    async def test_controlled_wait_error_kills_before_nonretryable_failure(self) -> None:
+        workload = _FakeControlledWorkload(wait_error=SandboxNotFoundError("lost"), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+
+        with pytest.raises(ControlledGenerationError):
+            await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
+
+        assert workload.kill_calls == 1
+        assert workload.closed.is_set()
+
+    async def test_controlled_output_error_after_start_is_nonretryable(self) -> None:
+        workload = _FakeControlledWorkload()
+        workload.output_error = SandboxNotFoundError("output lost")
+        sandbox = _FakeControlledSandbox(workload)
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+
+        with pytest.raises(ControlledGenerationError):
+            await _stream_controlled_output_with_egress_allowlist(
+                controlled_sandbox,
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ["example.com"],
+                10.0,
+            )
+
+        assert workload.kill_calls == 1
+        controlled_sandbox.clear_egress_rules.assert_awaited_once_with()
+
+    async def test_controlled_output_error_preserves_egress_when_kill_fails(
+        self,
+    ) -> None:
+        workload = _FakeControlledWorkload()
+        workload.output_error = SandboxNotFoundError("output lost")
+        workload.kill_error = ProviderSandboxError("kill unavailable")
+        sandbox = _FakeControlledSandbox(workload)
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+
+        with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
+            await _stream_controlled_output_with_egress_allowlist(
+                controlled_sandbox,
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ["example.com"],
+                10.0,
+            )
+
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(["example.com"])
+        controlled_sandbox.clear_egress_rules.assert_not_awaited()
+
+    async def test_controlled_cancellation_kills_before_propagation(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+        task = asyncio.create_task(
+            _stream_controlled_output_with_egress_allowlist(
+                controlled_sandbox,
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ["example.com"],
+                10.0,
+            )
+        )
+        await asyncio.sleep(0)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert workload.kill_calls == 1
+        assert workload.closed.is_set()
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(["example.com"])
+        controlled_sandbox.clear_egress_rules.assert_awaited_once_with()
+
+    async def test_controlled_cancellation_joins_children_when_kill_fails(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.kill_error = ProviderSandboxError("kill unavailable")
+        sandbox = _FakeControlledSandbox(workload)
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+        task = asyncio.create_task(
+            _stream_controlled_output_with_egress_allowlist(
+                controlled_sandbox,
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ["example.com"],
+                10.0,
+            )
+        )
+        await asyncio.sleep(0)
+
+        task.cancel()
+        with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
+            await task
+
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(["example.com"])
+        controlled_sandbox.clear_egress_rules.assert_not_awaited()
 
 
 class TestSandboxRetry:

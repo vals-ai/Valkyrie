@@ -23,6 +23,32 @@ Full syntax is in the [`run results`](/reference/cli/run#results), [`run outputs
 
 The results file holds the scores and the per-task evaluation. Without `--path`, the CLI writes it to `./results-<run-id>.json`.
 
+### Controlled-generation timeout accounting (local MVP)
+
+An agent contract and its benchmark task must both opt in to `generation_containment` with
+`type="linux_pid_namespace"` and `version=1`, with a finite positive task timeout. Mismatched
+declarations retain the legacy timeout path; matched declarations require an effective sandbox that
+supports containment, or Tracker rejects the run. A configured local External Service Gateway session
+additionally supplies neutral-time credit; without one, the controlled timeout uses the base allowance
+only. The SDK types are `valkyrie.sdk.models.agents.GenerationContainment` and
+`valkyrie.sdk.models.benchmarks.TaskBreakdown`. This local MVP does not activate the path in production.
+
+The gateway reports cumulative accepted neutral external-service overhead. Applied credit is capped
+by the configured cumulative cap, so the effective generation allowance is the base task timeout plus
+the capped credit. At an apparent deadline, gateway arbitration has a shared 10 seconds; any required
+kill must confirm absence by the absolute deadline plus 20 seconds, not 20 seconds after arbitration.
+An acknowledged `RESUME` establishes a new credited deadline. A sealed accounting summary is recorded
+only after generation absence is confirmed; unconfirmed termination does not proceed to grading.
+
+Controlled tasks expose seven nullable fields in each per-task `task_breakdown`:
+`accounting_session_id` identifies the gateway session; `base_generation_allowance_seconds` is the
+benchmark timeout; `cumulative_time_credit_cap_seconds` is the credit limit;
+`external_service_overhead_seconds` is accepted cumulative overhead;
+`external_service_credit_applied_seconds` is the capped credit;
+`effective_generation_allowance_seconds` is base plus applied credit; and
+`external_service_credit_revision` is the gateway revision at sealing. These fields remain null for
+tasks without controlled accounting.
+
 Pass a task subset to recompute `final_score` over only those tasks. The stored full result stays as it was:
 
 ```bash

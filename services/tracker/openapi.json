@@ -160,6 +160,16 @@
             ],
             "title": "Final Output"
           },
+          "generation_containment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationContainment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "inference_settings_attested": {
             "default": false,
             "title": "Inference Settings Attested",
@@ -248,6 +258,16 @@
               }
             ],
             "title": "Final Output"
+          },
+          "generation_containment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationContainment"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "inference_settings_attested": {
             "default": false,
@@ -1429,6 +1449,27 @@
         "title": "FinalViewResponse",
         "type": "object"
       },
+      "GenerationContainment": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "linux_pid_namespace",
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "version"
+        ],
+        "title": "GenerationContainment",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2546,6 +2587,16 @@
           "status": {
             "$ref": "#/components/schemas/TaskStatus"
           },
+          "task_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "task_id": {
             "title": "Task Id",
             "type": "string"
@@ -2936,6 +2987,146 @@
           "agent_output_expires_in"
         ],
         "title": "TaskArtifactsResponse",
+        "type": "object"
+      },
+      "TaskBreakdown": {
+        "properties": {
+          "accounting_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accounting Session Id"
+          },
+          "agent_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Run Duration"
+          },
+          "base_generation_allowance_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Generation Allowance Seconds"
+          },
+          "cumulative_time_credit_cap_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cumulative Time Credit Cap Seconds"
+          },
+          "effective_generation_allowance_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Generation Allowance Seconds"
+          },
+          "evaluation_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Run Duration"
+          },
+          "external_service_credit_applied_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Service Credit Applied Seconds"
+          },
+          "external_service_credit_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Service Credit Revision"
+          },
+          "external_service_overhead_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Service Overhead Seconds"
+          },
+          "sandbox_build_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Build Duration"
+          },
+          "sandbox_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Run Duration"
+          }
+        },
+        "required": [
+          "sandbox_build_duration",
+          "agent_run_duration",
+          "evaluation_run_duration",
+          "sandbox_run_duration",
+          "accounting_session_id",
+          "base_generation_allowance_seconds",
+          "cumulative_time_credit_cap_seconds",
+          "external_service_overhead_seconds",
+          "external_service_credit_applied_seconds",
+          "effective_generation_allowance_seconds",
+          "external_service_credit_revision"
+        ],
+        "title": "TaskBreakdown",
         "type": "object"
       },
       "TaskStatus": {

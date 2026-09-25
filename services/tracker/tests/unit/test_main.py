@@ -62,6 +62,7 @@ from tracker.database.models import (
     FinalEvaluation,
     Org,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.config import STABLE_QUEUE_NAME
@@ -1978,6 +1979,70 @@ class TestTrackerAPI:
         assert observed_results.keys() == {"task_1", "task_11"}
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
+
+    async def test_retrieve_results_keeps_accounting_summary_inside_task_breakdown(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        benchmark = example_benchmark_object
+        breakdown = TaskBreakdown(
+            sandbox_build_duration=1.0,
+            agent_run_duration=2.0,
+            evaluation_run_duration=3.0,
+            sandbox_run_duration=4.0,
+            accounting_session_id="accounting-session",
+            base_generation_allowance_seconds=300.0,
+            cumulative_time_credit_cap_seconds=120.0,
+            external_service_overhead_seconds=45.0,
+            external_service_credit_applied_seconds=45.0,
+            effective_generation_allowance_seconds=345.0,
+            external_service_credit_revision=2,
+        )
+        task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task-with-accounting",
+            benchmark=benchmark.id,
+            status=TaskStatus.FINISHED,
+            task_breakdown=breakdown.id,
+        )
+        result = EvaluationResult(
+            org_id=TEST_ORG_ID,
+            task=task.id,
+            instance_id=str(uuid4()),
+            result={"finished": True},
+        )
+        database_session.add_all([benchmark, breakdown, task, result])
+        database_session.commit()
+
+        response = client.get(
+            "/retrieve-results",
+            params={"benchmark_id": str(benchmark.id)},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body) == set(FinalViewResponse.model_fields)
+        assert body["evaluation_results"][task.task_id] == {
+            "finished": True,
+            "agent_caused_exit_reason": None,
+            "task_breakdown": {
+                "sandbox_build_duration": 1.0,
+                "agent_run_duration": 2.0,
+                "evaluation_run_duration": 3.0,
+                "sandbox_run_duration": 4.0,
+                "accounting_session_id": "accounting-session",
+                "base_generation_allowance_seconds": 300.0,
+                "cumulative_time_credit_cap_seconds": 120.0,
+                "external_service_overhead_seconds": 45.0,
+                "external_service_credit_applied_seconds": 45.0,
+                "effective_generation_allowance_seconds": 345.0,
+                "external_service_credit_revision": 2,
+            },
+            "attempts": 1,
+        }
 
     async def test_preview_results_archives_then_overwrites_canonical_result(
         self,

@@ -67,6 +67,18 @@ class AgentRunFailedError(SandboxError):
     """
 
 
+class ControlledGenerationError(SandboxError):
+    """Controlled generation failed after workload construction and is not retryable."""
+
+
+class ControlledGenerationTerminationUnconfirmedError(ControlledGenerationError):
+    """Controlled generation termination could not be positively confirmed."""
+
+
+class GenerationTerminationUnconfirmedError(ControlledGenerationTerminationUnconfirmedError):
+    """The generation deadline expired without confirmed workload termination."""
+
+
 class SandboxSetupError(SandboxError):
     """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
 

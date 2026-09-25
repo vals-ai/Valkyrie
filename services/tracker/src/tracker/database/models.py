@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field as PydanticField,
     SerializerFunctionWrapHandler,
     field_serializer,
@@ -150,8 +151,16 @@ class OutputArtifact(BaseModel):
 OutputArtifactSpec = str | OutputArtifact
 
 
+class GenerationContainment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["linux_pid_namespace"]
+    version: int = PydanticField(strict=True, ge=1)
+
+
 class AgentContractRequest(BaseModel):
     name: str
+    generation_containment: GenerationContainment | None = None
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""
@@ -615,6 +624,13 @@ class TaskBreakdown(SQLModel, table=True):
     agent_run_duration: float | None = Field(default=None)
     evaluation_run_duration: float | None = Field(default=None)
     sandbox_run_duration: float | None = Field(default=None)
+    accounting_session_id: str | None = Field(default=None)
+    base_generation_allowance_seconds: float | None = Field(default=None)
+    cumulative_time_credit_cap_seconds: float | None = Field(default=None)
+    external_service_overhead_seconds: float | None = Field(default=None)
+    external_service_credit_applied_seconds: float | None = Field(default=None)
+    effective_generation_allowance_seconds: float | None = Field(default=None)
+    external_service_credit_revision: int | None = Field(default=None)
 
 
 class ResultBase(SQLModel):

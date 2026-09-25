@@ -21,6 +21,7 @@ from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
     Org,
+    TaskBreakdown,
     TaskStatus,
 )
 
@@ -49,6 +50,21 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
         status=TaskStatus.FINISHED,
         finished_at=now,
     )
+    task_breakdown = TaskBreakdown(
+        sandbox_build_duration=1.0,
+        agent_run_duration=2.0,
+        evaluation_run_duration=3.0,
+        sandbox_run_duration=4.0,
+        accounting_session_id="accounting-session",
+        base_generation_allowance_seconds=300.0,
+        cumulative_time_credit_cap_seconds=120.0,
+        external_service_overhead_seconds=45.0,
+        external_service_credit_applied_seconds=45.0,
+        effective_generation_allowance_seconds=345.0,
+        external_service_credit_revision=2,
+    )
+    finished_task.task_breakdown = task_breakdown.id
+    database_session.add(task_breakdown)
     error_task = make_task(
         benchmark,
         "error-task",
@@ -106,12 +122,27 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     assert finished_response.json()["evaluation_result"] == {"score": 1.0}
     assert finished_response.json()["agent_caused_exit_reason"] == "TIMEOUT"
     assert finished_response.json()["error_message"] is None
+    assert finished_response.json()["task_breakdown"] == {
+        "sandbox_build_duration": 1.0,
+        "agent_run_duration": 2.0,
+        "evaluation_run_duration": 3.0,
+        "sandbox_run_duration": 4.0,
+        "accounting_session_id": "accounting-session",
+        "base_generation_allowance_seconds": 300.0,
+        "cumulative_time_credit_cap_seconds": 120.0,
+        "external_service_overhead_seconds": 45.0,
+        "external_service_credit_applied_seconds": 45.0,
+        "effective_generation_allowance_seconds": 345.0,
+        "external_service_credit_revision": 2,
+    }
     assert error_response.status_code == 200
     assert error_response.json()["error_message"] == "latest failure"
     assert error_response.json()["evaluation_result"] is None
+    assert error_response.json()["task_breakdown"] is None
     assert pending_response.status_code == 200
     assert pending_response.json()["error_message"] is None
     assert pending_response.json()["evaluation_result"] is None
+    assert pending_response.json()["task_breakdown"] is None
     assert other_org_response.status_code == 404
 
 

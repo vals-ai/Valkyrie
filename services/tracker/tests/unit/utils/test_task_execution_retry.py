@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -27,12 +27,19 @@ from tracker.scheduler.admission import SandboxQueueContext
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
+    GenerationContainment,
     ErrorResult,
     ExecutorDispatch,
     ExecutorDispatchStatus,
     TaskStatus,
 )
-from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
+from tracker.exceptions import (
+    AgentRunFailedError,
+    ControlledGenerationTerminationUnconfirmedError,
+    DependencySetupExhaustedError,
+    GenerationTerminationUnconfirmedError,
+    SandboxSetupError,
+)
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
@@ -549,6 +556,83 @@ class TestTaskExecutionRetry:
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_operation", "expected_cause_code"),
+        [
+            (
+                GenerationTerminationUnconfirmedError("deadline termination unconfirmed"),
+                "generation_termination",
+                "deadline_expired_termination_unconfirmed",
+            ),
+            (
+                ControlledGenerationTerminationUnconfirmedError("transport termination unconfirmed"),
+                "process_task",
+                None,
+            ),
+        ],
+        ids=["deadline", "transport"],
+    )
+    async def test_unconfirmed_controlled_termination_is_terminal_without_retry(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+        failure: ControlledGenerationTerminationUnconfirmedError,
+        expected_operation: str,
+        expected_cause_code: str | None,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        sandbox_entries = 0
+        observed_task_containment: list[Any] = []
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_entries
+            sandbox_entries += 1
+            sandbox = AsyncMock()
+            sandbox.id = f"mock-sandbox-{sandbox_entries}"
+            sandbox.name = sandbox.id
+            yield sandbox
+
+        async def _mock_run_agent(*_args: Any, **kwargs: Any) -> tuple[None, float]:
+            observed_task_containment.append(kwargs["task_generation_containment"])
+            raise failure
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            response = make_retrieve_task_response(problem_path="/tmp/problem.txt")
+            cast(Any, response).generation_containment = GenerationContainment(type="linux_pid_namespace", version=1)
+            response.sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=3)
+            return response
+
+        evaluate_instance = AsyncMock(return_value={"status": "success", "score": 1.0})
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
+        monkeypatch.setattr(task_execution_module, "create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(task_execution_module, "run_agent", _mock_run_agent)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate_instance)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert result == {"task_0": None}
+        assert sandbox_entries == 1
+        assert [item.model_dump() for item in observed_task_containment] == [
+            {"type": "linux_pid_namespace", "version": 1}
+        ]
+        evaluate_instance.assert_not_awaited()
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error = database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).one()
+        assert error.producer == "tracker"
+        assert error.operation == expected_operation
+        assert error.cause_code == expected_cause_code
+        assert error.retry_scheduled is False
 
     async def test_eval_resume_loads_recovery_policy_before_handling_sandbox_loss(
         self,

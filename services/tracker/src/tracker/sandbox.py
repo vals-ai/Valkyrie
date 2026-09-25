@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import math
 import shlex
 import time
 import uuid
@@ -9,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, AsyncGenerator, Literal, assert_never
+from typing import Any, AsyncGenerator, Literal, Never, Protocol, assert_never, cast
 
 import logfire
 import sentry_sdk
@@ -45,15 +46,24 @@ from tenacity import (
 
 from tracker.runtime.artifacts import benchmark_agent_bundle_key, task_artifact_key
 from tracker.runtime.storage import ObjectStore
+from tracker.external_service_gateway import (
+    ArbitrationDecision,
+    ExternalServiceAccountingSummary,
+    ExternalServiceDeadlineController,
+)
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
     AgentContractRequest,
+    GenerationContainment,
     OutputArtifactSpec,
 )
 from tracker.exceptions import (
     AgentRunFailedError,
+    ControlledGenerationError,
+    ControlledGenerationTerminationUnconfirmedError,
     DependencySetupExhaustedError,
+    GenerationTerminationUnconfirmedError,
     InvalidSandboxConfigurationError,
     OutputArtifactError,
     SandboxError,
@@ -76,7 +86,35 @@ bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
+# The 20-second post-deadline window includes at most 10 seconds for gateway arbitration;
+# the remaining time is reserved for confirmed workload termination.
+GENERATION_ARBITRATION_GRACE_SECONDS = 10.0
+GENERATION_TERMINATION_GRACE_SECONDS = 20.0
+EXTERNAL_SERVICE_REFRESH_LEAD_SECONDS = 60.0
+EXTERNAL_SERVICE_REFRESH_RETRY_SECONDS = 1.0
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
+
+
+class _ControlledWorkloadResult(Protocol):
+    result: ExecResult
+    absence_confirmed_at: float
+
+
+class _ControlledWorkload(Protocol):
+    def output(self) -> AsyncGenerator[str, None]: ...
+
+    async def wait(self) -> _ControlledWorkloadResult: ...
+
+    async def kill(self) -> None: ...
+
+
+class _ControlledSandbox(Protocol):
+    @property
+    def generation_containment(self) -> GenerationContainment | None: ...
+
+    async def probe_generation_containment(self) -> None: ...
+
+    def controlled_workload(self, command: str, *, cwd: str | None = None) -> _ControlledWorkload: ...
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -606,6 +644,302 @@ async def stream_command_output(
             pass
 
 
+def _controlled_completion_precedes_deadline(result: _ControlledWorkloadResult, deadline: float) -> bool:
+    return result.absence_confirmed_at < deadline
+
+
+def _controlled_result_outcome(
+    completed: _ControlledWorkloadResult, started_at: float
+) -> tuple[AgentCausedExitReason | None, float]:
+    duration = max(0.0, completed.absence_confirmed_at - started_at)
+    exit_code = completed.result.exit_code
+    if exit_code == _SUCCESS_EXIT_CODE:
+        return None, duration
+    if exit_code == _OS_KILL_EXIT_CODE:
+        return AgentCausedExitReason.OS_KILLED, duration
+    sentry_sdk.set_tag("agent_exit_code", str(exit_code))
+    raise AgentRunFailedError(f"Agent command failed with exit code {exit_code}")
+
+
+async def _pump_controlled_output(workload: _ControlledWorkload, on_output: Callable[[str], None]) -> None:
+    async for data in workload.output():
+        on_output(data)
+
+
+async def _raise_controlled_failure_after_close(workload: _ControlledWorkload, error: BaseException) -> Never:
+    try:
+        await workload.kill()
+    except BaseException as kill_error:
+        raise ControlledGenerationTerminationUnconfirmedError(
+            "Controlled generation failed and workload termination could not be confirmed"
+        ) from kill_error
+    raise ControlledGenerationError("Controlled generation failed after workload construction") from error
+
+
+async def _finish_controlled_output(workload: _ControlledWorkload, output_task: asyncio.Task[None]) -> None:
+    try:
+        # A naturally completed producer has a finite buffered tail to drain.
+        await output_task
+    except Exception as error:
+        await _raise_controlled_failure_after_close(workload, error)
+
+
+async def _controlled_wait_result(
+    workload: _ControlledWorkload, wait_task: asyncio.Task[_ControlledWorkloadResult]
+) -> _ControlledWorkloadResult:
+    try:
+        return wait_task.result()
+    except BaseException as error:
+        await _raise_controlled_failure_after_close(workload, error)
+
+
+async def _cancel_and_join_controlled_tasks(*tasks: asyncio.Task[Any]) -> None:
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _stream_controlled_output(
+    sandbox: Sandbox,
+    command: str,
+    cwd: str,
+    on_output: Callable[[str], None],
+    timeout: float,
+    deadline_controller: ExternalServiceDeadlineController | None = None,
+    on_accounting_sealed: (Callable[[ExternalServiceAccountingSummary], Awaitable[None]] | None) = None,
+) -> tuple[AgentCausedExitReason | None, float]:
+    event_loop = asyncio.get_running_loop()
+    started_at = event_loop.time()
+    deadline = deadline_controller.deadline(started_at) if deadline_controller is not None else started_at + timeout
+    controlled_sandbox = cast(_ControlledSandbox, sandbox)
+    workload = controlled_sandbox.controlled_workload(command, cwd=cwd)
+    output_task = asyncio.create_task(_pump_controlled_output(workload, on_output))
+    wait_task = asyncio.create_task(workload.wait())
+
+    async def wait_for_deadline(target_deadline: float) -> None:
+        nonlocal deadline
+        if deadline_controller is None:
+            await asyncio.sleep(max(0.0, target_deadline - event_loop.time()))
+            return
+
+        while True:
+            refresh_at = target_deadline - EXTERNAL_SERVICE_REFRESH_LEAD_SECONDS
+            await asyncio.sleep(max(0.0, refresh_at - event_loop.time()))
+            if event_loop.time() >= target_deadline:
+                return
+
+            while event_loop.time() < target_deadline:
+                try:
+                    async with asyncio.timeout_at(target_deadline):
+                        snapshot = await deadline_controller.refresh()
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except TimeoutError:
+                    return
+                except Exception:
+                    remaining = target_deadline - event_loop.time()
+                    if remaining <= 0:
+                        return
+                    await asyncio.sleep(min(EXTERNAL_SERVICE_REFRESH_RETRY_SECONDS, remaining))
+            else:
+                return
+
+            deadline = deadline_controller.deadline(started_at, snapshot)
+            if deadline <= target_deadline:
+                await asyncio.sleep(max(0.0, deadline - event_loop.time()))
+                return
+            target_deadline = deadline
+
+    async def consume_deadline_task() -> None:
+        if not deadline_task.done():
+            deadline_task.cancel()
+        await asyncio.gather(deadline_task, return_exceptions=True)
+
+    async def terminate_at_deadline(apparent_deadline: float) -> None:
+        try:
+            async with asyncio.timeout_at(apparent_deadline + GENERATION_TERMINATION_GRACE_SECONDS):
+                await workload.kill()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            raise GenerationTerminationUnconfirmedError(
+                "Generation deadline expired without confirmed workload termination"
+            ) from error
+
+    async def propagate_control_error(error: BaseException, apparent_deadline: float) -> Never:
+        await terminate_at_deadline(apparent_deadline)
+        await _cancel_and_join_controlled_tasks(wait_task)
+        # Preserve the control failure after draining output from confirmed absence.
+        await asyncio.gather(output_task, return_exceptions=True)
+        raise error
+
+    async def seal_natural_completion() -> None:
+        if deadline_controller is None:
+            return
+        assert on_accounting_sealed is not None
+        await deadline_controller.begin_arbitration()
+        sealed = await deadline_controller.resolve(ArbitrationDecision.SEAL)
+        await on_accounting_sealed(deadline_controller.summary(sealed))
+
+    deadline_task = asyncio.create_task(wait_for_deadline(deadline))
+    output_complete = False
+    sealed_summary: ExternalServiceAccountingSummary | None = None
+    try:
+        while True:
+            watched: set[asyncio.Task[Any]] = {wait_task, deadline_task}
+            if not output_complete:
+                watched.add(output_task)
+            done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+
+            if output_task in done:
+                output_error = output_task.exception()
+                if output_error is not None:
+                    await _raise_controlled_failure_after_close(workload, output_error)
+                output_complete = True
+
+            if wait_task in done:
+                completed = await _controlled_wait_result(workload, wait_task)
+                if _controlled_completion_precedes_deadline(completed, deadline):
+                    await consume_deadline_task()
+                    await seal_natural_completion()
+                    await _finish_controlled_output(workload, output_task)
+                    return _controlled_result_outcome(completed, started_at)
+
+            if deadline_task in done:
+                apparent_deadline = deadline
+                try:
+                    await deadline_task
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as control_error:
+                    await propagate_control_error(control_error, apparent_deadline)
+
+                if wait_task.done():
+                    completed = await _controlled_wait_result(workload, wait_task)
+                    if _controlled_completion_precedes_deadline(completed, deadline):
+                        await seal_natural_completion()
+                        await _finish_controlled_output(workload, output_task)
+                        return _controlled_result_outcome(completed, started_at)
+
+                if deadline_controller is not None:
+                    assert on_accounting_sealed is not None
+                    try:
+                        arbitration_deadline = apparent_deadline + GENERATION_ARBITRATION_GRACE_SECONDS
+                        async with asyncio.timeout_at(arbitration_deadline):
+                            frozen = await deadline_controller.begin_arbitration()
+                        frozen_deadline = deadline_controller.deadline(started_at, frozen)
+
+                        if wait_task.done():
+                            completed = await _controlled_wait_result(workload, wait_task)
+                            if _controlled_completion_precedes_deadline(completed, frozen_deadline):
+                                async with asyncio.timeout_at(arbitration_deadline):
+                                    sealed = await deadline_controller.resolve(ArbitrationDecision.SEAL)
+                                await on_accounting_sealed(deadline_controller.summary(sealed))
+                                await _finish_controlled_output(workload, output_task)
+                                return _controlled_result_outcome(completed, started_at)
+
+                        if frozen_deadline > event_loop.time():
+                            async with asyncio.timeout_at(arbitration_deadline):
+                                await deadline_controller.resolve(ArbitrationDecision.RESUME)
+                            # A new window starts only after the gateway acknowledges RESUME.
+                            deadline = frozen_deadline
+                            deadline_task = asyncio.create_task(wait_for_deadline(deadline))
+                            continue
+
+                        async with asyncio.timeout_at(arbitration_deadline):
+                            sealed = await deadline_controller.resolve(ArbitrationDecision.SEAL)
+                        deadline = frozen_deadline
+                        sealed_summary = deadline_controller.summary(sealed)
+                        if wait_task.done():
+                            completed = await _controlled_wait_result(workload, wait_task)
+                            if _controlled_completion_precedes_deadline(completed, deadline):
+                                await on_accounting_sealed(sealed_summary)
+                                await _finish_controlled_output(workload, output_task)
+                                return _controlled_result_outcome(completed, started_at)
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException as control_error:
+                        await propagate_control_error(control_error, apparent_deadline)
+                break
+
+        await terminate_at_deadline(apparent_deadline)
+        await _cancel_and_join_controlled_tasks(wait_task)
+        # A confirmed CBS close finishes the active iterator after buffered output.
+        await output_task
+        if sealed_summary is not None:
+            assert on_accounting_sealed is not None
+            await on_accounting_sealed(sealed_summary)
+        effective_timeout = deadline - started_at if deadline_controller is not None else timeout
+        return AgentCausedExitReason.TIMEOUT, effective_timeout
+    except ControlledGenerationError:
+        await _cancel_and_join_controlled_tasks(wait_task, output_task)
+        raise
+    except asyncio.CancelledError:
+        kill_error: BaseException | None = None
+        try:
+            await asyncio.shield(workload.kill())
+        except BaseException as error:
+            kill_error = error
+        await _cancel_and_join_controlled_tasks(wait_task, output_task)
+        if kill_error is not None:
+            raise ControlledGenerationTerminationUnconfirmedError(
+                "Controlled generation was cancelled and workload termination could not be confirmed"
+            ) from kill_error
+        raise
+    except BaseException:
+        await _cancel_and_join_controlled_tasks(wait_task, output_task)
+        raise
+    finally:
+        await consume_deadline_task()
+
+
+async def _stream_controlled_output_with_egress_allowlist(
+    sandbox: Sandbox,
+    command: str,
+    cwd: str,
+    on_output: Callable[[str], None],
+    allowed_addresses: list[str],
+    timeout: float,
+    deadline_controller: ExternalServiceDeadlineController | None = None,
+    on_accounting_sealed: (Callable[[ExternalServiceAccountingSummary], Awaitable[None]] | None) = None,
+) -> tuple[AgentCausedExitReason | None, float]:
+    if not allowed_addresses:
+        return await _stream_controlled_output(
+            sandbox,
+            command,
+            cwd,
+            on_output,
+            timeout,
+            deadline_controller,
+            on_accounting_sealed,
+        )
+
+    command_completed = False
+    termination_unconfirmed = False
+    try:
+        await _apply_egress_allowlist(sandbox, allowed_addresses)
+        try:
+            result = await _stream_controlled_output(
+                sandbox,
+                command,
+                cwd,
+                on_output,
+                timeout,
+                deadline_controller,
+                on_accounting_sealed,
+            )
+        except ControlledGenerationTerminationUnconfirmedError:
+            termination_unconfirmed = True
+            raise
+        command_completed = True
+        return result
+    finally:
+        if not termination_unconfirmed:
+            await _clear_egress_allowlist(sandbox, fail_on_error=command_completed)
+
+
 async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:
     """Read the sandbox-side command duration, degrading to ``fallback`` on any failure."""
     start_result = await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")
@@ -829,6 +1163,30 @@ async def _upload_output_artifact(
     return new_total_bytes
 
 
+def _controlled_generation_selected(
+    contract: AgentContractRequest,
+    task_containment: GenerationContainment | None,
+    agent_timeout: float | None,
+) -> bool:
+    if agent_timeout is None:
+        return False
+
+    agent_containment = contract.generation_containment
+    if (
+        agent_containment is None
+        or task_containment is None
+        or agent_containment.type != "linux_pid_namespace"
+        or task_containment.type != "linux_pid_namespace"
+        or agent_containment.version != 1
+        or task_containment.version != 1
+    ):
+        return False
+
+    if not math.isfinite(agent_timeout) or agent_timeout <= 0:
+        raise InvalidSandboxConfigurationError("Controlled generation requires a positive finite agent timeout")
+    return True
+
+
 async def run_agent(
     sandbox: Sandbox,
     contract: AgentContractRequest,
@@ -839,10 +1197,13 @@ async def run_agent(
     object_store: ObjectStore,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
+    task_generation_containment: GenerationContainment | None = None,
     benchmark_id: str | None = None,
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
     execution_is_current: Callable[[], bool] | None = None,
+    external_service_deadline: ExternalServiceDeadlineController | None = None,
+    on_external_service_sealed: (Callable[[ExternalServiceAccountingSummary], Awaitable[None]] | None) = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -855,8 +1216,11 @@ async def run_agent(
         cwd: Working directory to run the agent in
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
+        task_generation_containment: Optional benchmark declaration used for bilateral activation
         runtime_source: Optional source used to adapt agent commands to the task runtime
         execution_is_current: Optional execution-authority check before output uploads
+        external_service_deadline: Optional Tracker-owned cumulative deadline controller
+        on_external_service_sealed: Awaited persistence callback after workload absence
 
     Returns:
         AgentCausedExitReason if the agent was terminated abnormally but recoverably
@@ -868,16 +1232,28 @@ async def run_agent(
     log_output(f"Running agent {contract.name}")
     if runtime_source is not None:
         sandbox = runtime_sandbox(sandbox, runtime_source)
+    controlled_generation = _controlled_generation_selected(contract, task_generation_containment, agent_timeout)
 
     await install_agent_dependencies(sandbox, contract, log_output, dependency_setup_mode)
+
+    if controlled_generation:
+        controlled_sandbox = cast(_ControlledSandbox, sandbox)
+        runtime_containment = controlled_sandbox.generation_containment
+        if (
+            runtime_containment is None
+            or runtime_containment.type != "linux_pid_namespace"
+            or runtime_containment.version != 1
+        ):
+            raise InvalidSandboxConfigurationError("Effective sandbox does not support linux_pid_namespace v1")
+        await controlled_sandbox.probe_generation_containment()
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
     for kwarg_key, kwarg_value in contract.kwargs.items():
         run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
 
-    # Apply timeout if specified
-    if agent_timeout is not None:
+    # Legacy paths preserve the benchmark-provided shell timeout.
+    if agent_timeout is not None and not controlled_generation:
         run_cmd = f"timeout {agent_timeout:g} sh -c {shlex.quote(run_cmd)}"
 
     # Create cwd if it does not already exist
@@ -944,13 +1320,33 @@ async def run_agent(
     # A nonzero exit is terminal evidence; collect declared outputs while the
     # sandbox is still available.
     try:
-        exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
-            sandbox,
-            f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
-            log_output,
-            contract.egress_allowlist,
-        )
+        if controlled_generation:
+            assert agent_timeout is not None
+            exit_reason, agent_run_time = await _stream_controlled_output_with_egress_allowlist(
+                sandbox,
+                f"PYTHONSAFEPATH=1 {run_cmd}",
+                cwd,
+                log_output,
+                contract.egress_allowlist,
+                agent_timeout,
+                external_service_deadline,
+                on_external_service_sealed,
+            )
+        else:
+            exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+                sandbox,
+                f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+                log_output,
+                contract.egress_allowlist,
+            )
+    except ControlledGenerationError:
+        raise
+    except AgentRunFailedError:
+        await upload_outputs(preserve_agent_error=True)
+        raise
     except Exception:
+        if external_service_deadline is not None:
+            raise
         await upload_outputs(preserve_agent_error=True)
         raise
 

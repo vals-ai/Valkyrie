@@ -5,6 +5,7 @@ from valkyrie.sdk.models.agents import (
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
+    GenerationContainment,
     OutputArtifact,
     OutputArtifactSpec,
 )
@@ -15,6 +16,7 @@ from valkyrie.sdk.models.benchmarks import (
     SingleBenchmarkResponse,
     SingleTaskResponse,
     TaskArtifactsResponse,
+    TaskBreakdown,
     TasksResponse,
     TaskSummary,
 )
@@ -108,6 +110,7 @@ __all__ = [
     "LogEvent",
     "LogPage",
     "Order",
+    "GenerationContainment",
     "OutputArtifact",
     "OutputArtifactSpec",
     "RetrieveResultsResponse",
@@ -133,6 +136,7 @@ __all__ = [
     "UpdateBenchmarkConcurrencyResponse",
     "TaskStatus",
     "TaskArtifactsResponse",
+    "TaskBreakdown",
     "TaskIDsResponse",
     "TasksResponse",
     "TaskSummary",
