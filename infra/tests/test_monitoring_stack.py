@@ -252,6 +252,99 @@ def service_templates(
 
 
 class MonitoringStackTest(unittest.TestCase):
+    def test_dev_catalog_defaults_to_registry_ssm_parameter(self) -> None:
+        for configured in (None, "", "  "):
+            with self.subTest(configured=configured):
+                environment = dict(TEST_DEV_ENV)
+                if configured is not None:
+                    environment["BENCHMARK_CATALOG_URL"] = configured
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    tracker, _, _ = service_templates(DEV)
+                parameters = tracker.to_json().get("Parameters", {})
+                catalog_parameters = [
+                    key
+                    for key, value in parameters.items()
+                    if value.get("Type") == "AWS::SSM::Parameter::Value<String>"
+                    and value.get("Default") == "/benchmark-services/dev/catalog-api-url"
+                ]
+                self.assertEqual(len(catalog_parameters), 1)
+                tracker.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [
+                                assertions.Match.object_like(
+                                    {
+                                        "Environment": assertions.Match.array_with(
+                                            [
+                                                {
+                                                    "Name": "BENCHMARK_CATALOG_URL",
+                                                    "Value": {"Ref": catalog_parameters[0]},
+                                                }
+                                            ]
+                                        ),
+                                    }
+                                ),
+                            ]
+                        ),
+                    },
+                )
+
+    def test_explicit_dev_catalog_override_is_preserved(self) -> None:
+        with mock.patch.dict(
+            os.environ, {**TEST_DEV_ENV, "BENCHMARK_CATALOG_URL": "https://custom.example"}, clear=True
+        ):
+            tracker, _, _ = service_templates(DEV)
+        self.assertNotIn("/benchmark-services/dev/catalog-api-url", json.dumps(tracker.to_json()))
+        tracker.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {
+                "ContainerDefinitions": assertions.Match.array_with(
+                    [
+                        assertions.Match.object_like(
+                            {
+                                "Environment": assertions.Match.array_with(
+                                    [
+                                        {"Name": "BENCHMARK_CATALOG_URL", "Value": "https://custom.example"},
+                                    ]
+                                )
+                            }
+                        ),
+                    ]
+                )
+            },
+        )
+
+    def test_catalog_ssm_default_is_dev_only(self) -> None:
+        for stage_name, environment in (
+            (BENCH, TEST_BENCH_ENV),
+            (PROD, TEST_PROD_ENV),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
+        ):
+            with self.subTest(stage=stage_name):
+                without_catalog = {k: v for k, v in environment.items() if k != "BENCHMARK_CATALOG_URL"}
+                with mock.patch.dict(os.environ, without_catalog, clear=True):
+                    tracker, _, _ = service_templates(stage_name)
+                self.assertNotIn("/benchmark-services/dev/catalog-api-url", json.dumps(tracker.to_json()))
+                tracker.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [
+                                assertions.Match.object_like(
+                                    {
+                                        "Environment": assertions.Match.array_with(
+                                            [
+                                                {"Name": "BENCHMARK_CATALOG_URL", "Value": ""},
+                                            ]
+                                        )
+                                    }
+                                ),
+                            ]
+                        )
+                    },
+                )
+
     def test_managed_storage_environment_map_defaults_closed_and_is_immutable(self) -> None:
         with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=True):
             managed_aws = config_for(Stage(BENCH)).managed_aws
