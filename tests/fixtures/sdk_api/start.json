@@ -16,6 +16,7 @@
         }
       ],
       "egress_allowlist": [],
+      "install_egress": null,
       "secrets": {
         "ANTHROPIC_API_KEY": "AnthropicSecret"
       },

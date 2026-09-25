@@ -638,11 +638,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
-        monkeypatch.setattr(
-            sandbox_module,
-            "_stream_command_output_with_egress_allowlist",
-            _mock_stream_command_output,
-        )
+        monkeypatch.setattr(sandbox_module, "stream_command_output", _mock_stream_command_output)
         monkeypatch.setattr(sandbox_module, "_exec", _mock_exec)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _mock_write_benchmark_log_event)
 

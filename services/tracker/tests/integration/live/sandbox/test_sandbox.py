@@ -21,8 +21,10 @@ from tests.utils import random_task_id
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
+from tracker.egress import combine_run_egress_policies
 from tracker.exceptions import SandboxError
 from tracker.sandbox import (
+    apply_egress_policy,
     create_sandbox,
     install_agent_dependencies,
     run_agent,
@@ -281,19 +283,14 @@ class TestSandboxOperations:
         assert "line2" in output
         assert "line3" in output
 
-    async def test_run_agent_applies_egress_allowlist_and_restores_egress(
+    async def test_run_policy_allowlist_then_unrestricted_transition(
         self,
         test_sandbox: Sandbox,
         harness_config: HarnessConfig,
         egress_allowlist_probe_command: str,
         restored_egress_probe_command: str,
     ) -> None:
-        """Verify real provider egress rules are scoped to the agent command.
-
-        Test cases:
-        - The agent can request the allowlisted URL host but not an off-list host.
-        - The off-list host is reachable again after run_agent clears egress rules.
-        """
+        """Verify real provider allowlist and unrestricted stage transitions."""
         logged_messages: list[str] = []
 
         def log_callback(message: str) -> None:
@@ -310,6 +307,10 @@ class TestSandboxOperations:
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
         object_store = S3ObjectStore(aws_runtime)
 
+        await apply_egress_policy(
+            test_sandbox,
+            combine_run_egress_policies(None, contract.egress_allowlist),
+        )
         await run_agent(
             test_sandbox,
             contract,
@@ -323,6 +324,7 @@ class TestSandboxOperations:
         output = "\n".join(logged_messages)
         assert "allowed=True blocked=False" in output
 
+        await apply_egress_policy(test_sandbox, "*")
         restored_result = await test_sandbox.exec(restored_egress_probe_command)
         assert restored_result.exit_code == 0
         assert "restored=True" in restored_result.stdout

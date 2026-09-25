@@ -29,6 +29,43 @@ def load_fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def test_agent_contract_serializes_install_egress() -> None:
+    legacy_contract = AgentContractRequest(name="legacy")
+    staged_contract = AgentContractRequest(
+        name="staged",
+        install_egress=["https://packages.example.com"],
+    )
+
+    assert legacy_contract.model_dump(mode="json")["install_egress"] is None
+    assert staged_contract.model_dump(mode="json")["install_egress"] == ["https://packages.example.com"]
+
+
+@pytest.mark.parametrize(
+    "policy",
+    ["packages.example.com", ["packages.example.com", 1], {"install": "*"}],
+)
+def test_agent_contract_rejects_invalid_install_egress(policy: object) -> None:
+    with pytest.raises(ValidationError):
+        AgentContractRequest.model_validate({"name": "agent", "install_egress": policy})
+
+
+def test_agent_contract_allows_install_and_legacy_run_egress_together() -> None:
+    contract = AgentContractRequest(
+        name="combined",
+        egress_allowlist=["legacy.example.com"],
+        install_egress=["packages.example.com"],
+    )
+
+    assert contract.egress_allowlist == ["legacy.example.com"]
+    assert contract.install_egress == ["packages.example.com"]
+
+
+@pytest.mark.parametrize("egress", [None, {"install": "*"}, {"run": []}])
+def test_agent_contract_rejects_obsolete_egress(egress: object) -> None:
+    with pytest.raises(ValidationError, match="install_egress"):
+        AgentContractRequest.model_validate({"name": "agent", "egress": egress})
+
+
 def test_agent_contract_normalizes_output_artifacts() -> None:
     contract = AgentContractRequest(
         name="agent",
