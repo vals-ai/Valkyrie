@@ -651,6 +651,9 @@ async def _start_benchmark(
                     "environment": "local",
                     "sandbox_provider": "docker",
                     "properties": local_config.resources,
+                    # Clients fill these from their cloud configuration; a local Tracker never uses them.
+                    "harness_config": None,
+                    "sandbox_provider_secret_name": None,
                 }
             )
         except ValueError as error:

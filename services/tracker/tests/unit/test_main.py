@@ -3321,10 +3321,12 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
 async def test_local_start_persists_server_root_without_credentials(
     tmp_path: Path,
     contract: AgentContractRequest,
+    harness_config: HarnessConfig,
     monkeypatch: MonkeyPatch,
     database_session: Session,
     mock_kicker: Any,
 ) -> None:
+    """A local Tracker starts a Docker run from a client that still sends its cloud configuration."""
     from tracker.local import config as local_config
     from tracker.local.resources import LocalResources
 
@@ -3335,7 +3337,12 @@ async def test_local_start_persists_server_root_without_credentials(
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
     monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
     contract = contract.model_copy(update={"secrets": {"MODEL_KEY": "model-key"}})
-    request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench")
+    request = StartBenchmarkRequest(
+        contract=contract,
+        benchmark_name="swebench",
+        harness_config=harness_config,
+        sandbox_provider_secret_name="DaytonaSecrets",
+    )
 
     response = local_client.post("/start-benchmark", json=request.model_dump(mode="json"))
 
@@ -3345,13 +3352,17 @@ async def test_local_start_persists_server_root_without_credentials(
     assert benchmark is not None
     assert benchmark.arguments.environment == "local"
     assert benchmark.arguments.sandbox_provider == "docker"
+    assert benchmark.arguments.sandbox_provider_secret_name is None
     assert benchmark.arguments.properties == root
     assert not benchmark.aws_managed
     assert "local-model-key" not in benchmark.model_dump_json()
+    assert harness_config.aws.aws_secret_access_key not in benchmark.model_dump_json()
     payload = mock_kicker.queued_calls[0]
     queued_request = payload["start_benchmark_request_json"]
     assert queued_request["properties"] == root.model_dump(mode="json")
+    assert queued_request["harness_config"] is None
     assert "local-model-key" not in str(payload)
+    assert harness_config.aws.aws_secret_access_key not in str(payload)
     resumed_request = benchmark.local_start_benchmark_request(service_headers={})
     assert resumed_request.properties == root
     assert resumed_request.contract.secrets == {"MODEL_KEY": "model-key"}
