@@ -808,11 +808,15 @@ async def _upload_output_artifact(
         return None
 
     s3_key = task_artifact_key(benchmark_id, task_id, artifact_path)
-    await object_store.put_stream(
-        s3_key,
-        sandbox.stream_download(sandbox_path),
-        should_continue=execution_is_current,
-    )
+    if artifact_bytes == 0:
+        # Providers may report an empty file as a failed transfer; Daytona raises "No file data received".
+        await object_store.put_bytes(s3_key, b"")
+    else:
+        await object_store.put_stream(
+            s3_key,
+            sandbox.stream_download(sandbox_path),
+            should_continue=execution_is_current,
+        )
 
     logger.info(
         "output_artifact.upload.complete",

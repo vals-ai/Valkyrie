@@ -158,6 +158,44 @@ class TestOutputArtifacts:
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
         assert store.put_stream.await_args.kwargs["should_continue"] is execution_is_current
 
+    async def test_upload_output_artifacts_uploads_empty_file_without_streaming(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        """A zero-byte required artifact lands as an empty object.
+
+        Daytona's streaming download raises "No file data received" on an empty file,
+        which used to fail the required artifact and leave it missing from S3.
+        """
+        store = _mock_object_store()
+        artifact = "artifacts/turns.jsonl"
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="")
+            if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="0")
+            raise AssertionError(f"unexpected command: {command}")
+
+        def stream_download(remote_path: str) -> AsyncIterator[bytes]:
+            async def chunks() -> AsyncIterator[bytes]:
+                raise ProviderSandboxError(f"No file data received for: {remote_path}")
+                yield b""
+
+            return chunks()
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.stream_download = stream_download
+
+        await upload_output_artifacts(mock_sandbox, [artifact], "benchmark-123", "task_0", store)
+
+        store.put_bytes.assert_awaited_once_with("benchmarks/benchmark-123/task_0/artifacts/turns.jsonl", b"")
+        store.put_stream.assert_not_awaited()
+
     async def test_upload_output_artifacts_skips_upload_when_authority_revoked(
         self,
         monkeypatch: pytest.MonkeyPatch,
