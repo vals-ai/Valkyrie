@@ -88,7 +88,7 @@ def _parse_response(response: Response, action: str) -> Any:
     except ValueError as error:
         content_type = response.headers.get("content-type", "unknown")
         raise TrackerServiceError(
-            f"{action}: tracker returned a non-JSON response (content-type {content_type}) from {response.url}"
+            f"{action}: tracker returned a non-JSON response (content-type {content_type}) from {response.url.path}"
         ) from error
 
 
