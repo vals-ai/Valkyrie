@@ -28,12 +28,33 @@ def test_openapi_declares_authentication() -> None:
             "in": "header",
             "name": "x-api-key",
         },
+        "ExecutorDispatchAuth": {
+            "type": "http",
+            "scheme": "bearer",
+        },
     }
     assert schema["security"] == [{"BearerAuth": []}, {"ApiKeyAuth": []}]
     assert schema["paths"]["/health"]["get"]["security"] == []
     assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] == [{"ApiKeyAuth": []}]
+    for operation in (
+        "claim",
+        "authority",
+        "heartbeat",
+        "finish",
+        "fail",
+        "run/initialize",
+        "run/state",
+        "run/finalization",
+        "run/finalize",
+        "run/report",
+    ):
+        path = f"/internal/executor/v1/dispatches/{{dispatch_id}}/{operation}"
+        assert schema["paths"][path]["post"]["security"] == [{"ExecutorDispatchAuth": []}]
+    for operation in ("claim", "write", "queue/reserve", "queue/release"):
+        path = f"/internal/executor/v1/dispatches/{{dispatch_id}}/tasks/{{task_id}}/{operation}"
+        assert schema["paths"][path]["post"]["security"] == [{"ExecutorDispatchAuth": []}]
 
 
 def test_openapi_declares_required_harness_headers() -> None:

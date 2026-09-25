@@ -93,13 +93,14 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     postgres_session.commit()
 
     url = postgres_engine.url
-    assert url.host is not None
+    host = url.query.get("host", url.host)
+    assert isinstance(host, str)
     assert url.port is not None
     assert url.database is not None
     assert url.username is not None
     assert url.password is not None
     store = PostgresExecutorDispatchStore(
-        host=url.host,
+        host=host,
         port=str(url.port),
         dbname=url.database,
         user=url.username,

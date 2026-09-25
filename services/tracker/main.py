@@ -28,6 +28,7 @@ from sqlmodel import Session, col, select, update
 from tracker import config
 from tracker._lambda import invoke_lambda
 from tracker.api.agents import router as agents_router
+from tracker.executor_api.v1.router import router as executor_v1_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
@@ -120,7 +121,12 @@ from tracker.docent_analysis import (
 from tracker.exceptions import TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker.logging import configure_logging, get_logger, request_id_var
-from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
+from tracker.executor.release_control import (
+    MaintenanceModeError,
+    QueuePoolBusyError,
+    ReleaseControlError,
+    lock_executor_admission,
+)
 from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
@@ -213,6 +219,7 @@ logfire.instrument_fastapi(app, excluded_urls="/health$")
 app.add_middleware(RequestContextMiddleware)
 
 app.include_router(agents_router)
+app.include_router(executor_v1_router)
 app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
 app.include_router(filter_options_router)
@@ -1960,7 +1967,7 @@ def _apply_recovery(
         session.rollback()
         status_code = (
             503
-            if isinstance(exc, MaintenanceModeError)
+            if isinstance(exc, (MaintenanceModeError, QueuePoolBusyError))
             else (409 if pre_action_status == BenchmarkStatus.IN_PROGRESS else 503)
         )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

@@ -37,18 +37,20 @@ HARNESS_OPERATIONS = (
 
 def build_openapi() -> dict[str, Any]:
     schema = deepcopy(app.openapi())
-    schema["components"]["securitySchemes"] = {
-        "BearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-        },
-        "ApiKeyAuth": {
-            "type": "apiKey",
-            "in": "header",
-            "name": "x-api-key",
-        },
-    }
+    schema["components"].setdefault("securitySchemes", {}).update(
+        {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            },
+            "ApiKeyAuth": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "x-api-key",
+            },
+        }
+    )
     schema["components"]["parameters"] = {
         component: {
             "name": header,

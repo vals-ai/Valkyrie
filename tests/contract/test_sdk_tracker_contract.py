@@ -236,6 +236,20 @@ INTERNAL_ROUTES = {
     ("/aws-runtime", "get"),
     ("/health", "get"),
     ("/init", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/claim", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/authority", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/heartbeat", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/finish", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/fail", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/run/initialize", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/run/state", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/run/finalization", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/run/finalize", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/run/report", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/claim", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/write", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/queue/reserve", "post"),
+    ("/internal/executor/v1/dispatches/{dispatch_id}/tasks/{task_id}/queue/release", "post"),
 }
 
 

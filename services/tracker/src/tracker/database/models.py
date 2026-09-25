@@ -320,6 +320,58 @@ class ExecutorDispatch(SQLModel, table=True):
     failure_reason: str | None = None
 
 
+class ExecutorDispatchAccess(SQLModel, table=True):
+    """Dispatch-scoped API credentials and replay protection, separate from legacy claims."""
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id")
+    token_digest: str
+    claimant_id: UUID | None = None
+    terminal_operation: str | None = None
+    terminal_request_digest: str | None = None
+
+
+class ExecutorTaskAttempt(SQLModel, table=True):
+    """Exclusive executor ownership and write ordering for a task's current attempt."""
+
+    task_id: UUID = Field(primary_key=True, foreign_key="task.id", ondelete="CASCADE")
+    dispatch_id: UUID = Field(foreign_key="executordispatch.id", ondelete="CASCADE")
+    started_at: datetime
+    revision: int = 0
+
+
+class ExecutorTaskReceipt(SQLModel, table=True):
+    """Replay a committed task command without repeating its side effects."""
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id", ondelete="CASCADE")
+    command_id: UUID = Field(primary_key=True)
+    task_id: UUID = Field(foreign_key="task.id", ondelete="CASCADE")
+    request_digest: str
+    revision: int
+
+
+class ExecutorPoolReservation(SQLModel, table=True):
+    """Keep creation exclusive until its executor confirms the external operation settled.
+
+    No timeout or cascading delete may silently release an in-flight provider operation.
+    """
+
+    pool_id: str = Field(primary_key=True)
+    reservation_id: UUID
+    dispatch_id: UUID = Field(foreign_key="executordispatch.id")
+    task_id: UUID = Field(foreign_key="task.id")
+    started_at: datetime
+
+
+class ExecutorRunReceipt(SQLModel, table=True):
+    """Retain a finalization response across retries and later run attempts."""
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id", ondelete="CASCADE")
+    command_id: UUID = Field(primary_key=True)
+    request_digest: str
+    status: str
+    final_evaluation_id: UUID | None = None
+
+
 class Benchmark(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint(
