@@ -1,9 +1,11 @@
 name: Tracker live integration tests
 on:
-  # Runs on every PR so the required check is always reported. The guard below
-  # only assumes the AWS role and runs the live suite in trusted contexts (a
-  # prod-targeting PR or a maintainer's manual re-run); otherwise it reports
-  # success without minting credentials, preserving the manual-approval gate.
+  # Runs on every PR so the required check is always reported. PRs that don't
+  # touch services/tracker/ pass without running anything. PRs that do touch it
+  # only assume the AWS role and run the live suite in trusted contexts (a
+  # prod-targeting PR or a maintainer's manual re-run); on the first attempt of
+  # a non-prod PR the check FAILS so a maintainer must re-run it to go green.
+  # Fork PRs never receive secrets, so they pass with a warning instead.
   pull_request:
     types: [opened, reopened, synchronize]
 
@@ -27,6 +29,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.base_ref }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         run: |
           if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
             echo "Could not compute the PR diff; treating as tracker-relevant."
@@ -36,11 +39,15 @@ jobs:
             echo "No changes under services/tracker/; skipping live integration tests."
             echo "relevant=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::warning::Tracker changed in a fork PR; live tests cannot run without repository secrets. A maintainer must run them manually before merging."
+            echo "relevant=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           if [ "$BASE_REF" = "prod" ] || [ "${RUN_ATTEMPT:-1}" != "1" ]; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Tracker changed, but the live (AWS-credentialed) tests require a manual re-run on non-prod PRs; reporting success without running them."
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Tracker changed, but the live (AWS-credentialed) tests were not run. A maintainer must re-run this job (Re-run jobs) to execute them; failing instead of reporting a false pass."
+            exit 1
           fi
 
       - uses: actions/setup-python@v5
