@@ -835,7 +835,7 @@ async def _start_benchmark(
             selected_dataset = request.dataset or "default"
             try:
                 version_metadata = await benchmark_service.version(dataset=selected_dataset)
-                if version_metadata.dataset_version_pinning:
+                if version_metadata.dataset_version_selection:
                     resolved = await benchmark_service.resolve_dataset(
                         selected_dataset,
                         version=request.dataset_version if isinstance(request.dataset_version, str) else None,

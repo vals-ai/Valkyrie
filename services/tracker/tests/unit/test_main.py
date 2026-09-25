@@ -142,7 +142,7 @@ class TestTrackerAPI:
         async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
             assert dataset == "default"
 
-            return SimpleNamespace(dataset_version_pinning=True)
+            return SimpleNamespace(dataset_version_selection=True)
 
         async def resolve_dataset(
             _client: BenchmarkServiceClient, dataset: str, version: str | None = None
@@ -257,7 +257,7 @@ class TestTrackerAPI:
         async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
             assert dataset == "default"
 
-            return SimpleNamespace(dataset_version_pinning=False)
+            return SimpleNamespace(dataset_version_selection=False)
 
         monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)
