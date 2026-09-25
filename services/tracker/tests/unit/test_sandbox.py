@@ -163,13 +163,14 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
-        """A zero-byte required artifact lands as an empty object.
+        """A zero-byte required artifact lands as an empty object under the same authority check.
 
         Daytona's streaming download raises "No file data received" on an empty file,
         which used to fail the required artifact and leave it missing from S3.
         """
         store = _mock_object_store()
         artifact = "artifacts/turns.jsonl"
+        uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
@@ -186,15 +187,25 @@ class TestOutputArtifacts:
             return chunks()
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        _collect_put_stream(store, uploaded)
+
+        execution_is_current = Mock(return_value=True)
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
         mock_sandbox.stream_download = stream_download
 
-        await upload_output_artifacts(mock_sandbox, [artifact], "benchmark-123", "task_0", store)
+        await upload_output_artifacts(
+            mock_sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            store,
+            execution_is_current=execution_is_current,
+        )
 
-        store.put_bytes.assert_awaited_once_with("benchmarks/benchmark-123/task_0/artifacts/turns.jsonl", b"")
-        store.put_stream.assert_not_awaited()
+        assert uploaded == [(b"", "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
+        assert store.put_stream.await_args.kwargs["should_continue"] is execution_is_current
 
     async def test_upload_output_artifacts_skips_upload_when_authority_revoked(
         self,
