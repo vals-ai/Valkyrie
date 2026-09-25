@@ -10,4 +10,4 @@ prerelease = "allow"
 
 [tool.uv.sources]
 tracker = { path = "../tracker" }
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "ad24e92a108b6ab8b775e46b81e2da7d335d690e" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "28e0d3ccd7affa10bcb811e422797a3c8b279c57" }
