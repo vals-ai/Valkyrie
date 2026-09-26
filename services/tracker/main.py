@@ -1738,8 +1738,6 @@ async def retry_or_resume_benchmark(
             raise HTTPException(status_code=400, detail="Server has no local configuration")
         if lambda_function:
             raise HTTPException(status_code=400, detail="Local execution does not support AWS callbacks")
-        if update_agent:
-            raise HTTPException(status_code=400, detail="Local execution does not support --update-agent")
         access_key_harness_config = None
     else:
         runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
@@ -1770,25 +1768,30 @@ async def retry_or_resume_benchmark(
             await service.close()
     agent_copier: ObjectCopier | None = None
     if update_agent:
-        run_runtime = runtime_resolution.runtime
-        # Managed agent aliases live in the deployment library bucket; caller AWS headers never select it.
-        library_runtime = (
-            resolve_run_aws_runtime_and_access_key_config(http_request, aws_managed=True, org_id=org_id).runtime
-            if preparation.aws_managed
-            else run_runtime
-        )
-        library_store = S3ObjectStore(library_runtime)
-        source_key = agent_bundle_key(preparation.agent_name)
-        if not await library_store.exists(source_key):
+        library_store: ObjectStore
+        if isinstance(preparation.properties, LocalResources):
+            # A local run's agent aliases and frozen bundle share its data root.
+            library_store = LocalRuntimeFactory.create_runtime(preparation.properties.data_root, org_id).objects
+            agent_copier = library_store
+        else:
+            run_runtime = runtime_resolution.runtime
+            # Managed agent aliases live in the deployment library bucket; caller AWS headers never select it.
+            library_runtime = (
+                resolve_run_aws_runtime_and_access_key_config(http_request, aws_managed=True, org_id=org_id).runtime
+                if preparation.aws_managed
+                else run_runtime
+            )
+            library_store = S3ObjectStore(library_runtime)
+            agent_copier = (
+                S3ObjectCopier(library_runtime, run_runtime)
+                if library_runtime.resources.s3_bucket != run_runtime.resources.s3_bucket
+                else library_store
+            )
+        if not await library_store.exists(agent_bundle_key(preparation.agent_name)):
             raise HTTPException(
                 status_code=404,
                 detail=f"Agent {preparation.agent_name!r} was not found. Push the agent before using --update-agent.",
             )
-        agent_copier = (
-            S3ObjectCopier(library_runtime, run_runtime)
-            if library_runtime.resources.s3_bucket != run_runtime.resources.s3_bucket
-            else library_store
-        )
     commit_task = asyncio.create_task(
         asyncio.to_thread(
             _commit_recovery,

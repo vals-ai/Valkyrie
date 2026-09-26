@@ -3403,6 +3403,48 @@ async def test_local_start_rejects_invalid_root_before_admission(
     assert not mock_kicker.queued_calls
 
 
+async def test_local_resume_updates_agent_from_the_local_library(
+    tmp_path: Path,
+    example_benchmark_object: Benchmark,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+) -> None:
+    """A stopped local run's `--update-agent` copies the pushed agent into its frozen bundle on disk."""
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+    from tracker.local.runtime import LocalRuntimeFactory
+    from tracker.runtime.artifacts import agent_bundle_key, benchmark_agent_bundle_key
+
+    root = LocalResources(data_root=tmp_path / "server-root")
+    monkeypatch.setattr(local_config, "resources", root)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+    benchmark = example_benchmark_object
+    benchmark.status = BenchmarkStatus.STOPPED
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={
+            "environment": "local",
+            "sandbox_provider": "docker",
+            "sandbox_provider_secret_name": None,
+            "properties": root,
+        }
+    )
+    database_session.add(benchmark)
+    database_session.commit()
+    agent_name = benchmark.arguments.contract.name
+    objects = LocalRuntimeFactory.create_runtime(root.data_root, benchmark.org_id).objects
+    await objects.put_bytes(agent_bundle_key(agent_name), b"updated agent")
+
+    response = local_client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true",
+        json={"task_ids": ["task_0"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert await objects.get_bytes(benchmark_agent_bundle_key(str(benchmark.id), agent_name)) == b"updated agent"
+    assert mock_kicker.queued_calls
+
+
 async def test_local_start_rejects_managed_storage_before_admission(
     tmp_path: Path,
     contract: AgentContractRequest,
