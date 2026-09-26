@@ -10,6 +10,7 @@ import hashlib
 import json
 from json import JSONDecodeError
 import logging
+import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
@@ -35,7 +36,12 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     run_executor_dispatch,
     verify_file_digest,
 )
-from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
+from executor_protocol import (
+    EXECUTOR_ENTRYPOINT_MODULE,
+    ExecutorTelemetryContext,
+    source_executor_artifact_uri,
+    validate_executor_artifact_uri,
+)
 
 
 class FakeDispatchStore:
@@ -1480,19 +1486,37 @@ def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str)
     assert dispatch.release_id == "immutable-release"
 
 
-async def test_local_release_digest_and_location_validation(tmp_path: Path) -> None:
-    root = tmp_path / "releases"
-    root.mkdir()
-    artifact = root / "executor.pex"
-    content = b"pass\n"
-    artifact.write_bytes(content)
-    digest = hashlib.sha256(content).hexdigest()
-    cache_dir = tmp_path / "cache"
-    cache_dir.write_bytes(b"unavailable cache directory")
-    supervisor = ExecutorSupervisor(cache_dir, release_root=root)
-    dispatch = replace(_dispatch(digest=digest), artifact_uri=artifact.as_uri())
+def _source_root(tmp_path: Path, entrypoint: str) -> Path:
+    root = tmp_path / "src"
+    package = root / "tracker" / "executor"
+    package.mkdir(parents=True)
+    (root / "tracker" / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "entrypoint.py").write_text(entrypoint)
+    return root
 
-    assert await supervisor.prepare_artifact(dispatch) == artifact
+
+def _source_dispatch(root: Path) -> ArtifactDispatch:
+    return replace(_dispatch(digest="0" * 64), artifact_uri=source_executor_artifact_uri(root))
+
+
+async def test_source_release_runs_the_entrypoint_module_from_the_configured_root(tmp_path: Path) -> None:
+    """
+    Verify that a source release runs the checkout's executor module instead of a packaged artifact.
+
+    Test cases:
+    - Preparing a source dispatch resolves to the configured root without creating a cache.
+    - The dispatch runs `tracker.executor.entrypoint` from that root with the dispatch payload.
+    """
+    received_payload = tmp_path / "received.json"
+    root = _source_root(
+        tmp_path,
+        f"import pathlib, sys\npathlib.Path({str(received_payload)!r}).write_text(pathlib.Path(sys.argv[1]).read_text())\n",
+    )
+    supervisor = ExecutorSupervisor(tmp_path / "cache", source_root=root)
+    dispatch = _source_dispatch(root)
+
+    assert await supervisor.prepare_artifact(dispatch) == root
     store = FakeDispatchStore()
     await run_executor_dispatch(
         supervisor,
@@ -1501,31 +1525,72 @@ async def test_local_release_digest_and_location_validation(tmp_path: Path) -> N
         dispatch=dispatch,
         process_payload=_process_payload(),
     )
+
     assert store.finished == [store.authority]
-    assert store.terminalized == []
-    assert cache_dir.read_bytes() == b"unavailable cache directory"
-    with pytest.raises(ValueError, match="outside"):
-        await supervisor.prepare_artifact(replace(dispatch, artifact_uri=(tmp_path / "outside.pex").as_uri()))
-    artifact.write_bytes(b"damaged release")
-    with pytest.raises(ValueError, match="digest mismatch"):
-        await supervisor.prepare_artifact(dispatch)
+    assert json.loads(received_payload.read_text())["executor_dispatch_id"] == "dispatch-1"
+    assert not (tmp_path / "cache").exists()
+
+
+def test_source_release_launch_environment_imports_the_real_entrypoint(tmp_path: Path) -> None:
+    """
+    Verify that the checkout's real executor entrypoint and its imports load through the source launch environment.
+
+    Test cases:
+    - The source command runs the executor entrypoint module.
+    - That module imports from the configured checkout with the command's environment.
+    """
+    root = Path(__file__).resolve().parents[3] / "services" / "tracker" / "src"
+    supervisor = ExecutorSupervisor(tmp_path / "cache", source_root=root)
+    command, environment = supervisor._executor_command(  # pyright: ignore[reportPrivateUsage]
+        root, _source_dispatch(root), tmp_path / "payload.json"
+    )
+
+    assert command[1:3] == ["-m", EXECUTOR_ENTRYPOINT_MODULE]
+    result = subprocess.run(
+        [command[0], "-c", f"import {EXECUTOR_ENTRYPOINT_MODULE} as entrypoint; print(entrypoint.__file__)"],
+        env=environment,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).is_relative_to(root)
+
+
+async def test_source_release_requires_the_host_to_serve_that_root(tmp_path: Path) -> None:
+    """
+    Verify that only a host configured with the same source root runs a source release.
+
+    Test cases:
+    - A host without a source root, such as an AWS host, rejects the dispatch.
+    - A host configured with a different root rejects the dispatch.
+    """
+    dispatch = _source_dispatch(_source_root(tmp_path, ""))
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+
+    with pytest.raises(ValueError, match="EXECUTOR_SOURCE_ROOT"):
+        await _supervisor(tmp_path, content=b"").prepare_artifact(dispatch)
+    with pytest.raises(ValueError, match="configured source root"):
+        await ExecutorSupervisor(tmp_path / "cache", source_root=other_root).prepare_artifact(dispatch)
 
 
 async def test_local_host_still_downloads_saved_s3_releases(tmp_path: Path) -> None:
     """
-    Verify that configuring a local release root keeps dispatches pinned to an S3 release working.
+    Verify that configuring a source root keeps dispatches pinned to an S3 release working.
 
     Test cases:
-    - An `s3://` dispatch downloads and verifies its artifact on a host with a release root.
+    - An `s3://` dispatch downloads and verifies its artifact on a host with a source root.
     """
     content = b"pass\n"
-    release_root = tmp_path / "releases"
-    release_root.mkdir()
+    source_root = tmp_path / "src"
+    source_root.mkdir()
     client = FakeS3Client(content)
     supervisor = ExecutorSupervisor(
         tmp_path / "cache",
         s3_client=client,
-        release_root=release_root,
+        source_root=source_root,
         artifact_bucket="artifacts",
         artifact_prefix="executors",
     )

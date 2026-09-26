@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import io
-import json
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -20,8 +19,8 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
-from executor_protocol import validate_local_executor_artifact_uri
-from tracker.local.releases import initialize_release
+from executor_protocol import validate_source_executor_artifact_uri
+from tracker.local.releases import register_source_release
 from tracker.executor.release_control import (
     ReleaseControlError,
     activate_release,
@@ -713,85 +712,36 @@ def test_active_retry_dispatch_blocks_its_release_across_successive_promotions(
     assert retire_drained_releases(database_session) == ["v2"]
 
 
-def _local_manifest(directory: Path, content: bytes) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "executor.pex").write_bytes(content)
-    manifest = directory / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "artifact_path": "executor.pex",
-                "artifact_digest": hashlib.sha256(content).hexdigest(),
-                "protocol_version": "2",
-            }
-        )
-    )
-    return manifest
-
-
-def test_local_release_restart_reuses_matching_build_and_activates_changed_build(
+def test_source_release_restart_reuses_the_checkout_release_across_edits(
     database_session: Session,
     tmp_path: Path,
 ) -> None:
-    manifest = _local_manifest(tmp_path / "build", b"first executor")
-    root = tmp_path / "releases"
-    first = initialize_release(database_session, manifest, root)
-    database_session.commit()
-    with validate_local_executor_artifact_uri(first.artifact_uri, root).open("rb") as stream:
-        assert stream.read() == b"first executor"
+    """
+    Verify that registering a checkout at startup keeps one release for it, whatever its files contain.
 
-    restarted = initialize_release(database_session, manifest, root)
+    Test cases:
+    - The first registration activates a source release that names the checkout.
+    - Restarting after editing a source file reuses the active release.
+    - Registering a different checkout activates a new release and drains the previous one.
+    """
+    root = tmp_path / "src"
+    (root / "tracker").mkdir(parents=True)
+    module = root / "tracker" / "module.py"
+    module.write_text("VALUE = 1\n")
+
+    first = register_source_release(database_session, root)
+    database_session.commit()
+    assert first.status == ExecutorReleaseStatus.ACTIVE
+    assert validate_source_executor_artifact_uri(first.artifact_uri, root.resolve()) == root.resolve()
+
+    module.write_text("VALUE = 2\n")
+    restarted = register_source_release(database_session, root)
     assert restarted.id == first.id
-    assert restarted.activated_at == first.activated_at
 
-    _local_manifest(manifest.parent, b"second executor")
-    second = initialize_release(database_session, manifest, root)
+    other_root = tmp_path / "other" / "src"
+    other_root.mkdir(parents=True)
+    other = register_source_release(database_session, other_root)
     database_session.commit()
-    assert second.id != first.id
-    assert second.status == ExecutorReleaseStatus.ACTIVE
+    assert other.id != first.id
+    assert other.status == ExecutorReleaseStatus.ACTIVE
     assert first.status == ExecutorReleaseStatus.DRAINING
-    with validate_local_executor_artifact_uri(first.artifact_uri, root).open("rb") as stream:
-        assert stream.read() == b"first executor"
-    with validate_local_executor_artifact_uri(second.artifact_uri, root).open("rb") as stream:
-        assert stream.read() == b"second executor"
-
-    _local_manifest(manifest.parent, b"first executor")
-    restored = initialize_release(database_session, manifest, root)
-    database_session.commit()
-    assert restored.id != first.id
-    assert restored.artifact_uri == first.artifact_uri
-    assert restored.status == ExecutorReleaseStatus.ACTIVE
-    assert second.status == ExecutorReleaseStatus.DRAINING
-    for directory in root.iterdir():
-        assert list(directory.iterdir()) == [directory / "executor.pex"]
-
-
-def test_local_release_rejects_changed_build_and_preserves_admission(database_session: Session, tmp_path: Path) -> None:
-    manifest = _local_manifest(tmp_path / "build", b"executor")
-    (manifest.parent / "executor.pex").write_bytes(b"corrupted")
-    root = tmp_path / "releases"
-    with pytest.raises(ReleaseControlError, match="manifest digest"):
-        initialize_release(database_session, manifest, root)
-    assert not list(root.rglob("executor.pex"))
-    assert all(not list(directory.iterdir()) for directory in root.iterdir())
-    admission = database_session.get(ExecutorAdmission, 1)
-    assert admission is not None
-    assert admission.release_id is None
-
-
-def test_local_reader_rejects_escape_and_remote_locations(tmp_path: Path) -> None:
-    root = tmp_path / "releases"
-    root.mkdir()
-    outside = tmp_path / "outside.pex"
-    outside.write_bytes(b"outside")
-    (root / "linked.pex").symlink_to(outside)
-    for uri in (
-        outside.as_uri(),
-        (root / "linked.pex").as_uri(),
-        "file://host/executor.pex",
-        "s3://bucket/executor.pex",
-    ):
-        with pytest.raises(ValueError):
-            validate_local_executor_artifact_uri(uri, root)
-    with pytest.raises(ValueError, match="traversal"):
-        validate_local_executor_artifact_uri(root.as_uri() + "/%2e%2e/outside.pex", root)

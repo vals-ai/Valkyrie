@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from executor_protocol import DEFAULT_EXECUTOR_RELEASE_PREFIX, SUPPORTED_PROTOCOL_VERSION
+from executor_protocol import DEFAULT_EXECUTOR_RELEASE_PREFIX, EXECUTOR_ENTRYPOINT_MODULE, SUPPORTED_PROTOCOL_VERSION
 
 PEX_VERSION = "2.98.2"
 _REQUIRED_ARCHIVE_PATHS = (
@@ -111,7 +111,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
                 str(requirements),
                 str(wheels[0]),
                 "-m",
-                "tracker.executor.entrypoint",
+                EXECUTOR_ENTRYPOINT_MODULE,
                 "-o",
                 str(artifact),
             ],
@@ -127,7 +127,7 @@ def build(output_directory: Path, source_revision: str) -> dict[str, object]:
     artifact_digest = sha256(output_path)
     release_id, key = release_identity(source_revision, artifact_digest)
     manifest: dict[str, object] = {
-        "architecture": f"{platform.system().lower()}-arm64",
+        "architecture": "linux-arm64",
         "artifact_digest": artifact_digest,
         "artifact_path": output_path.name,
         "artifact_size_bytes": output_path.stat().st_size,

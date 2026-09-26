@@ -12,6 +12,7 @@ SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", SUPPORTED_PROTOCOL_VERSION})
 MANAGED_EXECUTION_PROTOCOL_VERSION = "3"
 DEFAULT_STABLE_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
+EXECUTOR_ENTRYPOINT_MODULE = "tracker.executor.entrypoint"
 
 # A dispatch owner renews this lease from the executor host. The Tracker
 # reconciler runs every minute, so a dead host is recovered within roughly six
@@ -105,15 +106,17 @@ def validate_executor_artifact_uri(uri: str, expected_bucket: str, expected_pref
     return parsed.netloc, key
 
 
-def validate_local_executor_artifact_uri(artifact_uri: str, root: Path) -> Path:
-    """Resolve an executor artifact inside the resolved configured release root."""
+def source_executor_artifact_uri(root: Path) -> str:
+    """Name a checkout's executor source tree as a release artifact."""
+    return root.as_uri().replace("file://", "source://", 1)
+
+
+def validate_source_executor_artifact_uri(artifact_uri: str, root: Path) -> Path:
+    """Require a source release to name the resolved configured source root."""
     parsed = urlparse(artifact_uri)
-    if parsed.scheme != "file" or parsed.netloc or parsed.query or parsed.fragment:
-        raise ValueError("Local executor artifact URI must use file:///absolute/path")
+    if parsed.scheme != "source" or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("Source executor artifact URI must use source:///absolute/path")
     path = Path(unquote(parsed.path))
-    if not path.is_absolute() or ".." in path.parts:
-        raise ValueError("Local executor artifact URI must be absolute without traversal")
-    path = path.resolve()
-    if not path.is_relative_to(root) or path == root:
-        raise ValueError("Executor artifact URI is outside the configured local release root")
-    return path
+    if not path.is_absolute() or path.resolve() != root:
+        raise ValueError("Source executor artifact URI does not match the configured source root")
+    return root

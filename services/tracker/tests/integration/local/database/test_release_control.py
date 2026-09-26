@@ -4,7 +4,6 @@ Exercise release lifecycle locking against disposable PostgreSQL.
 """
 
 import hashlib
-import json
 from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
@@ -17,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from executor_protocol import source_executor_artifact_uri
 from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
 from tracker.database.models import (
     AgentContractRequest,
@@ -44,7 +44,7 @@ from tracker.executor.release_control import (
 )
 from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.run_control import apply_stop_benchmark
-from tracker.local.releases import initialize_release
+from tracker.local.releases import register_source_release
 
 
 _EXECUTOR_ARTIFACT = b"immutable executor artifact"
@@ -656,29 +656,18 @@ def test_maintenance_commit_rejects_start_waiting_on_admission_lock(
     assert sorted(outcomes) == ["first-committed", "second-rejected"]
 
 
-def test_concurrent_local_initialization_preserves_one_active_release(
+def test_concurrent_source_registration_preserves_one_active_release(
     postgres_session: Session,
     postgres_engine: Engine,
     tmp_path: Path,
 ) -> None:
-    artifact = tmp_path / "executor.pex"
-    artifact.write_bytes(_EXECUTOR_ARTIFACT)
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "artifact_path": artifact.name,
-                "artifact_digest": _EXECUTOR_ARTIFACT_DIGEST,
-                "protocol_version": "2",
-            }
-        )
-    )
-    root = tmp_path / "releases"
+    root = tmp_path / "src"
+    root.mkdir()
 
-    def initialize(session: Session) -> ExecutorRelease:
-        return initialize_release(session, manifest, root)
+    def register(session: Session) -> ExecutorRelease:
+        return register_source_release(session, root)
 
-    outcomes = _run_while_first_transaction_holds_locks(initialize, initialize, postgres_engine)
+    outcomes = _run_while_first_transaction_holds_locks(register, register, postgres_engine)
     assert sorted(outcomes) == ["first-committed", "second-committed"]
     postgres_session.expire_all()
     admission = postgres_session.get(ExecutorAdmission, 1)
@@ -688,6 +677,5 @@ def test_concurrent_local_initialization_preserves_one_active_release(
     assert release is not None
     assert release.status == ExecutorReleaseStatus.ACTIVE
     assert release.readiness_verified
-    assert release.artifact_digest == _EXECUTOR_ARTIFACT_DIGEST
+    assert release.artifact_uri == source_executor_artifact_uri(root.resolve())
     assert len(postgres_session.exec(select(ExecutorRelease)).all()) == 1
-    assert len(list(root.rglob("executor.pex"))) == 1

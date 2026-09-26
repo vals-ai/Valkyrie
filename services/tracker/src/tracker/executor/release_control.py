@@ -421,8 +421,8 @@ def _validate_release_manifest(release: ExecutorRelease) -> None:
         raise ReleaseControlError(str(error)) from error
     if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {release.protocol_version}")
-    if not release.artifact_uri.startswith(("s3://", "file:///")):
-        raise ReleaseControlError("Executor artifact URI must use s3:// or file:///")
+    if not release.artifact_uri.startswith(("s3://", "source:///")):
+        raise ReleaseControlError("Executor artifact URI must use s3:// or source:///")
 
 
 def _get_release(
