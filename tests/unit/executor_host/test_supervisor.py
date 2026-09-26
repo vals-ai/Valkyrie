@@ -1509,3 +1509,28 @@ async def test_local_release_digest_and_location_validation(tmp_path: Path) -> N
     artifact.write_bytes(b"damaged release")
     with pytest.raises(ValueError, match="digest mismatch"):
         await supervisor.prepare_artifact(dispatch)
+
+
+async def test_local_host_still_downloads_saved_s3_releases(tmp_path: Path) -> None:
+    """
+    Verify that configuring a local release root keeps dispatches pinned to an S3 release working.
+
+    Test cases:
+    - An `s3://` dispatch downloads and verifies its artifact on a host with a release root.
+    """
+    content = b"pass\n"
+    release_root = tmp_path / "releases"
+    release_root.mkdir()
+    client = FakeS3Client(content)
+    supervisor = ExecutorSupervisor(
+        tmp_path / "cache",
+        s3_client=client,
+        release_root=release_root,
+        artifact_bucket="artifacts",
+        artifact_prefix="executors",
+    )
+
+    artifact = await supervisor.prepare_artifact(_dispatch(digest=hashlib.sha256(content).hexdigest()))
+
+    assert artifact.read_bytes() == content
+    assert client.calls

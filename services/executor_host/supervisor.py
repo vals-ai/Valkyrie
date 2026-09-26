@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, TypeVar, Unpack, cast
+from urllib.parse import urlparse
 
 import boto3
 import httpx
@@ -572,16 +573,14 @@ class ExecutorSupervisor:
         self.sleep = sleep
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        return await asyncio.to_thread(self._prepare_artifact, dispatch)
-
-    def _prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        if self.release_root is not None:
-            artifact_path = validate_local_executor_artifact_uri(dispatch.artifact_uri, self.release_root)
-            verify_file_digest(artifact_path, dispatch.artifact_digest)
-            return artifact_path
-
+        if urlparse(dispatch.artifact_uri).scheme == "file":
+            return await asyncio.to_thread(self._prepare_local_artifact, dispatch)
+        bucket, key = validate_executor_artifact_uri(
+            dispatch.artifact_uri,
+            self.artifact_bucket,
+            self.artifact_prefix,
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        bucket, key = validate_executor_artifact_uri(dispatch.artifact_uri, self.artifact_bucket, self.artifact_prefix)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
         try:
             verify_file_digest(artifact_path, dispatch.artifact_digest)
@@ -590,16 +589,36 @@ class ExecutorSupervisor:
         except (OSError, ValueError):
             pass
 
-        with tempfile.TemporaryDirectory(dir=self.cache_dir) as staging:
-            temporary_path = Path(staging) / "executor.pex"
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            dir=self.cache_dir,
+            prefix=f".{dispatch.artifact_digest}.",
+            suffix=".tmp",
+        )
+        os.close(temporary_fd)
+        temporary_path = Path(temporary_name)
+        try:
             client = self.s3_client or cast(
                 S3Client,
                 boto3.client("s3"),  # pyright: ignore[reportUnknownMemberType]
             )
-            client.download_file(bucket, key, str(temporary_path))
+
+            def download() -> None:
+                client.download_file(bucket, key, str(temporary_path))
+
+            await asyncio.to_thread(download)
             verify_file_digest(temporary_path, dispatch.artifact_digest)
             temporary_path.chmod(temporary_path.stat().st_mode | 0o111)
             temporary_path.replace(artifact_path)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return artifact_path
+
+    def _prepare_local_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        if self.release_root is None:
+            raise ValueError("Local executor releases require EXECUTOR_RELEASE_ROOT on this host")
+        artifact_path = validate_local_executor_artifact_uri(dispatch.artifact_uri, self.release_root)
+        verify_file_digest(artifact_path, dispatch.artifact_digest)
         return artifact_path
 
     async def run(
