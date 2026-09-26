@@ -241,7 +241,7 @@ class ExecutorDispatchStore(Protocol):
         dispatch: ArtifactDispatch,
     ) -> DispatchAuthority | None: ...
 
-    async def renew(self, authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]: ...
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]: ...
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
 
@@ -344,10 +344,10 @@ class PostgresExecutorDispatchStore:
             )
             return cursor.fetchone() is not None
 
-    async def renew(self, authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
         return await asyncio.to_thread(self._renew, authorities)
 
-    def _renew(self, authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+    def _renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
         if not authorities:
             return {}
         with self._connect() as connection, connection.cursor() as cursor:
@@ -356,17 +356,18 @@ class PostgresExecutorDispatchStore:
                 WITH requested AS (
                     SELECT id, benchmark_id
                     FROM unnest(%s::uuid[], %s::uuid[]) AS pair(id, benchmark_id)
-                ), live AS (
-                    SELECT d.id, d.benchmark_id, (b.status = 'STOPPED') AS stopped
+                ), classified AS (
+                    SELECT r.id, r.benchmark_id,
+                           COALESCE(d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP, FALSE) AS live,
+                           COALESCE(b.status = 'STOPPED', FALSE) AS stopped
                     FROM requested AS r
-                    JOIN executordispatch AS d ON d.id = r.id AND d.benchmark_id = r.benchmark_id
-                    JOIN benchmark AS b ON b.id = d.benchmark_id
-                    WHERE d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
+                    LEFT JOIN executordispatch AS d ON d.id = r.id AND d.benchmark_id = r.benchmark_id
+                    LEFT JOIN benchmark AS b ON b.id = r.benchmark_id
                 ), lockable AS (
                     SELECT d.id, d.benchmark_id
                     FROM executordispatch AS d
-                    JOIN live AS l ON l.id = d.id AND l.benchmark_id = d.benchmark_id
-                    WHERE d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
+                    JOIN classified AS c ON c.id = d.id AND c.benchmark_id = d.benchmark_id
+                    WHERE c.live AND d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
                     FOR UPDATE OF d SKIP LOCKED
                 ), renewed AS (
                     UPDATE executordispatch AS d
@@ -374,10 +375,12 @@ class PostgresExecutorDispatchStore:
                         lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
                     FROM lockable AS l
                     WHERE d.id = l.id AND d.benchmark_id = l.benchmark_id
-                    RETURNING d.id
+                    RETURNING d.id, d.benchmark_id
                 )
-                SELECT live.id::text, (renewed.id IS NOT NULL), live.stopped
-                FROM live LEFT JOIN renewed ON renewed.id = live.id
+                SELECT classified.id::text, classified.benchmark_id::text, classified.live,
+                       (renewed.id IS NOT NULL), classified.stopped
+                FROM classified LEFT JOIN renewed
+                    ON renewed.id = classified.id AND renewed.benchmark_id = classified.benchmark_id
                 """,
                 (
                     [authority.dispatch_id for authority in authorities],
@@ -385,7 +388,10 @@ class PostgresExecutorDispatchStore:
                     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                 ),
             )
-            return {dispatch_id: (renewed, stopped) for dispatch_id, renewed, stopped in cursor.fetchall()}
+            return {
+                (dispatch_id, benchmark_id): (live, renewed, stopped)
+                for dispatch_id, benchmark_id, live, renewed, stopped in cursor.fetchall()
+            }
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await asyncio.to_thread(self._terminalize, authority, task_ids)
@@ -591,6 +597,20 @@ class _LeaseKeeper:
                 self.task = None
                 return
 
+    async def refresh(self, authority: DispatchAuthority) -> None:
+        current = self.leases.get(authority.dispatch_id)
+        if current is None:
+            return
+        checked_at = _monotonic_time()
+        try:
+            results = await self.store.renew([authority])
+        except psycopg2.OperationalError:
+            logger.exception("Failed to refresh executor dispatch authority; using local lease")
+            return
+        self._apply_renewal(
+            authority, current[1], results.get((authority.dispatch_id, authority.benchmark_id)), checked_at
+        )
+
     async def tick(self) -> None:
         if not self.leases:
             return
@@ -601,24 +621,37 @@ class _LeaseKeeper:
         except psycopg2.OperationalError:
             logger.exception("Failed to renew executor dispatch leases; retrying")
             return
-        for key, (authority, lease) in active.items():
-            current = self.leases.get(key)
-            if current is None or current[1] is not lease or lease.lost.is_set():
-                continue
-            outcome = results.get(key)
-            if outcome is None:
-                lease.lost.set()
-            else:
-                renewed, stopped = outcome
-                if renewed and lease.expires_in(_monotonic_time()) > 0:
-                    lease.last_confirmed_renewal_at = tick_started_at
-                    current[2].cancel()
-                    timer = asyncio.get_running_loop().call_at(
-                        tick_started_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, lease.lost.set
-                    )
-                    self.leases[key] = (authority, lease, timer)
-                if stopped:
-                    lease.revoked.set()
+        for authority, lease in active.values():
+            self._apply_renewal(
+                authority, lease, results.get((authority.dispatch_id, authority.benchmark_id)), tick_started_at
+            )
+
+    def _apply_renewal(
+        self,
+        authority: DispatchAuthority,
+        lease: _DispatchLease,
+        outcome: tuple[bool, bool, bool] | None,
+        checked_at: float,
+    ) -> None:
+        current = self.leases.get(authority.dispatch_id)
+        if current is None or current[1] is not lease or lease.lost.is_set():
+            return
+        if outcome is None:
+            lease.lost.set()
+            return
+        live, renewed, stopped = outcome
+        if not live and not stopped:
+            lease.lost.set()
+            return
+        if renewed and lease.expires_in(_monotonic_time()) > 0:
+            lease.last_confirmed_renewal_at = checked_at
+            current[2].cancel()
+            timer = asyncio.get_running_loop().call_at(
+                checked_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, lease.lost.set
+            )
+            self.leases[authority.dispatch_id] = (authority, lease, timer)
+        if stopped:
+            lease.revoked.set()
 
 
 class DispatchAuthorityLostError(RuntimeError):
@@ -918,6 +951,7 @@ async def run_executor_dispatch(
         lease = keeper.register(authority, attempt_started_at)
         try:
             artifact_path = await executor_supervisor.prepare_artifact(dispatch)
+            await keeper.refresh(authority)
             await executor_supervisor.run(
                 artifact_path,
                 dispatch,

@@ -51,9 +51,9 @@ class FakeDispatchStore:
         self.authority = DispatchAuthority(dispatch_id=dispatch_id, benchmark_id=benchmark_id)
         return self.authority
 
-    async def renew(self, authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
         self.renewals.append(authorities)
-        return {authority.dispatch_id: (True, False) for authority in authorities}
+        return {(authority.dispatch_id, authority.benchmark_id): (True, True, False) for authority in authorities}
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         _ = task_ids
@@ -444,13 +444,14 @@ async def test_one_renew_tick_classifies_all_registered_dispatches(monkeypatch: 
     worker = keeper.task
     assert worker is not None
 
-    async def renew(authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+    async def renew(authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
         store.renewals.append(authorities)
         return {
-            healthy.dispatch_id: (True, False),
-            stopped.dispatch_id: (True, True),
-            locked.dispatch_id: (False, False),
-            locked_stopped.dispatch_id: (False, True),
+            (healthy.dispatch_id, healthy.benchmark_id): (True, True, False),
+            (stopped.dispatch_id, stopped.benchmark_id): (True, True, True),
+            (locked.dispatch_id, locked.benchmark_id): (True, False, False),
+            (locked_stopped.dispatch_id, locked_stopped.benchmark_id): (False, False, True),
+            (missing.dispatch_id, missing.benchmark_id): (False, False, False),
         }
 
     monkeypatch.setattr(store, "renew", renew)
@@ -491,7 +492,7 @@ async def test_register_after_empty_reuses_keeper_during_in_flight_renewal(
     maximum_active = 0
     renewed: list[str] = []
 
-    async def renew(authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+    async def renew(authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
         nonlocal active, maximum_active
         active += 1
         maximum_active = max(maximum_active, active)
@@ -500,7 +501,7 @@ async def test_register_after_empty_reuses_keeper_during_in_flight_renewal(
                 entered.set()
                 await release.wait()
             renewed.extend(authority.dispatch_id for authority in authorities)
-            return {authority.dispatch_id: (True, False) for authority in authorities}
+            return {(authority.dispatch_id, authority.benchmark_id): (True, True, False) for authority in authorities}
         finally:
             active -= 1
 
@@ -543,12 +544,12 @@ async def test_keeper_restarts_for_new_dispatch_after_unexpected_tick_failure(
     old_lease = keeper.register(first, asyncio.get_running_loop().time())
     calls = 0
 
-    async def renew(authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+    async def renew(authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise ValueError("unexpected database response")
-        return {authority.dispatch_id: (True, False) for authority in authorities}
+        return {(authority.dispatch_id, authority.benchmark_id): (True, True, False) for authority in authorities}
 
     monkeypatch.setattr(store, "renew", renew)
     try:
@@ -613,10 +614,10 @@ async def test_local_expiry_fires_while_renew_is_blocked(monkeypatch: pytest.Mon
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocked(_authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+    async def blocked(_authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
         entered.set()
         await release.wait()
-        return {authority.dispatch_id: (True, False)}
+        return {(authority.dispatch_id, authority.benchmark_id): (True, True, False)}
 
     monkeypatch.setattr(store, "renew", blocked)
     tick = asyncio.create_task(keeper.tick())
@@ -690,6 +691,65 @@ async def test_pre_spawn_rejects_lost_local_authority(tmp_path: Path, revoked: b
             authority=DispatchAuthority("dispatch-1", "benchmark-1"),
             lease=lease,
         )
+
+
+@pytest.mark.asyncio
+async def test_stop_during_artifact_preparation_prevents_executor_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeDispatchStore()
+    supervisor = _supervisor(tmp_path, content=b"unused")
+    stopped = False
+
+    async def prepare(_dispatch: ArtifactDispatch) -> Path:
+        nonlocal stopped
+        stopped = True
+        return tmp_path / "unused"
+
+    async def renew(authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
+        assert stopped
+        return {(authority.dispatch_id, authority.benchmark_id): (False, False, True) for authority in authorities}
+
+    async def forbidden_spawn(*args: object, **kwargs: object) -> None:
+        pytest.fail("Stopped dispatch spawned an executor")
+
+    monkeypatch.setattr(supervisor, "prepare_artifact", prepare)
+    monkeypatch.setattr(store, "renew", renew)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    with pytest.raises(DispatchAuthorityLostError, match="superseded before spawn"):
+        await run_executor_dispatch(
+            supervisor,
+            store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest="0" * 64),
+            process_payload=_process_payload(),
+        )
+    assert store.finished == []
+
+
+@pytest.mark.asyncio
+async def test_pre_spawn_refresh_outage_proceeds_on_local_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = b"print('ok')"
+    store = FakeDispatchStore()
+
+    async def unavailable(_authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
+        raise supervisor_module.psycopg2.OperationalError("temporary outage")
+
+    monkeypatch.setattr(store, "renew", unavailable)
+    await run_executor_dispatch(
+        _supervisor(tmp_path, content=script),
+        store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+        executor_dispatch_id="dispatch-1",
+        dispatch=_dispatch(digest=hashlib.sha256(script).hexdigest()),
+        process_payload=_process_payload(),
+    )
+    assert store.finished == [store.authority]
 
 
 @pytest.mark.asyncio

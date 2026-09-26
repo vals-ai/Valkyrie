@@ -125,8 +125,8 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     sibling_authority = await store.claim(str(sibling_dispatch.id), str(benchmark.id), artifact)
     assert sibling_authority is not None
     assert await store.renew([first_authority, sibling_authority]) == {
-        str(first_dispatch.id): (True, False),
-        str(sibling_dispatch.id): (True, False),
+        (str(first_dispatch.id), str(benchmark.id)): (True, True, False),
+        (str(sibling_dispatch.id), str(benchmark.id)): (True, True, False),
     }
     postgres_session.expire_all()
     claimed_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
@@ -134,10 +134,15 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert claimed_dispatch.started_at is not None
     assert claimed_dispatch.heartbeat_at is not None
     assert claimed_dispatch.lease_expires_at is not None
-    assert await store.renew([sibling_authority]) == {str(sibling_dispatch.id): (True, False)}
+    assert await store.renew([sibling_authority]) == {
+        (str(sibling_dispatch.id), str(benchmark.id)): (True, True, False)
+    }
 
     assert await store.finish(first_authority)
-    assert await store.renew([first_authority, sibling_authority]) == {str(sibling_dispatch.id): (True, False)}
+    assert await store.renew([first_authority, sibling_authority]) == {
+        (str(first_dispatch.id), str(benchmark.id)): (False, False, False),
+        (str(sibling_dispatch.id), str(benchmark.id)): (True, True, False),
+    }
     postgres_session.expire_all()
     persisted_benchmark = postgres_session.get(type(benchmark), benchmark.id)
     persisted_task = postgres_session.get(type(task), task.id)
@@ -194,15 +199,17 @@ async def test_renew_classifies_live_locked_and_nonlive_dispatches(
         create_executor_dispatch(live.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4()) for _ in range(4)
     ]
     stopped_dispatch = create_executor_dispatch(stopped.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
+    stopped_failed = create_executor_dispatch(stopped.id, release, ExecutorDispatchKind.RETRY, dispatch_id=uuid4())
     past = datetime.now(UTC) - timedelta(minutes=1)
     future = datetime.now(UTC) + timedelta(minutes=5)
-    for dispatch in (healthy, locked, expired, finished, stopped_dispatch):
+    for dispatch in (healthy, locked, expired, finished, stopped_dispatch, stopped_failed):
         dispatch.status = ExecutorDispatchStatus.RUNNING
         dispatch.heartbeat_at = past
         dispatch.lease_expires_at = future
         postgres_session.add(dispatch)
     expired.lease_expires_at = past
     finished.status = ExecutorDispatchStatus.FINISHED
+    stopped_failed.status = ExecutorDispatchStatus.FAILED
     postgres_session.commit()
 
     url = postgres_engine.url
@@ -216,7 +223,7 @@ async def test_renew_classifies_live_locked_and_nonlive_dispatches(
     )
     authorities = [
         DispatchAuthority(str(dispatch.id), str(dispatch.benchmark_id))
-        for dispatch in (healthy, locked, expired, finished, stopped_dispatch)
+        for dispatch in (healthy, locked, expired, finished, stopped_dispatch, stopped_failed)
     ]
     mismatched = DispatchAuthority(str(healthy.id), str(stopped.id))
     connection = store._connect()  # pyright: ignore[reportPrivateUsage]
@@ -229,9 +236,13 @@ async def test_renew_classifies_live_locked_and_nonlive_dispatches(
         connection.close()
 
     assert results == {
-        str(healthy.id): (True, False),
-        str(locked.id): (False, False),
-        str(stopped_dispatch.id): (True, True),
+        (str(healthy.id), str(live.id)): (True, True, False),
+        (str(locked.id), str(live.id)): (True, False, False),
+        (str(expired.id), str(live.id)): (False, False, False),
+        (str(finished.id), str(live.id)): (False, False, False),
+        (str(stopped_dispatch.id), str(stopped.id)): (True, True, True),
+        (str(stopped_failed.id), str(stopped.id)): (False, False, True),
+        (str(healthy.id), str(stopped.id)): (False, False, True),
     }
     postgres_session.expire_all()
     refreshed = postgres_session.get(ExecutorDispatch, healthy.id)
