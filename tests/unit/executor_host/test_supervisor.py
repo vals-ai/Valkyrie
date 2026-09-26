@@ -476,6 +476,47 @@ async def test_one_renew_tick_classifies_all_registered_dispatches(monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_keeper_restarts_for_new_dispatch_after_unexpected_tick_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeDispatchStore()
+    keeper = supervisor_module._LeaseKeeper(store, interval_seconds=0)  # pyright: ignore[reportPrivateUsage]
+    first = DispatchAuthority("dispatch-1", "benchmark-1")
+    second = DispatchAuthority("dispatch-2", "benchmark-2")
+    old_lease = keeper.register(first, asyncio.get_running_loop().time())
+    calls = 0
+
+    async def renew(authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("unexpected database response")
+        return {authority.dispatch_id: (True, False) for authority in authorities}
+
+    monkeypatch.setattr(store, "renew", renew)
+    try:
+        await asyncio.wait_for(old_lease.lost.wait(), timeout=1)
+        assert keeper.task is None
+        second_started = asyncio.get_running_loop().time()
+        new_lease = keeper.register(second, second_started)
+
+        async def renewed() -> bool:
+            for _ in range(20):
+                if new_lease.last_confirmed_renewal_at > second_started:
+                    return True
+                await asyncio.sleep(0)
+            return False
+
+        assert await asyncio.wait_for(renewed(), timeout=1)
+        assert not new_lease.lost.is_set()
+        assert calls >= 2
+    finally:
+        await keeper.unregister(first)
+        if second.dispatch_id in keeper.leases:
+            await keeper.unregister(second)
+
+
+@pytest.mark.asyncio
 async def test_renew_error_keeps_lease_and_child_can_finish(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     store = FakeDispatchStore()
     keeper = supervisor_module._LeaseKeeper(store)  # pyright: ignore[reportPrivateUsage]
@@ -1125,6 +1166,250 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
 
     assert store.terminalized == [store.authority]
     assert store.finished == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim_available", [True, False], ids=["claimed", "no-authority"])
+async def test_claim_retries_operational_error_then_obeys_authority_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    claim_available: bool,
+) -> None:
+    store = FakeDispatchStore(claim_result=claim_available)
+    original_claim = store.claim
+    attempts = 0
+
+    async def claim(dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority | None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise supervisor_module.psycopg2.OperationalError("no connection slots")
+        return await original_claim(dispatch_id, benchmark_id, dispatch)
+
+    monkeypatch.setattr(store, "claim", claim)
+    supervisor = _supervisor(tmp_path, content=b"unused")
+
+    async def prepare(_dispatch: ArtifactDispatch) -> Path:
+        return tmp_path
+
+    async def run(*args: object, **kwargs: object) -> None:
+        pass
+
+    monkeypatch.setattr(supervisor, "prepare_artifact", prepare)
+    monkeypatch.setattr(supervisor, "run", run)
+
+    await run_executor_dispatch(
+        supervisor,
+        store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+        executor_dispatch_id="dispatch-1",
+        dispatch=_dispatch(digest="0" * 64),
+        process_payload=_process_payload(),
+    )
+
+    assert attempts == 2
+    assert store.finished == ([store.authority] if claim_available else [])
+    assert store.terminalized == []
+
+
+@pytest.mark.asyncio
+async def test_claim_retries_only_until_claim_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeDispatchStore()
+    attempts = 0
+    now = [asyncio.get_running_loop().time()]
+    started_at = now[0]
+    original_sleep = asyncio.sleep
+
+    async def claim(*args: object) -> DispatchAuthority | None:
+        nonlocal attempts
+        attempts += 1
+        raise supervisor_module.psycopg2.OperationalError("no connection slots")
+
+    async def clock_sleep(seconds: float) -> None:
+        if seconds < 1:
+            now[0] += seconds
+            await original_sleep(0)
+        else:
+            await original_sleep(seconds)
+
+    monkeypatch.setattr(store, "claim", claim)
+    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now[0])
+    monkeypatch.setattr(supervisor_module, "DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS", 0.25)
+    monkeypatch.setattr(asyncio, "sleep", clock_sleep)
+    with pytest.raises(supervisor_module.psycopg2.OperationalError, match="no connection slots"):
+        await run_executor_dispatch(
+            _supervisor(tmp_path, content=b"unused"),
+            store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest="0" * 64),
+            process_payload=_process_payload(),
+        )
+    assert 2 <= attempts <= 3
+    assert now[0] >= started_at + 0.25
+    assert store.authority is None
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_claim_retry_terminalizes_late_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeDispatchStore()
+    original_claim = store.claim
+    original_sleep = asyncio.sleep
+    retry_waiting = asyncio.Event()
+    allow_retry = asyncio.Event()
+    attempts = 0
+
+    async def claim(dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority | None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise supervisor_module.psycopg2.OperationalError("no connection slots")
+        return await original_claim(dispatch_id, benchmark_id, dispatch)
+
+    async def blocked_sleep(seconds: float) -> None:
+        if seconds < 1:
+            retry_waiting.set()
+            await allow_retry.wait()
+        else:
+            await original_sleep(seconds)
+
+    monkeypatch.setattr(store, "claim", claim)
+    monkeypatch.setattr(asyncio, "sleep", blocked_sleep)
+    task = asyncio.create_task(
+        run_executor_dispatch(
+            _supervisor(tmp_path, content=b"unused"),
+            store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest="0" * 64),
+            process_payload=_process_payload(),
+        )
+    )
+    await asyncio.wait_for(retry_waiting.wait(), timeout=1)
+    task.cancel()
+    allow_retry.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert attempts == 2
+    assert store.terminalized == [store.authority]
+    assert store.finished == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recover", [True, False], ids=["recovers", "lease-expires"])
+async def test_finish_retries_operational_error_only_within_local_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recover: bool,
+) -> None:
+    store = FakeDispatchStore()
+    supervisor = _supervisor(tmp_path, content=b"unused")
+    now = [asyncio.get_running_loop().time()]
+    original_sleep = asyncio.sleep
+    attempts = 0
+
+    async def prepare(_dispatch: ArtifactDispatch) -> Path:
+        return tmp_path
+
+    async def run(*args: object, **kwargs: object) -> None:
+        pass
+
+    async def finish(authority: DispatchAuthority) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if recover and attempts == 2:
+            store.finished.append(authority)
+            return True
+        raise supervisor_module.psycopg2.OperationalError("no connection slots")
+
+    async def clock_sleep(seconds: float) -> None:
+        if seconds < 1:
+            now[0] += seconds
+            await original_sleep(0)
+        else:
+            await original_sleep(seconds)
+
+    monkeypatch.setattr(supervisor, "prepare_artifact", prepare)
+    monkeypatch.setattr(supervisor, "run", run)
+    monkeypatch.setattr(store, "finish", finish)
+    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now[0])
+    monkeypatch.setattr(supervisor_module, "DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS", 0.25)
+    monkeypatch.setattr(asyncio, "sleep", clock_sleep)
+
+    async def dispatch() -> None:
+        await run_executor_dispatch(
+            supervisor,
+            store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest="0" * 64),
+            process_payload=_process_payload(),
+        )
+
+    if recover:
+        await dispatch()
+        assert attempts == 2
+        assert store.finished == [store.authority]
+        assert store.terminalized == []
+    else:
+        with pytest.raises(supervisor_module.psycopg2.OperationalError, match="no connection slots"):
+            await dispatch()
+        assert 2 <= attempts <= 3
+        assert store.finished == []
+        assert store.terminalized == [store.authority]
+
+
+@pytest.mark.asyncio
+async def test_terminalization_recovers_from_operational_error_after_executor_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeDispatchStore()
+    supervisor = _supervisor(tmp_path, content=b"unused")
+    terminalization_attempts = 0
+    original_terminalize = store.terminalize
+    original_sleep = asyncio.sleep
+
+    async def prepare(_dispatch: ArtifactDispatch) -> Path:
+        return tmp_path
+
+    async def run(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("executor failed")
+
+    async def terminalize(authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        nonlocal terminalization_attempts
+        terminalization_attempts += 1
+        if terminalization_attempts == 1:
+            raise supervisor_module.psycopg2.OperationalError("no connection slots")
+        return await original_terminalize(authority, task_ids)
+
+    async def immediate_retry(seconds: float) -> None:
+        if seconds < 1:
+            await original_sleep(0)
+        else:
+            await original_sleep(seconds)
+
+    monkeypatch.setattr(supervisor, "prepare_artifact", prepare)
+    monkeypatch.setattr(supervisor, "run", run)
+    monkeypatch.setattr(store, "terminalize", terminalize)
+    monkeypatch.setattr(asyncio, "sleep", immediate_retry)
+    with pytest.raises(RuntimeError, match="executor failed"):
+        await run_executor_dispatch(
+            supervisor,
+            store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest="0" * 64),
+            process_payload=_process_payload(),
+        )
+    assert terminalization_attempts == 2
+    assert store.terminalized == [store.authority]
 
 
 @pytest.mark.asyncio

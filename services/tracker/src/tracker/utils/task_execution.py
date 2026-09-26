@@ -29,6 +29,7 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from pydantic import ValidationError
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
@@ -347,18 +348,19 @@ class TaskMonitor:
         self._cancellation_requested = set()
         self._authority = authority
 
-    def _load_state(self, task_ids: list[str]) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            task_states = {
-                task_id: (TaskStatus(status), started_at)
-                for task_id, status, started_at in session.exec(
-                    select(Task.task_id, Task.status, Task.started_at)
-                    .where(col(Task.task_id).in_(task_ids))
-                    .where(Task.benchmark == self._benchmark_id)
-                    .where(Task.org_id == self._org.id)
-                ).all()
-            }
+    def _load_state(
+        self, session: Session, task_ids: list[str]
+    ) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
+        benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+        task_states = {
+            task_id: (TaskStatus(status), started_at)
+            for task_id, status, started_at in session.exec(
+                select(Task.task_id, Task.status, Task.started_at)
+                .where(col(Task.task_id).in_(task_ids))
+                .where(Task.benchmark == self._benchmark_id)
+                .where(Task.org_id == self._org.id)
+            ).all()
+        }
 
         for task_id in task_ids:
             if task_id not in task_states:
@@ -366,15 +368,21 @@ class TaskMonitor:
 
         return benchmark_row, task_states
 
-    def _authority_is_current(self) -> bool:
+    def _read_tick(self, task_ids: list[str]) -> tuple[bool, Benchmark | None, dict[str, tuple[TaskStatus, datetime]]]:
         with Session(bind=engine) as session:
             try:
                 lock_execution_authority(session, self._authority)
             except ExecutionAuthorityRevoked:
-                session.rollback()
-                return False
+                authority_current = False
+            else:
+                authority_current = True
             session.rollback()
-            return True
+
+            if task_ids:
+                benchmark_row, task_states = self._load_state(session, task_ids)
+                return authority_current, benchmark_row, task_states
+
+        return authority_current, None, {}
 
     async def _check_notifications(self, benchmark_row: Benchmark) -> None:
         """Check notification thresholds using DB task counts."""
@@ -391,7 +399,18 @@ class TaskMonitor:
         """
 
         while self._task_tracking or (self._coordinator_done is not None and not self._coordinator_done.is_set()):
-            authority_current = self._authority_is_current()
+            tasks_to_check = [
+                task_id
+                for task_id, tracked_task in self._task_tracking.items()
+                if tracked_task.status != TrackedTaskStatus.DONE
+            ]
+            try:
+                authority_current, benchmark_row, task_states = self._read_tick(tasks_to_check)
+            except OperationalError:
+                logger.warning("Task monitor database read failed; retrying next tick", exc_info=True)
+                await asyncio.sleep(self._TRACK_INTERVAL)
+                continue
+
             for task_id, tracked_task in list(self._task_tracking.items()):
                 if tracked_task.status == TrackedTaskStatus.DONE:
                     del self._task_tracking[task_id]
@@ -403,8 +422,7 @@ class TaskMonitor:
                 await asyncio.sleep(self._TRACK_INTERVAL)
                 continue
 
-            tasks_to_check: list[str] = list(self._task_tracking.keys())
-            benchmark_row, task_states = self._load_state(tasks_to_check)
+            assert benchmark_row is not None
             if self._limiter is not None:
                 await self._limiter.resize(benchmark_row.arguments.concurrency)
 
@@ -422,7 +440,10 @@ class TaskMonitor:
                     self._cancellation_requested.add(task_id)
                     task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
-            await self._check_notifications(benchmark_row)
+            try:
+                await self._check_notifications(benchmark_row)
+            except OperationalError:
+                logger.warning("Task monitor notification read failed; retrying next tick", exc_info=True)
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 

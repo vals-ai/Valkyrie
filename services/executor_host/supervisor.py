@@ -14,7 +14,7 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, Unpack, cast
+from typing import Mapping, Protocol, TypeVar, Unpack, cast
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
@@ -23,6 +23,7 @@ from redis.asyncio import Redis
 from taskiq import TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
+    DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
@@ -592,6 +593,7 @@ class _LeaseKeeper:
                 logger.exception("Lease keeper failed; stopping all registered dispatches")
                 for _, lease, _ in self.leases.values():
                     lease.lost.set()
+                self.task = None
                 return
 
     async def tick(self) -> None:
@@ -824,13 +826,36 @@ dispatch_store = PostgresExecutorDispatchStore.from_environment()
 lease_keeper = _LeaseKeeper(dispatch_store)
 
 
+_Result = TypeVar("_Result")
+_RETRY_INITIAL_SECONDS = 0.1
+_RETRY_MAX_SECONDS = 5.0
+
+
+async def _retry_operational_error(
+    operation: Callable[[], Awaitable[_Result]], expires_at: Callable[[], float]
+) -> _Result:
+    delay = _RETRY_INITIAL_SECONDS
+    while True:
+        try:
+            return await operation()
+        except psycopg2.OperationalError:
+            remaining = expires_at() - _monotonic_time()
+            if remaining <= 0:
+                raise
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, _RETRY_MAX_SECONDS)
+            if expires_at() <= _monotonic_time():
+                raise
+
+
 async def _terminalize_after_failure(
     store: ExecutorDispatchStore,
     authority: DispatchAuthority,
     task_ids: list[str],
+    expires_at: Callable[[], float],
 ) -> None:
     try:
-        if not await store.terminalize(authority, task_ids):
+        if not await _retry_operational_error(lambda: store.terminalize(authority, task_ids), expires_at):
             logger.warning(
                 "Executor dispatch %s no longer had terminalization authority",
                 authority.dispatch_id,
@@ -863,10 +888,9 @@ async def run_executor_dispatch(
     try:
         claim_started_at = _monotonic_time()
         claim_task = asyncio.create_task(
-            store.claim(
-                executor_dispatch_id,
-                process_payload.benchmark_id,
-                dispatch,
+            _retry_operational_error(
+                lambda: store.claim(executor_dispatch_id, process_payload.benchmark_id, dispatch),
+                lambda: claim_started_at + DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
             )
         )
         try:
@@ -874,7 +898,12 @@ async def run_executor_dispatch(
         except asyncio.CancelledError:
             authority = await claim_task
             if authority is not None:
-                await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+                await _terminalize_after_failure(
+                    store,
+                    authority,
+                    process_payload.verified_task_ids,
+                    lambda: claim_started_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+                )
             raise
 
         if authority is None:
@@ -894,16 +923,29 @@ async def run_executor_dispatch(
                 authority=authority,
                 lease=lease,
             )
-            if not await store.finish(authority):
+            if not await _retry_operational_error(
+                lambda: store.finish(authority),
+                lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+            ):
                 logger.warning(
                     "Executor dispatch %s lost authority before successful finish",
                     authority.dispatch_id,
                 )
         except asyncio.CancelledError:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+            await _terminalize_after_failure(
+                store,
+                authority,
+                process_payload.verified_task_ids,
+                lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+            )
             raise
         except BaseException:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+            await _terminalize_after_failure(
+                store,
+                authority,
+                process_payload.verified_task_ids,
+                lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+            )
             raise
         finally:
             await keeper.unregister(authority)
