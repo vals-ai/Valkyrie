@@ -1,7 +1,10 @@
 """Typed configuration for the Valkyrie SDK."""
 
+import copy
+import warnings
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Literal, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
@@ -26,7 +29,21 @@ LEGACY_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
     "LOG_RETENTION_POLICY": ("aws", "LOG_RETENTION_POLICY"),
     "DAYTONA_SECRET_NAME": ("sandbox_providers", "daytona"),
 }
+# Flat keys the SDK model accepted before the nested layout; code callers may still pass them.
+_FLAT_SDK_KEYS = frozenset(LEGACY_CONFIG_KEYS) - {"DAYTONA_SECRET_NAME"}
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
+
+
+def migrate_legacy_config_keys(config: dict[str, Any], keys: Iterable[str] = LEGACY_CONFIG_KEYS) -> None:
+    """Move flat config keys to their nested paths, keeping any value already set there."""
+    for legacy_key in keys:
+        if legacy_key not in config:
+            continue
+        *parents, key = LEGACY_CONFIG_KEYS[legacy_key]
+        target = config
+        for parent in parents:
+            target = target.setdefault(parent, {})
+        target.setdefault(key, config.pop(legacy_key))
 
 
 class AWSAccessKeys(BaseModel):
@@ -108,6 +125,24 @@ class ValkyrieConfig(BaseModel):
     custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
     benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
     webhook: str | None = Field(default=None, repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_flat_aws_keys(cls, data: object) -> object:
+        """Nest the flat AWS keys, by alias or field name, that SDK callers passed before the `aws` layout."""
+        if not isinstance(data, dict):
+            return data
+        config = copy.deepcopy(cast(dict[Any, Any], data))
+        field_name_keys = [
+            key for key in config if isinstance(key, str) and key != key.upper() and key.upper() in _FLAT_SDK_KEYS
+        ]
+        for key in field_name_keys:
+            config[key.upper()] = config.pop(key)
+        if _FLAT_SDK_KEYS.isdisjoint(config):
+            return data
+        warnings.warn("Flat AWS config keys are deprecated; nest them under `aws`.", DeprecationWarning, stacklevel=2)
+        migrate_legacy_config_keys(config, _FLAT_SDK_KEYS)
+        return config
 
     @model_validator(mode="after")
     def validate_access_key_configuration(self) -> "ValkyrieConfig":

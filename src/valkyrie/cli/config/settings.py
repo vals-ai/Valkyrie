@@ -12,7 +12,7 @@ from valkyrie.cli.runtime_config import (
 )
 from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.cli.config.state import ConfigValue, load_config, read_config_if_exists, write_config
-from valkyrie.sdk.config import LEGACY_CONFIG_KEYS
+from valkyrie.sdk.config import migrate_legacy_config_keys
 
 
 _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
@@ -51,17 +51,6 @@ def _rotate_matching_benchmark_auth(config: dict[str, Any], new_api_key: str) ->
     return updated
 
 
-def _migrate_legacy_keys(config: dict[str, Any]) -> None:
-    """Move flat config keys to their nested paths, keeping any value already set there."""
-    for legacy_key, (*parents, key) in LEGACY_CONFIG_KEYS.items():
-        if legacy_key not in config:
-            continue
-        target = config
-        for parent in parents:
-            target = target.setdefault(parent, {})
-        target.setdefault(key, config.pop(legacy_key))
-
-
 @click.command()
 def init() -> None:
     """Create the Valkyrie config with the credentials and endpoints a run needs."""
@@ -79,7 +68,7 @@ def init() -> None:
         default="self-hosted",
     )
     environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
-    _migrate_legacy_keys(current_config)
+    migrate_legacy_config_keys(current_config)
     aws = current_config.setdefault("aws", {})
 
     if mode == "hosted":

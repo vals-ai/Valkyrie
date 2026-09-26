@@ -172,6 +172,36 @@ def test_config_rejects_unknown_keys_and_legacy_daytona(config_values, sdk_confi
         ValkyrieConfig.model_validate(legacy_values)
 
 
+@pytest.mark.parametrize("key_style", ["alias", "field_name"])
+def test_config_accepts_flat_aws_keys_from_code_callers(key_style: str) -> None:
+    """
+    Verify that SDK callers passing the earlier flat AWS keys still get a valid nested config.
+
+    Test cases:
+    - Flat aliases such as `S3_BUCKET` move under `aws` with a deprecation warning.
+    - Flat field names such as `s3_bucket` move the same way.
+    """
+    flat = {
+        "AWS_ACCESS_KEY_ID": "aws-key",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret",
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "S3_BUCKET": "runs-bucket",
+        "LOG_GROUP": "benchmarks",
+    }
+    values: dict[str, object] = {key if key_style == "alias" else key.lower(): value for key, value in flat.items()}
+    values["sandbox_providers"] = {"daytona": "DaytonaSecret"}
+    original = dict(values)
+
+    with pytest.warns(DeprecationWarning, match="nest them under `aws`"):
+        config = ValkyrieConfig.model_validate(values)
+
+    assert values == original
+    assert config.aws is not None
+    assert (config.aws.aws_default_region, config.aws.s3_bucket) == ("us-west-2", "runs-bucket")
+    assert config.aws.credentials is not None
+    assert config.aws.credentials.aws_access_key_id.get_secret_value() == "aws-key"
+
+
 def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
     with pytest.raises(ValkyrieConfigError, match="Could not read"):
         ValkyrieClient.from_config(tmp_path / "missing.yaml")
