@@ -11,7 +11,7 @@ The self-hosting guide documents reusable architecture and configuration. The ex
 ## Architecture
 
 - **Shared Stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
-- **Tracker Stack**: Public API, load balancer, and PostgreSQL
+- **Tracker Stack**: Public API, load balancer, PostgreSQL, and an RDS Proxy for database clients
 - **Executor Stack**: Stable ExecutorHost, executor release storage, sealed release control, and retained Worker logs
 - **Monitoring Stack**: Tracker, load balancer, database, and Redis alarms
 

@@ -14,10 +14,10 @@ DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
 
 # A dispatch owner renews this lease from the executor host. The Tracker
 # reconciler runs every minute, so a dead host is recovered within roughly six
-# minutes while a healthy dispatch has ample time between heartbeats.
+# minutes while a healthy dispatch has ample time between renewal ticks.
 DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS = 120
 DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS = 300
-DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS = 30
+DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS = 5
 
 
 class ExecutorDispatchStatus(str, Enum):

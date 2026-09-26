@@ -1119,6 +1119,7 @@ class TestTrackerAPI:
             _store: executor_host.ExecutorDispatchStore,
             *,
             executor_dispatch_id: str,
+            keeper: object,
             dispatch: executor_host.ArtifactDispatch,
             process_payload: executor_host.ExecutorProcessPayload,
         ) -> None:

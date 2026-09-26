@@ -1,5 +1,6 @@
 """ExecutorHost dispatch-store integration against disposable PostgreSQL."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from sqlmodel import Session, col, select
 
 from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
     ArtifactDispatch,
+    DispatchAuthority,
     PostgresExecutorDispatchStore,
 )
 from tests.factories import make_benchmark, make_task
@@ -122,19 +124,20 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert await store.claim(str(first_dispatch.id), str(benchmark.id), artifact) is None
     sibling_authority = await store.claim(str(sibling_dispatch.id), str(benchmark.id), artifact)
     assert sibling_authority is not None
-    assert await store.is_current(first_authority)
-    assert await store.is_current(sibling_authority)
+    assert await store.renew([first_authority, sibling_authority]) == {
+        str(first_dispatch.id): (True, False),
+        str(sibling_dispatch.id): (True, False),
+    }
     postgres_session.expire_all()
     claimed_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
     assert claimed_dispatch is not None
     assert claimed_dispatch.started_at is not None
     assert claimed_dispatch.heartbeat_at is not None
     assert claimed_dispatch.lease_expires_at is not None
-    assert await store.heartbeat(sibling_authority)
+    assert await store.renew([sibling_authority]) == {str(sibling_dispatch.id): (True, False)}
 
     assert await store.finish(first_authority)
-    assert not await store.is_current(first_authority)
-    assert await store.is_current(sibling_authority)
+    assert await store.renew([first_authority, sibling_authority]) == {str(sibling_dispatch.id): (True, False)}
     postgres_session.expire_all()
     persisted_benchmark = postgres_session.get(type(benchmark), benchmark.id)
     persisted_task = postgres_session.get(type(task), task.id)
@@ -163,6 +166,84 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert persisted_sibling_dispatch is not None
     assert persisted_sibling_dispatch.status == ExecutorDispatchStatus.FAILED
     assert persisted_sibling_dispatch.failure_reason == "EXECUTOR_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_renew_classifies_live_locked_and_nonlive_dispatches(
+    postgres_engine: Engine, postgres_session: Session
+) -> None:
+    org = Org(id=uuid4(), name=f"lease-contract-{uuid4()}")
+    live = make_benchmark(org_id=org.id, status=BenchmarkStatus.IN_PROGRESS)
+    stopped = make_benchmark(org_id=org.id, status=BenchmarkStatus.STOPPED)
+    release = ExecutorRelease(
+        id=f"lease-contract-{uuid4()}",
+        artifact_uri="s3://artifacts/lease.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+        readiness_verified=True,
+        created_at=datetime.now(UTC),
+    )
+    postgres_session.add(org)
+    postgres_session.flush()
+    register_release(postgres_session, release)
+    for benchmark in (live, stopped):
+        pin_benchmark_to_release(benchmark, release)
+        postgres_session.add(benchmark)
+    postgres_session.flush()
+    healthy, locked, expired, finished = [
+        create_executor_dispatch(live.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4()) for _ in range(4)
+    ]
+    stopped_dispatch = create_executor_dispatch(stopped.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
+    past = datetime.now(UTC) - timedelta(minutes=1)
+    future = datetime.now(UTC) + timedelta(minutes=5)
+    for dispatch in (healthy, locked, expired, finished, stopped_dispatch):
+        dispatch.status = ExecutorDispatchStatus.RUNNING
+        dispatch.heartbeat_at = past
+        dispatch.lease_expires_at = future
+        postgres_session.add(dispatch)
+    expired.lease_expires_at = past
+    finished.status = ExecutorDispatchStatus.FINISHED
+    postgres_session.commit()
+
+    url = postgres_engine.url
+    assert url.host and url.port and url.database and url.username and url.password
+    store = PostgresExecutorDispatchStore(
+        host=url.host,
+        port=str(url.port),
+        dbname=url.database,
+        user=url.username,
+        password=url.password,
+    )
+    authorities = [
+        DispatchAuthority(str(dispatch.id), str(dispatch.benchmark_id))
+        for dispatch in (healthy, locked, expired, finished, stopped_dispatch)
+    ]
+    mismatched = DispatchAuthority(str(healthy.id), str(stopped.id))
+    connection = store._connect()  # pyright: ignore[reportPrivateUsage]
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM executordispatch WHERE id = %s FOR UPDATE", (str(locked.id),))
+        results = await asyncio.wait_for(store.renew([*authorities, mismatched]), timeout=2)
+    finally:
+        connection.rollback()
+        connection.close()
+
+    assert results == {
+        str(healthy.id): (True, False),
+        str(locked.id): (False, False),
+        str(stopped_dispatch.id): (True, True),
+    }
+    postgres_session.expire_all()
+    refreshed = postgres_session.get(ExecutorDispatch, healthy.id)
+    unrenewed = postgres_session.get(ExecutorDispatch, locked.id)
+    assert refreshed is not None and refreshed.heartbeat_at is not None
+    assert unrenewed is not None and unrenewed.heartbeat_at is not None
+    assert refreshed.heartbeat_at > past.replace(tzinfo=None)
+    assert unrenewed.heartbeat_at == past.replace(tzinfo=None)
+    assert refreshed.lease_expires_at is not None
+    assert unrenewed.lease_expires_at is not None
+    assert refreshed.lease_expires_at > refreshed.heartbeat_at + timedelta(seconds=299)
+    assert unrenewed.lease_expires_at == future.replace(tzinfo=None)
 
 
 @pytest.mark.parametrize("dispatch_count", [1, 2])

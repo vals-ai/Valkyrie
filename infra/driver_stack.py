@@ -123,7 +123,7 @@ class DriverStack(Stack):
         self.security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),
             aws_ec2.Port.tcp(POSTGRES_PORT),
-            "Release-test PostgreSQL",
+            "Release-test RDS proxy",
         )
         self.security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),

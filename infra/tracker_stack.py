@@ -104,8 +104,6 @@ class TrackerStack(Stack):
         # Shared environment variables
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
-            "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
-            "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
@@ -154,9 +152,32 @@ class TrackerStack(Stack):
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
         )
 
+        proxy_security_group = aws_ec2.SecurityGroup(
+            self,
+            "TrackerDbProxySecurityGroup",
+            vpc=vpc,
+            description="Security group for Tracker RDS proxy",
+        )
+        proxy_security_group.add_ingress_rule(
+            peer=aws_ec2.Peer.ipv4(VPC_CIDR),
+            connection=aws_ec2.Port.tcp(POSTGRES_PORT),
+            description="Allow VPC services to connect to RDS proxy",
+        )
+        self.database_proxy = self.database.add_proxy(
+            "TrackerDatabaseProxy",
+            vpc=vpc,
+            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
+            secrets=[db_credentials_secret],
+            security_groups=[proxy_security_group],
+        )
+
+        # Retain old endpoint exports until consumer stacks have deployed the proxy endpoint.
+        self.export_value(self.database.db_instance_endpoint_address)
+        self.export_value(self.database.db_instance_endpoint_port)
+
         db_env = {
-            "DB_HOST": self.database.db_instance_endpoint_address,
-            "DB_PORT": self.database.db_instance_endpoint_port,
+            "DB_HOST": self.database_proxy.endpoint,
+            "DB_PORT": str(POSTGRES_PORT),
             "DB_NAME": POSTGRES_DB,
         }
 

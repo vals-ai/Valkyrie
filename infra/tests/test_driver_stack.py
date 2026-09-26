@@ -1,4 +1,7 @@
-"""Synthesis tests for the release-test Package R driver boundary."""
+"""Synthesis tests for the release-test Package R driver boundary.
+
+Run: cd infra && PYTHONPATH=. uv run python -m unittest tests/test_driver_stack.py
+"""
 
 import json
 import os
@@ -11,7 +14,9 @@ from unittest import mock
 import aws_cdk as cdk
 from aws_cdk import assertions, aws_ec2, aws_ecr, aws_ecs, aws_s3, aws_secretsmanager
 from driver_stack import DriverStack
+from shared import SharedStack
 from stage import DEV, RELEASE_TEST, Stage
+from tracker_stack import TrackerStack
 
 TEST_ENV = cdk.Environment(account="123456789012", region="us-east-1")
 DRIVER_ENV = {
@@ -52,7 +57,7 @@ def driver_template() -> Iterator[assertions.Template]:
             bucket=bucket,
             tracker_repository=cast(aws_ecr.IRepository, tracker_repository),
             image_tag="package-r-test",
-            db_host="tracker-db.internal",
+            db_host="tracker-proxy.internal",
             db_port="5432",
             db_credentials=cast(aws_secretsmanager.ISecret, db_credentials),
             redis_url="redis://redis.internal:6379",
@@ -154,7 +159,7 @@ class DriverStackTest(unittest.TestCase):
                                     ],
                                     "Environment": assertions.Match.array_with(
                                         [
-                                            {"Name": "DB_HOST", "Value": "tracker-db.internal"},
+                                            {"Name": "DB_HOST", "Value": "tracker-proxy.internal"},
                                             assertions.Match.object_like({"Name": "TRACKER_BASE_URL"}),
                                         ]
                                     ),
@@ -176,6 +181,72 @@ class DriverStackTest(unittest.TestCase):
             rendered_secrets = json.dumps(task_definition["Properties"]["ContainerDefinitions"][0]["Secrets"])
             self.assertIn("driver-ABC123:tracker_api_key::", rendered_secrets)
             self.assertIn("driver-ABC123:benchmark_authorization::", rendered_secrets)
+
+    def test_release_test_driver_uses_tracker_proxy_endpoint(self) -> None:
+        account = TEST_ENV.account
+        region = TEST_ENV.region
+        context = {f"availability-zones:account={account}:region={region}": [f"{region}a", f"{region}b"]}
+        auth_env = {
+            **DRIVER_ENV,
+            "DESCOPE_PROJECT_ID": "release-test-project",
+            "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": "example/descope-management-key",
+        }
+        with mock.patch.dict(os.environ, auth_env, clear=True):
+            app = cdk.App(context=context)
+            stage = Stage(RELEASE_TEST)
+            shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
+            repository = aws_ecr.Repository.from_repository_name(shared, "TrackerRepository", "tracker-release-test")
+            tracker = TrackerStack(
+                app,
+                stage.stack_id("TrackerStack"),
+                stage=stage,
+                vpc=shared.vpc,
+                cluster=shared.cluster,
+                namespace=shared.namespace,
+                hosted_zone=shared.hosted_zone,
+                bucket_name=shared.bucket_name,
+                redis_url=shared.redis_url,
+                redis_security_group=shared.redis_security_group,
+                tracker_repository=repository,
+                image_tag="package-r-test",
+                env=TEST_ENV,
+            )
+            driver = DriverStack(
+                app,
+                stage.stack_id("DriverStack"),
+                stage=stage,
+                vpc=shared.vpc,
+                cluster=shared.cluster,
+                bucket=shared.bucket,
+                tracker_repository=repository,
+                image_tag="package-r-test",
+                db_host=tracker.database_proxy.endpoint,
+                db_port="5432",
+                db_credentials=cast(aws_secretsmanager.ISecret, tracker.db_credentials),
+                redis_url=shared.redis_url,
+                redis_security_group=shared.redis_security_group,
+                env=TEST_ENV,
+            )
+
+        tracker_template = assertions.Template.from_stack(tracker).to_json()
+        driver_template = assertions.Template.from_stack(driver)
+        proxy_id = next(
+            logical_id
+            for logical_id, resource in tracker_template["Resources"].items()
+            if resource["Type"] == "AWS::RDS::DBProxy"
+        )
+        endpoint_export = next(
+            output["Export"]["Name"]
+            for output in tracker_template["Outputs"].values()
+            if output["Value"] == {"Fn::GetAtt": [proxy_id, "Endpoint"]}
+        )
+        task = next(iter(driver_template.find_resources("AWS::ECS::TaskDefinition").values()))
+        environment = {
+            item["Name"]: item["Value"] for item in task["Properties"]["ContainerDefinitions"][0]["Environment"]
+        }
+        self.assertEqual(environment["DB_HOST"], {"Fn::ImportValue": endpoint_export})
+        self.assertEqual(environment["DB_PORT"], "5432")
+        self.assertFalse(any(name.startswith("DATABASE_POOL_") for name in environment))
 
     def test_driver_publishes_stage_qualified_launch_contract(self) -> None:
         with driver_template() as template:
