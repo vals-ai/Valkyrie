@@ -28,6 +28,7 @@ from tracker.database.models import (
     FinalEvaluation,
     Org,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.database.session import engine
@@ -427,21 +428,31 @@ def _fetch_final_score_state(
         session.exec(task_rows_query).all(),
     )
 
-    # Fetch all results from tasks that are finished
+    # Fetch all results from tasks that are finished, each with the timings the executor
+    # recorded for it. `create_final_view` already hands a benchmark service's result file
+    # the same `task_breakdown` block (`reporting.fetch_evaluation_results`); scoring saw
+    # only the grader payload, so a service could publish the run's own wall clock in its
+    # final-score metadata for no task.
     task_row_ids = [task_row_id for task_row_id, _task_id, _started_at, _status in task_rows]
     result_rows = cast(
-        Sequence[tuple[UUID, UUID, dict[str, Any]]],
+        Sequence[tuple[UUID, UUID, dict[str, Any], TaskBreakdown | None]],
         session.exec(
-            select(EvaluationResult.task, EvaluationResult.id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
+            select(EvaluationResult.task, EvaluationResult.id, EvaluationResult.result, TaskBreakdown)  # pyright: ignore[reportUnknownArgumentType, reportArgumentType]
+            .join(Task, col(Task.id) == col(EvaluationResult.task))
+            .outerjoin(TaskBreakdown, col(Task.task_breakdown) == col(TaskBreakdown.id))
             .where(col(EvaluationResult.task).in_(task_row_ids))
             .where(col(EvaluationResult.org_id) == org.id)
+            .where(col(Task.org_id) == org.id)
             .order_by(desc(EvaluationResult.created_at), desc(EvaluationResult.id))
         ).all(),
     )
     # Group results by task row ID
     latest_results: dict[UUID, tuple[UUID, dict[str, Any]]] = {}
-    for task_row_id, result_id, result in result_rows:
-        latest_results.setdefault(task_row_id, (result_id, result))
+    for task_row_id, result_id, result, task_breakdown in result_rows:
+        scoring_input = dict(result)
+        if task_breakdown is not None:
+            scoring_input["task_breakdown"] = task_breakdown.model_dump()
+        latest_results.setdefault(task_row_id, (result_id, scoring_input))
 
     inputs = {
         task_id: latest_results[task_row_id][1]
