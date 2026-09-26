@@ -163,12 +163,15 @@ class TrackerStack(Stack):
             connection=aws_ec2.Port.tcp(POSTGRES_PORT),
             description="Allow VPC services to connect to RDS proxy",
         )
+        # Queued sandbox admission holds a session advisory lock while it waits on sandbox creation.
+        # The proxy closes idle clients after 30 minutes by default, which would release that lock.
         self.database_proxy = self.database.add_proxy(
             "TrackerDatabaseProxy",
             vpc=vpc,
             vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
             secrets=[db_credentials_secret],
             security_groups=[proxy_security_group],
+            idle_client_timeout=Duration.hours(8),
         )
 
         # Retain old endpoint exports until consumer stacks have deployed the proxy endpoint.
