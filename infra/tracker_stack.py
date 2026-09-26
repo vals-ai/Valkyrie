@@ -27,6 +27,7 @@ from constants import (
     ALB_HEALTH_INTERVAL_SECONDS,
     ALB_IDLE_TIMEOUT_SECONDS,
     ALLOWED_IPS,
+    BENCHMARK_SERVICE_PORT,
     CONTAINER_HEALTH_INTERVAL_SECONDS,
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
@@ -292,6 +293,53 @@ class TrackerStack(Stack):
             assign_public_ip=True,
             public_load_balancer=not stage.is_release_test,
         )
+
+        tracker_security_group = self.service.service.connections.security_groups[0]
+        cfn_tracker_security_group = cast(aws_ec2.CfnSecurityGroup, tracker_security_group.node.default_child)
+        cfn_tracker_security_group.security_group_egress = [
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=POSTGRES_PORT,
+                to_port=POSTGRES_PORT,
+                cidr_ip=VPC_CIDR,
+                description="Tracker PostgreSQL",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=REDIS_PORT,
+                to_port=REDIS_PORT,
+                cidr_ip=VPC_CIDR,
+                description="Tracker and ExecutorHost Redis",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=BENCHMARK_SERVICE_PORT,
+                to_port=BENCHMARK_SERVICE_PORT,
+                cidr_ip=VPC_CIDR,
+                description="Benchmark service Cloud Map calls",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="udp",
+                from_port=53,
+                to_port=53,
+                cidr_ip=VPC_CIDR,
+                description="VPC DNS UDP",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=53,
+                to_port=53,
+                cidr_ip=VPC_CIDR,
+                description="VPC DNS TCP",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=443,
+                to_port=443,
+                cidr_ip="0.0.0.0/0",
+                description="AWS API endpoints",
+            ),
+        ]
 
         create_tracker_access_logs(
             self,

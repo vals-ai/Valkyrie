@@ -37,6 +37,8 @@ TRACKER_PORT = 8000
 REDIS_PORT = 6379
 POSTGRES_PORT = 5432
 
+BENCHMARK_SERVICE_PORT = 8001
+
 # ElastiCache Redis (shared by Tracker + ExecutorHost)
 ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
 
