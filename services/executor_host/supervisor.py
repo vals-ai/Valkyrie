@@ -578,11 +578,6 @@ class _LeaseKeeper:
     async def unregister(self, authority: DispatchAuthority) -> None:
         _, _, timer = self.leases.pop(authority.dispatch_id)
         timer.cancel()
-        if not self.leases and self.task is not None:
-            task = self.task
-            self.task = None
-            task.cancel()
-            await _await_task_cancellation(task)
 
     async def _run(self) -> None:
         while True:
@@ -887,9 +882,16 @@ async def run_executor_dispatch(
 
     try:
         claim_started_at = _monotonic_time()
+        attempt_started_at = claim_started_at
+
+        def claim() -> Awaitable[DispatchAuthority | None]:
+            nonlocal attempt_started_at
+            attempt_started_at = _monotonic_time()
+            return store.claim(executor_dispatch_id, process_payload.benchmark_id, dispatch)
+
         claim_task = asyncio.create_task(
             _retry_operational_error(
-                lambda: store.claim(executor_dispatch_id, process_payload.benchmark_id, dispatch),
+                claim,
                 lambda: claim_started_at + DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
             )
         )
@@ -902,7 +904,7 @@ async def run_executor_dispatch(
                     store,
                     authority,
                     process_payload.verified_task_ids,
-                    lambda: claim_started_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+                    lambda: attempt_started_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                 )
             raise
 
@@ -913,7 +915,7 @@ async def run_executor_dispatch(
             )
             return
 
-        lease = keeper.register(authority, claim_started_at)
+        lease = keeper.register(authority, attempt_started_at)
         try:
             artifact_path = await executor_supervisor.prepare_artifact(dispatch)
             await executor_supervisor.run(
