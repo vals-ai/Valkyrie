@@ -233,6 +233,12 @@ def _payload_string(payload: Mapping[str, object], key: str) -> str:
     return str(value) if value else ""
 
 
+@dataclass(frozen=True)
+class RenewalResult:
+    renewed: bool
+    classification: tuple[bool, bool] | None  # (live, stopped); None if classification was unavailable
+
+
 class ExecutorDispatchStore(Protocol):
     async def claim(
         self,
@@ -241,7 +247,7 @@ class ExecutorDispatchStore(Protocol):
         dispatch: ArtifactDispatch,
     ) -> DispatchAuthority | None: ...
 
-    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]: ...
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]: ...
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
 
@@ -344,54 +350,68 @@ class PostgresExecutorDispatchStore:
             )
             return cursor.fetchone() is not None
 
-    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]:
         return await asyncio.to_thread(self._renew, authorities)
 
-    def _renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
+    def _renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]:
+        """Commit dispatch-only renewals before bounded benchmark classification."""
         if not authorities:
             return {}
+        dispatch_ids = [authority.dispatch_id for authority in authorities]
+        benchmark_ids = [authority.benchmark_id for authority in authorities]
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
                 WITH requested AS (
                     SELECT id, benchmark_id
                     FROM unnest(%s::uuid[], %s::uuid[]) AS pair(id, benchmark_id)
-                ), classified AS (
-                    SELECT r.id, r.benchmark_id,
+                ), lockable AS (
+                    SELECT d.id, d.benchmark_id
+                    FROM executordispatch AS d
+                    JOIN requested AS r ON r.id = d.id AND r.benchmark_id = d.benchmark_id
+                    WHERE d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
+                    FOR UPDATE OF d SKIP LOCKED
+                )
+                UPDATE executordispatch AS d
+                SET heartbeat_at = CURRENT_TIMESTAMP,
+                    lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
+                FROM lockable AS l
+                WHERE d.id = l.id AND d.benchmark_id = l.benchmark_id
+                RETURNING d.id::text, d.benchmark_id::text
+                """,
+                (dispatch_ids, benchmark_ids, DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS),
+            )
+            renewed = set(cursor.fetchall())
+            connection.commit()  # A blocked benchmark read must never hold back a confirmed lease.
+            results = {
+                (authority.dispatch_id, authority.benchmark_id): RenewalResult(
+                    renewed=(authority.dispatch_id, authority.benchmark_id) in renewed, classification=None
+                )
+                for authority in authorities
+            }
+            try:
+                cursor.execute("SET LOCAL lock_timeout = '1s'")
+                cursor.execute(
+                    """
+                    WITH requested AS (
+                        SELECT id, benchmark_id
+                        FROM unnest(%s::uuid[], %s::uuid[]) AS pair(id, benchmark_id)
+                    )
+                    SELECT r.id::text, r.benchmark_id::text,
                            COALESCE(d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP, FALSE) AS live,
                            COALESCE(b.status = 'STOPPED', FALSE) AS stopped
                     FROM requested AS r
                     LEFT JOIN executordispatch AS d ON d.id = r.id AND d.benchmark_id = r.benchmark_id
                     LEFT JOIN benchmark AS b ON b.id = r.benchmark_id
-                ), lockable AS (
-                    SELECT d.id, d.benchmark_id
-                    FROM executordispatch AS d
-                    JOIN classified AS c ON c.id = d.id AND c.benchmark_id = d.benchmark_id
-                    WHERE c.live AND d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
-                    FOR UPDATE OF d SKIP LOCKED
-                ), renewed AS (
-                    UPDATE executordispatch AS d
-                    SET heartbeat_at = CURRENT_TIMESTAMP,
-                        lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
-                    FROM lockable AS l
-                    WHERE d.id = l.id AND d.benchmark_id = l.benchmark_id
-                    RETURNING d.id, d.benchmark_id
+                    """,
+                    (dispatch_ids, benchmark_ids),
                 )
-                SELECT classified.id::text, classified.benchmark_id::text, classified.live,
-                       (renewed.id IS NOT NULL), classified.stopped
-                FROM classified LEFT JOIN renewed
-                    ON renewed.id = classified.id AND renewed.benchmark_id = classified.benchmark_id
-                """,
-                (
-                    [authority.dispatch_id for authority in authorities],
-                    [authority.benchmark_id for authority in authorities],
-                    DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-                ),
-            )
-            return {
-                (dispatch_id, benchmark_id): (live, renewed, stopped)
-                for dispatch_id, benchmark_id, live, renewed, stopped in cursor.fetchall()
-            }
+                for dispatch_id, benchmark_id, live, stopped in cursor.fetchall():
+                    key = (dispatch_id, benchmark_id)
+                    results[key] = RenewalResult(renewed=results[key].renewed, classification=(live, stopped))
+            except psycopg2.OperationalError:
+                connection.rollback()  # The committed renewals survive a classification timeout.
+            return results
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await asyncio.to_thread(self._terminalize, authority, task_ids)
@@ -604,7 +624,7 @@ class _LeaseKeeper:
         checked_at = _monotonic_time()
         try:
             results = await self.store.renew([authority])
-        except psycopg2.OperationalError:
+        except Exception:
             logger.exception("Failed to refresh executor dispatch authority; using local lease")
             return
         self._apply_renewal(
@@ -618,7 +638,7 @@ class _LeaseKeeper:
         active = {key: (authority, lease) for key, (authority, lease, _) in self.leases.items()}
         try:
             results = await self.store.renew([authority for authority, _ in active.values()])
-        except psycopg2.OperationalError:
+        except Exception:
             logger.exception("Failed to renew executor dispatch leases; retrying")
             return
         for authority, lease in active.values():
@@ -630,7 +650,7 @@ class _LeaseKeeper:
         self,
         authority: DispatchAuthority,
         lease: _DispatchLease,
-        outcome: tuple[bool, bool, bool] | None,
+        outcome: RenewalResult | None,
         checked_at: float,
     ) -> None:
         current = self.leases.get(authority.dispatch_id)
@@ -639,18 +659,19 @@ class _LeaseKeeper:
         if outcome is None:
             lease.lost.set()
             return
-        live, renewed, stopped = outcome
-        if not live and not stopped:
-            lease.lost.set()
-            return
-        if renewed and checked_at > lease.last_confirmed_renewal_at and lease.expires_in(_monotonic_time()) > 0:
+        if outcome.renewed and checked_at > lease.last_confirmed_renewal_at and lease.expires_in(_monotonic_time()) > 0:
             lease.last_confirmed_renewal_at = checked_at
             current[2].cancel()
             timer = asyncio.get_running_loop().call_at(
                 checked_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, lease.lost.set
             )
             self.leases[authority.dispatch_id] = (authority, lease, timer)
-        if stopped:
+        if outcome.classification is None:
+            return
+        live, stopped = outcome.classification
+        if not live and not stopped:
+            lease.lost.set()
+        elif stopped:
             lease.revoked.set()
 
 

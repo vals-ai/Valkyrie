@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, select
 
@@ -12,6 +13,7 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     ArtifactDispatch,
     DispatchAuthority,
     PostgresExecutorDispatchStore,
+    RenewalResult,
 )
 from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
@@ -125,8 +127,8 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     sibling_authority = await store.claim(str(sibling_dispatch.id), str(benchmark.id), artifact)
     assert sibling_authority is not None
     assert await store.renew([first_authority, sibling_authority]) == {
-        (str(first_dispatch.id), str(benchmark.id)): (True, True, False),
-        (str(sibling_dispatch.id), str(benchmark.id)): (True, True, False),
+        (str(first_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False)),
+        (str(sibling_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False)),
     }
     postgres_session.expire_all()
     claimed_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
@@ -135,13 +137,13 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     assert claimed_dispatch.heartbeat_at is not None
     assert claimed_dispatch.lease_expires_at is not None
     assert await store.renew([sibling_authority]) == {
-        (str(sibling_dispatch.id), str(benchmark.id)): (True, True, False)
+        (str(sibling_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False))
     }
 
     assert await store.finish(first_authority)
     assert await store.renew([first_authority, sibling_authority]) == {
-        (str(first_dispatch.id), str(benchmark.id)): (False, False, False),
-        (str(sibling_dispatch.id), str(benchmark.id)): (True, True, False),
+        (str(first_dispatch.id), str(benchmark.id)): RenewalResult(False, (False, False)),
+        (str(sibling_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False)),
     }
     postgres_session.expire_all()
     persisted_benchmark = postgres_session.get(type(benchmark), benchmark.id)
@@ -236,13 +238,13 @@ async def test_renew_classifies_live_locked_and_nonlive_dispatches(
         connection.close()
 
     assert results == {
-        (str(healthy.id), str(live.id)): (True, True, False),
-        (str(locked.id), str(live.id)): (True, False, False),
-        (str(expired.id), str(live.id)): (False, False, False),
-        (str(finished.id), str(live.id)): (False, False, False),
-        (str(stopped_dispatch.id), str(stopped.id)): (True, True, True),
-        (str(stopped_failed.id), str(stopped.id)): (False, False, True),
-        (str(healthy.id), str(stopped.id)): (False, False, True),
+        (str(healthy.id), str(live.id)): RenewalResult(True, (True, False)),
+        (str(locked.id), str(live.id)): RenewalResult(False, (True, False)),
+        (str(expired.id), str(live.id)): RenewalResult(False, (False, False)),
+        (str(finished.id), str(live.id)): RenewalResult(False, (False, False)),
+        (str(stopped_dispatch.id), str(stopped.id)): RenewalResult(True, (True, True)),
+        (str(stopped_failed.id), str(stopped.id)): RenewalResult(False, (False, True)),
+        (str(healthy.id), str(stopped.id)): RenewalResult(False, (False, True)),
     }
     postgres_session.expire_all()
     refreshed = postgres_session.get(ExecutorDispatch, healthy.id)
@@ -255,6 +257,66 @@ async def test_renew_classifies_live_locked_and_nonlive_dispatches(
     assert unrenewed.lease_expires_at is not None
     assert refreshed.lease_expires_at > refreshed.heartbeat_at + timedelta(seconds=299)
     assert unrenewed.lease_expires_at == future.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_renew_commits_dispatch_lease_while_benchmark_table_is_locked(
+    postgres_engine: Engine, postgres_session: Session
+) -> None:
+    org = Org(id=uuid4(), name=f"lease-lock-{uuid4()}")
+    benchmark = make_benchmark(org_id=org.id, status=BenchmarkStatus.STOPPED)
+    release = ExecutorRelease(
+        id=f"lease-lock-release-{uuid4()}",
+        artifact_uri="s3://artifacts/lease.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+        readiness_verified=True,
+        created_at=datetime.now(UTC),
+    )
+    postgres_session.add(org)
+    postgres_session.flush()
+    register_release(postgres_session, release)
+    pin_benchmark_to_release(benchmark, release)
+    postgres_session.add(benchmark)
+    postgres_session.flush()
+    dispatch = create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
+    dispatch.status = ExecutorDispatchStatus.RUNNING
+    dispatch.heartbeat_at = datetime.now(UTC) - timedelta(minutes=1)
+    dispatch.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+    postgres_session.add(dispatch)
+    postgres_session.commit()
+
+    authority = DispatchAuthority(str(dispatch.id), str(benchmark.id))
+    url = postgres_engine.url
+    assert url.host and url.port and url.database and url.username and url.password
+    store = PostgresExecutorDispatchStore(
+        host=url.host,
+        port=str(url.port),
+        dbname=url.database,
+        user=url.username,
+        password=url.password,
+    )
+    with postgres_engine.connect() as reader:
+        before = reader.execute(
+            text("SELECT lease_expires_at FROM executordispatch WHERE id = :id"), {"id": dispatch.id}
+        ).scalar_one()
+    blocker = postgres_engine.raw_connection()
+    try:
+        with blocker.cursor() as cursor:
+            cursor.execute("LOCK TABLE benchmark IN ACCESS EXCLUSIVE MODE")
+        result = await asyncio.wait_for(store.renew([authority]), timeout=4)
+        assert result[authority.dispatch_id, authority.benchmark_id] == RenewalResult(True, None)
+        with postgres_engine.connect() as reader:
+            after = reader.execute(
+                text("SELECT lease_expires_at FROM executordispatch WHERE id = :id"), {"id": dispatch.id}
+            ).scalar_one()
+        assert after > before
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    classified = await store.renew([authority])
+    assert classified[authority.dispatch_id, authority.benchmark_id] == RenewalResult(True, (True, True))
 
 
 @pytest.mark.parametrize("dispatch_count", [1, 2])
