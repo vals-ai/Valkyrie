@@ -81,7 +81,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
-    dataset_version: str | DatasetVersion | None = None
+    dataset_version: str | None = None
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -147,6 +147,7 @@ class StartBenchmarkResponse(ResponseModel):
     started_at: datetime
     task_count: int
     dataset_version: DatasetVersion | None = None
+    dataset_version_warning: str | None = None
     cloudwatch_url: str
     s3_bucket_url: str
     storage_bucket: str | None = None

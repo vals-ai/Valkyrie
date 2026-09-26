@@ -37,7 +37,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.executor.release_control import promote_release
-from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
+from tracker.types import FetchBenchmarksRequest, HarnessConfig, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
@@ -417,10 +417,14 @@ class TestRunState:
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
         recreated_start_benchmark_request = benchmark_row.access_key_start_benchmark_request(harness_config)
-        assert recreated_start_benchmark_request == original_start_benchmark_request.model_copy(
-            update={
-                "harness_config": harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
-            }
+        assert recreated_start_benchmark_request == RunExecutionRequest.model_validate(
+            original_start_benchmark_request.model_copy(
+                update={
+                    "harness_config": harness_config.model_copy(
+                        update={"sandbox_provider_secret_name": "ModalSecrets"}
+                    ),
+                }
+            ).model_dump(mode="python")
         )
 
         # Assert we have 5 tasks in the database

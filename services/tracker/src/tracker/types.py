@@ -95,7 +95,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
-    dataset_version: str | DatasetVersion | None = None
+    dataset_version: str | None = None
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -127,12 +127,38 @@ class StartBenchmarkRequest(BaseModel):
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
 
-        # Prioritize user defined benchmark service over hosted one
         benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
             url=benchmark_service_url,
             service_headers=self.service_headers,
-            dataset_version=self.dataset_version if isinstance(self.dataset_version, DatasetVersion) else None,
+        )
+
+
+class RunExecutionRequest(StartBenchmarkRequest):
+    """Internal request carrying the exact dataset version saved for a run."""
+
+    resolved_dataset_version: DatasetVersion | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_queued_dataset_version(cls, value: Any) -> Any:
+        if isinstance(value, dict) and isinstance(value.get("dataset_version"), dict):
+            value = {
+                **value,
+                "dataset_version": None,
+                "resolved_dataset_version": value["dataset_version"],
+            }
+        return value
+
+    @property
+    def benchmark_service(self) -> BenchmarkServiceClient:
+        from tracker.utils import create_benchmark_service_client
+
+        benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
+        return create_benchmark_service_client(
+            url=benchmark_service_url,
+            service_headers=self.service_headers,
+            dataset_version=self.resolved_dataset_version,
         )
 
 
@@ -175,6 +201,7 @@ class StartBenchmarkResponse(BaseModel):
     started_at: datetime
     task_count: int
     dataset_version: DatasetVersion | None = None
+    dataset_version_warning: str | None = None
     cloudwatch_url: str
     s3_bucket_url: str
     storage_bucket: str | None = None
@@ -284,7 +311,19 @@ class ManagedExecutionContext(BaseModel):
     version: Literal[2, 3]
     benchmark_id: UUID
     verified_task_ids: list[str]
-    start_benchmark_request: StartBenchmarkRequest
+    start_benchmark_request: RunExecutionRequest
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_run_request(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            request = value.get("start_benchmark_request")
+            if isinstance(request, StartBenchmarkRequest) and not isinstance(request, RunExecutionRequest):
+                value = {
+                    **value,
+                    "start_benchmark_request": RunExecutionRequest.model_validate(request.model_dump(mode="python")),
+                }
+        return value
 
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":

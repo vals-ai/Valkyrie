@@ -19,9 +19,7 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
 from tracker.runtime.secrets import AsyncSecretStore, SecretStore, sandbox_provider_config_from_secret
-from tracker.types import (
-    StartBenchmarkRequest,
-)
+from tracker.types import RunExecutionRequest, StartBenchmarkRequest
 
 
 @dataclass(frozen=True)
@@ -65,7 +63,7 @@ def create_benchmark_service_client(
 
 
 def start_benchmark_request_to_benchmark(
-    request: StartBenchmarkRequest,
+    request: StartBenchmarkRequest | RunExecutionRequest,
     run_starter: RequestIdentity,
     *,
     aws_managed: bool,
@@ -97,7 +95,7 @@ def start_benchmark_request_to_benchmark(
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,
             dataset=request.dataset,
-            dataset_version=request.dataset_version if isinstance(request.dataset_version, DatasetVersion) else None,
+            dataset_version=(request.resolved_dataset_version if isinstance(request, RunExecutionRequest) else None),
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=provider_secret_name,
         ),

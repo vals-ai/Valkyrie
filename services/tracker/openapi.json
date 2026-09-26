@@ -1675,9 +1675,6 @@
                 "type": "string"
               },
               {
-                "$ref": "#/components/schemas/DatasetVersion"
-              },
-              {
                 "type": "null"
               }
             ],
@@ -2696,9 +2693,6 @@
                 "type": "string"
               },
               {
-                "$ref": "#/components/schemas/DatasetVersion"
-              },
-              {
                 "type": "null"
               }
             ],
@@ -2923,6 +2917,17 @@
                 "type": "null"
               }
             ]
+          },
+          "dataset_version_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Version Warning"
           },
           "executor_artifact_digest": {
             "anyOf": [

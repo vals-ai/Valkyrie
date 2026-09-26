@@ -146,6 +146,7 @@ from tracker.types import (
     ManagedStorageStartBenchmarkRequest,
     Order,
     RetrieveResultsResponse,
+    RunExecutionRequest,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
@@ -249,7 +250,7 @@ def _executor_telemetry_context() -> ExecutorTelemetryContext:
 
 def _process_benchmark_kwargs(
     benchmark_row: Benchmark,
-    request: StartBenchmarkRequest,
+    request: RunExecutionRequest,
     verified_task_ids: list[str],
 ) -> dict[str, Any]:
     if benchmark_row.aws_managed:
@@ -550,7 +551,7 @@ def _validate_start_release(bind: Engine | Connection) -> None:
 def _commit_start(
     bind: Engine | Connection,
     benchmark_json: str,
-    request: StartBenchmarkRequest,
+    request: RunExecutionRequest,
     dispatch_id: UUID,
     task_ids: list[str],
     queue_pool_id: str | None,
@@ -636,8 +637,6 @@ async def _start_benchmark(
     """
     if request.custom_benchmark_service is not None:
         _authorize_custom_benchmark_destination(request.custom_benchmark_service, run_starter.org)
-    if isinstance(request.dataset_version, DatasetVersion):
-        raise HTTPException(status_code=400, detail="Select a dataset version by its name or ID")
     if request.dataset_version is not None and not config.DATASET_VERSION_PINNING_ENABLED:
         raise HTTPException(status_code=503, detail="Dataset version selection is not enabled")
     if request.service_auth_header_name is not None and request.service_auth_header_name.lower() == (
@@ -819,6 +818,7 @@ async def _start_benchmark(
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
+    execution_request = RunExecutionRequest.model_validate(request.model_dump(mode="python"))
 
     # Validate benchmark service is reachable + tasks resolve BEFORE creating the DB row,
     # so failed auth / unreachable services don't pollute the benchmark list.
@@ -838,15 +838,19 @@ async def _start_benchmark(
                 if version_metadata.dataset_version_selection:
                     resolved = await benchmark_service.resolve_dataset(
                         selected_dataset,
-                        version=request.dataset_version if isinstance(request.dataset_version, str) else None,
+                        version=request.dataset_version,
                     )
                     if resolved.dataset != selected_dataset:
                         raise ValueError("Benchmark service resolved a different dataset")
-                    request = request.model_copy(
-                        update={"dataset": resolved.dataset, "dataset_version": resolved.version}
+                    execution_request = RunExecutionRequest.model_validate(
+                        {
+                            **request.model_dump(mode="python"),
+                            "dataset": resolved.dataset,
+                            "resolved_dataset_version": resolved.version,
+                        }
                     )
                     await benchmark_service.close()
-                    benchmark_service = request.benchmark_service
+                    benchmark_service = execution_request.benchmark_service
                 elif request.dataset_version is not None:
                     raise HTTPException(
                         status_code=400, detail="This benchmark service cannot select a dataset version"
@@ -858,7 +862,7 @@ async def _start_benchmark(
 
         try:
             verify_response = await benchmark_service.verify_task_ids(
-                task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
+                task_ids=request.task_ids, slice_str=request.slice_str, dataset=execution_request.dataset
             )
         except BenchmarkServiceUnauthenticatedError as exc:
             logger.warning("Benchmark service authentication failed for %s: %s", request.benchmark_name, exc)
@@ -873,7 +877,7 @@ async def _start_benchmark(
             logger.exception("Failed to close benchmark service client for %s", request.benchmark_name)
 
     benchmark_row = start_benchmark_request_to_benchmark(
-        request,
+        execution_request,
         run_starter,
         aws_managed=aws_managed,
         queue_pool_id=resolved_queue_pool_id,
@@ -892,7 +896,7 @@ async def _start_benchmark(
                 _commit_start,
                 bind,
                 benchmark_row.model_dump_json(),
-                request,
+                execution_request,
                 dispatch_id,
                 verify_response.task_ids,
                 resolved_queue_pool_id,
@@ -968,6 +972,11 @@ async def _start_benchmark(
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
         dataset_version=benchmark_row.arguments.dataset_version,
+        dataset_version_warning=(
+            "Unversioned — dataset consistency is not guaranteed."
+            if benchmark_row.arguments.dataset_version is None
+            else None
+        ),
         cloudwatch_url=CloudWatchBenchmarkLogLocations(aws_runtime.resources).benchmark_location(str(benchmark_row.id)),
         s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
         storage_bucket=aws_runtime.resources.s3_bucket,

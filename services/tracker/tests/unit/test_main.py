@@ -73,6 +73,7 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FinalViewResponse,
     HarnessConfig,
+    RunExecutionRequest,
     StartBenchmarkRequest,
 )
 from tracker.utils import update_benchmark_concurrency
@@ -169,7 +170,12 @@ class TestTrackerAPI:
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)
         monkeypatch.setattr(BenchmarkServiceClient, "resolve_dataset", resolve_dataset)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
-        request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench", harness_config=harness_config)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            dataset_version="release-a",
+        )
 
         started = client.post("/start-benchmark", json=request.model_dump(mode="json"))
 
@@ -190,12 +196,20 @@ class TestTrackerAPI:
         first_run = database_session.get(Benchmark, first_run_id)
         assert first_run is not None
         assert first_run.arguments.dataset_version == DatasetVersion(id="release-a", label="release-a")
-        assert mock_kicker.queued_calls[0]["start_benchmark_request_json"]["dataset_version"]["id"] == "release-a"
+        queued_payload = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_payload["dataset_version"] == "release-a"
+        assert queued_payload["resolved_dataset_version"]["id"] == "release-a"
+        legacy_payload = {
+            **queued_payload,
+            "dataset_version": {"id": "release-a", "label": "release-a"},
+        }
+        legacy_payload.pop("resolved_dataset_version")
+        legacy_request = RunExecutionRequest.model_validate(legacy_payload)
+        assert legacy_request.dataset_version is None
+        assert legacy_request.resolved_dataset_version == DatasetVersion(id="release-a", label="release-a")
 
         current_default[0] = "release-b"
-        queued_request = StartBenchmarkRequest.model_validate(
-            mock_kicker.queued_calls[0]["start_benchmark_request_json"]
-        )
+        queued_request = RunExecutionRequest.model_validate(mock_kicker.queued_calls[0]["start_benchmark_request_json"])
         async with queued_request.benchmark_service as queued_service:
             await queued_service.verify_task_ids(["task-release-a"], None, dataset=queued_request.dataset)
         async with first_run.benchmark_service() as scoring_service:
@@ -226,7 +240,9 @@ class TestTrackerAPI:
 
         assert resumed.status_code == 200, resumed.text
         assert observed_versions == ["release-a"] * 4
-        assert mock_kicker.queued_calls[1]["start_benchmark_request_json"]["dataset_version"]["id"] == "release-a"
+        assert mock_kicker.queued_calls[1]["start_benchmark_request_json"]["resolved_dataset_version"]["id"] == (
+            "release-a"
+        )
 
         active_release = database_session.get(ExecutorRelease, "test-release")
         assert active_release is not None
@@ -241,11 +257,46 @@ class TestTrackerAPI:
         database_session.add(active_release)
         database_session.commit()
 
-        second = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+        default_request = request.model_copy(update={"dataset_version": None})
+        second = client.post("/start-benchmark", json=default_request.model_dump(mode="json"))
 
         assert second.status_code == 200, second.text
         assert observed_versions[-1] == "release-b"
         assert second.json()["dataset_version"]["id"] == "release-b"
+
+    async def test_unversioned_service_starts_with_consistency_warning(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        mock_kicker: Any,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
+            assert dataset == "default"
+
+            return SimpleNamespace(dataset_version_selection=False)
+
+        async def verify_task_ids(
+            _client: BenchmarkServiceClient,
+            task_ids: list[str] | None,
+            slice_str: str | None,
+            dataset: str | None = None,
+        ) -> VerifyTaskIdsResponse:
+            assert dataset is None
+            assert slice_str is None
+
+            return VerifyTaskIdsResponse(task_ids=task_ids or ["task-1"])
+
+        monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
+        monkeypatch.setattr(BenchmarkServiceClient, "version", version)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+        request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench", harness_config=harness_config)
+
+        response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["dataset_version"] is None
+        assert response.json()["dataset_version_warning"] == "Unversioned — dataset consistency is not guaranteed."
 
     async def test_explicit_dataset_version_requires_service_support(
         self,
@@ -1302,10 +1353,11 @@ class TestTrackerAPI:
                 "telemetry_context_json": child_telemetry_context,
             }
         else:
+            expected_request = RunExecutionRequest.model_validate(
+                request.model_copy(update={"properties": benchmark.arguments.properties}).model_dump(mode="python")
+            )
             assert process_payload.arguments == {
-                "start_benchmark_request_json": request.model_copy(
-                    update={"properties": benchmark.arguments.properties}
-                ).model_dump(exclude={"managed_s3_bucket"}),
+                "start_benchmark_request_json": expected_request.model_dump(exclude={"managed_s3_bucket"}),
                 "benchmark_id_str": str(benchmark.id),
                 "verified_task_ids": ["task_0"],
                 "telemetry_context_json": child_telemetry_context,
