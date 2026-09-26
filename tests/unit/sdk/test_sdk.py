@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from valkyrie.sdk.models import AWSResources
 
 from valkyrie.sdk import (
+    AWSConfig,
     AgentContractRequest,
     FetchBenchmarksRequest,
     FinalViewResponse,
@@ -40,15 +41,17 @@ def load_sdk_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def test_config_loads_existing_yaml_shape_and_builds_headers(tmp_path: Path) -> None:
+def test_config_loads_nested_yaml_and_builds_headers(tmp_path: Path) -> None:
     config_path = tmp_path / "valkyrie.yaml"
     config_path.write_text(
         """
 api_key: vals-key
-AWS_ACCESS_KEY_ID: aws-key
-AWS_SECRET_ACCESS_KEY: aws-secret
-AWS_DEFAULT_REGION: us-west-2
-S3_BUCKET: runs-bucket
+aws:
+  credentials:
+    AWS_ACCESS_KEY_ID: aws-key
+    AWS_SECRET_ACCESS_KEY: aws-secret
+  AWS_DEFAULT_REGION: us-west-2
+  S3_BUCKET: runs-bucket
 sandbox_providers:
   daytona: DaytonaSecret
 default_sandbox_provider: daytona
@@ -70,8 +73,9 @@ def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pyt
         """
 environment: prod
 api_key: vals-key
-AWS_DEFAULT_REGION: us-west-2
-S3_BUCKET: runs-bucket
+aws:
+  AWS_DEFAULT_REGION: us-west-2
+  S3_BUCKET: runs-bucket
 sandbox_providers:
   daytona: DaytonaSecret
 """.strip(),
@@ -100,20 +104,27 @@ def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> Non
     assert headers["X-Harness-Aws-Secret-Access-Key"] == "aws-secret"
     assert headers["X-Harness-Aws-Session-Token"] == "aws-session"
 
-    harness = config.harness_config("ModalSecret")
+    assert config.aws is not None
+    harness = config.aws.harness_config("ModalSecret")
+    assert harness is not None
     assert harness.aws.aws_access_key_id == "aws-key"
     assert harness.aws.aws_secret_access_key == "aws-secret"
     assert harness.aws.aws_session_token == "aws-session"
 
 
-def test_config_omits_optional_secret_headers(sdk_config) -> None:
-    config = sdk_config(api_key=None, AWS_SESSION_TOKEN=None)
+def test_config_omits_optional_secret_headers(sdk_config, config_values) -> None:
+    aws = config_values()["aws"]
+    aws["credentials"]["AWS_SESSION_TOKEN"] = None
+    config = sdk_config(api_key=None, aws=aws)
 
     headers = config.request_headers()
 
     assert "X-Api-Key" not in headers
     assert "X-Harness-Aws-Session-Token" not in headers
-    assert config.harness_config("ModalSecret").aws.aws_session_token is None
+    assert config.aws is not None
+    harness = config.aws.harness_config("ModalSecret")
+    assert harness is not None
+    assert harness.aws.aws_session_token is None
 
 
 def test_run_error_is_a_public_sdk_error() -> None:
@@ -122,21 +133,24 @@ def test_run_error_is_a_public_sdk_error() -> None:
 
 def test_config_rejects_missing_required_values_and_invalid_provider(config_values, sdk_config) -> None:
     values = config_values()
-    values.pop("S3_BUCKET")
-    with pytest.raises(ValidationError):
+    values["aws"].pop("S3_BUCKET")
+    with pytest.raises(ValidationError, match="S3_BUCKET"):
         ValkyrieConfig.model_validate(values)
     with pytest.raises(ValidationError):
         sdk_config(sandbox_providers={})
-    with pytest.raises(ValidationError):
-        sdk_config(LOG_GROUP=" ")
-    with pytest.raises(ValidationError):
-        sdk_config(AWS_SECRET_ACCESS_KEY=" ")
-    with pytest.raises(ValidationError, match="configured together"):
-        sdk_config(AWS_SECRET_ACCESS_KEY=None)
-    with pytest.raises(ValidationError, match="configured together"):
-        sdk_config(AWS_ACCESS_KEY_ID=None)
-    with pytest.raises(ValidationError, match="AWS_SESSION_TOKEN requires"):
-        sdk_config(AWS_ACCESS_KEY_ID=None, AWS_SECRET_ACCESS_KEY=None)
+    for field, value in (
+        ("LOG_GROUP", " "),
+        ("AWS_SECRET_ACCESS_KEY", " "),
+        ("AWS_SECRET_ACCESS_KEY", None),
+        ("AWS_ACCESS_KEY_ID", None),
+    ):
+        aws = config_values()["aws"]
+        if field == "LOG_GROUP":
+            aws[field] = value
+        else:
+            aws["credentials"][field] = value
+        with pytest.raises(ValidationError, match=field):
+            sdk_config(aws=aws)
 
     config = sdk_config()
     with pytest.raises(ValkyrieConfigError, match="Unknown sandbox provider"):
@@ -158,6 +172,36 @@ def test_config_rejects_unknown_keys_and_legacy_daytona(config_values, sdk_confi
         ValkyrieConfig.model_validate(legacy_values)
 
 
+@pytest.mark.parametrize("key_style", ["alias", "field_name"])
+def test_config_accepts_flat_aws_keys_from_code_callers(key_style: str) -> None:
+    """
+    Verify that SDK callers passing the earlier flat AWS keys still get a valid nested config.
+
+    Test cases:
+    - Flat aliases such as `S3_BUCKET` move under `aws` with a deprecation warning.
+    - Flat field names such as `s3_bucket` move the same way.
+    """
+    flat = {
+        "AWS_ACCESS_KEY_ID": "aws-key",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret",
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "S3_BUCKET": "runs-bucket",
+        "LOG_GROUP": "benchmarks",
+    }
+    values: dict[str, object] = {key if key_style == "alias" else key.lower(): value for key, value in flat.items()}
+    values["sandbox_providers"] = {"daytona": "DaytonaSecret"}
+    original = dict(values)
+
+    with pytest.warns(DeprecationWarning, match="nest them under `aws`"):
+        config = ValkyrieConfig.model_validate(values)
+
+    assert values == original
+    assert config.aws is not None
+    assert (config.aws.aws_default_region, config.aws.s3_bucket) == ("us-west-2", "runs-bucket")
+    assert config.aws.credentials is not None
+    assert config.aws.credentials.aws_access_key_id.get_secret_value() == "aws-key"
+
+
 def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
     with pytest.raises(ValkyrieConfigError, match="Could not read"):
         ValkyrieClient.from_config(tmp_path / "missing.yaml")
@@ -173,9 +217,43 @@ def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
         ValkyrieClient.from_config(malformed_path)
 
     incomplete_path = tmp_path / "incomplete.yaml"
-    incomplete_path.write_text("api_key: key\n", encoding="utf-8")
+    incomplete_path.write_text("AWS_ACCESS_KEY_ID: key\n", encoding="utf-8")
     with pytest.raises(ValkyrieConfigError, match="Invalid Valkyrie config"):
         ValkyrieClient.from_config(incomplete_path)
+
+
+def test_from_yaml_errors_name_keys_without_config_values(tmp_path: Path) -> None:
+    """Config errors name misplaced keys without echoing stored credentials."""
+    flat_path = tmp_path / "flat.yaml"
+    flat_path.write_text(
+        """
+AWS_ACCESS_KEY_ID: aws-key
+AWS_SECRET_ACCESS_KEY: secret-canary
+S3_BUCKET: runs-bucket
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValkyrieConfigError, match="AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET") as flat_error:
+        ValkyrieConfig.from_yaml(flat_path)
+    assert "valkyrie config init" in str(flat_error.value)
+    assert "secret-canary" not in str(flat_error.value)
+
+    nested_path = tmp_path / "nested.yaml"
+    nested_path.write_text(
+        """
+aws:
+  AWS_ACCESS_KEY_ID: aws-key
+  AWS_SECRET_ACCESS_KEY: secret-canary
+  AWS_DEFAULT_REGION: us-west-2
+  S3_BUCKET: runs-bucket
+sandbox_providers:
+  daytona: DaytonaSecret
+""".strip(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValkyrieConfigError, match="aws.AWS_SECRET_ACCESS_KEY") as nested_error:
+        ValkyrieConfig.from_yaml(nested_path)
+    assert "secret-canary" not in str(nested_error.value)
 
 
 async def test_start_normalizes_agent_and_builds_configured_payload(make_client) -> None:
@@ -254,9 +332,7 @@ async def test_start_without_static_keys_builds_managed_request(make_client, sdk
         )
 
     config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
+        aws=None,
         default_sandbox_provider="daytona",
     )
     client = make_client(handler, config=config)
@@ -574,6 +650,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
                         "status": "FINISHED",
                         "error_message": None,
                         "benchmark_arguments": {
+                            "environment": "aws",
                             "contract": {"name": "sweagent"},
                             "concurrency": 1,
                         },
@@ -885,3 +962,29 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         assert isinstance(exc_info.value, ValkyrieRunError)
 
     assert request_count == 0
+
+
+@pytest.mark.parametrize("provider", [None, "modal"])
+@pytest.mark.parametrize("aws", [None, AWSConfig(AWS_DEFAULT_REGION="us-west-2", S3_BUCKET="runs-bucket")])
+async def test_tracker_url_only_start_sends_configuration_without_credentials(
+    provider: str | None, aws: AWSConfig | None
+) -> None:
+    config = ValkyrieConfig(tracker_url="http://127.0.0.1:8765", aws=aws)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        if provider is None:
+            assert "sandbox_provider" not in payload
+        else:
+            assert payload["sandbox_provider"] == provider
+        assert "execution_secrets" not in payload
+        assert "properties" not in payload
+        assert "environment" not in payload
+        assert request.url.host == "127.0.0.1"
+        assert payload["harness_config"] is None
+        assert payload["sandbox_provider_secret_name"] is None
+        assert not config.request_headers()
+        return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
+
+    async with ValkyrieClient(config, transport=httpx.MockTransport(handler)) as client:
+        await client.runs.start("agent", "test", provider=provider)

@@ -16,24 +16,33 @@ ClientFactory = Callable[..., ValkyrieClient]
 
 @pytest.fixture
 def config_values() -> ConfigValuesFactory:
-    """Return a factory for complete YAML-shaped SDK configuration."""
+    """Return a factory for complete SDK configuration."""
 
     def factory(**overrides: object) -> dict[str, object]:
         values: dict[str, object] = {
             "api_key": "vals-key",
-            "AWS_ACCESS_KEY_ID": "aws-key",
-            "AWS_SECRET_ACCESS_KEY": "aws-secret",
-            "AWS_DEFAULT_REGION": "us-west-2",
-            "AWS_SESSION_TOKEN": "aws-session",
-            "S3_BUCKET": "runs-bucket",
-            "LOG_GROUP": "benchmarks",
-            "LOG_RETENTION_POLICY": 30,
+            "aws": {
+                "credentials": {
+                    "AWS_ACCESS_KEY_ID": "aws-key",
+                    "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                    "AWS_SESSION_TOKEN": "aws-session",
+                },
+                "AWS_DEFAULT_REGION": "us-west-2",
+                "S3_BUCKET": "runs-bucket",
+                "LOG_GROUP": "benchmarks",
+                "LOG_RETENTION_POLICY": 30,
+            },
             "sandbox_providers": {"modal": "ModalSecret", "daytona": "DaytonaSecret"},
             "default_sandbox_provider": "modal",
             "custom_benchmark_services": {"swebench": "https://local.swebench/"},
             "benchmark_auth": {"swebench": "benchmark-token"},
             "webhook": "SlackWebhook",
         }
+        credential_fields = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
+        if credential_fields & overrides.keys():
+            if all(overrides.pop(field, None) is None for field in credential_fields):
+                assert isinstance(values["aws"], dict)
+                values["aws"] = {**values["aws"], "credentials": None}
         values.update(overrides)
         return values
 

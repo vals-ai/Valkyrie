@@ -16,10 +16,9 @@ from sqlalchemy import JSON, literal, tuple_, type_coerce
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, asc, case, col, desc, func, or_, select
 
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSResources
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
-    create_benchmark_url,
 )
 from tracker.database.models import (
     Benchmark,
@@ -247,7 +246,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, aws_runtime: AWSRuntime, org: Org
+    benchmark_id: UUID, session: Session, s3_bucket_url: str, org: Org
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -280,8 +279,12 @@ async def stream_benchmark_results(
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), aws_runtime.resources),
-                    storage_bucket=aws_runtime.resources.s3_bucket,
+                    s3_bucket_url=s3_bucket_url,
+                    storage_bucket=(
+                        fresh_benchmark.arguments.properties.s3_bucket
+                        if isinstance(fresh_benchmark.arguments.properties, AWSResources)
+                        else None
+                    ),
                     label=fresh_benchmark.label,
                     executor_release_id=fresh_benchmark.executor_release_id,
                     current_execution_release_id=fresh_benchmark.current_execution_release_id,

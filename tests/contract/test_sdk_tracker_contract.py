@@ -20,7 +20,8 @@ from services.tracker.main import app
 from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
+    LocalBenchmarkArguments,
     FinalEvaluation,
     OutputArtifact,
 )
@@ -64,7 +65,7 @@ from tracker.types import (
     TasksResponse,
     TaskSummary,
 )
-from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
+from valkyrie.sdk import AWSAccessKeys, AWSConfig, ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
     AWSCredentials as SDKAWSCredentials,
     AgentContractRequest as SDKAgentContractRequest,
@@ -73,7 +74,8 @@ from valkyrie.sdk.models import (
     AgentsResponse as SDKAgentsResponse,
     AnalyzeBenchmarkRequest as SDKAnalyzeBenchmarkRequest,
     AverageTaskBreakdown as SDKAverageTaskBreakdown,
-    BenchmarkArguments as SDKBenchmarkArguments,
+    AWSBenchmarkArguments as SDKAWSBenchmarkArguments,
+    LocalBenchmarkArguments as SDKLocalBenchmarkArguments,
     BenchmarkDetails as SDKBenchmarkDetails,
     BenchmarkServiceCatalogResponse as SDKBenchmarkServiceCatalogResponse,
     BenchmarkServiceEntry as SDKBenchmarkServiceEntry,
@@ -117,7 +119,7 @@ ROUTES = (
     ("/benchmarks/filter-options", "get", ""),
     ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
     ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
-    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
+    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path download"),
     ("/start-benchmark", "post", ""),
     ("/start-benchmark-with-storage", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
@@ -151,7 +153,7 @@ ROUTES = (
         "benchmark_id task_id query start_time end_time",
     ),
     ("/agents", "get", ""),
-    ("/agents/{name}/download-url", "get", "name"),
+    ("/agents/{name}/download-url", "get", "name download"),
     ("/agents/{name}", "put", "name overwrite"),
     ("/agents/{name}", "delete", "name"),
     ("/benchmark-services", "get", ""),
@@ -200,7 +202,8 @@ MODEL_PAIRS = (
     (FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
     (BenchmarkTableRow, SDKBenchmarkTableRow),
     (FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
-    (BenchmarkArguments, SDKBenchmarkArguments),
+    (AWSBenchmarkArguments, SDKAWSBenchmarkArguments),
+    (LocalBenchmarkArguments, SDKLocalBenchmarkArguments),
     (FinalEvaluation, SDKFinalEvaluation),
     (AverageTaskBreakdown, SDKAverageTaskBreakdown),
     (FinalViewResponse, SDKFinalViewResponse),
@@ -364,10 +367,14 @@ async def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None
         return httpx.Response(200, json=load_fixture("start.json")["response"])
 
     config = ValkyrieConfig(
-        AWS_ACCESS_KEY_ID="test-key",
-        AWS_SECRET_ACCESS_KEY="test-secret",
-        AWS_DEFAULT_REGION="us-west-2",
-        S3_BUCKET="test-bucket",
+        aws=AWSConfig(
+            credentials=AWSAccessKeys(
+                AWS_ACCESS_KEY_ID="test-key",
+                AWS_SECRET_ACCESS_KEY="test-secret",
+            ),
+            AWS_DEFAULT_REGION="us-west-2",
+            S3_BUCKET="test-bucket",
+        ),
         sandbox_providers={"daytona": "DaytonaSecret"},
     )
     async with ValkyrieClient(

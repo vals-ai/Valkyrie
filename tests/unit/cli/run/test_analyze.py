@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, BenchmarkArguments
+from tracker.database.models import AgentContractRequest, AWSBenchmarkArguments
 from tracker.exceptions import S3Error
 from tracker.types import FetchBenchmarkMetadataResponse
 
@@ -25,7 +25,7 @@ def _metadata() -> FetchBenchmarkMetadataResponse:
     return FetchBenchmarkMetadataResponse(
         benchmark_id=_RUN_ID,
         benchmark_name="swebench",
-        benchmark_arguments=BenchmarkArguments(
+        benchmark_arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="analysis-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),

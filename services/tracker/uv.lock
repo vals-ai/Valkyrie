@@ -36,6 +36,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aiodocker"
+version = "0.27.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/19/f07d8532d7489ed8629847d004d0bbd286287286a76828be43aca7e6b106/aiodocker-0.27.0.tar.gz", hash = "sha256:74586f4929aee4563ee7db50996a1a39ac35e06c80701daad31f94aadb6551c7", size = 328202, upload-time = "2026-05-27T07:06:49.731Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/54/cd3aa680c9653b8708e164d610948e7a9aa50bba619705ac6169f61b0837/aiodocker-0.27.0-py3-none-any.whl", hash = "sha256:c55647bdcaf546dd4fc9b52794a9510575e126888dff478a9185f580a40dc45e", size = 55037, upload-time = "2026-05-27T07:06:48.316Z" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "24.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -394,9 +406,10 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.40.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=v0.40.0#a998a611aa9114bcf05b7f58e8e39b689913be7f" }
+version = "0.40.1.dev17+g067f1fa88"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=067f1fa88b90ab9ef388000506ff3a92a67c9d2e#067f1fa88b90ab9ef388000506ff3a92a67c9d2e" }
 dependencies = [
+    { name = "aiodocker" },
     { name = "boto3" },
     { name = "cachetools" },
     { name = "click" },
@@ -2118,7 +2131,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "cachetools", specifier = ">=7.1.1,<8" },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=v0.40.0" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=067f1fa88b90ab9ef388000506ff3a92a67c9d2e" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },
     { name = "httpx", specifier = ">=0.28.1" },

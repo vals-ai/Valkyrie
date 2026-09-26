@@ -6,7 +6,8 @@ Cover task details and artifact-link behavior.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from unittest.mock import ANY, AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -14,10 +15,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-import tracker.api.single_task as single_task_module
+from tracker.aws.s3 import S3ObjectStore
+from tracker import auth
+from tracker.auth import get_current_org
+from tracker.local.resources import LocalResources
 from main import app
 from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
+    LocalBenchmarkArguments,
     AgentCausedExitReason,
     Benchmark,
     Org,
@@ -137,8 +142,8 @@ def test_task_artifacts_only_presign_existing_output(
 
     object_exists = AsyncMock(return_value=True)
     create_presigned_url = AsyncMock(return_value="https://example.test/presigned")
-    monkeypatch.setattr(single_task_module, "s3_object_exists", object_exists)
-    monkeypatch.setattr(single_task_module, "create_presigned_url", create_presigned_url)
+    monkeypatch.setattr(S3ObjectStore, "exists", object_exists)
+    monkeypatch.setattr(S3ObjectStore, "temporary_download_url", create_presigned_url)
 
     found_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
@@ -158,11 +163,10 @@ def test_task_artifacts_only_presign_existing_output(
     assert "logsV2:log-groups/log-group/" in cloudwatch_url
     assert str(benchmark.id) in cloudwatch_url
     assert ("/log-events/" in cloudwatch_url) is (task_id == "task-with-output")
-    object_exists.assert_awaited_with(expected_key, ANY)
+    object_exists.assert_awaited_with(expected_key)
     create_presigned_url.assert_awaited_once_with(
-        s3_key=expected_key,
-        runtime=ANY,
-        expiration=300,
+        expected_key,
+        expires_in=300,
     )
     assert missing_response.status_code == 200
     assert missing_response.json()["agent_output_url"] is None
@@ -241,3 +245,66 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
             ).status_code
             == status
         )
+
+
+def test_local_task_artifacts_use_existing_files(
+    database_session: Session, example_benchmark_object: Benchmark, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Serve local output over HTTP while enforcing organization and path boundaries.
+
+    Test cases:
+    - Task and run download links return the existing artifact bytes.
+    - Traversal and symlink escapes fail without exposing files.
+    - Other organizations, unauthenticated requests, and missing files cannot download.
+    """
+    benchmark = example_benchmark_object
+    benchmark.arguments = LocalBenchmarkArguments.model_validate(
+        {
+            **benchmark.arguments.model_dump(),
+            "environment": "local",
+            "properties": LocalResources(data_root=tmp_path),
+            "sandbox_provider": "docker",
+        }
+    )
+    task = make_task(benchmark, "local task:one")
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+    root = tmp_path / "orgs" / str(benchmark.org_id)
+    output = root / "objects" / "benchmarks" / str(benchmark.id) / task.task_id / "agent_output.tar.gz"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"archive")
+    endpoint = f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts"
+    response = _client.get(endpoint)
+    assert response.status_code == 200, response.text
+    download_url = response.json()["agent_output_url"]
+    assert download_url.startswith("http://testserver/")
+    assert _client.get(download_url).content == b"archive"
+    path = f"{task.task_id}/agent_output.tar.gz"
+    artifact_endpoint = f"/benchmarks/{benchmark.id}/artifacts/download-url"
+    artifact_link = _client.get(artifact_endpoint, params={"path": path})
+    assert artifact_link.status_code == 200, artifact_link.text
+    assert artifact_link.json()["expires_in"] == 0
+    assert _client.get(artifact_link.json()["download_url"]).content == b"archive"
+
+    for invalid in ("../outside", "/outside", "task/../file", "a\\b"):
+        assert _client.get(artifact_endpoint, params={"path": invalid, "download": "true"}).status_code == 400
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"private")
+    (output.parent / "escape").symlink_to(outside)
+    assert (
+        _client.get(artifact_endpoint, params={"path": f"{task.task_id}/escape", "download": "true"}).status_code == 400
+    )
+
+    with monkeypatch.context() as scoped:
+        scoped.setitem(app.dependency_overrides, get_current_org, lambda: Org(id=uuid4(), name="other"))
+        assert _client.get(download_url).status_code == 404
+    with monkeypatch.context() as scoped:
+        scoped.delitem(app.dependency_overrides, get_current_org)
+        scoped.setattr(auth, "AUTH_REQUIRED", True)
+        assert _client.get(download_url).status_code == 401
+    assert response.json()["agent_output_expires_in"] == 0
+    assert response.json()["cloudwatch_url"].startswith("http://testserver/")
+    assert _client.get(response.json()["cloudwatch_url"]).status_code == 200
+    output.unlink()
+    assert _client.get(endpoint).json()["agent_output_url"] is None
+    assert _client.get(download_url).status_code == 404

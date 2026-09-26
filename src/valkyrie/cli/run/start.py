@@ -100,8 +100,8 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
     click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
     click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
-    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
+    click.echo(f"│ {'Logs:':<17} {start_benchmark_response.cloudwatch_url}")
+    click.echo(f"│ {'Artifacts:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
     if not connect:
         click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))

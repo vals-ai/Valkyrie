@@ -94,9 +94,9 @@ async def test_list_agents_keeps_zip_bundles_and_last_modified_metadata() -> Non
     recording_store = RecordingStore(
         exists=False,
         objects=[
-            StoredObject(key="agents/alpha.zip", last_modified=timestamp),
-            StoredObject(key="agents/notes.txt", last_modified=timestamp),
-            StoredObject(key="agents/nested/beta.zip"),
+            StoredObject(key="agents/alpha.zip", last_modified=timestamp, size=0),
+            StoredObject(key="agents/notes.txt", last_modified=timestamp, size=0),
+            StoredObject(key="agents/nested/beta.zip", size=0),
         ],
     )
 

@@ -16,7 +16,7 @@ from tracker.runtime.logs import (
     RunLogReference,
     RunTaskLogReference,
     TaskLogReference,
-    task_log_stream_name,
+    sanitize_log_stream_name,
 )
 
 
@@ -76,9 +76,7 @@ class FilesystemLogs:
         start = start_time.timestamp() if start_time is not None else None
         end = end_time.timestamp() if end_time is not None else None
         tasks = (reference,) if isinstance(reference, TaskLogReference) else reference.tasks
-        task_names = {
-            task_log_stream_name(task.task_id, task.started_at).rsplit("_", 1)[0]: task.task_id for task in tasks
-        }
+        task_names = {sanitize_log_stream_name(task.task_id): task.task_id for task in tasks}
 
         def read() -> LogPage:
             path = self._path(str(reference.run_id))

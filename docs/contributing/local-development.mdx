@@ -41,6 +41,96 @@ make tracker-service
 
 The API is available at `http://localhost:8000`. Local Compose runs the tracker, PostgreSQL, and Redis only. It does not execute benchmarks. See [Tracker service](/contributing/tracker-service) for the individual targets and test suites.
 
+## Test local runtime adapters
+
+The local adapters compose filesystem artifacts, per-run JSONL logs, transient secrets,
+and the CBS Docker provider. Containerized services mount the data directory at the
+same absolute path as the host. Artifacts are scoped to the organization. Execution
+secrets stay in memory for each dispatch and are not stored in artifacts or the database.
+
+Run the Docker integration check from `services/tracker`:
+
+```bash
+DOCKER_HOST=unix:///var/run/docker.sock \
+  uv run pytest tests/integration/docker
+```
+
+Use your Docker context's Unix socket for `DOCKER_HOST` when it differs. The check
+creates a disposable container, transfers a frozen agent bundle, executes it, verifies
+its output, and deletes the container. Local transfers use provider file upload and
+preserve executable files without requiring curl or unzip in the image.
+
+Configure local execution in `/absolute/path/to/local-server.yaml`:
+
+```yaml
+data_root: /absolute/path/to/valkyrie-data
+secrets_file: /absolute/path/to/existing.env
+```
+
+`secrets_file` is optional for agents without secrets. The executor reads only
+keys declared by the agent contract, directly from that file, for each start or
+resume. Valkyrie stores the file path, not its contents. Keep the file outside the
+artifact directory. Tracker and ExecutorHost must use the same filesystem paths and Docker daemon.
+
+Configure the CLI or SDK in `/absolute/path/to/local-client.yaml`:
+
+```yaml
+tracker_url: http://127.0.0.1:8000
+custom_benchmark_services:
+  my-benchmark: http://127.0.0.1:8001
+```
+
+`tracker_url` is the only required client setting. Add `api_key` when Tracker requires authentication.
+
+Start PostgreSQL and Redis with `docker compose -f services/tracker/docker-compose.yml up -d postgres redis`.
+Set `DATABASE_URL` and `REDIS_URL` for those services, then run the existing migrations
+from `services/tracker` with `uv run alembic upgrade head`. Build the executor on the
+machine where it will run, then initialize its release as shown above:
+
+```bash
+PYTHONPATH=services/tracker/src uv run --project services/tracker python \
+  services/executor_artifact/build.py --output-directory /absolute/path/to/build
+```
+
+Use the same Docker daemon for Tracker, ExecutorHost, and your local benchmark
+service. Set `DOCKER_HOST` when needed to select it. Start Tracker from `services/tracker`:
+
+```bash
+uv run python -m tracker.serve --config /absolute/path/to/local-server.yaml
+```
+
+Supplying `--config` selects local execution and registers the checkout's executor source as the active release, so local runs need no executor build. Every dispatch, including a retry or resume, runs the current checkout. Omit `--config` to use AWS execution.
+
+In another terminal at the repository root, start ExecutorHost. Set `DB_HOST`,
+`DB_PORT`, `DB_NAME`, `DB_USERNAME`, and `DB_PASSWORD` to the same database used by
+Tracker. ExecutorHost uses these settings in addition to the executor's `DATABASE_URL`.
+
+```bash
+EXECUTOR_SOURCE_ROOT=$PWD/services/tracker/src \
+EXECUTOR_CACHE_DIR=/absolute/path/to/executor-cache \
+PYTHONPATH=services/tracker/src uv run --project services/tracker python -m taskiq worker \
+  --workers 1 --no-configure-logging services.executor_host.supervisor:broker services.executor_host.supervisor
+```
+
+Start your benchmark service at its configured address with `AUTH_DISABLED=true`. Then publish an agent and run it:
+
+```bash
+export VALKYRIE_CONFIG_PATH=/absolute/path/to/local-client.yaml
+valkyrie agent push ./my-agent
+valkyrie run start --agent my-agent --benchmark my-benchmark --concurrency 1
+```
+
+Use the returned run ID with `run fetch`, `run logs`, `run results`, `run outputs`,
+`run stop`, `run retry`, and `run resume`. Tracker serves local agent and artifact
+downloads over HTTP. Clients do not need access to `data_root`. Local execution supports
+image-based Docker tasks; AWS callbacks and cloud secret references are unavailable.
+
+An executor that exits mid-run leaves its task containers running. Remove that run's containers with:
+
+```bash
+docker rm -f $(docker ps -aq --filter label=io.vals.cbs.managed=true --filter label=run-id=<run-id>)
+```
+
 ### Run it with hosted-mode authentication
 
 ```bash

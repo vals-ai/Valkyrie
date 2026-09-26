@@ -576,7 +576,7 @@ def _parse_queued_execution(
         if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
             raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
         request = _parse_start_benchmark_request(start_benchmark_request_json)
-        if request.harness_config is None:
+        if request.environment == "aws" and request.harness_config is None:
             raise ValueError("Queued access-key benchmark request has no AWS configuration.")
 
         if request.managed_s3_bucket is not None:
@@ -737,7 +737,10 @@ async def _process_benchmark(
             )
 
         runtime = await get_execution_runtime(
-            start_benchmark_request, benchmark_row, org, context_version=execution.context_version
+            start_benchmark_request,
+            benchmark_row,
+            org,
+            context_version=execution.context_version,
         )
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()

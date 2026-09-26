@@ -1,9 +1,8 @@
 """Client for interacting with the tracker service."""
 
 import json
-import re
 from collections.abc import Generator, Iterator
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 from uuid import UUID
 
 import httpx
@@ -36,16 +35,11 @@ from tracker.types import (
     UpdateBenchmarkConcurrencyResponse,
 )
 
+from valkyrie.sdk import ValkyrieConfig, ValkyrieConfigError
+
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
 from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
-_REQUIRED_ACCESS_KEY_CONFIG_KEYS = {
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_DEFAULT_REGION",
-    "S3_BUCKET",
-}
-_PROVIDER_SETUP_COMMAND = "valkyrie config provider set <provider> <secret-name>"
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
@@ -56,14 +50,6 @@ def _resolve_tracker_url(base_url: str | None) -> str:
 
     load_dotenv()
     return tracker_service_url().rstrip("/")
-
-
-def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
-    raw_providers = config.get("sandbox_providers")
-    if not isinstance(raw_providers, dict):
-        return {}
-    providers = cast(dict[object, object], raw_providers)
-    return {str(name): str(secret_name) for name, secret_name in providers.items()}
 
 
 def response_error_detail(response: Response) -> Any:
@@ -97,35 +83,8 @@ def _parse_model_response(response: Response, action: str, model: type[ModelT]) 
         raise TrackerServiceError(f"{action}: tracker returned a malformed response") from error
 
 
-def _resolve_sandbox_provider_config(
-    config: dict[str, Any], config_values: dict[str, str], provider: str | None = None
-) -> tuple[str, str]:
-    providers = _sandbox_providers(config)
-
-    # Point users to provider setup when named providers are not configured.
-    if not providers:
-        if provider is not None:
-            raise TrackerServiceError(
-                f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
-            )
-        raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-
-    # Use the requested provider, configured default, or first configured provider.
-    provider_name = str(provider or config.get("default_sandbox_provider") or next(iter(providers)))
-    secret_name = providers.get(provider_name)
-    if secret_name is not None:
-        return provider_name, secret_name
-
-    # Report valid provider names when the selected provider is unknown.
-    raise TrackerServiceError(
-        f"Unknown sandbox provider '{provider_name}'. Configured providers: {', '.join(providers)}"
-    )
-
-
 class TrackerService:
     """Client for tracker service API."""
-
-    _config_values: dict[str, str] = {}
 
     def __init__(
         self,
@@ -141,12 +100,17 @@ class TrackerService:
             timeout: Request timeout in seconds
             require_config: Whether to require full harness config values
         """
-        self._config = self._load_config()
-        self._api_key = self._config.get("api_key")
         self._base_url = _resolve_tracker_url(base_url)
         self._timeout = timeout
-        self._config_values = self.parse_config_keys() if require_config else {}
-        self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
+        try:
+            self._sdk_config = (
+                ValkyrieConfig.from_yaml(config_location())
+                if require_config
+                else ValkyrieConfig(api_key=self._load_config().get("api_key"))
+            )
+        except ValkyrieConfigError as error:
+            raise TrackerServiceError(str(error)) from error
+        self._client = httpx.Client(timeout=timeout, headers=self._sdk_config.request_headers())
 
     def __enter__(self) -> "TrackerService":
         """Context manager entry."""
@@ -170,13 +134,6 @@ class TrackerService:
 
         with open(config_path) as f:
             return yaml.safe_load(f) or {}
-
-    def _build_auth_headers(self) -> dict[str, str]:
-        """Build request headers. Hosted mode adds X-Api-Key alongside X-Harness-* headers."""
-        headers = self._build_harness_headers()
-        if self._api_key:
-            headers["X-Api-Key"] = self._api_key
-        return headers
 
     @staticmethod
     def get_benchmark_service_url(benchmark_name: str) -> str | None:
@@ -239,88 +196,20 @@ class TrackerService:
         return secret_name if secret_name else None
 
     @staticmethod
-    def parse_config_keys() -> dict[str, str]:
-        """Build access-key request values when static credentials are configured."""
-        config_path = config_location()
-        config_keys: dict[str, str] = {}
-        if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {config_path}, run `valkyrie config init`")
-
-        with open(config_path) as f:
-            harness_config: dict[str, Any] = yaml.safe_load(f) or {}
-
-        if not _sandbox_providers(harness_config):
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-
-        access_key_fields = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
-        configured_access_key_fields = [field for field in access_key_fields if field in harness_config]
-        if configured_access_key_fields and len(configured_access_key_fields) != len(access_key_fields):
-            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
-        if not configured_access_key_fields:
-            if "AWS_SESSION_TOKEN" in harness_config:
-                raise TrackerServiceError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
-            return {}
-        if any(
-            not isinstance(harness_config[field], str) or not harness_config[field].strip()
-            for field in access_key_fields
-        ):
-            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must not be blank.")
-
-        missing = _REQUIRED_ACCESS_KEY_CONFIG_KEYS - harness_config.keys()
-        if missing:
-            raise TrackerServiceError(
-                f"Missing required config keys: {', '.join(sorted(missing))}. "
-                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
-            )
-        # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
-
-        # Skip custom_benchmark_services to avoid adding them inside of the header
-        for key, value in harness_config.items():
-            if isinstance(value, dict) or key in _SKIP_HEADER_KEYS:
-                continue
-
-            config_keys[key] = str(value)
-
-        return config_keys
+    def _resolve_sandbox_provider(sdk_config: ValkyrieConfig, provider: str | None) -> tuple[str, str | None]:
+        try:
+            name, secret = sdk_config.resolve_sandbox_provider(provider)
+        except ValkyrieConfigError as error:
+            raise TrackerServiceError(str(error)) from error
+        return name or "daytona", secret
 
     @classmethod
-    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str]:
-        """Validate sandbox provider config without opening a tracker client.
+    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str | None]:
+        """Validate the selected sandbox provider before starting a run."""
+        return cls._resolve_sandbox_provider(ValkyrieConfig.from_yaml(config_location()), provider)
 
-        Arguments
-        - provider: Optional provider name supplied by the CLI.
-
-        Returns
-        - The resolved provider name and cloud secret name.
-
-        Raises
-        - TrackerServiceError: If provider config is missing or the provider is unknown.
-        """
-        return _resolve_sandbox_provider_config(cls._load_config(), cls.parse_config_keys(), provider)
-
-    def _build_harness_headers(self) -> dict[str, str]:
-        """Automate building the headers from the config keys"""
-        return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
-
-    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
-        return _resolve_sandbox_provider_config(self._config, self._config_values, provider)
-
-    def _build_harness_config_payload(self, sandbox_provider_secret_name: str) -> dict[str, Any]:
-        """Build the Valkyrie config in a way that can be packed into a object"""
-        flat = {key.lower(): value for key, value in self._config_values.items()}
-        return {
-            "aws": {
-                "aws_access_key_id": flat["aws_access_key_id"],
-                "aws_secret_access_key": flat["aws_secret_access_key"],
-                "aws_default_region": flat["aws_default_region"],
-                "aws_session_token": flat.get("aws_session_token"),
-            },
-            "s3_bucket": flat["s3_bucket"],
-            "log_group": flat["log_group"],
-            "log_retention_policy": int(flat["log_retention_policy"]),
-            "sandbox_provider_secret_name": sandbox_provider_secret_name,
-        }
+    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str | None]:
+        return self._resolve_sandbox_provider(self._sdk_config, provider)
 
     def health_check(self) -> Response:
         """
@@ -448,11 +337,11 @@ class TrackerService:
         """
         try:
             provider_name, sandbox_provider_secret_name = self.resolve_sandbox_provider(provider)
-            access_key_harness_config = (
-                HarnessConfig.model_validate(self._build_harness_config_payload(sandbox_provider_secret_name))
-                if self._config_values
-                else None
-            )
+            access_key_harness_config = None
+            if self._sdk_config.aws is not None:
+                harness = self._sdk_config.aws.harness_config(sandbox_provider_secret_name)
+                if harness is not None:
+                    access_key_harness_config = HarnessConfig.model_validate(harness.model_dump())
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -476,7 +365,7 @@ class TrackerService:
                 webhook_intervals=webhook_intervals,
             )
 
-            body = payload.model_dump()
+            body = payload.model_dump(exclude={"environment"})
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
 

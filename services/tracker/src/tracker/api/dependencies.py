@@ -1,6 +1,5 @@
 """Shared API dependencies."""
 
-from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
@@ -14,12 +13,13 @@ from tracker.aws.resolver import (
     resolve_agent_library_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
 )
-from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org, Task
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
+from tracker.local import config as local_config
+from tracker.local.runtime import LocalRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 
 
@@ -34,51 +34,42 @@ async def bind_benchmark_id(benchmark_id: UUID) -> UUID:
 TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
 
 
-@dataclass(frozen=True)
-class RunAWSContext:
-    """An organization-scoped run and its persisted AWS authority."""
-
-    benchmark: Benchmark
-    aws_runtime: AWSRuntime
-
-
-async def get_run_aws_context(
+def get_run_benchmark(
     benchmark_id: TrackedBenchmarkId,
-    request: Request,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
-) -> RunAWSContext:
-    """Return an organization-scoped run with its persisted AWS authority."""
-    benchmark = get_scoped(Benchmark, benchmark_id, session, org)
+) -> Benchmark:
+    """Load a run scoped to the authenticated organization."""
+    return get_scoped(Benchmark, benchmark_id, session, org)
+
+
+RunBenchmarkDependency = Annotated[Benchmark, Depends(get_run_benchmark)]
+
+
+async def get_run_runtime(
+    benchmark: RunBenchmarkDependency,
+    request: Request,
+    org: Org = Depends(get_current_org),
+) -> RuntimeServices:
+    """Compose services for one authorized run operation."""
+    arguments = benchmark.arguments
+    if arguments.environment == "local":
+        return LocalRuntimeFactory.create_runtime(arguments.properties.data_root, org.id)
+
     aws_runtime = resolve_run_aws_runtime_and_access_key_config(
         request,
         aws_managed=benchmark.aws_managed,
-        properties=benchmark.arguments.properties,
+        properties=arguments.properties,
         org_id=org.id,
     ).runtime
     if benchmark.aws_managed:
         await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
-    return RunAWSContext(
-        benchmark=benchmark,
-        aws_runtime=aws_runtime,
-    )
-
-
-RunAWSDependency = Annotated[RunAWSContext, Depends(get_run_aws_context)]
-
-
-async def get_run_runtime(run_context: RunAWSDependency) -> RuntimeServices:
-    """Compose services for one authorized run operation."""
-    aws_runtime = run_context.aws_runtime
-    arguments = run_context.benchmark.arguments
-
-    runtime = CloudRuntimeFactory.create_runtime(
+    return CloudRuntimeFactory.create_runtime(
         aws_runtime,
         sandbox_provider=arguments.sandbox_provider,
         sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
     )
-    return runtime
 
 
 RunRuntimeDependency = Annotated[RuntimeServices, Depends(get_run_runtime)]
@@ -89,6 +80,8 @@ def get_agent_library_runtime(
     org: Org = Depends(get_current_org),
 ) -> RuntimeServices:
     """Open agent storage without constructing sandbox access."""
+    if local_config.resources is not None:
+        return LocalRuntimeFactory.create_runtime(local_config.resources.data_root, org.id)
     aws_runtime = resolve_agent_library_aws_runtime(request, org.id)
 
     return CloudRuntimeFactory.create_runtime(aws_runtime)

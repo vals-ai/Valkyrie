@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     Field as PydanticField,
     SerializerFunctionWrapHandler,
+    TypeAdapter,
     field_serializer,
     field_validator,
     model_serializer,
@@ -31,6 +32,7 @@ from sqlmodel import (
 )
 
 from tracker.aws.runtime import AWSResources
+from tracker.local.resources import LocalResources
 from tracker.database.utils import has_field_changed
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
@@ -190,13 +192,11 @@ class AgentContractRequest(BaseModel):
         return normalized_artifacts
 
 
-class BenchmarkArguments(BaseModel):
+class _BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}
 
     contract: AgentContractRequest
     concurrency: int
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
     priority: int | None = PydanticField(default=None, exclude=True, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
@@ -205,6 +205,27 @@ class BenchmarkArguments(BaseModel):
     dataset: str | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
+
+
+class AWSBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments for an AWS run, including legacy rows without resources."""
+
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
+
+
+class LocalBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments with the filesystem resources selected at admission."""
+
+    environment: Literal["local"] = "local"
+    properties: LocalResources
+
+
+BenchmarkArguments = Annotated[
+    AWSBenchmarkArguments | LocalBenchmarkArguments,
+    PydanticField(discriminator="environment"),
+]
+benchmark_arguments_adapter: TypeAdapter[BenchmarkArguments] = TypeAdapter(BenchmarkArguments)
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -242,7 +263,7 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we save the value to the database."""
         if value is None:
             return None
-        serialized = value.model_dump(exclude={"priority", "queue_pool_id"})
+        serialized = value.model_dump(mode="json", exclude={"priority", "queue_pool_id"})
         if value.priority is not None:
             serialized["priority"] = value.priority
         if value.queue_pool_id is not None:
@@ -254,7 +275,7 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we fetch the value from the database."""
         if value is None:
             return None
-        return BenchmarkArguments(**value)
+        return benchmark_arguments_adapter.validate_python({"environment": "aws", **value})
 
 
 class ExecutorRelease(SQLModel, table=True):
@@ -416,6 +437,17 @@ class Benchmark(SQLModel, table=True):
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
             service_headers=service_headers or {},
+        )
+
+    def local_start_benchmark_request(self, service_headers: dict[str, str]) -> "StartBenchmarkRequest":
+        from tracker.types import StartBenchmarkRequest
+
+        return StartBenchmarkRequest(
+            **self.arguments.model_dump(),
+            benchmark_name=self.name,
+            label=self.label,
+            custom_benchmark_service=self.custom_benchmark_service,
+            service_headers=service_headers,
         )
 
     def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":

@@ -63,20 +63,26 @@ async def get_single_benchmark(
 
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
-    aws_runtime = resolve_run_metadata_aws_runtime(
-        request,
-        aws_managed=benchmark.aws_managed,
-        properties=benchmark.arguments.properties,
-        org_id=org.id,
-    )
-    if aws_runtime is not None and benchmark.aws_managed:
-        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
+    storage_bucket: str | None = None
+    if benchmark.arguments.environment == "local":
+        cloudwatch_url = str(request.url_for("get_logs", benchmark_id=benchmark.id))
+        s3_bucket_url = str(request.url_for("list_run_artifacts", benchmark_id=benchmark.id))
+    else:
+        aws_runtime = resolve_run_metadata_aws_runtime(
+            request,
+            aws_managed=benchmark.aws_managed,
+            properties=benchmark.arguments.properties,
+            org_id=org.id,
+        )
+        if aws_runtime is not None and benchmark.aws_managed:
+            await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
-    if aws_runtime:
-        aws_resources = aws_runtime.resources
-        s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
-        if aws_resources.log_group:
-            cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_resources).benchmark_location(str(benchmark.id))
+        if aws_runtime:
+            aws_resources = aws_runtime.resources
+            s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
+            storage_bucket = aws_resources.s3_bucket
+            if aws_resources.log_group:
+                cloudwatch_url = CloudWatchBenchmarkLogLocations(aws_resources).benchmark_location(str(benchmark.id))
 
     return SingleBenchmarkResponse(
         id=benchmark.id,
@@ -98,7 +104,7 @@ async def get_single_benchmark(
         error_message=benchmark.error_message,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
-        storage_bucket=aws_runtime.resources.s3_bucket if aws_runtime is not None else None,
+        storage_bucket=storage_bucket,
     )
 
 

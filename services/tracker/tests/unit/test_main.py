@@ -10,6 +10,7 @@ import re
 import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import UUID, uuid4
@@ -46,9 +47,10 @@ from tracker.aws.s3 import S3ObjectCopier, download_from_s3, upload_to_s3
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.storage import ObjectStore, StoredObject, StoredObjectCopy
 from tracker.database.models import (
+    LocalBenchmarkArguments,
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ExecutorAdmission,
     ExecutorDispatch,
@@ -77,6 +79,7 @@ from tracker.types import (
 from tracker.utils import update_benchmark_concurrency
 
 client = TestClient(app)
+local_client = TestClient(app, base_url="http://localhost")
 _create_cloudwatch_benchmark = CloudWatchBenchmarkLogSink.create_benchmark
 _write_cloudwatch_log = CloudWatchBenchmarkLogSink.write
 
@@ -565,9 +568,11 @@ class TestTrackerAPI:
 
     def test_analyze_benchmark_enforces_state_and_reuses_cached_result(
         self,
+        tmp_path: Path,
         database_session: Session,
         example_benchmark_object: Benchmark,
         harness_headers: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Docent analysis must reject invalid runs and return a completed cached result.
 
@@ -612,6 +617,25 @@ class TestTrackerAPI:
             "status": "done",
             "reading_plan_url": "https://results.example/reading-plan",
         }
+
+        from tracker.local.resources import LocalResources
+
+        example_benchmark_object.arguments = LocalBenchmarkArguments.model_validate(
+            {
+                **example_benchmark_object.arguments.model_dump(),
+                "environment": "local",
+                "properties": LocalResources(data_root=tmp_path),
+                "sandbox_provider": "docker",
+            }
+        )
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        resolver = Mock(side_effect=AssertionError("Local analysis must not resolve AWS"))
+        monkeypatch.setattr("main.resolve_run_aws_runtime_and_access_key_config", resolver)
+        local_response = client.post(f"/analyze-benchmark/{example_benchmark_object.id}", json={})
+        assert local_response.status_code == 400
+        assert local_response.json()["detail"] == "This operation requires an AWS run"
+        resolver.assert_not_called()
 
     async def test_tracker_service_error_hides_internal_detail(
         self,
@@ -817,6 +841,25 @@ class TestTrackerAPI:
         else:
             assert response.json() == {"detail": "Queue priority requires a sandbox provider configured for admission"}
 
+    async def test_start_benchmark_rejects_docker_provider_for_aws_execution(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        database_session: Session,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            sandbox_provider="docker",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "AWS execution does not support the Docker sandbox provider"}
+        assert not database_session.exec(select(Benchmark)).all()
+
     async def test_start_benchmark_marks_persisted_queue_error_when_start_setup_fails(
         self,
         contract: AgentContractRequest,
@@ -931,7 +974,7 @@ class TestTrackerAPI:
         assert response.status_code == 200, response.text
         benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
         assert benchmark is not None
-        assert benchmark.arguments.properties is not None
+        assert isinstance(benchmark.arguments.properties, AWSResources)
         assert benchmark.arguments.properties.log_group == ""
 
     async def test_start_benchmark(
@@ -966,7 +1009,7 @@ class TestTrackerAPI:
         assert benchmark_row
 
         # Secondary test. Arguments is correct serialized into the database
-        assert benchmark_row.arguments == BenchmarkArguments(
+        assert benchmark_row.arguments == AWSBenchmarkArguments(
             properties=AWSRuntime.from_harness_config(harness_config).resources,
             contract=request.contract,
             concurrency=request.concurrency,
@@ -2309,7 +2352,7 @@ class TestTrackerAPI:
         unique_benchmark = Benchmark(
             org_id=TEST_ORG_ID,
             name="terminal_bench",
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=unique_contract,
                 concurrency=5,
                 task_ids=None,
@@ -2440,17 +2483,17 @@ class TestTrackerAPI:
             Benchmark(
                 org_id=TEST_ORG_ID,
                 name="terminal-bench",
-                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset=None),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, dataset=None),
             ),
             Benchmark(
                 org_id=TEST_ORG_ID,
                 name="terminal-bench",
-                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="default"),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, dataset="default"),
             ),
             Benchmark(
                 org_id=TEST_ORG_ID,
                 name="terminal-bench",
-                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="terminal-bench-2.1"),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, dataset="terminal-bench-2.1"),
             ),
         ]
         database_session.add_all(benchmark_rows)
@@ -2654,7 +2697,7 @@ class TestTrackerAPI:
         bench = Benchmark(
             org_id=TEST_ORG_ID,
             name="swebench",
-            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
             started_by_email="alice@vals.ai",
             started_by_id="K2abc",
         )
@@ -2680,7 +2723,7 @@ class TestTrackerAPI:
                 Benchmark(
                     org_id=TEST_ORG_ID,
                     name="swebench",
-                    arguments=BenchmarkArguments(contract=contract, concurrency=1),
+                    arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
                     started_by_email=email,
                     started_by_id=f"K-{email or 'none'}",
                 )
@@ -2759,7 +2802,7 @@ class TestTrackerAPI:
         bench = Benchmark(
             org_id=TEST_ORG_ID,
             name="swebench",
-            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
             started_by_email="alice@vals.ai",
             started_by_id="K2abc",
         )
@@ -2787,7 +2830,7 @@ class TestTrackerAPI:
             org_id=TEST_ORG_ID,
             name="swebench",
             aws_managed=True,
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=contract,
                 concurrency=1,
                 properties=saved_resources,
@@ -2830,7 +2873,7 @@ class TestTrackerAPI:
             org_id=TEST_ORG_ID,
             name="swebench",
             aws_managed=True,
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=contract,
                 concurrency=1,
                 properties=None,
@@ -2860,7 +2903,7 @@ class TestTrackerAPI:
             org_id=TEST_ORG_ID,
             name="swebench",
             aws_managed=False,
-            arguments=BenchmarkArguments(contract=contract, concurrency=1, properties=None),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1, properties=None),
         )
         database_session.add(benchmark)
         database_session.commit()
@@ -2884,7 +2927,7 @@ class TestTrackerAPI:
 
         async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
             observed_prefixes.append(prefix)
-            yield StoredObject(key=f"{prefix}output.txt")
+            yield StoredObject(key=f"{prefix}output.txt", size=0)
 
         async def _mock_get_many(_store: object, keys: AsyncIterator[str]) -> AsyncIterator[tuple[str, bytes]]:
             async for key in keys:
@@ -2927,12 +2970,12 @@ class TestTrackerAPI:
         database_session.commit()
 
         async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
-            yield StoredObject(key=f"{prefix}task/../../outside.txt")
-            yield StoredObject(key=f"{prefix}task/..\\outside.txt")
-            yield StoredObject(key=f"{prefix}C:/outside.txt")
-            yield StoredObject(key=f"{prefix}task//outside.txt")
-            yield StoredObject(key=f"{prefix}task/hidden\x00.txt")
-            yield StoredObject(key=f"{prefix}task/output.txt")
+            yield StoredObject(key=f"{prefix}task/../../outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/..\\outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}C:/outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task//outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/hidden\x00.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/output.txt", size=0)
 
         async def _mock_get_many(_store: object, keys: AsyncIterator[str]) -> AsyncIterator[tuple[str, bytes]]:
             async for key in keys:
@@ -2962,8 +3005,8 @@ class TestTrackerAPI:
         database_session.commit()
 
         async def _mock_list_objects(_store: object, prefix: str) -> AsyncIterator[StoredObject]:
-            yield StoredObject(key=f"{prefix}task/../../outside.txt")
-            yield StoredObject(key=f"{prefix}task/hidden\x00.txt")
+            yield StoredObject(key=f"{prefix}task/../../outside.txt", size=0)
+            yield StoredObject(key=f"{prefix}task/hidden\x00.txt", size=0)
 
         get_many = MagicMock()
         monkeypatch.setattr(main_module.S3ObjectStore, "list_objects", _mock_list_objects)
@@ -3062,7 +3105,7 @@ class TestTrackerAPI:
             executor_artifact_uri="s3://artifacts/test-release.pex",
             executor_artifact_digest="digest-test-release",
             executor_protocol_version="1",
-            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
         )
         database_session.add(benchmark)
         database_session.commit()
@@ -3186,7 +3229,14 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
 
     logs_client = Mock()
     logs_client.filter_log_events.return_value = {"events": []}
+    logs_client.create_log_group = AsyncMock()
+    logs_client.put_retention_policy = AsyncMock()
     monkeypatch.setattr(DefaultChainAWSClientProvider, "cloudwatch_logs_client", lambda _provider: logs_client)
+    async_logs_context = AsyncMock()
+    async_logs_context.__aenter__.return_value = logs_client
+    monkeypatch.setattr(
+        DefaultChainAWSClientProvider, "cloudwatch_logs_async_client", lambda _provider: async_logs_context
+    )
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _create_cloudwatch_benchmark)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _write_cloudwatch_log)
     runtime = await CloudRuntimeFactory.create_execution_runtime(
@@ -3244,7 +3294,9 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     assert archived == [saved_result]
     payloads: list[dict[str, Any]] = []
 
-    def invoke_lambda(_clients: object, _function: str, payload: dict[str, Any], **_arguments: Any) -> dict[str, str]:
+    async def invoke_lambda(
+        _clients: object, _function: str, payload: dict[str, Any], **_arguments: Any
+    ) -> dict[str, str]:
         payloads.append(payload)
         return {"reading_plan_url": "https://analysis.example/result"}
 
@@ -3264,3 +3316,208 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     for operation, arguments in storage.calls:
         expected_bucket = "shared-library" if arguments.get("Key", "").startswith("agents/") else "vs-dev-acme-123"
         assert arguments["Bucket"] == expected_bucket, (operation, arguments)
+
+
+async def test_local_start_persists_server_root_without_credentials(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+) -> None:
+    """A local Tracker starts a Docker run from a client that still sends its cloud configuration."""
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    secrets_file = tmp_path / "credentials.env"
+    secrets_file.write_text("MODEL_KEY=local-model-key\n")
+    root = LocalResources(data_root=tmp_path / "server-root", secrets_file=secrets_file)
+    monkeypatch.setattr(local_config, "resources", root)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+    monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
+    contract = contract.model_copy(update={"secrets": {"MODEL_KEY": "model-key"}})
+    request = StartBenchmarkRequest(
+        contract=contract,
+        benchmark_name="swebench",
+        harness_config=harness_config,
+        sandbox_provider_secret_name="DaytonaSecrets",
+    )
+
+    response = local_client.post("/start-benchmark", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 200, response.text
+    benchmark_id = UUID(response.json()["benchmark_id"])
+    benchmark = database_session.get(Benchmark, benchmark_id)
+    assert benchmark is not None
+    assert benchmark.arguments.environment == "local"
+    assert benchmark.arguments.sandbox_provider == "docker"
+    assert benchmark.arguments.sandbox_provider_secret_name is None
+    assert benchmark.arguments.properties == root
+    assert not benchmark.aws_managed
+    assert "local-model-key" not in benchmark.model_dump_json()
+    assert harness_config.aws.aws_secret_access_key not in benchmark.model_dump_json()
+    payload = mock_kicker.queued_calls[0]
+    queued_request = payload["start_benchmark_request_json"]
+    assert queued_request["properties"] == root.model_dump(mode="json")
+    assert queued_request["harness_config"] is None
+    assert "local-model-key" not in str(payload)
+    assert harness_config.aws.aws_secret_access_key not in str(payload)
+    resumed_request = benchmark.local_start_benchmark_request(service_headers={})
+    assert resumed_request.properties == root
+    assert resumed_request.contract.secrets == {"MODEL_KEY": "model-key"}
+
+
+@pytest.mark.parametrize("failure", ["server-unconfigured", "caller-root", "missing-agent"])
+async def test_local_start_rejects_invalid_root_before_admission(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+    failure: str,
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(
+        local_config, "resources", None if failure == "server-unconfigured" else LocalResources(data_root=tmp_path)
+    )
+    request = {
+        "benchmark_name": "swebench",
+        "contract": contract.model_dump(mode="json"),
+    }
+    if failure == "server-unconfigured":
+        request.update(environment="local", sandbox_provider="docker")
+    elif failure == "caller-root":
+        request["properties"] = {"data_root": str(tmp_path / "caller-root")}
+    elif failure == "missing-agent":
+        request["contract"] = {"name": "missing-agent"}
+
+    response = local_client.post("/start-benchmark", json=request)
+
+    expected_status = {"server-unconfigured": 400, "caller-root": 422, "missing-agent": 404}[failure]
+    assert response.status_code == expected_status, response.text
+    assert not database_session.exec(select(Benchmark)).all()
+    assert not database_session.exec(select(ExecutorDispatch)).all()
+    assert not mock_kicker.queued_calls
+
+
+async def test_local_resume_updates_agent_from_the_local_library(
+    tmp_path: Path,
+    example_benchmark_object: Benchmark,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+) -> None:
+    """A stopped local run's `--update-agent` copies the pushed agent into its frozen bundle on disk."""
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+    from tracker.local.runtime import LocalRuntimeFactory
+    from tracker.runtime.artifacts import agent_bundle_key, benchmark_agent_bundle_key
+
+    root = LocalResources(data_root=tmp_path / "server-root")
+    monkeypatch.setattr(local_config, "resources", root)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+    benchmark = example_benchmark_object
+    benchmark.status = BenchmarkStatus.STOPPED
+    benchmark.arguments = benchmark.arguments.model_copy(
+        update={
+            "environment": "local",
+            "sandbox_provider": "docker",
+            "sandbox_provider_secret_name": None,
+            "properties": root,
+        }
+    )
+    database_session.add(benchmark)
+    database_session.commit()
+    agent_name = benchmark.arguments.contract.name
+    objects = LocalRuntimeFactory.create_runtime(root.data_root, benchmark.org_id).objects
+    await objects.put_bytes(agent_bundle_key(agent_name), b"updated agent")
+
+    response = local_client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true",
+        json={"task_ids": ["task_0"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert await objects.get_bytes(benchmark_agent_bundle_key(str(benchmark.id), agent_name)) == b"updated agent"
+    assert mock_kicker.queued_calls
+
+
+async def test_local_start_rejects_managed_storage_before_admission(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+    mock_kicker: Any,
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+
+    response = local_client.post(
+        "/start-benchmark-with-storage",
+        json={
+            "benchmark_name": "swebench",
+            "contract": contract.model_dump(mode="json"),
+            "managed_s3_bucket": "vs-dev-acme-123",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Local execution does not support managed storage buckets"
+    assert not database_session.exec(select(Benchmark)).all()
+    assert not database_session.exec(select(ExecutorDispatch)).all()
+    assert not mock_kicker.queued_calls
+
+
+async def test_local_run_metadata_ignores_client_aws_headers(
+    tmp_path: Path,
+    contract: AgentContractRequest,
+    harness_headers: dict[str, str],
+    monkeypatch: MonkeyPatch,
+    mock_kicker: Any,
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+    monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
+    started = local_client.post(
+        "/start-benchmark",
+        json=StartBenchmarkRequest(contract=contract, benchmark_name="swebench").model_dump(mode="json"),
+    )
+    assert started.status_code == 200, started.text
+    benchmark_id = started.json()["benchmark_id"]
+
+    for headers in ({}, harness_headers):
+        response = local_client.get(f"/fetch-benchmark-metadata/{benchmark_id}", headers=headers)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["storage_bucket"] is None
+
+
+@pytest.mark.parametrize(
+    ("local", "base_url", "expected_status"),
+    [
+        (True, "http://localhost", 200),
+        (True, "http://127.0.0.1:8000", 200),
+        (True, "http://rebound.example", 400),
+        (False, "http://tracker.example", 200),
+    ],
+)
+def test_local_tracker_accepts_only_loopback_hosts(
+    tmp_path: Path, monkeypatch: MonkeyPatch, local: bool, base_url: str, expected_status: int
+) -> None:
+    from tracker.local import config as local_config
+    from tracker.local.resources import LocalResources
+
+    monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path) if local else None)
+    monkeypatch.setattr("main.check_database_connection", lambda: True)
+
+    response = TestClient(app, base_url=base_url).get("/health")
+
+    assert response.status_code == expected_status

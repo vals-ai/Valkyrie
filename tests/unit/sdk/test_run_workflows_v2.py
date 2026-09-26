@@ -16,8 +16,10 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
-from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError
+from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError, ValkyrieTransportError
+from valkyrie.sdk.models import AWSBenchmarkArguments, LocalBenchmarkArguments
 
 _STOP_RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -42,6 +44,7 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
                 "benchmark_id": str(run_id),
                 "benchmark_name": "swebench",
                 "benchmark_arguments": {
+                    "environment": "aws",
                     "contract": {"name": "sweagent", "model": "anthropic/claude-sonnet-4-6"},
                     "concurrency": 5,
                     "task_ids": None,
@@ -59,8 +62,49 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
         result = await client.runs.metadata(run_id)
 
     assert result.benchmark_id == run_id
-    assert result.benchmark_arguments.contract.name == "sweagent"
     assert result.storage_bucket is None
+    assert isinstance(result.benchmark_arguments, AWSBenchmarkArguments)
+
+
+@pytest.mark.parametrize(
+    ("environment", "properties", "valid"),
+    [
+        ("local", {"data_root": "/tmp/valkyrie"}, True),
+        ("aws", {"data_root": "/tmp/valkyrie"}, False),
+        ("local", None, False),
+        (
+            "local",
+            {"region": "us-east-1", "s3_bucket": "runs", "log_group": "runs", "log_retention_days": 365},
+            False,
+        ),
+    ],
+)
+async def test_metadata_validates_environment_resources(make_client, environment, properties, valid) -> None:
+    run_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_id": str(run_id),
+                "benchmark_name": "swebench",
+                "benchmark_arguments": {
+                    "contract": {"name": "sweagent"},
+                    "concurrency": 1,
+                    "environment": environment,
+                    "properties": properties,
+                },
+            },
+        )
+
+    async with make_client(handler) as client:
+        if valid:
+            result = await client.runs.metadata(run_id)
+            assert isinstance(result.benchmark_arguments, LocalBenchmarkArguments)
+            assert result.benchmark_arguments.properties.data_root == Path("/tmp/valkyrie")
+        else:
+            with pytest.raises(ValidationError):
+                await client.runs.metadata(run_id)
 
 
 async def test_results_exist_returns_typed_s3_state(make_client) -> None:
@@ -480,3 +524,39 @@ async def test_windows_artifact_download_rejects_colons_before_writing(make_clie
         with pytest.raises(ValueError, match="Windows filenames"):
             await client.artifacts.download(uuid4(), tmp_path / "outputs")
     assert not (tmp_path / "outputs").exists()
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://tracker.test/file", "http://tracker.test/file", "https://tracker.test:8443/file"],
+)
+async def test_artifact_download_authenticates_only_tracker_origin(make_client, monkeypatch, tmp_path, url):
+    """Keep Tracker credentials on its origin and reject authenticated redirects."""
+    redirect = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("download-url"):
+            return httpx.Response(200, json={"path": "result", "download_url": url, "expires_in": 300, "size": 2})
+        return httpx.Response(200, json={"artifacts": [{"path": "result", "size": 2}]})
+
+    async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == url
+        if url == "https://tracker.test/file":
+            assert request.headers["x-api-key"] == "vals-key"
+            assert request.headers["authorization"] == "Bearer overridden"
+        else:
+            assert not any(name.startswith("x-") for name in request.headers)
+            assert "authorization" not in request.headers
+        if redirect:
+            return httpx.Response(302, headers={"location": "https://other.test/file"})
+        return httpx.Response(200, content=b"{}")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
+    async with make_client(handler) as client:
+        client._client.headers["authorization"] = "Bearer overridden"
+        result = await client.artifacts.download(uuid4(), tmp_path / "outputs")
+        assert (result / "result").read_bytes() == b"{}"
+        if url == "https://tracker.test/file":
+            redirect = True
+            with pytest.raises(ValkyrieTransportError):
+                await client.artifacts.download(uuid4(), tmp_path / "redirect")

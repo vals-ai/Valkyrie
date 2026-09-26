@@ -101,6 +101,7 @@ class CloudRuntimeFactory:
         context_version: int | None = None,
     ) -> RuntimeServices:
         """Select AWS access and prepare services for one dispatch."""
+        assert request.properties is None or isinstance(request.properties, AWSResources)
         if properties is not None and request.properties is not None and request.properties != properties:
             raise TrackerServiceError("Queued AWS resources differ from the saved run")
 

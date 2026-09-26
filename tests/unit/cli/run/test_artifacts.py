@@ -142,14 +142,9 @@ async def test_download_s3_path_requires_configured_bucket(monkeypatch: pytest.M
     Test cases:
     - Missing S3_BUCKET raises the same ClickException surfaced by CLI commands.
     """
-    monkeypatch.setattr(
-        "valkyrie.cli.s3_config.load_config",
-        lambda: {
-            "AWS_ACCESS_KEY_ID": "key",
-            "AWS_SECRET_ACCESS_KEY": "secret",
-            "AWS_DEFAULT_REGION": "us-east-1",
-        },
-    )
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text("aws:\n  AWS_DEFAULT_REGION: us-east-1\n")
+    monkeypatch.setenv("VALKYRIE_CONFIG_PATH", str(config_path))
 
-    with pytest.raises(click.ClickException, match="S3_BUCKET key not found"):
+    with pytest.raises(click.ClickException, match="aws.S3_BUCKET"):
         await download_s3_path("benchmarks/run-1", tmp_path)
