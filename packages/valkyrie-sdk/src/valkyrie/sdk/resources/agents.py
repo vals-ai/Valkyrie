@@ -52,10 +52,11 @@ class AgentsResource:
             AgentDownloadURLResponse,
         )
 
-    async def push(self, agent_path: str | Path, *, name: str | None = None) -> AgentEntry:
+    async def push(self, agent_path: str | Path, *, name: str | None = None, overwrite: bool = True) -> AgentEntry:
         """Bundle a directory containing contract.yaml or contract.yml and upload it through Tracker.
 
         name defaults to the contract name and replaces that library alias if it exists.
+        Set overwrite=False to reject an existing alias with a 409 API error.
         """
         path = Path(agent_path)
         contract_name = await asyncio.to_thread(read_agent_name, path)
@@ -69,6 +70,7 @@ class AgentsResource:
                 "PUT",
                 f"/agents/{agent_name}",
                 AgentEntry,
+                params={"overwrite": overwrite},
                 content=_file_chunks(stream),
                 headers={"Content-Type": "application/zip", "Content-Length": str(size)},
             )

@@ -498,6 +498,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        update_agent: bool = False,
         benchmark_url: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Resume unfinished work for a run."""
@@ -509,6 +510,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            update_agent=update_agent,
             benchmark_url=benchmark_url,
         )
 
@@ -521,6 +523,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        update_agent: bool = False,
         benchmark_url: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Retry failed or selected work for a run."""
@@ -532,6 +535,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            update_agent=update_agent,
             benchmark_url=benchmark_url,
         )
 
@@ -545,6 +549,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None,
         service_headers: Mapping[str, str] | None,
         from_scratch: bool,
+        update_agent: bool,
         benchmark_url: str | None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Send a retry or resume request."""
@@ -555,6 +560,7 @@ class RunsResource:
         effective_headers = self._service_headers(run.benchmark_name, service_headers)
         params: dict[str, Any] = {
             "retry": retry,
+            "update_agent": update_agent,
             "retry_mode": RetryMode.FROM_SCRATCH.value if from_scratch else RetryMode.AUTO.value,
         }
         if concurrency is not None:

@@ -102,16 +102,13 @@ def _resolve_sandbox_provider_config(
 ) -> tuple[str, str]:
     providers = _sandbox_providers(config)
 
-    # Fall back to the legacy Daytona secret when named providers are not configured.
+    # Point users to provider setup when named providers are not configured.
     if not providers:
         if provider is not None:
             raise TrackerServiceError(
                 f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
             )
-        secret_name = config.get("DAYTONA_SECRET_NAME")
-        if not secret_name:
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-        return "daytona", secret_name
+        raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
 
     # Use the requested provider, configured default, or first configured provider.
     provider_name = str(provider or config.get("default_sandbox_provider") or next(iter(providers)))
@@ -252,7 +249,7 @@ class TrackerService:
         with open(config_path) as f:
             harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
-        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
+        if not _sandbox_providers(harness_config):
             raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
 
         access_key_fields = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
@@ -719,6 +716,7 @@ class TrackerService:
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
         lambda_function: str | None = None,
+        update_agent: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -737,7 +735,7 @@ class TrackerService:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
-            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
+            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value, "update_agent": update_agent}
 
             if concurrency is not None:
                 params["concurrency"] = concurrency
