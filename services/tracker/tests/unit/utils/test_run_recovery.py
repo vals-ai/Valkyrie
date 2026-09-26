@@ -1674,6 +1674,46 @@ class TestRunRecovery:
         admitted_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
         assert admitted_request["contract"] == saved_contract
 
+    @pytest.mark.parametrize("query", ["", "&concurrency=3", "&retry=true"])
+    async def test_retry_or_resume_rejects_agent_update_without_restarting_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_kicker: MockKicker,
+        query: str,
+    ) -> None:
+        """
+        An in-progress run keeps its bundle when recovery would not restart any task.
+
+        Test cases:
+        - A plain resume only updates stored arguments.
+        - A concurrency change only updates the running dispatch.
+        - A retry with no failed tasks restarts nothing.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+        copy = AsyncMock()
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true{query}",
+            json={},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 409, response.text
+        assert "stop the run first" in response.json()["detail"]
+        copy.assert_not_awaited()
+        assert not mock_kicker.queued_calls
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.arguments.concurrency == 5
+
     async def test_retry_or_resume_keeps_agent_when_a_concurrent_stop_rejects_recovery(
         self,
         example_benchmark_object: Benchmark,

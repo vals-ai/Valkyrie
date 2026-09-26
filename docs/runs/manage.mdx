@@ -59,7 +59,7 @@ valkyrie run retry <run-id>
 
 Either accepts a task subset, a concurrency override, and `--connect` to stream afterwards. Three overrides change what the retried work uses:
 
-- `--update-agent` refreshes the frozen agent from its current S3 bundle, so a re-pushed agent takes effect.
+- `--update-agent` refreshes the frozen agent from its current S3 bundle, so a re-pushed agent takes effect. On a run still in progress, it applies only when tasks restart; otherwise stop the run first.
 - `--from-scratch` clears stored evaluation resume state, so a task is graded again from the beginning.
 - `--benchmark-url` replaces the benchmark-service URL stored on the run, which a tunnelled service needs after its URL changes.
 

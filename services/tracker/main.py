@@ -1545,6 +1545,7 @@ def _commit_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    update_agent: bool = False,
 ) -> AdmissionResult | None:
     with Session(bind, expire_on_commit=False) as session:
         org = session.get(Org, org_id)
@@ -1565,7 +1566,14 @@ def _commit_recovery(
             access_key_harness_config,
             preparation,
             verified_task_ids,
+            update_agent=update_agent,
         )
+
+
+# Tasks download the bundle when their sandbox starts, so a refresh without a new dispatch changes a run in flight.
+_UPDATE_AGENT_WITHOUT_DISPATCH = (
+    "Updating the agent of an in-progress run requires a recovery that restarts its tasks; stop the run first."
+)
 
 
 async def _refresh_recovered_agent(
@@ -1574,14 +1582,12 @@ async def _refresh_recovered_agent(
     benchmark_id: UUID,
     agent_name: str,
     session: Session,
-    admission: AdmissionResult | None,
+    admission: AdmissionResult,
 ) -> None:
     """Replace the run's agent bundle after recovery admission and before its executor is enqueued."""
     try:
         await copier.copy(agent_bundle_key(agent_name), benchmark_agent_bundle_key(str(benchmark_id), agent_name))
     except Exception as exc:
-        if admission is None:
-            raise
         dispatch = ExecutorDispatch.model_validate(json.loads(admission.dispatch_json))
         logger.exception(
             "Failed to refresh the agent bundle for an admitted recovery",
@@ -1725,28 +1731,29 @@ async def retry_or_resume_benchmark(
             access_key_harness_config=runtime_resolution.access_key_harness_config,
             preparation=preparation,
             verified_task_ids=verified_task_ids,
+            update_agent=update_agent,
         )
     )
     try:
         result, cancellation = await _await_before_cancellation(commit_task)
     except _TaskFailedAfterCancellation as failure:
         raise failure.cancellation from failure.task_error
-    # A rejected recovery never reaches this copy, and the executor cannot read the bundle before enqueue.
-    if agent_copier is not None:
-        refresh_task = asyncio.create_task(
-            _refresh_recovered_agent(
-                agent_copier,
-                benchmark_id=benchmark_id,
-                agent_name=preparation.agent_name,
-                session=session,
-                admission=result,
-            )
-        )
-        try:
-            _, cancellation = await _await_before_cancellation(refresh_task, cancellation)
-        except _TaskFailedAfterCancellation as failure:
-            raise failure.cancellation from failure.task_error
     if result is not None:
+        # A rejected recovery never reaches this copy, and the executor cannot read the bundle before enqueue.
+        if agent_copier is not None:
+            refresh_task = asyncio.create_task(
+                _refresh_recovered_agent(
+                    agent_copier,
+                    benchmark_id=benchmark_id,
+                    agent_name=preparation.agent_name,
+                    session=session,
+                    admission=result,
+                )
+            )
+            try:
+                _, cancellation = await _await_before_cancellation(refresh_task, cancellation)
+            except _TaskFailedAfterCancellation as failure:
+                raise failure.cancellation from failure.task_error
         enqueue_task = asyncio.create_task(
             _enqueue_executor_dispatch(
                 ExecutorDispatch.model_validate(json.loads(result.dispatch_json)),
@@ -1780,6 +1787,8 @@ def _apply_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    *,
+    update_agent: bool = False,
 ) -> AdmissionResult | None:
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
@@ -1819,6 +1828,8 @@ def _apply_recovery(
         and concurrency is None
         and not queued_running_recovery
     ):
+        if update_agent:
+            raise HTTPException(status_code=409, detail=_UPDATE_AGENT_WITHOUT_DISPATCH)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
                 benchmark_id,
@@ -1840,6 +1851,8 @@ def _apply_recovery(
         and not retry
         and concurrency is not None
     ):
+        if update_agent:
+            raise HTTPException(status_code=409, detail=_UPDATE_AGENT_WITHOUT_DISPATCH)
         _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
@@ -1950,6 +1963,8 @@ def _apply_recovery(
             )
 
         if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids and recovery_task_ids is None:
+            if update_agent:
+                raise HTTPException(status_code=409, detail=_UPDATE_AGENT_WITHOUT_DISPATCH)
             if secrets or concurrency is not None or benchmark_url is not None:
                 update_benchmark_resume_arguments(
                     benchmark_id,
