@@ -1675,7 +1675,7 @@ class TestRunRecovery:
         assert admitted_request["contract"] == saved_contract
 
     @pytest.mark.parametrize("query", ["", "&concurrency=3", "&retry=true"])
-    async def test_retry_or_resume_rejects_agent_update_without_restarting_tasks(
+    async def test_retry_or_resume_rejects_agent_update_on_an_in_progress_run(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
@@ -1685,18 +1685,28 @@ class TestRunRecovery:
         query: str,
     ) -> None:
         """
-        An in-progress run keeps its bundle when recovery would not restart any task.
+        An in-progress run keeps its bundle, because its running tasks would otherwise mix agents.
 
         Test cases:
         - A plain resume only updates stored arguments.
         - A concurrency change only updates the running dispatch.
-        - A retry with no failed tasks restarts nothing.
+        - A retry of failed tasks would admit a dispatch beside the running one.
         """
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                benchmark_row,
+                Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            ]
+        )
         database_session.commit()
         copy = AsyncMock()
+        monkeypatch.setattr(
+            BenchmarkServiceClient,
+            "verify_task_ids",
+            AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task_0"])),
+        )
         monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
         monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
 
@@ -1707,7 +1717,7 @@ class TestRunRecovery:
         )
 
         assert response.status_code == 409, response.text
-        assert "stop the run first" in response.json()["detail"]
+        assert "stopping the run first" in response.json()["detail"]
         copy.assert_not_awaited()
         assert not mock_kicker.queued_calls
         database_session.refresh(benchmark_row)

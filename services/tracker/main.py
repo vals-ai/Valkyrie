@@ -1570,10 +1570,8 @@ def _commit_recovery(
         )
 
 
-# Tasks download the bundle when their sandbox starts, so a refresh without a new dispatch changes a run in flight.
-_UPDATE_AGENT_WITHOUT_DISPATCH = (
-    "Updating the agent of an in-progress run requires a recovery that restarts its tasks; stop the run first."
-)
+# Tasks download the bundle when their sandbox starts, so a refresh during a run would mix agents within it.
+_UPDATE_AGENT_IN_PROGRESS = "Updating the agent of an in-progress run requires stopping the run first."
 
 
 async def _refresh_recovered_agent(
@@ -1798,6 +1796,10 @@ def _apply_recovery(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
 
+    # A later status change fails the locked comparison with the prepared state.
+    if update_agent and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(status_code=409, detail=_UPDATE_AGENT_IN_PROGRESS)
+
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and secrets:
         raise HTTPException(
             status_code=409,
@@ -1828,8 +1830,6 @@ def _apply_recovery(
         and concurrency is None
         and not queued_running_recovery
     ):
-        if update_agent:
-            raise HTTPException(status_code=409, detail=_UPDATE_AGENT_WITHOUT_DISPATCH)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
                 benchmark_id,
@@ -1851,8 +1851,6 @@ def _apply_recovery(
         and not retry
         and concurrency is not None
     ):
-        if update_agent:
-            raise HTTPException(status_code=409, detail=_UPDATE_AGENT_WITHOUT_DISPATCH)
         _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
         if secrets or benchmark_url is not None:
             update_benchmark_resume_arguments(
@@ -1963,8 +1961,6 @@ def _apply_recovery(
             )
 
         if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids and recovery_task_ids is None:
-            if update_agent:
-                raise HTTPException(status_code=409, detail=_UPDATE_AGENT_WITHOUT_DISPATCH)
             if secrets or concurrency is not None or benchmark_url is not None:
                 update_benchmark_resume_arguments(
                     benchmark_id,
