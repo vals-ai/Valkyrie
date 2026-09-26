@@ -479,6 +479,57 @@ async def test_one_renew_tick_classifies_all_registered_dispatches(monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_older_tick_cannot_rewind_newer_refresh_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeDispatchStore()
+    keeper = supervisor_module._LeaseKeeper(store)  # pyright: ignore[reportPrivateUsage]
+    authority = DispatchAuthority("dispatch-1", "benchmark-1")
+    now = [asyncio.get_running_loop().time()]
+    lease = keeper.register(authority, now[0])
+    worker = keeper.task
+    assert worker is not None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def renew(_authorities: list[DispatchAuthority]) -> dict[tuple[str, str], tuple[bool, bool, bool]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+            outcome = (True, True, True)
+        else:
+            outcome = (True, True, False)
+        return {(authority.dispatch_id, authority.benchmark_id): outcome}
+
+    monkeypatch.setattr(store, "renew", renew)
+    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now[0])
+    now[0] += 1
+    old_tick = asyncio.create_task(keeper.tick())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        now[0] += 1
+        await keeper.refresh(authority)
+        refreshed_at = lease.last_confirmed_renewal_at
+        refreshed_timer = keeper.leases[authority.dispatch_id][2]
+        assert refreshed_at == now[0]
+        release.set()
+        await old_tick
+        assert lease.last_confirmed_renewal_at == refreshed_at
+        assert keeper.leases[authority.dispatch_id][2] is refreshed_timer
+        assert lease.revoked.is_set()
+        assert not lease.lost.is_set()
+    finally:
+        release.set()
+        await old_tick
+        await keeper.unregister(authority)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_register_after_empty_reuses_keeper_during_in_flight_renewal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

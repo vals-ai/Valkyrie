@@ -643,7 +643,7 @@ class _LeaseKeeper:
         if not live and not stopped:
             lease.lost.set()
             return
-        if renewed and lease.expires_in(_monotonic_time()) > 0:
+        if renewed and checked_at > lease.last_confirmed_renewal_at and lease.expires_in(_monotonic_time()) > 0:
             lease.last_confirmed_renewal_at = checked_at
             current[2].cancel()
             timer = asyncio.get_running_loop().call_at(
