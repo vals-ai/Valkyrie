@@ -624,6 +624,7 @@ class ExecutorSupervisor:
         if urlparse(dispatch.artifact_uri).scheme == "source":
             if self.source_root is None:
                 raise ValueError("Source executor releases require EXECUTOR_SOURCE_ROOT on this host")
+            # Source releases always run the current checkout; their digest names the checkout, not its contents.
             return validate_source_executor_artifact_uri(dispatch.artifact_uri, self.source_root)
         if self.release_root is None:
             raise ValueError("Local executor releases require EXECUTOR_RELEASE_ROOT on this host")

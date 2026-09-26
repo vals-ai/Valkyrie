@@ -10,6 +10,7 @@ import hashlib
 import json
 from json import JSONDecodeError
 import logging
+import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
@@ -35,7 +36,12 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     run_executor_dispatch,
     verify_file_digest,
 )
-from executor_protocol import ExecutorTelemetryContext, source_executor_artifact_uri, validate_executor_artifact_uri
+from executor_protocol import (
+    EXECUTOR_ENTRYPOINT_MODULE,
+    ExecutorTelemetryContext,
+    source_executor_artifact_uri,
+    validate_executor_artifact_uri,
+)
 
 
 class FakeDispatchStore:
@@ -1554,6 +1560,33 @@ async def test_source_release_runs_the_entrypoint_module_from_the_configured_roo
     assert store.finished == [store.authority]
     assert json.loads(received_payload.read_text())["executor_dispatch_id"] == "dispatch-1"
     assert not (tmp_path / "cache").exists()
+
+
+def test_source_release_launch_environment_imports_the_real_entrypoint(tmp_path: Path) -> None:
+    """
+    Verify that the checkout's real executor entrypoint and its imports load through the source launch environment.
+
+    Test cases:
+    - The source command runs the executor entrypoint module.
+    - That module imports from the configured checkout with the command's environment.
+    """
+    root = Path(__file__).resolve().parents[3] / "services" / "tracker" / "src"
+    supervisor = ExecutorSupervisor(tmp_path / "cache", source_root=root)
+    command, environment = supervisor._executor_command(  # pyright: ignore[reportPrivateUsage]
+        root, _source_dispatch(root), tmp_path / "payload.json"
+    )
+
+    assert command[1:3] == ["-m", EXECUTOR_ENTRYPOINT_MODULE]
+    result = subprocess.run(
+        [command[0], "-c", f"import {EXECUTOR_ENTRYPOINT_MODULE} as entrypoint; print(entrypoint.__file__)"],
+        env=environment,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).is_relative_to(root)
 
 
 async def test_source_release_requires_the_host_to_serve_that_root(tmp_path: Path) -> None:

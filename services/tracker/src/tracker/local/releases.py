@@ -74,27 +74,17 @@ def initialize_release(
 
 
 def register_source_release(session: Session, source_root: Path) -> ExecutorRelease:
-    """Activate a release that runs the executor from this checkout, reusing it until the source changes."""
-    root = source_root.resolve()
+    """Activate the release that always runs this checkout's current executor source."""
+    artifact_uri = source_executor_artifact_uri(source_root.resolve())
 
+    # Source releases are not pinned: the digest names the checkout, not its contents, so edits reuse the release.
     return _activate_or_reuse(
         session,
-        artifact_uri=source_executor_artifact_uri(root),
-        artifact_digest=_source_tree_digest(root),
+        artifact_uri=artifact_uri,
+        artifact_digest=hashlib.sha256(artifact_uri.encode()).hexdigest(),
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
         id_prefix="source",
     )
-
-
-def _source_tree_digest(root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root)
-        if "__pycache__" in relative.parts or not path.is_file():
-            continue
-        content_digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        digest.update(f"{relative.as_posix()}\0{content_digest}\n".encode())
-    return digest.hexdigest()
 
 
 def _activate_or_reuse(

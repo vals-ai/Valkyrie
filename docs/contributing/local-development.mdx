@@ -43,7 +43,7 @@ The API is available at `http://localhost:8000`. Local Compose runs the tracker,
 
 ### Initialize a filesystem executor release
 
-`python -m tracker.serve --config` registers the checkout's executor source as the active release at startup, so local runs need no executor build. A retry or resume runs the current checkout. To run a built artifact instead, build it on the ARM64 machine that will run it:
+`python -m tracker.serve --config` registers the checkout's executor source as the active release at startup, so local runs need no executor build. Every dispatch, including a retry or resume, runs the current checkout. To run a built artifact instead, build it on the ARM64 machine that will run it:
 
 ```bash
 PYTHONPATH=services/tracker/src uv run --project services/tracker python \
