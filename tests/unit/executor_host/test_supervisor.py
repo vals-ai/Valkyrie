@@ -11,10 +11,9 @@ import json
 from json import JSONDecodeError
 import logging
 import sys
-from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -36,47 +35,25 @@ from executor_protocol import ExecutorTelemetryContext, validate_executor_artifa
 
 
 class FakeDispatchStore:
-    def __init__(
-        self,
-        *,
-        claim_result: bool = True,
-        authority_results: list[bool] | None = None,
-        finish_result: bool = True,
-    ) -> None:
+    def __init__(self, *, claim_result: bool = True, finish_result: bool = True) -> None:
         self.claim_result = claim_result
-        self.authority_results = authority_results or [True]
         self.finish_result = finish_result
         self.claimed: list[tuple[str, str, ArtifactDispatch]] = []
-        self.authority_checks: list[DispatchAuthority] = []
         self.terminalized: list[DispatchAuthority] = []
         self.finished: list[DispatchAuthority] = []
-        self.heartbeats: list[DispatchAuthority] = []
+        self.renewals: list[list[DispatchAuthority]] = []
         self.authority: DispatchAuthority | None = None
 
-    async def claim(
-        self,
-        dispatch_id: str,
-        benchmark_id: str,
-        dispatch: ArtifactDispatch,
-    ) -> DispatchAuthority | None:
+    async def claim(self, dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority | None:
         self.claimed.append((dispatch_id, benchmark_id, dispatch))
         if not self.claim_result or self.authority is not None:
             return None
-        self.authority = DispatchAuthority(
-            dispatch_id=dispatch_id,
-            benchmark_id=benchmark_id,
-        )
+        self.authority = DispatchAuthority(dispatch_id=dispatch_id, benchmark_id=benchmark_id)
         return self.authority
 
-    async def is_current(self, authority: DispatchAuthority) -> bool:
-        self.authority_checks.append(authority)
-        if len(self.authority_results) == 1:
-            return self.authority_results[0]
-        return self.authority_results.pop(0)
-
-    async def heartbeat(self, authority: DispatchAuthority) -> bool:
-        self.heartbeats.append(authority)
-        return True
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+        self.renewals.append(authorities)
+        return {authority.dispatch_id: (True, False) for authority in authorities}
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         _ = task_ids
@@ -223,19 +200,13 @@ def test_process_payload_rejects_mixed_execution_shapes() -> None:
         )
 
 
-def _supervisor(
-    tmp_path: Path,
-    *,
-    content: bytes,
-    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-) -> ExecutorSupervisor:
+def _supervisor(tmp_path: Path, *, content: bytes) -> ExecutorSupervisor:
     return ExecutorSupervisor(
         cache_dir=tmp_path,
         s3_client=FakeS3Client(content),
         python_executable=sys.executable,
         artifact_bucket="artifacts",
         artifact_prefix="executors",
-        sleep=sleep,
     )
 
 
@@ -339,49 +310,6 @@ async def test_postgres_claim_is_status_fenced_and_returns_authority(
 
 
 @pytest.mark.asyncio
-async def test_postgres_authority_and_completion_are_fenced(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cursor = RecordingCursor([(True,), ("dispatch-1",), ("FINISHED",), ("dispatch-1",)])
-    store = PostgresExecutorDispatchStore(
-        host="db",
-        port="5432",
-        dbname="tracker",
-        user="tracker",
-        password="secret",
-    )
-    monkeypatch.setattr(store, "_connect", lambda: RecordingConnection(cursor))
-    authority = DispatchAuthority(
-        dispatch_id="dispatch-1",
-        benchmark_id="benchmark-1",
-    )
-
-    assert await store.is_current(authority)
-    assert await store.heartbeat(authority)
-    assert await store.finish(authority)
-
-    authority_statement, authority_parameters = cursor.statements[0]
-    heartbeat_statement, heartbeat_parameters = cursor.statements[1]
-    finish_lock_statement, finish_lock_parameters = cursor.statements[2]
-    finish_statement, finish_parameters = cursor.statements[3]
-    assert "dispatch.status = 'RUNNING'" in authority_statement
-    assert "benchmark.status != 'STOPPED'" in authority_statement
-    assert "dispatch.lease_expires_at > CURRENT_TIMESTAMP" in authority_statement
-    assert authority_parameters == ("dispatch-1",)
-    assert "lease_expires_at > CURRENT_TIMESTAMP" in heartbeat_statement
-    assert heartbeat_parameters == (
-        supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-        "dispatch-1",
-        "benchmark-1",
-    )
-    assert "FOR UPDATE" in finish_lock_statement
-    assert finish_lock_parameters == ("benchmark-1",)
-    assert "SET status = 'FINISHED'" in finish_statement
-    assert "lease_expires_at > CURRENT_TIMESTAMP" in finish_statement
-    assert finish_parameters == ("dispatch-1", "benchmark-1")
-
-
-@pytest.mark.asyncio
 async def test_postgres_finish_errors_orphaned_in_progress_benchmark(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -469,18 +397,17 @@ async def test_run_forwards_dispatch_authority_to_executor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\"), \"pool_size\": os.environ.get(\"DATABASE_POOL_SIZE\"), \"max_overflow\": os.environ.get(\"DATABASE_MAX_OVERFLOW\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
+    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nresult = {\"payload\": payload, \"sentry_release\": os.environ.get(\"SENTRY_RELEASE\")}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(result))\n"""
     digest = hashlib.sha256(script).hexdigest()
     marker = tmp_path / "marker.json"
     monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
-    monkeypatch.setenv("DATABASE_POOL_SIZE", "5")
-    monkeypatch.setenv("DATABASE_MAX_OVERFLOW", "2")
     store = FakeDispatchStore()
 
     with caplog.at_level(logging.INFO, logger=supervisor_module.logger.name):
         await run_executor_dispatch(
             _supervisor(tmp_path, content=script),
             store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest=digest),
             process_payload=_process_payload({"benchmark_name": "swebench"}, task_ids=["task-1"]),
@@ -496,9 +423,6 @@ async def test_run_forwards_dispatch_authority_to_executor(
     assert payload["executor_dispatch_id"] == "dispatch-1"
     assert payload["telemetry_context_json"] == {"request_id": "", "trace_headers": {}}
     assert result["sentry_release"] == "release-v2"
-    assert result["pool_size"] == "5"
-    assert result["max_overflow"] == "2"
-    assert store.authority_checks
     assert store.finished == [store.authority]
     assert (
         f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
@@ -506,128 +430,168 @@ async def test_run_forwards_dispatch_authority_to_executor(
 
 
 @pytest.mark.asyncio
-async def test_run_renews_heartbeat_and_stops_it_after_cleanup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    heartbeat_seen = asyncio.Event()
-
-    class FakeExecutorSupervisor:
-        async def prepare_artifact(self, _dispatch: ArtifactDispatch) -> Path:
-            return tmp_path / "executor.pex"
-
-        async def run(self, *_args: object, **_kwargs: object) -> None:
-            await heartbeat_seen.wait()
-
+async def test_one_renew_tick_classifies_all_registered_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
     store = FakeDispatchStore()
-    original_heartbeat = store.heartbeat
+    keeper = supervisor_module._LeaseKeeper(store)  # pyright: ignore[reportPrivateUsage]
+    now = asyncio.get_running_loop().time()
+    healthy = DispatchAuthority("dispatch-1", "benchmark-1")
+    stopped = DispatchAuthority("dispatch-2", "benchmark-2")
+    locked = DispatchAuthority("dispatch-3", "benchmark-3")
+    missing = DispatchAuthority("dispatch-4", "benchmark-4")
+    locked_stopped = DispatchAuthority("dispatch-5", "benchmark-5")
+    authorities = (healthy, stopped, locked, missing, locked_stopped)
+    leases = {authority.dispatch_id: keeper.register(authority, now) for authority in authorities}
+    worker = keeper.task
+    assert worker is not None
 
-    async def record_heartbeat(authority: DispatchAuthority) -> bool:
-        result = await original_heartbeat(authority)
-        heartbeat_seen.set()
-        return result
+    async def renew(authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+        store.renewals.append(authorities)
+        return {
+            healthy.dispatch_id: (True, False),
+            stopped.dispatch_id: (True, True),
+            locked.dispatch_id: (False, False),
+            locked_stopped.dispatch_id: (False, True),
+        }
 
-    monkeypatch.setattr(store, "heartbeat", record_heartbeat)
+    monkeypatch.setattr(store, "renew", renew)
+    try:
+        await keeper.tick()
 
-    await run_executor_dispatch(
-        FakeExecutorSupervisor(),  # type: ignore[arg-type]
-        store,
-        executor_dispatch_id="dispatch-1",
-        dispatch=_dispatch(digest="0" * 64),
-        process_payload=_process_payload(),
-        heartbeat_interval_seconds=0,
-    )
-
-    heartbeat_count_after_cleanup = len(store.heartbeats)
-    assert heartbeat_count_after_cleanup >= 1
-    await asyncio.sleep(0)
-    assert len(store.heartbeats) == heartbeat_count_after_cleanup
+        assert len(store.renewals) == 1
+        assert set(store.renewals[0]) == set(authorities)
+        assert leases[healthy.dispatch_id].last_confirmed_renewal_at >= now
+        assert leases[stopped.dispatch_id].revoked.is_set()
+        assert not leases[stopped.dispatch_id].lost.is_set()
+        assert not leases[locked.dispatch_id].lost.is_set()
+        assert leases[locked.dispatch_id].last_confirmed_renewal_at == now
+        assert leases[locked_stopped.dispatch_id].revoked.is_set()
+        assert not leases[locked_stopped.dispatch_id].lost.is_set()
+        assert leases[missing.dispatch_id].lost.is_set()
+    finally:
+        for authority in authorities:
+            await keeper.unregister(authority)
+    assert keeper.task is None
+    assert keeper.leases == {}
+    assert worker.done()
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_lease_expires_from_last_confirmed_renewal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    now = 0.0
-    sleep_delays: list[float] = []
+async def test_renew_error_keeps_lease_and_child_can_finish(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     store = FakeDispatchStore()
-    authority = DispatchAuthority(dispatch_id="dispatch-1", benchmark_id="benchmark-1")
-    lease = supervisor_module._DispatchLease(  # pyright: ignore[reportPrivateUsage]
-        last_confirmed_renewal_at=now,
-        lost=asyncio.Event(),
-    )
+    keeper = supervisor_module._LeaseKeeper(store)  # pyright: ignore[reportPrivateUsage]
+    authority = DispatchAuthority("dispatch-1", "benchmark-1")
+    lease = keeper.register(authority, asyncio.get_running_loop().time())
 
-    async def advance_time(delay: float) -> None:
-        nonlocal now
-        sleep_delays.append(delay)
-        now += delay
+    async def fail(_authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+        raise supervisor_module.psycopg2.OperationalError("transient")
 
-    async def heartbeat(current_authority: DispatchAuthority) -> bool:
-        nonlocal now
-        store.heartbeats.append(current_authority)
-        if len(store.heartbeats) == 1:
-            return True
-        now = 1 + supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
-        raise supervisor_module.psycopg2.OperationalError("temporary")
-
-    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now)
-    monkeypatch.setattr(supervisor_module.asyncio, "sleep", advance_time)
-    monkeypatch.setattr(store, "heartbeat", heartbeat)
-
-    await supervisor_module._heartbeat_loop(  # pyright: ignore[reportPrivateUsage]
-        store,
-        authority,
-        lease,
-        interval_seconds=1,
-    )
-
-    assert lease.lost.is_set()
-    assert store.heartbeats == [authority, authority]
-    assert sleep_delays == [1, 1]
-    assert now == 1 + supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
+    monkeypatch.setattr(store, "renew", fail)
+    try:
+        await keeper.tick()
+        assert not lease.lost.is_set()
+        assert not lease.revoked.is_set()
+        script = b"print('ok')"
+        dispatch = _dispatch(digest=hashlib.sha256(script).hexdigest())
+        executor = _supervisor(tmp_path, content=script)
+        artifact_path = await executor.prepare_artifact(dispatch)
+        await executor.run(
+            artifact_path,
+            dispatch,
+            process_payload=_process_payload(),
+            authority=authority,
+            lease=lease,
+        )
+    finally:
+        await keeper.unregister(authority)
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_returning_after_deadline_cannot_renew_lease(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    now = 0.0
-    heartbeat_started_at: float | None = None
+async def test_local_expiry_fires_while_renew_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(supervisor_module, "DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS", 0.02)
     store = FakeDispatchStore()
-    authority = DispatchAuthority(dispatch_id="dispatch-1", benchmark_id="benchmark-1")
+    keeper = supervisor_module._LeaseKeeper(store)  # pyright: ignore[reportPrivateUsage]
+    authority = DispatchAuthority("dispatch-1", "benchmark-1")
+    lease = keeper.register(authority, asyncio.get_running_loop().time())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked(_authorities: list[DispatchAuthority]) -> dict[str, tuple[bool, bool]]:
+        entered.set()
+        await release.wait()
+        return {authority.dispatch_id: (True, False)}
+
+    monkeypatch.setattr(store, "renew", blocked)
+    tick = asyncio.create_task(keeper.tick())
+    try:
+        await entered.wait()
+        await asyncio.wait_for(lease.lost.wait(), timeout=1)
+        assert not tick.done()
+        release.set()
+        await tick
+        assert lease.lost.is_set()
+    finally:
+        release.set()
+        await keeper.unregister(authority)
+
+
+class _WaitingProcess:
+    returncode: int | None = None
+
+    def __init__(self) -> None:
+        self.done = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self.done.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_lease_loss_kills_immediately_but_stopped_allows_grace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, revoked: bool
+) -> None:
+    process = _WaitingProcess()
     lease = supervisor_module._DispatchLease(  # pyright: ignore[reportPrivateUsage]
-        last_confirmed_renewal_at=now,
-        lost=asyncio.Event(),
+        asyncio.get_running_loop().time(), asyncio.Event(), asyncio.Event()
     )
+    terminated = asyncio.Event()
 
-    async def advance_time(delay: float) -> None:
-        nonlocal now
-        now += delay
+    async def terminate(_process: object) -> None:
+        process.returncode = -15
+        process.done.set()
+        terminated.set()
 
-    async def heartbeat(current_authority: DispatchAuthority) -> bool:
-        nonlocal heartbeat_started_at, now
-        heartbeat_started_at = now
-        store.heartbeats.append(current_authority)
-        now = supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS + 0.1
-        return True
+    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate)
+    if revoked:
+        monkeypatch.setattr(supervisor_module, "_AUTHORITY_LOSS_GRACE_SECONDS", 0)
+        lease.revoked.set()
+    else:
+        lease.lost.set()
+    with pytest.raises(DispatchAuthorityLostError, match="superseded" if revoked else "expired"):
+        await _supervisor(tmp_path, content=b"unused")._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
+            cast(asyncio.subprocess.Process, process), lease
+        )
 
-    monkeypatch.setattr(supervisor_module, "_monotonic_time", lambda: now)
-    monkeypatch.setattr(supervisor_module.asyncio, "sleep", advance_time)
-    monkeypatch.setattr(store, "heartbeat", heartbeat)
+    assert terminated.is_set()
+    assert process.returncode == -15
 
-    await supervisor_module._heartbeat_loop(  # pyright: ignore[reportPrivateUsage]
-        store,
-        authority,
-        lease,
-        interval_seconds=1,
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_pre_spawn_rejects_lost_local_authority(tmp_path: Path, revoked: bool) -> None:
+    lease = supervisor_module._DispatchLease(  # pyright: ignore[reportPrivateUsage]
+        asyncio.get_running_loop().time(), asyncio.Event(), asyncio.Event()
     )
-
-    assert lease.lost.is_set()
-    assert heartbeat_started_at == 1
-    assert heartbeat_started_at < supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
-    assert now > supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS
-    assert lease.last_confirmed_renewal_at == 0
-    assert store.heartbeats == [authority]
+    (lease.revoked if revoked else lease.lost).set()
+    with pytest.raises(DispatchAuthorityLostError, match="superseded" if revoked else "expired"):
+        await _supervisor(tmp_path, content=b"unused").run(
+            tmp_path / "unused",
+            _dispatch(digest="0" * 64),
+            process_payload=_process_payload(),
+            authority=DispatchAuthority("dispatch-1", "benchmark-1"),
+            lease=lease,
+        )
 
 
 @pytest.mark.asyncio
@@ -646,6 +610,7 @@ async def test_non_claimable_dispatch_does_not_launch(tmp_path: Path) -> None:
     await run_executor_dispatch(
         supervisor,
         store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
         process_payload=_process_payload(),
@@ -667,6 +632,7 @@ async def test_duplicate_dispatch_claim_does_not_launch_again(tmp_path: Path) ->
     await run_executor_dispatch(
         supervisor,
         store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=digest),
         process_payload=_process_payload(),
@@ -674,6 +640,7 @@ async def test_duplicate_dispatch_claim_does_not_launch_again(tmp_path: Path) ->
     await run_executor_dispatch(
         supervisor,
         store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=digest),
         process_payload=_process_payload(),
@@ -686,11 +653,13 @@ async def test_duplicate_dispatch_claim_does_not_launch_again(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_artifact_failure_terminalizes_current_dispatch(tmp_path: Path) -> None:
     store = FakeDispatchStore()
+    keeper = supervisor_module._LeaseKeeper(store)  # pyright: ignore[reportPrivateUsage]
 
     with pytest.raises(ValueError, match="digest mismatch"):
         await run_executor_dispatch(
             _supervisor(tmp_path, content=b"wrong content"),
             store,
+            keeper=keeper,
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest="0" * 64),
             process_payload=_process_payload(),
@@ -699,6 +668,8 @@ async def test_artifact_failure_terminalizes_current_dispatch(tmp_path: Path) ->
     assert len(store.claimed) == 1
     assert store.terminalized == [store.authority]
     assert store.finished == []
+    assert keeper.leases == {}
+    assert keeper.task is None
 
 
 @pytest.mark.asyncio
@@ -711,6 +682,7 @@ async def test_failed_executor_terminalizes_dispatch(tmp_path: Path) -> None:
         await run_executor_dispatch(
             _supervisor(tmp_path, content=script),
             store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest=digest),
             process_payload=_process_payload(),
@@ -1033,6 +1005,7 @@ async def test_task_protection_is_acquired_before_claim(
     await run_executor_dispatch(
         _supervisor(tmp_path, content=artifact),
         store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
         process_payload=_process_payload(),
@@ -1079,6 +1052,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
         run_executor_dispatch(
             _supervisor(tmp_path, content=artifact),
             store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
             executor_dispatch_id="dispatch-1",
             dispatch=dispatch,
             process_payload=_process_payload(),
@@ -1107,6 +1081,7 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
     await run_executor_dispatch(
         _supervisor(tmp_path, content=artifact),
         store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
         executor_dispatch_id="dispatch-2",
         dispatch=dispatch,
         process_payload=_process_payload(),
@@ -1136,6 +1111,7 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
         run_executor_dispatch(
             supervisor,
             store,
+            keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
             executor_dispatch_id="dispatch-1",
             dispatch=_dispatch(digest=hashlib.sha256(artifact).hexdigest()),
             process_payload=_process_payload(),
@@ -1152,241 +1128,6 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_periodic_authority_operational_error_allows_child_completion(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProcess:
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
-    sleep_count = 0
-    authority_blocker = asyncio.Event()
-
-    async def sleep(_delay: float) -> None:
-        nonlocal sleep_count
-        sleep_count += 1
-        if sleep_count == 3:
-            process.returncode = 0
-            process.done.set()
-            await authority_blocker.wait()
-
-    checks = iter(
-        [
-            supervisor_module.psycopg2.OperationalError("temporary"),
-            True,
-            True,
-        ]
-    )
-
-    async def is_current() -> bool:
-        result = next(checks)
-        if isinstance(result, BaseException):
-            raise result
-        return result
-
-    terminate = Mock()
-    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate)
-    supervisor = _supervisor(tmp_path, content=b"unused", sleep=sleep)
-
-    assert (
-        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
-            cast(asyncio.subprocess.Process, process),
-            is_current,
-            asyncio.Event(),
-        )
-        == 0
-    )
-    terminate.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_heartbeat_lease_loss_terminates_process_and_cleans_up_tasks(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProcess:
-        pid = 123
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
-    lease_lost = asyncio.Event()
-    lease_lost.set()
-    created_tasks: list[asyncio.Task[object]] = []
-    create_task = asyncio.create_task
-
-    def record_task(coroutine: Coroutine[Any, Any, object]) -> asyncio.Task[object]:
-        task = create_task(coroutine)
-        created_tasks.append(task)
-        return task
-
-    async def is_current() -> bool:
-        return True
-
-    async def terminate_process(_process: object) -> None:
-        process.returncode = -15
-        process.done.set()
-
-    monkeypatch.setattr(supervisor_module.asyncio, "create_task", record_task)
-    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate_process)
-    supervisor = _supervisor(tmp_path, content=b"unused", sleep=lambda _delay: asyncio.sleep(0))
-
-    with pytest.raises(DispatchAuthorityLostError, match="lease expired"):
-        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
-            cast(asyncio.subprocess.Process, process),
-            is_current,
-            lease_lost,
-        )
-
-    assert process.returncode == -15
-    assert len(created_tasks) == 3
-    assert all(task.done() for task in created_tasks)
-
-
-@pytest.mark.asyncio
-async def test_periodic_authority_operational_error_then_loss_terminates(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProcess:
-        pid = 123
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
-    checks = iter([supervisor_module.psycopg2.OperationalError("temporary"), False])
-
-    async def is_current() -> bool:
-        result = next(checks)
-        if isinstance(result, BaseException):
-            raise result
-        return result
-
-    async def terminate_process(_process: object) -> None:
-        process.returncode = -15
-        process.done.set()
-
-    monkeypatch.setattr(supervisor_module, "_AUTHORITY_LOSS_GRACE_SECONDS", 0)
-    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate_process)
-    supervisor = _supervisor(tmp_path, content=b"unused", sleep=lambda _delay: asyncio.sleep(0))
-
-    with pytest.raises(DispatchAuthorityLostError, match="superseded"):
-        await supervisor._wait_with_authority(  # pyright: ignore[reportPrivateUsage]
-            cast(asyncio.subprocess.Process, process),
-            is_current,
-            asyncio.Event(),
-        )
-
-    assert process.returncode == -15
-
-
-@pytest.mark.asyncio
-async def test_unexpected_periodic_authority_error_propagates(tmp_path: Path) -> None:
-    async def is_current() -> bool:
-        raise RuntimeError("unexpected")
-
-    supervisor = _supervisor(
-        tmp_path,
-        content=b"unused",
-        sleep=lambda _delay: asyncio.sleep(0),
-    )
-
-    with pytest.raises(RuntimeError, match="unexpected"):
-        await supervisor._wait_for_authority_loss(  # pyright: ignore[reportPrivateUsage]
-            is_current
-        )
-
-
-@pytest.mark.asyncio
-async def test_authority_revocation_terminates_process_before_terminalization(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProcess:
-        pid = 123
-        returncode: int | None = None
-
-        def __init__(self) -> None:
-            self.done = asyncio.Event()
-
-        async def wait(self) -> int:
-            await self.done.wait()
-            assert self.returncode is not None
-            return self.returncode
-
-    process = FakeProcess()
-    authority_check_due = asyncio.Event()
-    trigger_authority_check = asyncio.Event()
-    lifecycle_events: list[str] = []
-    store = FakeDispatchStore(authority_results=[True, False])
-    original_terminalize = store.terminalize
-
-    async def explicit_authority_check(_delay: float) -> None:
-        authority_check_due.set()
-        await trigger_authority_check.wait()
-
-    async def create_process(*args: object, **kwargs: object) -> object:
-        return process
-
-    async def terminate_process(_process: object) -> None:
-        if process.returncode is None:
-            lifecycle_events.append("terminate")
-            process.returncode = -15
-            process.done.set()
-
-    async def record_terminalize(authority: DispatchAuthority, task_ids: list[str]) -> bool:
-        lifecycle_events.append("terminalize")
-        return await original_terminalize(authority, task_ids)
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
-    monkeypatch.setattr(supervisor_module, "_AUTHORITY_LOSS_GRACE_SECONDS", 0)
-    monkeypatch.setattr(supervisor_module, "_terminate_process_group", terminate_process)
-    monkeypatch.setattr(store, "terminalize", record_terminalize)
-    script = b"print('not executed by fake process')"
-    digest = hashlib.sha256(script).hexdigest()
-    task = asyncio.create_task(
-        run_executor_dispatch(
-            _supervisor(tmp_path, content=script, sleep=explicit_authority_check),
-            store,
-            executor_dispatch_id="dispatch-1",
-            dispatch=_dispatch(digest=digest),
-            process_payload=_process_payload(),
-        )
-    )
-    await authority_check_due.wait()
-    trigger_authority_check.set()
-
-    with pytest.raises(DispatchAuthorityLostError, match="superseded"):
-        await task
-
-    assert lifecycle_events == ["terminate", "terminalize"]
-    assert store.authority_checks == [store.authority, store.authority]
-
-
-@pytest.mark.asyncio
 async def test_stale_successful_finish_cannot_finish_dispatch(tmp_path: Path) -> None:
     script = b"print('ok')"
     digest = hashlib.sha256(script).hexdigest()
@@ -1395,6 +1136,7 @@ async def test_stale_successful_finish_cannot_finish_dispatch(tmp_path: Path) ->
     await run_executor_dispatch(
         _supervisor(tmp_path, content=script),
         store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
         executor_dispatch_id="dispatch-1",
         dispatch=_dispatch(digest=digest),
         process_payload=_process_payload(),
