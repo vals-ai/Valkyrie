@@ -131,10 +131,6 @@ def _build_database_url() -> str:
 
 
 DATABASE_URL = _build_database_url()
-DATABASE_POOL_SIZE = _positive_int_setting("DATABASE_POOL_SIZE", 50)
-DATABASE_MAX_OVERFLOW = int(os.environ.get("DATABASE_MAX_OVERFLOW", "10"))
-if DATABASE_MAX_OVERFLOW < 0:
-    raise ValueError("DATABASE_MAX_OVERFLOW must be a nonnegative integer")
 
 result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,

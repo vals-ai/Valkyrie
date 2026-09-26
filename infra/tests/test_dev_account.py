@@ -121,7 +121,7 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
             namespace=shared.namespace,
             redis_url=shared.redis_url,
             bucket_name=shared.bucket_name,
-            database=tracker.database,
+            database_proxy=tracker.database_proxy,
             db_credentials=tracker.db_credentials,
             tracker_service=tracker.tracker_fargate_service,
             tracker_image=tracker.tracker_image,
@@ -285,8 +285,6 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                             {
                                 "Environment": assertions.Match.array_with(
                                     [
-                                        {"Name": "DATABASE_POOL_SIZE", "Value": "5"},
-                                        {"Name": "DATABASE_MAX_OVERFLOW", "Value": "2"},
                                         {"Name": "AUTH_REQUIRED", "Value": "true"},
                                         {"Name": "DESCOPE_PROJECT_ID", "Value": "dev-project"},
                                     ]
@@ -300,6 +298,74 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                 )
             },
         )
+
+    def test_dev_database_clients_use_tls_proxy_and_keep_old_endpoint_exports(self) -> None:
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
+            tracker_template, executor_template = dev_service_templates()
+
+        instance_id = next(iter(tracker_template.find_resources("AWS::RDS::DBInstance")))
+        secret_id = next(iter(tracker_template.find_resources("AWS::SecretsManager::Secret")))
+        proxy_id, proxy = next(iter(tracker_template.find_resources("AWS::RDS::DBProxy").items()))
+        proxy_properties = proxy["Properties"]
+        self.assertTrue(proxy_properties["RequireTLS"])
+        self.assertEqual(proxy_properties["Auth"][0]["SecretArn"], {"Ref": secret_id})
+        self.assertEqual(len(proxy_properties["VpcSubnetIds"]), 2)
+
+        target_group = next(iter(tracker_template.find_resources("AWS::RDS::DBProxyTargetGroup").values()))
+        self.assertEqual(target_group["Properties"]["DBInstanceIdentifiers"], [{"Ref": instance_id}])
+        self.assertEqual(target_group["Properties"]["DBProxyName"], {"Ref": proxy_id})
+
+        proxy_sg_id, proxy_sg = next(
+            (logical_id, resource)
+            for logical_id, resource in tracker_template.find_resources("AWS::EC2::SecurityGroup").items()
+            if resource["Properties"]["GroupDescription"] == "Security group for Tracker RDS proxy"
+        )
+        self.assertIn(proxy_sg_id, json.dumps(proxy_properties["VpcSecurityGroupIds"]))
+        ingress_rules = proxy_sg["Properties"].get("SecurityGroupIngress", []) + [
+            resource["Properties"]
+            for resource in tracker_template.find_resources("AWS::EC2::SecurityGroupIngress").values()
+            if proxy_sg_id in json.dumps(resource["Properties"].get("GroupId"))
+        ]
+        self.assertTrue(
+            any(
+                rule.get("CidrIp") == "10.0.0.0/16" and rule.get("FromPort") == 5432 and rule.get("ToPort") == 5432
+                for rule in ingress_rules
+            )
+        )
+
+        outputs = tracker_template.to_json()["Outputs"]
+        old_outputs = {
+            attribute: next(
+                output for output in outputs.values() if output["Value"] == {"Fn::GetAtt": [instance_id, attribute]}
+            )
+            for attribute in ("Endpoint.Address", "Endpoint.Port")
+        }
+        self.assertTrue(all("Export" in output for output in old_outputs.values()))
+
+        proxy_output = next(
+            output for output in outputs.values() if output["Value"] == {"Fn::GetAtt": [proxy_id, "Endpoint"]}
+        )
+        proxy_host = {"Fn::ImportValue": proxy_output["Export"]["Name"]}
+        tracker_host = {"Fn::GetAtt": [proxy_id, "Endpoint"]}
+        for template, host in ((tracker_template, tracker_host), (executor_template, proxy_host)):
+            for task in template.find_resources("AWS::ECS::TaskDefinition").values():
+                for container in task["Properties"]["ContainerDefinitions"]:
+                    environment = {item["Name"]: item["Value"] for item in container.get("Environment", [])}
+                    self.assertFalse(any(name.startswith("DATABASE_POOL_") for name in environment))
+                    if "DB_HOST" in environment:
+                        self.assertEqual(environment["DB_HOST"], host)
+                        self.assertEqual(environment["DB_PORT"], "5432")
+
+        release_task = next(
+            task
+            for task in executor_template.find_resources("AWS::ECS::TaskDefinition").values()
+            if task["Properties"]["Family"] == "ValkyrieExecutorRelease-dev"
+        )
+        release_arguments = release_task["Properties"]["ContainerDefinitions"][0]["EntryPoint"]
+        self.assertEqual(release_arguments[4:6], [proxy_host, "5432"])
+        executor_template_json = json.dumps(executor_template.to_json())
+        for old_output in old_outputs.values():
+            self.assertNotIn(old_output["Export"]["Name"], executor_template_json)
 
     def test_dev_release_control_is_one_sealed_task_with_environment_bound_role(self) -> None:
         with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
@@ -325,11 +391,6 @@ class DevAccountInfrastructureTest(unittest.TestCase):
             "AWS::SSM::Parameter",
             {"Name": executor_release_launch_parameter(DEV), "Type": "String"},
         )
-        for task in template.find_resources("AWS::ECS::TaskDefinition").values():
-            for container in task["Properties"]["ContainerDefinitions"]:
-                environment = {item["Name"]: item["Value"] for item in container.get("Environment", [])}
-                self.assertEqual(environment["DATABASE_POOL_SIZE"], "5")
-                self.assertEqual(environment["DATABASE_MAX_OVERFLOW"], "2")
         roles = template.find_resources("AWS::IAM::Role")
         release_role_id, release_role = next(
             (logical_id, role)
