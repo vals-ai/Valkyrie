@@ -999,8 +999,11 @@ async def fetch_benchmark(
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
+        bind = session.bind
+        org_id = org.id
+        session.close()
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session, aws_runtime, org),
+            stream_benchmark_results(benchmark_id, bind, aws_runtime, org_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1009,7 +1012,7 @@ async def fetch_benchmark(
             },
         )
 
-    benchmark_context = BenchmarkContext(benchmark_row, session, org)
+    benchmark_context = BenchmarkContext(benchmark_row, session, org.id)
 
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,

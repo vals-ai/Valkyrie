@@ -13,6 +13,7 @@ from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 
 from sqlalchemy import JSON, literal, tuple_, type_coerce
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, asc, case, col, desc, func, or_, select
 
@@ -65,12 +66,12 @@ class TaskCounts(NamedTuple):
 class BenchmarkContext:
     _benchmark_row: Benchmark
     _session: Session
-    _org: Org
+    _org_id: UUID
 
-    def __init__(self, benchmark_row: Benchmark, session: Session, org: Org):
+    def __init__(self, benchmark_row: Benchmark, session: Session, org_id: UUID):
         self._benchmark_row = benchmark_row
         self._session = session
-        self._org = org
+        self._org_id = org_id
 
     @property
     def _status(self) -> BenchmarkStatus:
@@ -88,7 +89,7 @@ class BenchmarkContext:
             )
             .select_from(Task)
             .where(Task.benchmark == self._benchmark_row.id)
-            .where(Task.org_id == self._org.id)
+            .where(Task.org_id == self._org_id)
         )
 
         result = self._session.exec(statement).one()
@@ -108,7 +109,7 @@ class BenchmarkContext:
             select(Task.status, func.count(col(Task.id)))
             .select_from(Task)
             .where(Task.benchmark == self._benchmark_row.id)
-            .where(Task.org_id == self._org.id)
+            .where(Task.org_id == self._org_id)
             .group_by(Task.status)
             .having(func.count(col(Task.id)) > 0)  # Exclude all with count of 0
         )
@@ -247,7 +248,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, aws_runtime: AWSRuntime, org: Org
+    benchmark_id: UUID, bind: Engine | Connection | None, aws_runtime: AWSRuntime, org_id: UUID
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -267,14 +268,14 @@ async def stream_benchmark_results(
 
     try:
         while True:
-            with Session(bind=session.bind) as fresh_session:
+            with Session(bind=bind) as fresh_session:
                 fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
-                if not fresh_benchmark or fresh_benchmark.org_id != org.id:
+                if not fresh_benchmark or fresh_benchmark.org_id != org_id:
                     yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
                     break
 
                 fresh_session.refresh(fresh_benchmark)
-                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org)
+                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org_id)
 
                 response_data = FetchBenchmarkResponse(
                     benchmark_name=fresh_benchmark.name,
@@ -295,11 +296,17 @@ async def stream_benchmark_results(
                     else None,
                 )
 
-                yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
+                event = f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
+                complete = fresh_benchmark.status in (
+                    BenchmarkStatus.FINISHED,
+                    BenchmarkStatus.ERROR,
+                    BenchmarkStatus.STOPPED,
+                )
 
-                if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
-                    yield EVENT_COMPLETE
-                    break
+            yield event
+            if complete:
+                yield EVENT_COMPLETE
+                break
 
             await asyncio.sleep(PULL_INTERVAL)
 
