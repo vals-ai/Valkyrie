@@ -1853,7 +1853,7 @@ requires-dist = [
     { name = "sentry-sdk", extras = ["fastapi"], specifier = "==2.58.0" },
     { name = "sqlmodel", specifier = ">=0.0.38" },
     { name = "starlette", specifier = ">=1.0.1" },
-    { name = "taskiq", specifier = ">=0.12.1" },
+    { name = "taskiq", specifier = ">=0.12.1,<0.13" },
     { name = "taskiq-redis", specifier = ">=1.2.2" },
     { name = "tenacity", specifier = ">=9.0.0" },
 ]
