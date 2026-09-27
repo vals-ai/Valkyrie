@@ -73,16 +73,22 @@ def local_app(
 
 
 @pytest.fixture
-def client(local_app: FastAPI) -> Generator[TestClient, None, None]:
-    """Use bearer authentication with the local tracker app."""
+def bearer_auth(local_app: FastAPI) -> Generator[None, None, None]:
+    """Accept any bearer token as the default-tenant caller."""
     with patch.object(auth_module, "_descope_client") as mock_client:
         mock_client.validate_session.return_value = {
             "tenants": {"default": {}},
             "userId": "U_caller",
             "user": {"email": "caller@example.com"},
         }
-        with TestClient(local_app) as test_client:
-            yield test_client
+        yield
+
+
+@pytest.fixture
+def client(local_app: FastAPI, bearer_auth: None) -> Generator[TestClient, None, None]:
+    """Use bearer authentication with the local tracker app."""
+    with TestClient(local_app) as test_client:
+        yield test_client
 
 
 @pytest.fixture

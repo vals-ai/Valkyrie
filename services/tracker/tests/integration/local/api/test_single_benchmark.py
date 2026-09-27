@@ -109,9 +109,8 @@ class TestSingleBenchmark:
 class TestBenchmarkStatusStreamPostgres:
     """Live status streams on PostgreSQL."""
 
-    def test_open_stream_releases_postgres_request_and_poll_transactions(
-        self, client: TestClient, local_app: FastAPI
-    ) -> None:
+    @pytest.mark.usefixtures("bearer_auth")
+    def test_open_stream_releases_postgres_request_and_poll_transactions(self, local_app: FastAPI) -> None:
         """An open status stream must not hold benchmark locks between events."""
         with PostgresContainer("postgres:16-alpine") as postgres:
             engine = create_engine(
