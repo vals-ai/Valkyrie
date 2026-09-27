@@ -45,6 +45,7 @@ from tenacity import (
 
 from tracker.runtime.artifacts import benchmark_agent_bundle_key, task_artifact_key
 from tracker.runtime.storage import ObjectStore
+from tracker.egress import EgressPolicy
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
@@ -510,45 +511,21 @@ async def _run_egress_operation(operation: Callable[[], Awaitable[None]]) -> Non
     await operation()
 
 
-async def _apply_egress_allowlist(sandbox: Sandbox, allowed_addresses: list[str]) -> None:
+async def apply_egress_policy(sandbox: Sandbox, policy: EgressPolicy) -> None:
+    """Replace the sandbox egress policy, failing before the next lifecycle stage."""
     try:
-        await _run_egress_operation(lambda: sandbox.modify_egress_rules(allowed_addresses))
+        if policy == "*":
+            await _run_egress_operation(sandbox.clear_egress_rules)
+        elif policy:
+            await _run_egress_operation(lambda: sandbox.modify_egress_rules(policy))
+        else:
+            await _run_egress_operation(sandbox.block_all_egress)
     except SandboxNotFoundError:
         raise
-    except ValueError as e:
-        raise SandboxSetupError(f"Failed to apply egress rules: {e}") from e
-    except ProviderSandboxError as e:
-        raise SandboxError(str(e)) from e
-
-
-async def _clear_egress_allowlist(sandbox: Sandbox, fail_on_error: bool) -> None:
-    try:
-        # Clearing restores unrestricted egress because sandboxes have no baseline restriction today.
-        await _run_egress_operation(sandbox.clear_egress_rules)
-    except Exception as e:
-        logger.warning("failed to clear egress rules for sandbox %s", sandbox.id, exc_info=True)
-        if fail_on_error:
-            raise SandboxSetupError("Failed to clear egress rules") from e
-
-
-async def _stream_command_output_with_egress_allowlist(
-    sandbox: Sandbox,
-    command: str,
-    on_output: Callable[[str], None],
-    allowed_addresses: list[str],
-) -> tuple[AgentCausedExitReason | None, float]:
-    if not allowed_addresses:
-        return await stream_command_output(sandbox, command, on_output)
-
-    command_completed = False
-    try:
-        await _apply_egress_allowlist(sandbox, allowed_addresses)
-        result = await stream_command_output(sandbox, command, on_output)
-        command_completed = True
-        return result
-    finally:
-        # After a clean agent run, stale egress rules would affect evaluation; otherwise preserve the original error.
-        await _clear_egress_allowlist(sandbox, fail_on_error=command_completed)
+    except ValueError as error:
+        raise SandboxSetupError(f"Failed to apply egress policy: {error}") from error
+    except ProviderSandboxError as error:
+        raise SandboxError(str(error)) from error
 
 
 async def stream_command_output(
@@ -808,11 +785,9 @@ async def _upload_output_artifact(
         return None
 
     s3_key = task_artifact_key(benchmark_id, task_id, artifact_path)
-    await object_store.put_stream(
-        s3_key,
-        sandbox.stream_download(sandbox_path),
-        should_continue=execution_is_current,
-    )
+    # Providers may report an empty file as a failed transfer; Daytona raises "No file data received".
+    chunks = _no_chunks() if artifact_bytes == 0 else sandbox.stream_download(sandbox_path)
+    await object_store.put_stream(s3_key, chunks, should_continue=execution_is_current)
 
     logger.info(
         "output_artifact.upload.complete",
@@ -829,6 +804,11 @@ async def _upload_output_artifact(
     return new_total_bytes
 
 
+async def _no_chunks() -> AsyncGenerator[bytes, None]:
+    return
+    yield
+
+
 async def run_agent(
     sandbox: Sandbox,
     contract: AgentContractRequest,
@@ -840,8 +820,6 @@ async def run_agent(
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
-    runtime_source: SandboxSource | None = None,
-    dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
     execution_is_current: Callable[[], bool] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
@@ -855,7 +833,6 @@ async def run_agent(
         cwd: Working directory to run the agent in
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
-        runtime_source: Optional source used to adapt agent commands to the task runtime
         execution_is_current: Optional execution-authority check before output uploads
 
     Returns:
@@ -866,10 +843,6 @@ async def run_agent(
         SandboxError: If the agent fails to run or times out
     """
     log_output(f"Running agent {contract.name}")
-    if runtime_source is not None:
-        sandbox = runtime_sandbox(sandbox, runtime_source)
-
-    await install_agent_dependencies(sandbox, contract, log_output, dependency_setup_mode)
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
@@ -944,11 +917,10 @@ async def run_agent(
     # A nonzero exit is terminal evidence; collect declared outputs while the
     # sandbox is still available.
     try:
-        exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+        exit_reason, agent_run_time = await stream_command_output(
             sandbox,
             f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
             log_output,
-            contract.egress_allowlist,
         )
     except Exception:
         await upload_outputs(preserve_agent_error=True)
