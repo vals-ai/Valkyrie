@@ -268,40 +268,43 @@ async def stream_benchmark_results(
 
     try:
         while True:
+            event: str | None = None
+            complete = False
             with Session(bind=bind) as fresh_session:
                 fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
-                if not fresh_benchmark or fresh_benchmark.org_id != org_id:
-                    yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
-                    break
+                if fresh_benchmark is not None and fresh_benchmark.org_id == org_id:
+                    fresh_session.refresh(fresh_benchmark)
+                    benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org_id)
 
-                fresh_session.refresh(fresh_benchmark)
-                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org_id)
+                    response_data = FetchBenchmarkResponse(
+                        benchmark_name=fresh_benchmark.name,
+                        benchmark_id=fresh_benchmark.id,
+                        details=benchmark_context.benchmark_details,
+                        s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), aws_runtime.resources),
+                        storage_bucket=aws_runtime.resources.s3_bucket,
+                        label=fresh_benchmark.label,
+                        executor_release_id=fresh_benchmark.executor_release_id,
+                        current_execution_release_id=fresh_benchmark.current_execution_release_id,
+                        executor_artifact_digest=fresh_benchmark.executor_artifact_digest,
+                        executor_protocol_version=fresh_benchmark.executor_protocol_version,
+                        final_score=fresh_benchmark.final_evaluation.final_score
+                        if fresh_benchmark.final_evaluation
+                        else None,
+                        error_message=fresh_benchmark.error_message
+                        if fresh_benchmark.status == BenchmarkStatus.ERROR
+                        else None,
+                    )
 
-                response_data = FetchBenchmarkResponse(
-                    benchmark_name=fresh_benchmark.name,
-                    benchmark_id=fresh_benchmark.id,
-                    details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), aws_runtime.resources),
-                    storage_bucket=aws_runtime.resources.s3_bucket,
-                    label=fresh_benchmark.label,
-                    executor_release_id=fresh_benchmark.executor_release_id,
-                    current_execution_release_id=fresh_benchmark.current_execution_release_id,
-                    executor_artifact_digest=fresh_benchmark.executor_artifact_digest,
-                    executor_protocol_version=fresh_benchmark.executor_protocol_version,
-                    final_score=fresh_benchmark.final_evaluation.final_score
-                    if fresh_benchmark.final_evaluation
-                    else None,
-                    error_message=fresh_benchmark.error_message
-                    if fresh_benchmark.status == BenchmarkStatus.ERROR
-                    else None,
-                )
+                    event = f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
+                    complete = fresh_benchmark.status in (
+                        BenchmarkStatus.FINISHED,
+                        BenchmarkStatus.ERROR,
+                        BenchmarkStatus.STOPPED,
+                    )
 
-                event = f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
-                complete = fresh_benchmark.status in (
-                    BenchmarkStatus.FINISHED,
-                    BenchmarkStatus.ERROR,
-                    BenchmarkStatus.STOPPED,
-                )
+            if event is None:
+                yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
+                break
 
             yield event
             if complete:
