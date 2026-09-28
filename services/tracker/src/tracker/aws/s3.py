@@ -382,6 +382,7 @@ class _ObjectVersion:
     last_modified: datetime
     is_latest: bool
     is_delete_marker: bool
+    size: int = 0
 
 
 @handle_s3_error(message="Failed to restore S3 object versions")
@@ -390,7 +391,8 @@ async def restore_prefix_versions_before(prefix: str, cutoff: datetime, runtime:
     Make every object under a prefix match its newest version written at or before cutoff.
 
     Keys that only exist in versions written after cutoff receive a delete marker. Returns None when the bucket does
-    not keep versions, in which case nothing can be restored.
+    not keep versions, in which case nothing can be restored. Every change is planned before any key is touched so a
+    version that cannot be restored fails the call without leaving the prefix half-reverted.
     """
     if cutoff.tzinfo is None:
         cutoff = cutoff.replace(tzinfo=UTC)
@@ -406,14 +408,15 @@ async def restore_prefix_versions_before(prefix: str, cutoff: datetime, runtime:
         async for page in paginator.paginate(Bucket=bucket, Prefix=prefix, **owner_arguments):
             for entry in page.get("Versions", []):
                 versions_by_key.setdefault(entry["Key"], []).append(
-                    _ObjectVersion(entry["VersionId"], entry["LastModified"], entry["IsLatest"], False)
+                    _ObjectVersion(entry["VersionId"], entry["LastModified"], entry["IsLatest"], False, entry["Size"])
                 )
             for entry in page.get("DeleteMarkers", []):
                 versions_by_key.setdefault(entry["Key"], []).append(
                     _ObjectVersion(entry["VersionId"], entry["LastModified"], entry["IsLatest"], True)
                 )
 
-        restore = PrefixRestore(restored=[], removed=[])
+        to_copy: list[tuple[str, _ObjectVersion]] = []
+        to_remove: list[str] = []
         for key, versions in versions_by_key.items():
             current = next(version for version in versions if version.is_latest)
             target = max(
@@ -423,19 +426,22 @@ async def restore_prefix_versions_before(prefix: str, cutoff: datetime, runtime:
             )
             if target is None or target.is_delete_marker:
                 if not current.is_delete_marker:
-                    await client.delete_object(Bucket=bucket, Key=key, **owner_arguments)
-                    restore.removed.append(key)
-                continue
-            if target.version_id == current.version_id:
-                continue
+                    to_remove.append(key)
+            elif target.version_id != current.version_id:
+                if target.size > _MAX_SINGLE_COPY_BYTES:
+                    raise S3Error(f"Object version exceeds the 5 GiB single-copy limit: {key}")
+                to_copy.append((key, target))
+
+        for key, target in to_copy:
             await client.copy_object(
                 Bucket=bucket,
                 CopySource={"Bucket": bucket, "Key": key, "VersionId": target.version_id},
                 Key=key,
                 **owner_arguments,
             )
-            restore.restored.append(key)
-    return restore
+        for key in to_remove:
+            await client.delete_object(Bucket=bucket, Key=key, **owner_arguments)
+    return PrefixRestore(restored=[key for key, _target in to_copy], removed=to_remove)
 
 
 @handle_s3_error(message="Failed to create presigned URL")

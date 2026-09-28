@@ -887,12 +887,30 @@ async def test_restore_prefix_versions_before_reverts_keys_to_their_state_at_cut
     pages: list[dict[str, list[dict[str, object]]]] = [
         {
             "Versions": [
-                {"Key": f"{prefix}agent_output.tar.gz", "VersionId": "v2", "LastModified": after, "IsLatest": True},
-                {"Key": f"{prefix}agent_output.tar.gz", "VersionId": "v1", "LastModified": before, "IsLatest": False},
-                {"Key": f"{prefix}new.txt", "VersionId": "n1", "LastModified": after, "IsLatest": True},
-                {"Key": f"{prefix}stable.txt", "VersionId": "s1", "LastModified": before, "IsLatest": True},
-                {"Key": f"{prefix}revived.txt", "VersionId": "r2", "LastModified": after, "IsLatest": True},
-                {"Key": f"{prefix}revived.txt", "VersionId": "r1", "LastModified": before, "IsLatest": False},
+                {
+                    "Key": f"{prefix}agent_output.tar.gz",
+                    "VersionId": "v2",
+                    "LastModified": after,
+                    "IsLatest": True,
+                    "Size": 1,
+                },
+                {
+                    "Key": f"{prefix}agent_output.tar.gz",
+                    "VersionId": "v1",
+                    "LastModified": before,
+                    "IsLatest": False,
+                    "Size": 1,
+                },
+                {"Key": f"{prefix}new.txt", "VersionId": "n1", "LastModified": after, "IsLatest": True, "Size": 1},
+                {"Key": f"{prefix}stable.txt", "VersionId": "s1", "LastModified": before, "IsLatest": True, "Size": 1},
+                {"Key": f"{prefix}revived.txt", "VersionId": "r2", "LastModified": after, "IsLatest": True, "Size": 1},
+                {
+                    "Key": f"{prefix}revived.txt",
+                    "VersionId": "r1",
+                    "LastModified": before,
+                    "IsLatest": False,
+                    "Size": 1,
+                },
             ],
             "DeleteMarkers": [
                 {
@@ -901,7 +919,7 @@ async def test_restore_prefix_versions_before_reverts_keys_to_their_state_at_cut
                     "LastModified": before + timedelta(minutes=1),
                     "IsLatest": False,
                 },
-                {"Key": f"{prefix}gone.txt", "VersionId": "gd", "LastModified": after, "IsLatest": True},
+                {"Key": f"{prefix}gone.txt", "VersionId": "gd", "LastModified": after, "IsLatest": True, "Size": 1},
             ],
         }
     ]
@@ -939,3 +957,54 @@ async def test_restore_prefix_versions_before_reports_unversioned_bucket_and_map
     )
     with pytest.raises(S3Error):
         await s3_module.restore_prefix_versions_before("benchmarks/run/task/", datetime.now(UTC), runtime)
+
+
+async def test_restore_prefix_versions_before_rejects_oversized_versions_before_touching_keys() -> None:
+    """A pre-cutoff version too large for a single copy must fail the restore before any copy or delete runs."""
+    cutoff = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    prefix = "benchmarks/run/task/"
+    pages: list[dict[str, list[dict[str, object]]]] = [
+        {
+            "Versions": [
+                {
+                    "Key": f"{prefix}small.txt",
+                    "VersionId": "s2",
+                    "LastModified": cutoff + timedelta(hours=1),
+                    "IsLatest": True,
+                    "Size": 1,
+                },
+                {
+                    "Key": f"{prefix}small.txt",
+                    "VersionId": "s1",
+                    "LastModified": cutoff - timedelta(hours=1),
+                    "IsLatest": False,
+                    "Size": 1,
+                },
+                {
+                    "Key": f"{prefix}huge.tar.gz",
+                    "VersionId": "h2",
+                    "LastModified": cutoff + timedelta(hours=1),
+                    "IsLatest": True,
+                    "Size": 1,
+                },
+                {
+                    "Key": f"{prefix}huge.tar.gz",
+                    "VersionId": "h1",
+                    "LastModified": cutoff - timedelta(hours=1),
+                    "IsLatest": False,
+                    "Size": s3_module._MAX_SINGLE_COPY_BYTES + 1,
+                },
+            ],
+            "DeleteMarkers": [],
+        }
+    ]
+    client = _version_client(pages, versioning="Enabled")
+    runtime = _copy_runtime(
+        bucket="test-bucket", client=client, credential_source="access_key", expected_bucket_owner=None
+    )
+
+    with pytest.raises(S3Error, match="5 GiB"):
+        await s3_module.restore_prefix_versions_before(prefix, cutoff, runtime)
+
+    client.copy_object.assert_not_awaited()
+    client.delete_object.assert_not_awaited()

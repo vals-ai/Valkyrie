@@ -24,6 +24,8 @@ from tracker.database.models import (
     BenchmarkStatus,
     FinalEvaluation,
     Org,
+    Task,
+    TaskBreakdown,
     TaskStatus,
 )
 
@@ -257,6 +259,11 @@ def test_task_results_list_history_newest_first_and_mark_current(
     database_session.flush()
     finished_task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED, finished_at=now)
     error_task = make_task(benchmark, "error-task", status=TaskStatus.ERROR, finished_at=now)
+    breakdown = TaskBreakdown(agent_run_duration=12.0)
+    database_session.add(breakdown)
+    database_session.flush()
+    breakdown_id = breakdown.id
+    finished_task.task_breakdown = breakdown_id
     database_session.add_all([finished_task, error_task])
     database_session.flush()
     old = make_evaluation_result(finished_task, "old", {"score": 0.0}, now - timedelta(minutes=1))
@@ -288,7 +295,8 @@ def test_rollback_task_restores_previous_evaluation_and_artifacts(
     Test cases:
     - Default target is the attempt before the current one; task detail then shows its result.
     - Artifacts are restored for the task prefix using the target attempt's timestamp.
-    - The stale FinalEvaluation row is deleted.
+    - The stale FinalEvaluation row and the published final view object are deleted.
+    - The task's timing breakdown (which describes the rerun, not the restored attempt) is dropped.
     - An errored task rolls back to its last good evaluation and becomes FINISHED.
     - Explicit result_id from another task is 404; the current result is 409.
     """
@@ -301,6 +309,11 @@ def test_rollback_task_restores_previous_evaluation_and_artifacts(
     database_session.add(FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=1.0))
     finished_task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED, finished_at=now)
     error_task = make_task(benchmark, "error-task", status=TaskStatus.ERROR, finished_at=now)
+    breakdown = TaskBreakdown(agent_run_duration=12.0)
+    database_session.add(breakdown)
+    database_session.flush()
+    breakdown_id = breakdown.id
+    finished_task.task_breakdown = breakdown_id
     database_session.add_all([finished_task, error_task])
     database_session.flush()
     old = make_evaluation_result(
@@ -313,6 +326,8 @@ def test_rollback_task_restores_previous_evaluation_and_artifacts(
 
     restore = AsyncMock(return_value=PrefixRestore(restored=["agent_output.tar.gz"], removed=["extra.txt"]))
     monkeypatch.setattr(single_task_module, "restore_prefix_versions_before", restore)
+    delete_final_view = AsyncMock()
+    monkeypatch.setattr(single_task_module, "delete_from_s3", delete_final_view)
 
     response = _client.post(
         f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback", headers=harness_headers, json={}
@@ -328,6 +343,8 @@ def test_rollback_task_restores_previous_evaluation_and_artifacts(
     assert restore.await_args is not None
     assert restore.await_args.args[0] == f"benchmarks/{benchmark.id}/{finished_task.task_id}/"
     assert restore.await_args.args[1] == old.created_at
+    assert delete_final_view.await_args is not None
+    assert delete_final_view.await_args.args[0] == f"benchmarks/{benchmark.id}/{benchmark.name}.json"
 
     detail = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}").json()
     assert detail["evaluation_result"] == {"score": 0.0}
@@ -336,6 +353,9 @@ def test_rollback_task_restores_previous_evaluation_and_artifacts(
     assert [entry["id"] for entry in history["results"]] == [body["result_id"], str(new.id), str(old.id)]
     database_session.expire_all()
     assert database_session.exec(select(FinalEvaluation)).first() is None
+    rolled_back = database_session.get(Task, finished_task.id)
+    assert rolled_back is not None and rolled_back.task_breakdown is None
+    assert database_session.get(TaskBreakdown, breakdown_id) is None
 
     errored = _client.post(
         f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}/rollback", headers=harness_headers, json={}
@@ -381,6 +401,7 @@ def test_rollback_task_rejects_active_runs_unsettled_tasks_and_missing_history(
     database_session.commit()
     restore = AsyncMock()
     monkeypatch.setattr(single_task_module, "restore_prefix_versions_before", restore)
+    monkeypatch.setattr(single_task_module, "delete_from_s3", AsyncMock())
 
     active = _client.post(
         f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback", headers=harness_headers, json={}

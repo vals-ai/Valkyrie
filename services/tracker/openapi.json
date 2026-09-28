@@ -4484,7 +4484,7 @@
     },
     "/benchmarks/{benchmark_id}/tasks/{task_id}/rollback": {
       "post": {
-        "description": "Make an earlier evaluation attempt the task's current result and restore its S3 artifacts.\n\nThe chosen attempt is re-recorded as the newest evaluation row (history is never deleted), the task's artifact\nprefix is reverted to the object versions that existed when that attempt was evaluated, and the run's final score\nis discarded so `resume` recomputes it.",
+        "description": "Make an earlier evaluation attempt the task's current result and restore its S3 artifacts.\n\nThe chosen attempt is re-recorded as the newest evaluation row (history is never deleted), the task's artifact\nprefix is reverted to the object versions that existed when that attempt was evaluated, and the run's final score\n(database row and published final view) is discarded so `resume` recomputes it.",
         "operationId": "rollback_task",
         "parameters": [
           {

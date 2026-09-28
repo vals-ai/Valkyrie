@@ -16,6 +16,7 @@ from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations, task_lo
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_presigned_url,
+    delete_from_s3,
     restore_prefix_versions_before,
     s3_object_exists,
 )
@@ -26,6 +27,7 @@ from tracker.database.models import (
     EvaluationResult,
     Org,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.database.session import get_session
@@ -38,6 +40,7 @@ from tracker.types import (
     TaskResultEntry,
     TaskResultsResponse,
 )
+from tracker.utils.reporting import final_view_s3_key
 from tracker.utils.resources import fetch_benchmark_row
 
 router = APIRouter(prefix="/benchmarks")
@@ -171,7 +174,7 @@ async def rollback_task(
 
     The chosen attempt is re-recorded as the newest evaluation row (history is never deleted), the task's artifact
     prefix is reverted to the object versions that existed when that attempt was evaluated, and the run's final score
-    is discarded so `resume` recomputes it.
+    (database row and published final view) is discarded so `resume` recomputes it.
     """
     benchmark = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
     if benchmark.status in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING):
@@ -203,6 +206,7 @@ async def rollback_task(
         artifacts = await restore_prefix_versions_before(
             _task_prefix(benchmark_id, task.task_id), target.created_at, run_context.aws_runtime
         )
+        await delete_from_s3(final_view_s3_key(benchmark), run_context.aws_runtime)
     except S3Error as exc:
         session.rollback()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -218,6 +222,11 @@ async def rollback_task(
     session.add(restored)
     task.status = TaskStatus.FINISHED
     task.finished_at = now
+    if task.task_breakdown is not None:
+        breakdown = session.get(TaskBreakdown, task.task_breakdown)
+        task.task_breakdown = None
+        if breakdown is not None:
+            session.delete(breakdown)
     session.add(task)
     if benchmark.final_evaluation is not None:
         session.delete(benchmark.final_evaluation)
