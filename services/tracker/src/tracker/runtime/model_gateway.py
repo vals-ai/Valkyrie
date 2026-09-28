@@ -24,12 +24,10 @@ _client = httpx.AsyncClient()
 
 
 def _ttl_seconds(agent_timeout: float | None) -> int:
-    """How long the credential may outlive its mint.
+    """The agent's timeout plus room for the permit, build, install and eval.
 
-    The agent's own timeout plus room for what surrounds it: a sandbox creation
-    permit, the build, dependency install and evaluation. There is no renew and
-    expiring mid-task breaks the run, so an agent with no timeout of its own
-    gets the gateway's ceiling, which is also the cap.
+    No renew, and expiring mid-task breaks the run, so an unbounded agent gets
+    the gateway's ceiling, which is also the cap.
     """
     ceiling = 7 * 24 * 60 * 60
     if agent_timeout is None:
@@ -62,10 +60,9 @@ async def task_scoped_gateway_key(
 ) -> AsyncIterator[dict[str, str]]:
     """Yield the sandbox environment with its gateway key scoped to this task.
 
-    Scope comes from the tracker's own values, never from `env_vars`, whose
-    names a contract's secrets choose. Returned untouched without an attested
-    model or a gateway credential. A failed mint propagates: falling back to
-    the static key would make the scoping silently unreliable.
+    Scope comes from the tracker's values, never from `env_vars`, whose names a
+    contract's secrets choose. A failed mint propagates: falling back to the
+    static key would make the scoping silently unreliable.
     """
     api_key = env_vars.get("MODEL_GATEWAY_API_KEY", "")
     if not env_vars.get("MODEL_GATEWAY_URL") or not api_key or not attested_model:
@@ -103,9 +100,8 @@ async def task_scoped_gateway_key(
 async def _revoke(url: str, api_key: str, lease_id: str) -> None:
     """End the credential, retrying a gateway that is briefly unwell.
 
-    Never raises: a finished task must not fail, or mask its own error, over
-    teardown. The response body is unused, and an empty one would raise a
-    decoding error that is not an `httpx.HTTPError`.
+    Never raises, and never reads the body: a finished task must not fail, or
+    mask its own error, over teardown.
     """
     last_error: httpx.HTTPError | None = None
     for attempt in range(3):
