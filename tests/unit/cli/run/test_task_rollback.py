@@ -133,3 +133,11 @@ def test_rollback_task_passes_result_id_and_reports_next_step(monkeypatch: pytes
     as_json = runner.invoke(tasks_module.rollback_task, [str(_RUN_ID), "task-1", "--format", "json"])
     assert as_json.exit_code == 0, as_json.output
     assert json.loads(as_json.output)["result_id"] == str(_RESTORED_ID)
+
+    async def failing_rollback(run_id: UUID, task_id: str, result_id: UUID | None) -> RollbackTaskResponse:
+        raise ValkyrieSDKError("run is still in progress")
+
+    monkeypatch.setattr(tasks_module, "_rollback_task", failing_rollback)
+    failed = runner.invoke(tasks_module.rollback_task, [str(_RUN_ID), "task-1"])
+    assert failed.exit_code != 0
+    assert "run is still in progress" in failed.output
