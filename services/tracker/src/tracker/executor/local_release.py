@@ -17,7 +17,11 @@ from tracker.database.models import ExecutorRelease
 from tracker.database.session import engine
 from tracker.executor.release_control import activate_release
 
-_LAUNCHER = b"from tracker.executor.entrypoint import main\nmain()\n"
+# The launcher runs whatever executor code is installed in this image, so a local release is not
+# byte-immutable across rebuilds. Its identity changes only with the executor protocol version.
+_LAUNCHER = (
+    f"# executor protocol {SUPPORTED_PROTOCOL_VERSION}\nfrom tracker.executor.entrypoint import main\nmain()\n"
+).encode()
 
 
 class LocalArtifactStore:
