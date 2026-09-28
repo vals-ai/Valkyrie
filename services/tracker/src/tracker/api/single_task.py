@@ -24,7 +24,6 @@ from tracker.aws.s3 import (
 )
 from tracker.database.models import (
     Benchmark,
-    BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
     Org,
@@ -165,12 +164,7 @@ def get_task_results(
 def _select_rollback_target(
     benchmark: Benchmark, task_id: str, result_id: UUID | None, org: Org, session: Session
 ) -> tuple[Task, EvaluationResult, EvaluationResult | None]:
-    """Validate run/task state and pick the evaluation to restore; returns (task, target, current)."""
-    if benchmark.status in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Run {benchmark.id} is {benchmark.status.value}; stop it or wait for it to finish before rolling back.",
-        )
+    """Validate task state and pick the evaluation to restore; returns (task, target, current)."""
     task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
     if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
         raise HTTPException(

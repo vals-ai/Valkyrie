@@ -383,13 +383,13 @@ def test_rollback_task_restores_previous_evaluation_and_artifacts(
     assert restore.await_count == 2
 
 
-def test_rollback_task_rejects_active_runs_unsettled_tasks_and_missing_history(
+def test_rollback_task_rejects_unsettled_tasks_and_missing_history(
     database_session: Session,
     example_benchmark_object: Benchmark,
     monkeypatch: pytest.MonkeyPatch,
     harness_headers: dict[str, str],
 ) -> None:
-    """Rollback must not touch state while a run is active, for unsettled tasks, or with nothing to restore."""
+    """Rollback must not touch state for unsettled tasks or with nothing to restore, regardless of run status."""
     now = datetime.now(ZoneInfo("UTC"))
     benchmark = example_benchmark_object
     database_session.add(benchmark)
@@ -404,15 +404,7 @@ def test_rollback_task_rejects_active_runs_unsettled_tasks_and_missing_history(
     monkeypatch.setattr(single_task_module, "restore_prefix_versions_before", restore)
     monkeypatch.setattr(single_task_module, "delete_from_s3", AsyncMock())
 
-    active = _client.post(
-        f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback", headers=harness_headers, json={}
-    )
-    assert active.status_code == 409
-
-    benchmark.status = BenchmarkStatus.FINISHED
-    benchmark.finished_at = now
-    database_session.add(benchmark)
-    database_session.commit()
+    assert benchmark.status == BenchmarkStatus.IN_PROGRESS
 
     unsettled = _client.post(
         f"/benchmarks/{benchmark.id}/tasks/{pending_task.task_id}/rollback", headers=harness_headers, json={}
