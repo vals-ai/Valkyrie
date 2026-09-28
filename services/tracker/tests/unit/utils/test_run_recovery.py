@@ -2168,7 +2168,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         """Per-task stops leave the run IN_PROGRESS; those STOPPED tasks must be retryable in place."""
         benchmark_row = example_benchmark_object
@@ -2209,7 +2209,7 @@ class TestRunRecovery:
         )
 
         assert response.status_code == 200, response.text
-        admitted_payload = mock_kicker.queued_calls[0]
+        admitted_payload = mock_launcher.queued_calls[0]
         assert sorted(admitted_payload["verified_task_ids"]) == ["task_stopped", "task_stopped_graded"]
 
         database_session.expire_all()
