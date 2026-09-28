@@ -1672,6 +1672,8 @@
           "dataset_version": {
             "anyOf": [
               {
+                "maxLength": 1024,
+                "minLength": 1,
                 "type": "string"
               },
               {
@@ -2690,6 +2692,8 @@
           "dataset_version": {
             "anyOf": [
               {
+                "maxLength": 1024,
+                "minLength": 1,
                 "type": "string"
               },
               {

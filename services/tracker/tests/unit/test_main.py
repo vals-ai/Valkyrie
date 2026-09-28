@@ -324,6 +324,25 @@ class TestTrackerAPI:
         assert response.status_code == 400
         assert database_session.exec(select(Benchmark)).all() == []
 
+    @pytest.mark.parametrize("dataset_version", ["", "x" * 1025])
+    async def test_invalid_dataset_version_length_is_rejected(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        dataset_version: str,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+        )
+        payload = request.model_dump(mode="json")
+        payload["dataset_version"] = dataset_version
+
+        response = client.post("/start-benchmark", json=payload)
+
+        assert response.status_code == 422
+
     @pytest.mark.parametrize(
         ("owner_bucket", "expected_log_prefix"),
         [
