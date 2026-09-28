@@ -185,7 +185,7 @@ def _retry_candidates(
     new_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_ids]
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and new_task_ids:
         raise TrackerServiceError(
-            f"{', '.join(new_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
+            f"{', '.join(new_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR or STOPPED status"
         )
     return existing_rows, new_task_ids
 
@@ -322,14 +322,15 @@ def reset_to_in_progress_status(
 def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
     """Select retryable rows.
 
-    Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
+    Active retries on in-progress runs are limited to ERROR and STOPPED tasks (per-task stops leave the run
+    in progress). Finished tasks must wait until the run is terminal.
     """
     filters = [
         col(Task.benchmark) == benchmark_row.id,
         col(Task.org_id) == org.id,
     ]
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
-        filters.append(col(Task.status) == TaskStatus.ERROR)
+        filters.append(col(Task.status).in_([TaskStatus.ERROR, TaskStatus.STOPPED]))
         if rerun_task_ids:
             filters.append(col(Task.task_id).in_(rerun_task_ids))
         return filters
