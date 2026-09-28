@@ -37,19 +37,29 @@ def test_local_release_repeated_registration_is_active_and_downloadable(
     assert hashlib.sha256(downloaded.read_bytes()).hexdigest() == releases[0].artifact_digest
 
 
-def test_local_release_launcher_change_promotes_new_release_and_drains_old(
+def test_local_release_launcher_changes_promote_fresh_releases(
     database_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    original_launcher = local_release._LAUNCHER
     old = register_local_release(database_session, root=tmp_path, bucket="local", prefix="executor-releases")
     database_session.commit()
-    monkeypatch.setattr(local_release, "_LAUNCHER", b"# executor protocol next\n" + local_release._LAUNCHER)
+    monkeypatch.setattr(local_release, "_LAUNCHER", b"# executor protocol next\n" + original_launcher)
     new = register_local_release(database_session, root=tmp_path, bucket="local", prefix="executor-releases")
     database_session.commit()
-
     database_session.refresh(old)
-    admission = database_session.get(ExecutorAdmission, 1)
     assert new.id != old.id
     assert new.status == ExecutorReleaseStatus.ACTIVE
     assert old.status == ExecutorReleaseStatus.DRAINING
+
+    # Switching back to the original launcher cannot reactivate the drained release.
+    monkeypatch.setattr(local_release, "_LAUNCHER", original_launcher)
+    back = register_local_release(database_session, root=tmp_path, bucket="local", prefix="executor-releases")
+    database_session.commit()
+    database_session.refresh(old)
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert back.id not in (old.id, new.id)
+    assert back.artifact_digest == old.artifact_digest
+    assert back.status == ExecutorReleaseStatus.ACTIVE
+    assert old.status == ExecutorReleaseStatus.DRAINING
     assert admission is not None
-    assert admission.release_id == new.id
+    assert admission.release_id == back.id

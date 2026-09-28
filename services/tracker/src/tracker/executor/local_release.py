@@ -9,11 +9,12 @@ import sys
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import BinaryIO
+from uuid import uuid4
 
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
-from tracker.database.models import ExecutorRelease
+from tracker.database.models import ExecutorRelease, ExecutorReleaseStatus
 from tracker.database.session import engine
 from tracker.executor.release_control import activate_release
 
@@ -40,7 +41,15 @@ class LocalArtifactStore:
 def register_local_release(session: Session, *, root: Path, bucket: str, prefix: str) -> ExecutorRelease:
     """Publish, smoke-test, and activate the local image's executor."""
     digest = hashlib.sha256(_LAUNCHER).hexdigest()
-    release_id = f"local-{digest[:16]}"
+    # Reuse the active release for this launcher. A drained or retired one cannot be reactivated, so
+    # switching back to an older protocol version gets a fresh release ID.
+    active = session.exec(
+        select(ExecutorRelease).where(
+            col(ExecutorRelease.artifact_digest) == digest,
+            col(ExecutorRelease.status) == ExecutorReleaseStatus.ACTIVE,
+        )
+    ).first()
+    release_id = active.id if active is not None else f"local-{digest[:16]}-{uuid4().hex[:8]}"
     key = f"{prefix}/{release_id}/executor.pex"
     artifact = root / bucket / key
     artifact.parent.mkdir(parents=True, exist_ok=True)
