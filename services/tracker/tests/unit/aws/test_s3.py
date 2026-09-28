@@ -1008,3 +1008,34 @@ async def test_restore_prefix_versions_before_rejects_oversized_versions_before_
 
     client.copy_object.assert_not_awaited()
     client.delete_object.assert_not_awaited()
+
+
+async def test_restore_prefix_versions_before_skips_excluded_prefixes() -> None:
+    """Keys under an excluded (nested sibling task) prefix are neither copied nor deleted."""
+    cutoff = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    after = cutoff + timedelta(hours=1)
+    prefix = "benchmarks/run/foo/"
+    pages: list[dict[str, list[dict[str, object]]]] = [
+        {
+            "Versions": [
+                {"Key": f"{prefix}bar/out.txt", "VersionId": "b1", "LastModified": after, "IsLatest": True, "Size": 1},
+                {"Key": f"{prefix}out.txt", "VersionId": "o1", "LastModified": after, "IsLatest": True, "Size": 1},
+            ],
+            "DeleteMarkers": [
+                {"Key": f"{prefix}bar/gone.txt", "VersionId": "bd", "LastModified": after, "IsLatest": True},
+            ],
+        }
+    ]
+    client = _version_client(pages, versioning="Enabled")
+    runtime = _copy_runtime(
+        bucket="test-bucket", client=client, credential_source="access_key", expected_bucket_owner=None
+    )
+
+    restore = await s3_module.restore_prefix_versions_before(
+        prefix, cutoff, runtime, exclude_prefixes=[f"{prefix}bar/"]
+    )
+
+    assert restore is not None
+    assert restore.restored == []
+    assert restore.removed == [f"{prefix}out.txt"]
+    client.delete_object.assert_awaited_once()

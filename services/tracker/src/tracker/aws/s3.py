@@ -1,6 +1,15 @@
 """S3 upload utilities for the tracker service."""
 
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Sequence,
+)
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -386,9 +395,16 @@ class _ObjectVersion:
 
 
 @handle_s3_error(message="Failed to restore S3 object versions")
-async def restore_prefix_versions_before(prefix: str, cutoff: datetime, runtime: AWSRuntime) -> PrefixRestore | None:
+async def restore_prefix_versions_before(
+    prefix: str,
+    cutoff: datetime,
+    runtime: AWSRuntime,
+    *,
+    exclude_prefixes: Sequence[str] = (),
+) -> PrefixRestore | None:
     """
-    Make every object under a prefix match its newest version written at or before cutoff.
+    Make every object under a prefix (except those under exclude_prefixes) match its newest version written at or
+    before cutoff.
 
     Keys that only exist in versions written after cutoff receive a delete marker. Returns None when the bucket does
     not keep versions, in which case nothing can be restored. Every change is planned before any key is touched so a
@@ -407,10 +423,14 @@ async def restore_prefix_versions_before(prefix: str, cutoff: datetime, runtime:
         paginator = client.get_paginator("list_object_versions")
         async for page in paginator.paginate(Bucket=bucket, Prefix=prefix, **owner_arguments):
             for entry in page.get("Versions", []):
+                if entry["Key"].startswith(tuple(exclude_prefixes)):
+                    continue
                 versions_by_key.setdefault(entry["Key"], []).append(
                     _ObjectVersion(entry["VersionId"], entry["LastModified"], entry["IsLatest"], False, entry["Size"])
                 )
             for entry in page.get("DeleteMarkers", []):
+                if entry["Key"].startswith(tuple(exclude_prefixes)):
+                    continue
                 versions_by_key.setdefault(entry["Key"], []).append(
                     _ObjectVersion(entry["VersionId"], entry["LastModified"], entry["IsLatest"], True)
                 )

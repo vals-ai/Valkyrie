@@ -7,6 +7,8 @@ from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import logging
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlmodel import Session, col, desc, select
 
@@ -42,6 +44,8 @@ from tracker.types import (
 )
 from tracker.utils.reporting import final_view_s3_key
 from tracker.utils.resources import fetch_benchmark_row
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -158,6 +162,47 @@ def get_task_results(
     )
 
 
+def _select_rollback_target(
+    benchmark: Benchmark, task_id: str, result_id: UUID | None, org: Org, session: Session
+) -> tuple[Task, EvaluationResult, EvaluationResult | None]:
+    """Validate run/task state and pick the evaluation to restore; returns (task, target, current)."""
+    if benchmark.status in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {benchmark.id} is {benchmark.status.value}; stop it or wait for it to finish before rolling back.",
+        )
+    task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
+    if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
+        raise HTTPException(
+            status_code=409, detail=f"Task {task_id} is {task.status.value}; only settled tasks roll back."
+        )
+
+    history = _evaluation_history(session, task, org)
+    current = history[0] if history and task.status == TaskStatus.FINISHED else None
+    if result_id is None:
+        candidates = [row for row in history if current is None or row.id != current.id]
+        if not candidates:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} has no earlier evaluation to roll back to.")
+        return task, candidates[0], current
+    target = next((row for row in history if row.id == result_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Evaluation {result_id} not found for task {task_id}.")
+    if current is not None and target.id == current.id:
+        raise HTTPException(status_code=409, detail=f"Evaluation {target.id} is already the current result.")
+    return task, target, current
+
+
+def _nested_task_prefixes(benchmark: Benchmark, task: Task, org: Org, session: Session) -> list[str]:
+    """Artifact prefixes of sibling tasks whose IDs nest under this task's ID (e.g. `foo/bar` under `foo`)."""
+    nested_ids = session.exec(
+        select(Task.task_id)
+        .where(Task.benchmark == benchmark.id)
+        .where(Task.org_id == org.id)
+        .where(col(Task.task_id).startswith(f"{task.task_id}/"))
+    ).all()
+    return [_task_prefix(benchmark.id, nested_id) for nested_id in nested_ids]
+
+
 @router.post(
     "/{benchmark_id}/tasks/{task_id}/rollback",
     response_model=RollbackTaskResponse,
@@ -176,40 +221,31 @@ async def rollback_task(
     prefix is reverted to the object versions that existed when that attempt was evaluated, and the run's final score
     (database row and published final view) is discarded so `resume` recomputes it.
     """
-    benchmark = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
-    if benchmark.status in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Run {benchmark_id} is {benchmark.status.value}; stop it or wait for it to finish before rolling back.",
-        )
-    task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
-    if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
-        raise HTTPException(
-            status_code=409, detail=f"Task {task_id} is {task.status.value}; only settled tasks roll back."
-        )
-
-    history = _evaluation_history(session, task, org)
-    current = history[0] if history and task.status == TaskStatus.FINISHED else None
-    if request.result_id is None:
-        candidates = [row for row in history if current is None or row.id != current.id]
-        if not candidates:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} has no earlier evaluation to roll back to.")
-        target = candidates[0]
-    else:
-        target = next((row for row in history if row.id == request.result_id), None)
-        if target is None:
-            raise HTTPException(status_code=404, detail=f"Evaluation {request.result_id} not found for task {task_id}.")
-        if current is not None and target.id == current.id:
-            raise HTTPException(status_code=409, detail=f"Evaluation {target.id} is already the current result.")
+    benchmark = fetch_benchmark_row(benchmark_id, session, org)
+    task, target, current = _select_rollback_target(benchmark, task_id, request.result_id, org, session)
+    sibling_prefixes = _nested_task_prefixes(benchmark, task, org, session)
+    # Release the read transaction so no database state is held across S3 I/O.
+    session.commit()
 
     try:
         artifacts = await restore_prefix_versions_before(
-            _task_prefix(benchmark_id, task.task_id), target.created_at, run_context.aws_runtime
+            _task_prefix(benchmark_id, task.task_id),
+            target.created_at,
+            run_context.aws_runtime,
+            exclude_prefixes=sibling_prefixes,
         )
         await delete_from_s3(final_view_s3_key(benchmark), run_context.aws_runtime)
     except S3Error as exc:
+        logger.exception("Task rollback storage operation failed")
+        raise HTTPException(status_code=502, detail="Task rollback storage operation failed") from exc
+
+    # Re-lock and re-validate: the run or task may have changed while S3 was being restored.
+    benchmark = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+    task, retarget, recurrent = _select_rollback_target(benchmark, task_id, target.id, org, session)
+    if (recurrent.id if recurrent else None) != (current.id if current else None):
         session.rollback()
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=f"Task {task_id} changed during rollback; retry.")
+    target = retarget
 
     now = datetime.now(ZoneInfo("UTC"))
     restored = EvaluationResult(

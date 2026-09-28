@@ -22,6 +22,7 @@ from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
     BenchmarkStatus,
+    EvaluationResult,
     FinalEvaluation,
     Org,
     Task,
@@ -423,3 +424,58 @@ def test_rollback_task_rejects_active_runs_unsettled_tasks_and_missing_history(
     assert unsettled.status_code == 409
     assert no_history.status_code == 404
     restore.assert_not_awaited()
+
+
+def test_rollback_task_excludes_nested_sibling_tasks_and_detects_concurrent_changes(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    """Restoring `foo` must not touch `foo/bar`'s artifacts, and a task that changes mid-rollback is not committed.
+
+    Test cases:
+    - The S3 restore receives the nested sibling's prefix as an exclusion.
+    - If a new evaluation lands while S3 is being restored, the rollback is refused with 409 and nothing is written.
+    """
+    now = datetime.now(ZoneInfo("UTC"))
+    benchmark = example_benchmark_object
+    benchmark.status = BenchmarkStatus.FINISHED
+    benchmark.finished_at = now
+    database_session.add(benchmark)
+    database_session.flush()
+    parent = make_task(benchmark, "foo", status=TaskStatus.FINISHED, finished_at=now)
+    nested = make_task(benchmark, "foo/bar", status=TaskStatus.FINISHED, finished_at=now)
+    unrelated = make_task(benchmark, "foobar", status=TaskStatus.FINISHED, finished_at=now)
+    database_session.add_all([parent, nested, unrelated])
+    database_session.flush()
+    database_session.add_all(
+        [
+            make_evaluation_result(parent, "p-old", {"score": 0.0}, now - timedelta(minutes=5)),
+            make_evaluation_result(parent, "p-new", {"score": 1.0}, now),
+        ]
+    )
+    database_session.commit()
+    restore = AsyncMock(return_value=PrefixRestore(restored=[], removed=[]))
+    monkeypatch.setattr(single_task_module, "restore_prefix_versions_before", restore)
+    monkeypatch.setattr(single_task_module, "delete_from_s3", AsyncMock())
+
+    response = _client.post(f"/benchmarks/{benchmark.id}/tasks/foo/rollback", headers=harness_headers, json={})
+
+    assert response.status_code == 200, response.text
+    assert restore.await_args is not None
+    assert restore.await_args.kwargs["exclude_prefixes"] == [f"benchmarks/{benchmark.id}/foo/bar/"]
+    result_count = len(database_session.exec(select(EvaluationResult).where(EvaluationResult.task == parent.id)).all())
+    assert result_count == 3
+
+    async def evaluate_during_restore(*_args: object, **_kwargs: object) -> PrefixRestore:
+        database_session.add(make_evaluation_result(parent, "raced", {"score": 0.5}, datetime.now(ZoneInfo("UTC"))))
+        database_session.commit()
+        return PrefixRestore(restored=[], removed=[])
+
+    monkeypatch.setattr(single_task_module, "restore_prefix_versions_before", evaluate_during_restore)
+    raced = _client.post(f"/benchmarks/{benchmark.id}/tasks/foo/rollback", headers=harness_headers, json={})
+
+    assert raced.status_code == 409, raced.text
+    database_session.expire_all()
+    assert len(database_session.exec(select(EvaluationResult).where(EvaluationResult.task == parent.id)).all()) == 4
