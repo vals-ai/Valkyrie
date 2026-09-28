@@ -6,6 +6,8 @@ set -euo pipefail
 # The synthetic managed-storage map must stay non-empty: an empty map makes
 # owner-bucket IAM disappear from both templates, so a change confined to it
 # would produce no diff and the executor stack deploy would be skipped.
+# Path metadata must be enabled explicitly: the ExecutorHost classifier matches
+# resources by aws:cdk:path, and running app.py without the CDK CLI omits it.
 revision="${1:?revision is required}"
 target_branch="${2:?target branch is required}"
 label="${3:?label is required}"
@@ -82,7 +84,7 @@ for target in "${targets[@]}"; do
     SENTRY_DSN_SECRET_NAME=offline-synth \
     DESCOPE_MANAGEMENT_KEY_SECRET_NAME=offline-synth \
     DESCOPE_PROJECT_ID=offline-synth \
-    CDK_CONTEXT_JSON="{\"stage\":\"$stage\"}" \
+    CDK_CONTEXT_JSON="{\"stage\":\"$stage\",\"aws:cdk:enable-path-metadata\":true}" \
     CDK_OUTDIR="$assembly" \
       uv run --frozen python app.py
   )
