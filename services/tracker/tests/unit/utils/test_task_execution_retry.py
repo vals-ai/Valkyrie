@@ -217,6 +217,7 @@ class TestTaskExecutionRetry:
     @pytest.mark.parametrize(
         ("compose_runtime", "agent_install_order", "setup_before_install"),
         [
+            pytest.param(False, None, True, id="image-legacy-service-omits-order"),
             pytest.param(False, "before_setup", False, id="image-before-setup"),
             pytest.param(False, "after_setup", True, id="image-after-setup"),
             pytest.param(True, "before_setup", True, id="compose-before-setup-override"),
@@ -231,10 +232,14 @@ class TestTaskExecutionRetry:
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         compose_runtime: bool,
-        agent_install_order: AgentInstallOrder,
+        agent_install_order: AgentInstallOrder | None,
         setup_before_install: bool,
     ) -> None:
-        """Benchmarks choose install order; Compose always bootstraps first."""
+        """Benchmarks choose install order; Compose and legacy services bootstrap first.
+
+        Test cases:
+        - agent_install_order=None: the service omits the field, as framework < 0.41.0 does.
+        """
         contract = contract.model_copy(
             update={
                 "install_egress": ["https://packages.example.com"],
@@ -257,7 +262,6 @@ class TestTaskExecutionRetry:
         task_data = make_retrieve_task_response().model_copy(
             update={
                 "source": source,
-                "agent_install_order": agent_install_order,
                 "egress": BenchmarkEgressPlan(
                     setup_task=[],
                     run=["https://benchmark-runtime.example.com"],
@@ -265,6 +269,8 @@ class TestTaskExecutionRetry:
                 ),
             }
         )
+        if agent_install_order is not None:
+            task_data = task_data.model_copy(update={"agent_install_order": agent_install_order})
         events: list[str] = []
         raw_sandbox = Mock(id="raw-sandbox", name="raw-sandbox")
         agent_sandbox = Mock(id="agent-sandbox", name="agent-sandbox")

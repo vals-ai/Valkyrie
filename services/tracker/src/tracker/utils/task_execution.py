@@ -1128,8 +1128,12 @@ async def _process_task_attempt(
 
                 # Compose setup bootstraps the service that receives agent commands,
                 # so it must run before installation regardless of the declared order.
+                # Services on framework < 0.41.0 do not send agent_install_order and
+                # expect the legacy order, in which installation runs after setup.
                 install_after_setup = (
-                    isinstance(task_data.source, ComposeSource) or task_data.agent_install_order == "after_setup"
+                    isinstance(task_data.source, ComposeSource)
+                    or "agent_install_order" not in task_data.model_fields_set
+                    or task_data.agent_install_order == "after_setup"
                 )
                 if not install_after_setup:
                     await install_agent()
