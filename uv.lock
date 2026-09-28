@@ -425,23 +425,19 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.41.2.dev10+gd440f0210"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=d440f0210063d26a5978375bf85119f9a5fa72ad#d440f0210063d26a5978375bf85119f9a5fa72ad" }
+version = "0.42.1.dev12+gca0f1322b"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=ca0f1322bd82d7df0ebc6e451f9b44e8f6faea3f#ca0f1322bd82d7df0ebc6e451f9b44e8f6faea3f" }
 dependencies = [
-    { name = "boto3" },
-    { name = "cachetools" },
     { name = "click" },
     { name = "daytona" },
     { name = "daytona-api-client-async" },
-    { name = "descope" },
-    { name = "fastapi", extra = ["standard"] },
+    { name = "fastapi", extra = ["standard-no-fastapi-cloud-cli"] },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "modal" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "sentry-sdk", extra = ["fastapi"] },
     { name = "starlette" },
     { name = "tenacity" },
     { name = "websockets" },
@@ -723,6 +719,16 @@ standard = [
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+standard-no-fastapi-cloud-cli = [
+    { name = "email-validator" },
+    { name = "fastapi-cli", extra = ["standard-no-fastapi-cloud-cli"] },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "pydantic-extra-types" },
+    { name = "pydantic-settings" },
+    { name = "python-multipart" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 
 [[package]]
 name = "fastapi-cli"
@@ -741,6 +747,9 @@ wheels = [
 [package.optional-dependencies]
 standard = [
     { name = "fastapi-cloud-cli" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+standard-no-fastapi-cloud-cli = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2314,7 +2323,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "cachetools", specifier = ">=7.1.1,<8" },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=d440f0210063d26a5978375bf85119f9a5fa72ad" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=ca0f1322bd82d7df0ebc6e451f9b44e8f6faea3f" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },
     { name = "httpx", specifier = ">=0.28.1" },
