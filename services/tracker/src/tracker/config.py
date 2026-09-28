@@ -2,18 +2,11 @@
 
 from enum import Enum
 import os
-from typing import Any
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
-from executor_protocol import DEFAULT_STABLE_QUEUE_NAME
-from taskiq import InMemoryBroker, TaskiqEvents
-from taskiq_redis import RedisStreamBroker
-from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
-from tracker.middleware import LoggingContextMiddleware, TracingContextMiddleware
-from tracker.observability import configure_observability
 from tracker.outbound_security import validate_benchmark_name
 
 load_dotenv()
@@ -111,10 +104,7 @@ AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED = (
 AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS = _non_negative_int_setting(
     "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300
 )
-BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-STABLE_QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
 
 
 def _build_database_url() -> str:
@@ -131,32 +121,6 @@ def _build_database_url() -> str:
 
 
 DATABASE_URL = _build_database_url()
-
-result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
-    redis_url=REDIS_URL,
-)
-
-# Tracing precedes Logging so that anything emitted after (logs, child spans
-# from middlewares or the task body) is captured under the propagated parent trace.
-_BROKER_MIDDLEWARES = (TracingContextMiddleware(), LoggingContextMiddleware())
-
-broker = (
-    InMemoryBroker().with_middlewares(*_BROKER_MIDDLEWARES)
-    if BROKER_ENVIRONMENT == "testing"
-    else RedisStreamBroker(
-        url=REDIS_URL,
-        queue_name=STABLE_QUEUE_NAME,
-        consumer_group_name=STABLE_QUEUE_NAME,
-        idle_timeout=86400000,  # 24 hours
-    )
-    .with_result_backend(result_backend)
-    .with_middlewares(*_BROKER_MIDDLEWARES)
-)
-
-
-@broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
-    configure_observability("valkyrie-worker", environment=ENVIRONMENT)
 
 
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"

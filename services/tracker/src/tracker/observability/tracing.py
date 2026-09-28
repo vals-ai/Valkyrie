@@ -136,7 +136,7 @@ def configure_tracing(service_name: str, environment: str) -> None:
             if os.getenv("LOGFIRE_TRACE_SAMPLE_RATE") or os.getenv("OTEL_TRACES_SAMPLER_ARG")
             else logfire.SamplingOptions(head=0.1)
         ),
-        # Opt in: trace context is propagated via TracingContextMiddleware.
+        # Opt in: trace context is propagated through the dispatch's sealed telemetry context.
         distributed_tracing=True,
         # configure_logging() owns stdout.
         console=False,

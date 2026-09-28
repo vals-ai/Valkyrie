@@ -1,4 +1,4 @@
-"""Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3, ElastiCache."""
+"""Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3."""
 
 from typing import Any
 
@@ -7,9 +7,9 @@ from aws_cdk import (
     Stack,
     aws_chatbot,
     aws_ec2,
+    aws_elasticache,
     aws_ecr,
     aws_ecs,
-    aws_elasticache,
     aws_events,
     aws_events_targets,
     aws_route53,
@@ -24,18 +24,17 @@ from constants import (
     SHARED_ARTIFACT_BUCKET_PARAMETER_PATH,
     SHARED_AVAILABILITY_ZONES_PARAMETER_PATH,
     SHARED_CLUSTER_NAME_PARAMETER_PATH,
-    SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER_PATH,
     SHARED_NAMESPACE_ARN_PARAMETER_PATH,
     SHARED_NAMESPACE_ID_PARAMETER_PATH,
     SHARED_NAMESPACE_NAME_PARAMETER_PATH,
     SHARED_PUBLIC_SUBNET_IDS_PARAMETER_PATH,
     SHARED_TRACKER_REPOSITORY_URI_PARAMETER_PATH,
     SHARED_VPC_ID_PARAMETER_PATH,
-    ELASTICACHE_NODE_TYPE,
     NAMESPACE,
-    RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
     RELEASE_TEST_TRACKER_REPOSITORY_NAME,
+    RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
     S3_BUCKET_NAME,
+    ELASTICACHE_NODE_TYPE,
     stage_parameter_name,
     VPC_MAX_AZS,
     VPC_NAT_GATEWAYS,
@@ -128,7 +127,6 @@ class SharedStack(Stack):
         )
 
         self.tracker_repository: aws_ecr.Repository | None = None
-        self.executor_host_repository: aws_ecr.Repository | None = None
         if self.stage.is_release_test:
             self.tracker_repository = aws_ecr.Repository(
                 self,
@@ -140,7 +138,10 @@ class SharedStack(Stack):
                 removal_policy=cdk.RemovalPolicy.RETAIN,
                 empty_on_delete=False,
             )
-            self.executor_host_repository = aws_ecr.Repository(
+            # Retained only so release-test WorkerStack can drop these imports in this deploy.
+            # Remove the unused repository and exports in the follow-up cleanup PR
+            # together with the host-removal classifier rule.
+            legacy_repository = aws_ecr.Repository(
                 self,
                 "ReleaseTestExecutorHostRepository",
                 repository_name=RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
@@ -150,11 +151,12 @@ class SharedStack(Stack):
                 removal_policy=cdk.RemovalPolicy.RETAIN,
                 empty_on_delete=False,
             )
+            self.export_value(legacy_repository.repository_arn)
+            self.export_value(legacy_repository.repository_name)
 
-        # ── ElastiCache Redis ─────────────────────────────────────────────
-        # Single-node Redis used as the Taskiq message broker, shared by
-        # Tracker (producer) and ExecutorHost (consumer).
-
+        # Retained only so consumer stacks can drop their Redis imports in this deploy.
+        # Delete the unused cluster, security group, and exports in the follow-up cleanup PR
+        # together with the host-removal classifier rule.
         self.redis_security_group = aws_ec2.SecurityGroup(
             self,
             "RedisSG",
@@ -162,14 +164,12 @@ class SharedStack(Stack):
             description="Security group for ElastiCache Redis",
             allow_all_outbound=False,
         )
-
         redis_subnet_group = aws_elasticache.CfnSubnetGroup(
             self,
             "RedisSubnetGroup",
             description="Subnet group for ElastiCache Redis",
-            subnet_ids=[s.subnet_id for s in self.vpc.public_subnets],
+            subnet_ids=[subnet.subnet_id for subnet in self.vpc.public_subnets],
         )
-
         self.redis_cluster = aws_elasticache.CfnCacheCluster(
             self,
             "RedisCluster",
@@ -180,17 +180,10 @@ class SharedStack(Stack):
             vpc_security_group_ids=[self.redis_security_group.security_group_id],
             cache_subnet_group_name=redis_subnet_group.ref,
         )
-
-        self.redis_url = cdk.Fn.join(
-            "",
-            [
-                "redis://",
-                self.redis_cluster.attr_redis_endpoint_address,
-                ":",
-                self.redis_cluster.attr_redis_endpoint_port,
-            ],
-        )
-
+        self.export_value(self.redis_cluster.attr_redis_endpoint_address)
+        self.export_value(self.redis_cluster.attr_redis_endpoint_port)
+        self.export_value(self.redis_security_group.security_group_id)
+        self.export_value(self.redis_cluster.ref)
         if not self.stage.is_bench:
             self._publish_shared_contract()
 
@@ -244,21 +237,12 @@ class SharedStack(Stack):
             parameter_name=stage_parameter_name(self.stage.name, SHARED_ARTIFACT_BUCKET_PARAMETER_PATH),
             string_value=self.bucket.bucket_name,
         )
-        if self.tracker_repository is not None and self.executor_host_repository is not None:
+        if self.tracker_repository is not None:
             aws_ssm.StringParameter(
                 self,
                 "SharedTrackerRepositoryUriParameter",
                 parameter_name=stage_parameter_name(self.stage.name, SHARED_TRACKER_REPOSITORY_URI_PARAMETER_PATH),
                 string_value=self.tracker_repository.repository_uri,
-            )
-            aws_ssm.StringParameter(
-                self,
-                "SharedExecutorHostRepositoryUriParameter",
-                parameter_name=stage_parameter_name(
-                    self.stage.name,
-                    SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER_PATH,
-                ),
-                string_value=self.executor_host_repository.repository_uri,
             )
 
     def _create_deployment_notifications(self, slack_workspace_id: str, slack_channel_id: str) -> None:

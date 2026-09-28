@@ -22,19 +22,6 @@ services:
     networks:
       - tracker-network
 
-  redis:
-    image: redis:7-alpine
-    container_name: tracker-redis
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - tracker-network
-
   tracker:
     image: tracker-service
     container_name: tracker-service-container
@@ -45,10 +32,19 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379
+      # Local development only; never use this fixed key in a deployed stage.
+      - EXECUTOR_LAUNCHER=local
+      - EXECUTOR_PAYLOAD_LOCAL_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      - EXECUTOR_CACHE_DIR=/tmp/executor-cache
       - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
       - DB_HOST=postgres
       - DB_PORT=5432
+      - DB_NAME=tracker
+      - DB_USERNAME=tracker
+      - DB_PASSWORD=tracker
+      # Runner artifact downloads: set to the release bucket/prefix your AWS credentials can read.
+      - EXECUTOR_RELEASE_BUCKET
+      - EXECUTOR_RELEASE_PREFIX
       - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
       - SANDBOX_QUEUE_ENABLED=${SANDBOX_QUEUE_ENABLED:-false}
       - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
@@ -63,8 +59,6 @@ services:
       - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

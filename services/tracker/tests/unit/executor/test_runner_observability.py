@@ -1,6 +1,6 @@
 """Tests for ExecutorHost structured logging and Sentry correlation.
 
-Run: uv run pytest tests/unit/executor_host/test_observability.py
+Run: uv run pytest services/tracker/tests/unit/executor/test_runner_observability.py
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import pytest
 import sentry_sdk
 
 from executor_protocol import ExecutorTelemetryContext
-from services.executor_host import observability
+from tracker.executor import runner_observability as observability
 
 
 def test_dispatch_transaction_finishes_before_executor_work(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -133,7 +133,7 @@ def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch
     handler = logging.StreamHandler(output)
     handler.addFilter(observability._ContextFilter())  # pyright: ignore[reportPrivateUsage]
     handler.setFormatter(observability._JsonFormatter())  # pyright: ignore[reportPrivateUsage]
-    logger = logging.Logger("executor-host-test")
+    logger = logging.Logger("executor-runner-test")
     logger.addHandler(handler)
 
     with observability.dispatch_observability_context(
@@ -154,7 +154,7 @@ def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch
     assert record == {
         "timestamp": record["timestamp"],
         "level": "INFO",
-        "logger": "executor-host-test",
+        "logger": "executor-runner-test",
         "message": "Launching executor",
         "request_id": "request-abc",
         "benchmark_id": "benchmark-123",

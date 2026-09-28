@@ -76,7 +76,7 @@ def database_session() -> Generator[Session, None, None]:
 def executor_authority_kwargs(
     database_session: Session,
 ) -> Callable[..., dict[str, object]]:
-    """Create one live host claim for direct process_benchmark tests."""
+    """Create one live runner claim for direct process_benchmark tests."""
 
     def create(
         benchmark: Benchmark,

@@ -36,7 +36,7 @@ _EXECUTOR_STACK_FILES = {
     "services/tracker/src/tracker/executor/release_control.py",
     "services/tracker/src/tracker/executor/release_entrypoint.py",
 }
-_EXECUTOR_STACK_DIRECTORIES = ("infra/executor_release/", "services/executor_host/")
+_EXECUTOR_STACK_DIRECTORIES = ("infra/executor_release/",)
 _EXECUTOR_SHARED_FILES = {
     "infra/app.py",
     "infra/constants.py",

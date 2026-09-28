@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from io import BytesIO
+from typing import cast
 
 import boto3
 import pytest
@@ -117,22 +118,43 @@ class FakeS3Client:
 class FakeEcsClient:
     def __init__(self) -> None:
         self.service_updates: list[dict[str, object]] = []
-        self.protection_updates: list[dict[str, object]] = []
         self.stopped_tasks: list[str] = []
+        self.list_calls: list[dict[str, object]] = []
+        self.waited_for: list[dict[str, object]] = []
+        self.pending_polls = 0
+        self.tracker_polls = 0
+        self.describe_polls = 0
 
     def get_waiter(self, name: str) -> "FakeEcsClient":
         assert name == "services_stable"
         return self
 
-    def wait(self, **_kwargs: object) -> None:
-        return
+    def wait(self, **kwargs: object) -> None:
+        self.waited_for.append(kwargs)
 
-    def list_tasks(self, **_kwargs: object) -> dict[str, object]:
-        return {"taskArns": ["task-1", "task-2"]}
+    def list_tasks(self, **kwargs: object) -> dict[str, object]:
+        self.list_calls.append(kwargs)
+        assert kwargs["family"] == "ValkyrieExecutorRunner"
+        assert kwargs["cluster"] == "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie"
+        if kwargs["desiredStatus"] == "PENDING":
+            self.pending_polls += 1
+            return {"taskArns": ["pending-runner"] if self.pending_polls == 1 else []}
+        if self.stopped_tasks:
+            return {"taskArns": []}
+        if kwargs.get("nextToken") == "page-2":
+            return {"taskArns": ["task-2"]}
+        return {"taskArns": ["task-1"], "nextToken": "page-2"}
 
-    def update_task_protection(self, **kwargs: object) -> dict[str, object]:
-        self.protection_updates.append(kwargs)
-        return {}
+    def describe_services(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["services"] == ["Tracker"]
+        self.tracker_polls += 1
+        return {"services": [{"runningCount": 1 if self.tracker_polls == 1 else 0}]}
+    def describe_tasks(self, **kwargs: object) -> dict[str, object]:
+        self.describe_polls += 1
+        return {"tasks": [
+            {"taskArn": arn, "lastStatus": "RUNNING" if self.describe_polls == 1 else "STOPPED"}
+            for arn in cast(list[str], kwargs["tasks"])
+        ]}
 
     def stop_task(self, **kwargs: object) -> dict[str, object]:
         self.stopped_tasks.append(str(kwargs["task"]))
@@ -156,10 +178,10 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
             "releases",
             "releases",
             "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "ExecutorHost",
             "Tracker",
-            "1",
             "2",
+            "--runner-task-family",
+            "ValkyrieExecutorRunner",
             "activate",
             "git-abc123-def456",
             "s3://releases/releases/git-abc123-def456/executor.pex",
@@ -223,7 +245,7 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     assert admission.release_id == stored_release.id
 
 
-def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
+def test_maintenance_begin_drains_paginated_runner_tasks_before_finish(
     monkeypatch: MonkeyPatch,
     database_session: Session,
 ) -> None:
@@ -234,6 +256,7 @@ def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
     ecs = FakeEcsClient()
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: secrets)
     monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
 
     release_entrypoint.main()
@@ -242,20 +265,17 @@ def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
     assert admission.maintenance_target_sha == target_sha
-    assert ecs.service_updates == [
-        {
-            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "service": "ExecutorHost",
-            "desiredCount": 0,
-        },
-        {
-            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "service": "Tracker",
-            "desiredCount": 0,
-        },
-    ]
-    assert ecs.protection_updates[0]["tasks"] == ["task-1", "task-2"]
-    assert ecs.stopped_tasks == ["task-1", "task-2"]
+    assert ecs.service_updates == [{
+        "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+        "service": "Tracker",
+        "desiredCount": 0,
+    }]
+    assert ecs.stopped_tasks == ["task-1", "task-2", "pending-runner"]
+    assert ecs.list_calls[1]["nextToken"] == "page-2"
+    assert ecs.pending_polls == 2
+    assert ecs.tracker_polls == 2
+    assert ecs.describe_polls == 2
+    assert ecs.waited_for == []
 
     sys.argv = sys.argv[:12] + ["maintenance-finish", target_sha]
     release_entrypoint.main()
@@ -264,18 +284,37 @@ def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
     assert admission.maintenance_target_sha is None
-    assert ecs.service_updates[-2:] == [
-        {
-            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "service": "ExecutorHost",
-            "desiredCount": 1,
-        },
-        {
-            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "service": "Tracker",
-            "desiredCount": 2,
-        },
-    ]
+    assert ecs.service_updates[-1] == {
+        "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+        "service": "Tracker",
+        "desiredCount": 2,
+    }
+    assert len(ecs.service_updates) == 2
+    assert ecs.waited_for == [{
+        "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+        "services": ["Tracker"],
+    }]
+
+
+def test_maintenance_begin_fails_loudly_if_runners_do_not_drain(
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    monkeypatch.setattr(ecs, "list_tasks", lambda **_kwargs: {"taskArns": ["still-running"]})
+    monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    with pytest.raises(TimeoutError, match="Maintenance drain timed out"):
+        release_entrypoint.main()
+    database_session.expire_all()
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    assert admission.maintenance_target_sha == "b" * 40
 
 
 def test_release_entrypoint_digest_failure_does_not_commit_release(

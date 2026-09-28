@@ -616,32 +616,6 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('if [[ "$APPROVAL_RESULT" != "success" ]]', gate)
         self.assertNotIn("force merge", workflow.lower())
 
-    def test_executor_build_check_covers_real_arm_images_and_pex(self) -> None:
-        workflow = EXECUTOR_BUILD_WORKFLOW.read_text(encoding="utf-8")
-
-        self.assertIn("runs-on: ubuntu-24.04-arm", workflow)
-        self.assertEqual(workflow.count('"tests/unit/executor_host/**"'), 1)
-        self.assertIn('"services/executor_artifact/**"', workflow)
-        self.assertIn('"services/executor_host/**"', workflow)
-        self.assertIn('"services/tracker/**"', workflow)
-        self.assertIn('".dockerignore"', workflow)
-        self.assertIn("PYTHONPATH=services/tracker/src python services/executor_artifact/build.py", workflow)
-        self.assertIn("uv run pytest", workflow)
-        for test_path in (
-            "tests/unit/executor_host",
-            "tests/integration/observability",
-            "services/executor_artifact/tests",
-        ):
-            self.assertIn(test_path, workflow)
-        self.assertIn(
-            "docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker",
-            workflow,
-        )
-        self.assertIn("-f services/executor_host/Dockerfile", workflow)
-        self.assertEqual(workflow.count("services/executor_artifact/build.py"), 1)
-        self.assertIn("services/executor_artifact/uv.lock", workflow)
-        self.assertIn("uv lock --project services/executor_artifact --check", workflow)
-
     def test_sentry_publication_requires_successful_component_deployment(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         for stage, core_job, executor_job, github_environment in (

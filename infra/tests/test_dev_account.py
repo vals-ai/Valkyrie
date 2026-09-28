@@ -108,8 +108,6 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
             namespace=shared.namespace,
             hosted_zone=shared.hosted_zone,
             bucket_name=shared.bucket_name,
-            redis_url=shared.redis_url,
-            redis_security_group=shared.redis_security_group,
             env=TEST_ENV,
         )
         executor = ExecutorStack(
@@ -118,9 +116,6 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
             stage=stage,
             vpc=shared.vpc,
             cluster=shared.cluster,
-            namespace=shared.namespace,
-            redis_url=shared.redis_url,
-            bucket_name=shared.bucket_name,
             database_proxy=tracker.database_proxy,
             db_credentials=tracker.db_credentials,
             tracker_service=tracker.tracker_fargate_service,

@@ -61,8 +61,6 @@ include = [
   "src",
   "packages/valkyrie-sdk/src",
   "services/executor_artifact",
-  "services/executor_host",
-  "tests/unit/executor_host",
 ]
 
 [build-system]

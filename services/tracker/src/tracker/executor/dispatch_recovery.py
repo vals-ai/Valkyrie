@@ -5,8 +5,11 @@ from __future__ import annotations
 import logging
 from threading import Event, Thread
 
-from sqlmodel import Session
+from sqlalchemy import delete, select
+from sqlmodel import Session, col
 
+from executor_protocol import ExecutorDispatchStatus
+from tracker.database.models import ExecutorDispatch, ExecutorDispatchPayload
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import reconcile_expired_dispatches
 
@@ -20,6 +23,13 @@ def reconcile_expired_dispatches_once() -> int:
     with Session(engine) as session:
         try:
             recovered_count = reconcile_expired_dispatches(session)
+            session.exec(
+                delete(ExecutorDispatchPayload).where(
+                    col(ExecutorDispatchPayload.dispatch_id).in_(
+                        select(ExecutorDispatch.id).where(col(ExecutorDispatch.status) != ExecutorDispatchStatus.QUEUED)
+                    )
+                )
+            )
             session.commit()
         except Exception:
             session.rollback()

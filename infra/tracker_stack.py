@@ -14,6 +14,7 @@ from aws_cdk import (
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
     aws_iam,
+    aws_kms,
     aws_logs,
     aws_rds,
     aws_route53,
@@ -33,10 +34,13 @@ from constants import (
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
     DOCKER_ASSET_EXCLUDES,
+    EXECUTOR_RELEASE_BUCKET_NAME,
+    EXECUTOR_RELEASE_PREFIX,
+    EXECUTOR_RUNNER_LOG_GROUP_NAME,
+    RUNNER_STOP_TIMEOUT_SECONDS,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
-    REDIS_PORT,
     TRACKER_DOMAIN,
     TRACKER_ALB_DNS_PARAMETER_PATH,
     TRACKER_HOSTED_ZONE_ID_PARAMETER_PATH,
@@ -48,7 +52,7 @@ from constants import (
     stage_parameter_name,
 )
 from constructs import Construct
-from runtime_iam import create_tracker_task_role, managed_runtime_environment
+from runtime_iam import create_executor_task_role, create_tracker_task_role, managed_runtime_environment
 from stage import PROD, Stage
 from stage_config import benchmark_service_base_url, config_for
 from tracker_access_logs import create_tracker_access_logs
@@ -76,8 +80,6 @@ class TrackerStack(Stack):
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone | None,
         bucket_name: str,
-        redis_url: str,
-        redis_security_group: aws_ec2.ISecurityGroup,
         tracker_repository: aws_ecr.IRepository | None = None,
         image_tag: str | None = None,
         **kwargs: Any,
@@ -105,7 +107,6 @@ class TrackerStack(Stack):
         # Shared environment variables
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
-            "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "SENTRY_ENVIRONMENT": stage_config.sentry_environment,
@@ -225,6 +226,72 @@ class TrackerStack(Stack):
                 descope_management_key_secret,
             )
 
+        # Runner revisions live with the Tracker image; active dispatches keep their revision.
+        runner_family = stage.phys("ExecutorRunner")
+        runner_bucket = aws_s3.Bucket.from_bucket_name(
+            self, "ExecutorReleaseArtifacts", f"{stage.phys(EXECUTOR_RELEASE_BUCKET_NAME)}-{self.account}"
+        )
+        payload_key = aws_kms.Key(
+            self, "ExecutorPayloadKey", enable_key_rotation=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+        )
+        runner_security_group = aws_ec2.SecurityGroup(
+            self, "ExecutorRunnerSG", vpc=vpc,
+            description="No-ingress security group for one-dispatch executor tasks",
+            allow_all_outbound=False,
+        )
+        runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.tcp(POSTGRES_PORT), "Tracker RDS proxy")
+        runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.udp(53), "VPC DNS UDP")
+        runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.tcp(53), "VPC DNS TCP")
+        runner_security_group.add_egress_rule(aws_ec2.Peer.any_ipv4(), aws_ec2.Port.tcp(443), "AWS API endpoints and release artifacts")
+
+        runner_task_role = create_executor_task_role(self, stage, bucket, stage_config.managed_aws)
+        runner_task_role.add_to_policy(aws_iam.PolicyStatement(
+            actions=["s3:GetObject"],
+            resources=[runner_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],
+        ))
+        payload_key.grant_decrypt(runner_task_role)
+        runner_execution_role = aws_iam.Role(
+            self, "ExecutorRunnerExecutionRole",
+            role_name=stage.phys("ValkyrieExecutorRunnerExecution"),
+            assumed_by=cast(aws_iam.IPrincipal, aws_iam.ServicePrincipal("ecs-tasks.amazonaws.com")),
+            managed_policies=[aws_iam.ManagedPolicy.from_aws_managed_policy_name(
+                "service-role/AmazonECSTaskExecutionRolePolicy"
+            )],
+        )
+        db_credentials_secret.grant_read(runner_execution_role)
+        if sentry_secret_name:
+            sentry_secret.grant_read(runner_execution_role)
+        runner_task_def = aws_ecs.FargateTaskDefinition(
+            self, "ExecutorRunnerTaskDef", family=runner_family,
+            cpu=1024, memory_limit_mib=4096, runtime_platform=_ARM64_PLATFORM,
+            task_role=cast(aws_iam.IRole, runner_task_role),
+            execution_role=cast(aws_iam.IRole, runner_execution_role),
+        )
+        runner_task_def.add_container(
+            "ExecutorRunnerContainer", image=tracker_image,
+            logging=aws_ecs.LogDriver.aws_logs(
+                stream_prefix="ExecutorRunner",
+                log_group=aws_logs.LogGroup(
+                    self, "ExecutorRunnerLogGroup",
+                    log_group_name=stage.phys(EXECUTOR_RUNNER_LOG_GROUP_NAME),
+                    retention=stage_config.service_log_retention,
+                    removal_policy=cdk.RemovalPolicy.RETAIN,
+                ),
+            ),
+            environment={
+                **shared_env, **db_env,
+                "EXECUTOR_RELEASE_BUCKET": runner_bucket.bucket_name,
+                "EXECUTOR_RELEASE_PREFIX": EXECUTOR_RELEASE_PREFIX,
+                "EXECUTOR_CACHE_DIR": "/tmp/executor-cache",
+                "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
+                "EXECUTOR_LAUNCHER": "ecs",
+                "EXECUTOR_PAYLOAD_KMS_KEY_ID": payload_key.key_id,
+            },
+            secrets={**db_secrets, **sentry_secrets},
+            stop_timeout=Duration.seconds(RUNNER_STOP_TIMEOUT_SECONDS),
+        )
+
         # ── Tracker API service ──────────────────────────────────────────
 
         self.tracker_task_role = create_tracker_task_role(self, stage, bucket, stage_config.managed_aws)
@@ -237,6 +304,21 @@ class TrackerStack(Stack):
             task_role=cast(aws_iam.IRole, self.tracker_task_role),
         )
 
+        runner_family_arn = self.format_arn(
+            service="ecs", resource="task-definition", resource_name=f"{runner_family}:*"
+        )
+        self.tracker_task_role.add_to_policy(aws_iam.PolicyStatement(
+            actions=["ecs:RunTask"], resources=[runner_family_arn],
+            conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
+        ))
+        self.tracker_task_role.add_to_policy(aws_iam.PolicyStatement(
+            actions=["iam:PassRole"],
+            resources=[runner_task_role.role_arn, runner_execution_role.role_arn],
+            conditions={"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}},
+        ))
+        self.tracker_task_role.add_to_policy(aws_iam.PolicyStatement(
+            actions=["kms:GenerateDataKey"], resources=[payload_key.key_arn],
+        ))
         cdk.CfnOutput(self, "TrackerTaskRoleArn", value=self.tracker_task_role.role_arn)
 
         tracker_task_def.add_container(
@@ -256,7 +338,13 @@ class TrackerStack(Stack):
             environment={
                 **shared_env,
                 **db_env,
-                "REDIS_URL": redis_url,
+                "EXECUTOR_LAUNCHER": "ecs",
+                "EXECUTOR_RUNNER_CLUSTER": cluster.cluster_arn,
+                "EXECUTOR_RUNNER_TASK_DEFINITION": runner_task_def.task_definition_arn,
+                "EXECUTOR_RUNNER_SUBNETS": cdk.Fn.join(",", vpc.select_subnets(subnet_type=aws_ec2.SubnetType.PUBLIC).subnet_ids),
+                "EXECUTOR_RUNNER_SECURITY_GROUP": runner_security_group.security_group_id,
+                "EXECUTOR_RUNNER_CONTAINER": "ExecutorRunnerContainer",
+                "EXECUTOR_PAYLOAD_KMS_KEY_ID": payload_key.key_id,
                 "AUTH_REQUIRED": auth_required,
                 "BENCHMARK_CATALOG_URL": benchmark_catalog_url,
                 "DESCOPE_PROJECT_ID": descope_project_id,
@@ -327,13 +415,6 @@ class TrackerStack(Stack):
                 to_port=POSTGRES_PORT,
                 cidr_ip=VPC_CIDR,
                 description="Tracker PostgreSQL",
-            ),
-            aws_ec2.CfnSecurityGroup.EgressProperty(
-                ip_protocol="tcp",
-                from_port=REDIS_PORT,
-                to_port=REDIS_PORT,
-                cidr_ip=VPC_CIDR,
-                description="Tracker and ExecutorHost Redis",
             ),
             aws_ec2.CfnSecurityGroup.EgressProperty(
                 ip_protocol="tcp",
@@ -425,18 +506,10 @@ class TrackerStack(Stack):
         # ── Network access ───────────────────────────────────────────────
 
         tracker_security_group = self.tracker_fargate_service.connections.security_groups[0]
-        aws_ec2.CfnSecurityGroupIngress(
-            self,
-            "TrackerToRedisIngress",
-            group_id=redis_security_group.security_group_id,
-            source_security_group_id=tracker_security_group.security_group_id,
-            ip_protocol="tcp",
-            from_port=REDIS_PORT,
-            to_port=REDIS_PORT,
-            description="Allow Tracker and ExecutorHost to connect to Redis",
-        )
-
-        # Allow VPC services (Tracker and ExecutorHost) to reach RDS.
+        # Retained only so WorkerStack can drop this import in this deploy.
+        # Delete the export in the follow-up cleanup PR with the host-removal classifier rule.
+        self.export_value(tracker_security_group.security_group_id)
+        # Allow Tracker and one-dispatch runners in the VPC to reach RDS.
         db_security_group.add_ingress_rule(
             peer=aws_ec2.Peer.ipv4(VPC_CIDR),
             connection=aws_ec2.Port.tcp(POSTGRES_PORT),

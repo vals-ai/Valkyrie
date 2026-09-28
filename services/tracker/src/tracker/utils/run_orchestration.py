@@ -18,7 +18,7 @@ from sqlmodel import Session, col, desc, func, select
 
 from tracker.executor.dependencies import get_execution_runtime
 from tracker.runtime.services import RuntimeServices
-from tracker.config import AUTH_REQUIRED, broker
+from tracker.config import AUTH_REQUIRED
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -34,7 +34,6 @@ from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import error_span
@@ -626,8 +625,6 @@ async def hold_dispatch_authority(
         yield session, benchmark
 
 
-# Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
-@broker.task(EXECUTOR_TASK_NAME)
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any] | None = None,
     benchmark_id_str: str | None = None,

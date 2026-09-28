@@ -150,7 +150,7 @@ def test_benchmark_creation_rejects_inconsistent_managed_inputs(
         _persist_benchmark(database_session, invalid_managed_request, aws_managed=True)
 
 
-def test_taskiq_adapter_accepts_exact_access_key_shape(
+def test_execution_payload_parser_accepts_exact_access_key_shape(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
 ) -> None:
@@ -170,7 +170,7 @@ def test_taskiq_adapter_accepts_exact_access_key_shape(
     assert execution.aws_managed is False
 
 
-def test_taskiq_adapter_accepts_v2_envelope_only(contract: AgentContractRequest) -> None:
+def test_execution_payload_parser_accepts_v2_envelope_only(contract: AgentContractRequest) -> None:
     request = _managed_request(contract)
     benchmark_id = uuid4()
 
@@ -187,7 +187,7 @@ def test_taskiq_adapter_accepts_v2_envelope_only(contract: AgentContractRequest)
     assert execution.aws_managed is True
 
 
-def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
+def test_execution_payload_parser_rejects_mixed_and_invalid_managed_inputs(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
 ) -> None:

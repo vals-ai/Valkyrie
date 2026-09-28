@@ -83,7 +83,7 @@ class MaintenanceClassifierTest(unittest.TestCase):
         )
 
     def test_initial_branch_push_uses_the_empty_tree(self) -> None:
-        head_sha = self._commit_file("services/executor_host/supervisor.py", "changed = True\n")
+        head_sha = self._commit_file("infra/executor_release/main.py", "changed = True\n")
 
         result = classify_repository_change.classify_repository_change(
             self.repository,
@@ -418,7 +418,7 @@ def upgrade() -> None:
         head_sha = self._commit_files(
             {
                 "infra/classify_repository_change.py": "policy = True\n",
-                "services/executor_host/supervisor.py": "runtime = True\n",
+                "infra/executor_release/main.py": "runtime = True\n",
             }
         )
         effect = ExecutorHostTemplateEffect(
@@ -504,7 +504,7 @@ def upgrade() -> None:
         self.assertIn("requires both templates and the stack ID", output.read_text(encoding="utf-8"))
 
     def test_executor_source_change_requires_stack_without_assuming_maintenance(self) -> None:
-        head_sha = self._commit_file("services/executor_host/supervisor.py", "changed = True\n")
+        head_sha = self._commit_file("infra/executor_release/main.py", "changed = True\n")
 
         result = self._classify(head_sha)
 
@@ -527,7 +527,7 @@ def upgrade() -> None:
         self.assertTrue(result.executor_host_redeploy_required)
         self.assertIn("executor-host-task-definition-changed", result.reasons)
 
-    def test_executor_host_context_change_requires_stack_without_assuming_maintenance(self) -> None:
+    def test_image_context_change_requires_stack_without_assuming_maintenance(self) -> None:
         head_sha = self._commit_file(".dockerignore", "changed\n")
 
         result = self._classify(head_sha)

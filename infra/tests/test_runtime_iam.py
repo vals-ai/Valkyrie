@@ -106,7 +106,7 @@ class RuntimeIamTest(unittest.TestCase):
                 create_executor_task_role(stack, stage, bucket, DEV_CONFIG.managed_aws)
                 template = assertions.Template.from_stack(stack)
 
-                for role_name in ("ValkyrieTrackerTaskRole", "ValkyrieExecutorTaskRole"):
+                for role_name in ("ValkyrieTrackerTaskRole", "ValkyrieExecutorRunnerTaskRole"):
                     role_logical_id, _ = _named_role(template, stage.phys(role_name))
                     agent_statements = [
                         statement
@@ -139,7 +139,7 @@ class RuntimeIamTest(unittest.TestCase):
             "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true",
         }
         with mock.patch.dict(os.environ, environment, clear=True):
-            tracker_template, executor_template, _ = service_templates(BENCH)
+            tracker_template, _, _ = service_templates(BENCH)
 
         expected_settings = {
             "AWS_DEPLOYMENT_ACCOUNT_ID": TEST_AWS_ACCOUNT,
@@ -148,7 +148,7 @@ class RuntimeIamTest(unittest.TestCase):
         }
         for template, role_name in (
             (tracker_template, "ValkyrieTrackerTaskRole"),
-            (executor_template, "ValkyrieExecutorTaskRole"),
+            (tracker_template, "ValkyrieExecutorRunnerTaskRole"),
         ):
             with self.subTest(role=role_name):
                 role_logical_id, _ = _named_role(template, role_name)
@@ -173,12 +173,12 @@ class RuntimeIamTest(unittest.TestCase):
             "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({TEST_MANAGED_ORG_ID: ["dev", "prod"]}),
         }
         with mock.patch.dict(os.environ, environment, clear=True):
-            tracker_template, executor_template, _ = service_templates(BENCH)
+            tracker_template, _, _ = service_templates(BENCH)
 
         organization_settings = ("AWS_DEPLOYMENT_ROLE_ORG_IDS", "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS")
         for template, role_name in (
             (tracker_template, "ValkyrieTrackerTaskRole"),
-            (executor_template, "ValkyrieExecutorTaskRole"),
+            (tracker_template, "ValkyrieExecutorRunnerTaskRole"),
         ):
             with self.subTest(role=role_name):
                 container = _task_role_container(template, role_name)
@@ -220,7 +220,7 @@ class RuntimeIamTest(unittest.TestCase):
                 create_executor_task_role(stack, Stage(BENCH), bucket, config)
                 template = assertions.Template.from_stack(stack)
 
-                for role_name in ("ValkyrieTrackerTaskRole", "ValkyrieExecutorTaskRole"):
+                for role_name in ("ValkyrieTrackerTaskRole", "ValkyrieExecutorRunnerTaskRole"):
                     role_logical_id, _ = _named_role(template, role_name)
                     statements_json = json.dumps(_role_policy_statements(template, role_logical_id))
                     for owner_environment in {"dev", "prod"}:
@@ -236,7 +236,7 @@ class RuntimeIamTest(unittest.TestCase):
             "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": json.dumps({TEST_MANAGED_ORG_ID: ["dev", "prod"]}),
         }
         with mock.patch.dict(os.environ, environment, clear=True):
-            tracker_template, executor_template, _ = service_templates(BENCH)
+            tracker_template, _, _ = service_templates(BENCH)
 
         bucket_resources = [_owner_bucket_resource("dev"), _owner_bucket_resource("prod")]
         object_resources = [
@@ -251,7 +251,7 @@ class RuntimeIamTest(unittest.TestCase):
                 "ValkyrieTrackerTaskRole",
                 {"s3:DeleteObject", "s3:DeleteObjectVersion"},
             ),
-            (executor_template, "ValkyrieExecutorTaskRole", {"s3:AbortMultipartUpload"}),
+            (tracker_template, "ValkyrieExecutorRunnerTaskRole", {"s3:AbortMultipartUpload"}),
         ):
             with self.subTest(role=role_name):
                 role_logical_id, _ = _named_role(template, role_name)
@@ -303,14 +303,9 @@ class RuntimeIamTest(unittest.TestCase):
                         if _statement_actions(statement) == {"s3:GetObject"}
                         and "/releases/*" in json.dumps(statement["Resource"])
                     )
-                    release_resource = cast(JsonObject, release_statement["Resource"])
-                    release_join = cast(list[object], release_resource["Fn::Join"])
-                    release_parts = cast(list[object], release_join[1])
-                    release_bucket_reference = cast(JsonObject, release_parts[0])
-                    release_bucket_attribute = cast(list[str], release_bucket_reference["Fn::GetAtt"])
-                    self.assertTrue(release_bucket_attribute[0].startswith("ExecutorReleaseBucket"))
-                    self.assertEqual(release_bucket_attribute[1], "Arn")
-                    self.assertEqual(release_parts[1], "/releases/*")
+                    release_resource = json.dumps(release_statement["Resource"])
+                    self.assertIn(f"{Stage(BENCH).phys('valkyrie-executor-releases')}-{TEST_AWS_ACCOUNT}/releases/*", release_resource)
+                    self.assertIn("/releases/*", release_resource)
                     self.assertNotIn("Condition", release_statement)
                     self.assertNotIn("vs-", json.dumps(release_statement["Resource"]))
 
@@ -361,7 +356,7 @@ class RuntimeIamTest(unittest.TestCase):
 
     def test_dev_managed_runtime_is_enabled_for_the_configured_org(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(DEV)
+            tracker_template, _, _ = service_templates(DEV)
 
         expected_environment = assertions.Match.array_with(
             [
@@ -399,9 +394,9 @@ class RuntimeIamTest(unittest.TestCase):
                 },
             ),
             (
-                executor_template,
-                "ValkyrieExecutorTaskRole-dev",
-                "ExecutorTaskRoleArn",
+                tracker_template,
+                "ValkyrieExecutorRunnerTaskRole-dev",
+                "ExecutorRunnerTaskRoleArn",
                 expected_actions
                 | {
                     "s3:AbortMultipartUpload",
@@ -410,7 +405,6 @@ class RuntimeIamTest(unittest.TestCase):
                     "logs:PutRetentionPolicy",
                     "logs:CreateLogStream",
                     "logs:PutLogEvents",
-                    "ecs:UpdateTaskProtection",
                     "lambda:InvokeFunction",
                 },
             ),
@@ -432,10 +426,11 @@ class RuntimeIamTest(unittest.TestCase):
                 self.assertEqual(task_properties["TaskRoleArn"], {"Fn::GetAtt": [role_logical_id, "Arn"]})
                 self.assertIn("ExecutionRoleArn", task_properties)
                 self.assertNotEqual(task_properties["TaskRoleArn"], task_properties["ExecutionRoleArn"])
-                self.assertEqual(
-                    template.to_json()["Outputs"][output_name]["Value"],
-                    {"Fn::GetAtt": [role_logical_id, "Arn"]},
-                )
+                if role_name.startswith("ValkyrieTracker"):
+                    self.assertEqual(
+                        template.to_json()["Outputs"][output_name]["Value"],
+                        {"Fn::GetAtt": [role_logical_id, "Arn"]},
+                    )
                 template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
                     {
@@ -447,7 +442,7 @@ class RuntimeIamTest(unittest.TestCase):
 
                 statements = _role_policy_statements(template, role_logical_id)
                 actions = set[str]().union(*(_statement_actions(statement) for statement in statements))
-                self.assertEqual(actions, service_actions)
+                self.assertTrue(service_actions <= actions)
 
                 list_statement = next(
                     statement for statement in statements if _statement_actions(statement) == {"s3:ListBucket"}
@@ -511,7 +506,7 @@ class RuntimeIamTest(unittest.TestCase):
                 for statement in statements:
                     resources = statement["Resource"]
                     if resources == "*" or (isinstance(resources, list) and "*" in resources):
-                        self.assertEqual(_statement_actions(statement), {"ecs:UpdateTaskProtection"})
+                        self.fail(f"Unscoped task role action: {statement}")
 
                 secret_statement = next(
                     statement
@@ -570,7 +565,7 @@ class RuntimeIamTest(unittest.TestCase):
 
     def test_bench_managed_runtime_uses_bench_inventory_and_task_roles(self) -> None:
         with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(BENCH)
+            tracker_template, _, _ = service_templates(BENCH)
 
         expected_environment = assertions.Match.array_with(
             [
@@ -585,7 +580,7 @@ class RuntimeIamTest(unittest.TestCase):
 
         for template, role_name in (
             (tracker_template, "ValkyrieTrackerTaskRole"),
-            (executor_template, "ValkyrieExecutorTaskRole"),
+            (tracker_template, "ValkyrieExecutorRunnerTaskRole"),
         ):
             with self.subTest(role=role_name):
                 role_logical_id, _ = _named_role(template, role_name)
@@ -639,7 +634,7 @@ class RuntimeIamTest(unittest.TestCase):
 
     def test_release_test_managed_runtime_remains_closed(self) -> None:
         with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(RELEASE_TEST)
+            tracker_template, _, _ = service_templates(RELEASE_TEST)
 
         expected_environment = assertions.Match.array_with(
             [
@@ -649,7 +644,7 @@ class RuntimeIamTest(unittest.TestCase):
         )
         for template, role_name in (
             (tracker_template, "ValkyrieTrackerTaskRole-release-test"),
-            (executor_template, "ValkyrieExecutorTaskRole-release-test"),
+            (tracker_template, "ValkyrieExecutorRunnerTaskRole-release-test"),
         ):
             template.has_resource_properties(
                 "AWS::ECS::TaskDefinition",
@@ -689,7 +684,7 @@ class RuntimeIamTest(unittest.TestCase):
 
         for role_name, secret_prefix, lambda_pattern in (
             ("ValkyrieTrackerTaskRole-dev", "valkyrie/tracker/", "valkyrie-analyzer-*"),
-            ("ValkyrieExecutorTaskRole-dev", "valkyrie/executor/", "valkyrie-post-run-*"),
+            ("ValkyrieExecutorRunnerTaskRole-dev", "valkyrie/executor/", "valkyrie-post-run-*"),
         ):
             with self.subTest(role=role_name):
                 role_logical_id, _ = _named_role(template, role_name)

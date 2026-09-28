@@ -1,19 +1,17 @@
-"""Shared Tracker-to-ExecutorHost wire contract."""
+"""Shared executor payload and lease protocol."""
 
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any, NotRequired, TypedDict, Unpack, cast
+from typing import Any, NotRequired, TypedDict, cast
 from urllib.parse import urlparse
 
-EXECUTOR_TASK_NAME = "tracker.utils:process_benchmark"
 SUPPORTED_PROTOCOL_VERSION = "3"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", SUPPORTED_PROTOCOL_VERSION})
 MANAGED_EXECUTION_PROTOCOL_VERSION = "3"
-DEFAULT_STABLE_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
 
-# A dispatch owner renews this lease from the executor host. The Tracker
-# reconciler runs every minute, so a dead host is recovered within roughly six
+# A dispatch owner renews this lease from its runner task. The Tracker
+# reconciler runs every minute, so a dead runner is recovered within roughly six
 # minutes while a healthy dispatch has ample time between renewal ticks.
 DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS = 120
 DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS = 300
@@ -46,11 +44,6 @@ class ExecutorPayload(TypedDict):
     executor_artifact_uri: str
     executor_artifact_digest: str
     executor_protocol_version: str
-
-
-async def executor_task_signature(**_payload: Unpack[ExecutorPayload]) -> None:
-    """Provide the producer's typed Taskiq signature; this body never executes."""
-    raise RuntimeError("Executor task signatures cannot execute in Tracker")
 
 
 def executor_payload_benchmark_id(payload: Mapping[str, object]) -> str:

@@ -8,7 +8,6 @@ from aws_cdk import (
     aws_cloudwatch,
     aws_cloudwatch_actions,
     aws_ecs,
-    aws_elasticache,
     aws_elasticloadbalancingv2 as aws_elb,
     aws_rds,
     aws_sns,
@@ -23,7 +22,6 @@ from dashboards import (
     create_ecs_dashboard,
     create_overview_dashboard,
     create_rds_dashboard,
-    create_redis_dashboard,
 )
 from stage import Stage
 from stage_config import config_for
@@ -32,7 +30,7 @@ from stage_config import config_for
 class MonitoringStack(cdk.Stack):
     """CloudWatch dashboards and alarms for Valkyrie infrastructure.
 
-    Depends on SharedStack (cluster, Redis) and TrackerStack (RDS, ALB,
+    Depends on SharedStack (cluster) and TrackerStack (RDS, ALB,
     Tracker service).
 
     Alarms publish to the ``Valkyrie-Alerts`` SNS topic.
@@ -49,7 +47,6 @@ class MonitoringStack(cdk.Stack):
         load_balancer: aws_elb.ApplicationLoadBalancer,
         target_group: aws_elb.ApplicationTargetGroup,
         database: aws_rds.DatabaseInstance,
-        redis_cluster: aws_elasticache.CfnCacheCluster,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, id, **kwargs)
@@ -61,7 +58,6 @@ class MonitoringStack(cdk.Stack):
         self.load_balancer = load_balancer
         self.target_group = target_group
         self.database = database
-        self.redis_cluster = redis_cluster
 
         self.alerts_topic = aws_sns.Topic(
             self,
@@ -85,7 +81,6 @@ class MonitoringStack(cdk.Stack):
             load_balancer=load_balancer,
             target_group=target_group,
             database=database,
-            redis_cluster=redis_cluster,
         )
 
         self.overview_dashboard = create_overview_dashboard(
@@ -95,7 +90,6 @@ class MonitoringStack(cdk.Stack):
             load_balancer=load_balancer,
             target_group=target_group,
             database=database,
-            redis_cluster=redis_cluster,
         )
         self.ecs_dashboard = create_ecs_dashboard(
             self,
@@ -114,19 +108,12 @@ class MonitoringStack(cdk.Stack):
             database=database,
             region=self.region,
         )
-        self.redis_dashboard = create_redis_dashboard(
-            self,
-            stage=self.stage,
-            redis_cluster=redis_cluster,
-        )
-
     def _create_alarms(
         self,
         *,
         load_balancer: aws_elb.ApplicationLoadBalancer,
         target_group: aws_elb.ApplicationTargetGroup,
         database: aws_rds.DatabaseInstance,
-        redis_cluster: aws_elasticache.CfnCacheCluster,
     ) -> None:
         sns_action: aws_cloudwatch.IAlarmAction = aws_cloudwatch_actions.SnsAction(
             self.alerts_topic  # type: ignore[arg-type]
@@ -234,41 +221,3 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 7: Redis memory high (DatabaseMemoryUsagePercentage >= 80 for 5 min)
-        aws_cloudwatch.Alarm(
-            self,
-            "RedisMemoryHighAlarm",
-            alarm_name=self.stage.phys("Valkyrie-Redis-Memory-High"),
-            alarm_description="Redis memory usage >= 80% for 5+ minutes",
-            metric=aws_cloudwatch.Metric(
-                namespace="AWS/ElastiCache",
-                metric_name="DatabaseMemoryUsagePercentage",
-                dimensions_map={"CacheClusterId": redis_cluster.ref},
-                period=cdk.Duration.minutes(1),
-                statistic="Average",
-            ),
-            threshold=80,
-            evaluation_periods=5,
-            datapoints_to_alarm=5,
-            comparison_operator=aws_cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-            treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
-        ).add_alarm_action(sns_action)
-
-        # Alarm 8: Redis evictions
-        aws_cloudwatch.Alarm(
-            self,
-            "RedisEvictionsAlarm",
-            alarm_name=self.stage.phys("Valkyrie-Redis-Evictions"),
-            alarm_description="Redis evicted 1+ keys in a 5-minute window (data loss in queue)",
-            metric=aws_cloudwatch.Metric(
-                namespace="AWS/ElastiCache",
-                metric_name="Evictions",
-                dimensions_map={"CacheClusterId": redis_cluster.ref},
-                period=cdk.Duration.minutes(5),
-                statistic="Sum",
-            ),
-            threshold=1,
-            evaluation_periods=1,
-            comparison_operator=aws_cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-            treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
-        ).add_alarm_action(sns_action)

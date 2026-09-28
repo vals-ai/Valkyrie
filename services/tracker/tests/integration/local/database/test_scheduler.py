@@ -274,7 +274,7 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
     monkeypatch.setattr(BenchmarkServiceClient, "close", close)
     monkeypatch.setattr(tracker_main, "copy_agent_to_benchmark", copy_agent)
-    monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(tracker_main, "_launch_executor_dispatch", enqueue)
     lock_entered = threading.Event()
     if operation == "retry":
         original_lock = tracker_main.lock_executor_admission
@@ -836,7 +836,7 @@ async def test_held_evaluation_lock_rejects_recovery_without_mutation(
         select(func.count()).select_from(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark.id)
     ).one()
     enqueue = AsyncMock()
-    monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(tracker_main, "_launch_executor_dispatch", enqueue)
     _use_access_key_runtime(monkeypatch, harness_config)
 
     async with store.task_evaluation_lock(postgres_engine, task.id) as acquired:
@@ -907,7 +907,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
             first_enqueued.set()
             await release_first.wait()
 
-    monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(tracker_main, "_launch_executor_dispatch", enqueue)
     _use_access_key_runtime(monkeypatch, harness_config)
 
     async def recover() -> None:

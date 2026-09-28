@@ -1,4 +1,4 @@
-"""Structured logging and Sentry correlation for the stable executor host."""
+"""Structured logging and Sentry correlation for the per-dispatch executor runner."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class _JsonFormatter(logging.Formatter):
 
 
 def configure_observability() -> None:
-    """Configure CloudWatch JSON logs and Sentry for the host process."""
+    """Configure CloudWatch JSON logs and Sentry for the runner process."""
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(_ContextFilter())
     handler.setFormatter(_JsonFormatter())
@@ -72,7 +72,7 @@ def configure_observability() -> None:
             dsn=dsn,
             environment=os.environ.get("SENTRY_ENVIRONMENT", os.environ.get("ENVIRONMENT", "development")),
             release=os.environ.get("SENTRY_RELEASE") or None,
-            server_name="valkyrie-executor-host",
+            server_name="valkyrie-executor-runner",
             enable_logs=True,
             send_default_pii=False,
             traces_sample_rate=1.0,
@@ -153,7 +153,7 @@ def _accepted_telemetry_context(telemetry_context: ExecutorTelemetryContext) -> 
         transaction = sentry_sdk.continue_trace(
             telemetry_context["trace_headers"],
             op="queue.process",
-            name="executor_host.dispatch.accepted",
+            name="executor_runner.dispatch.accepted",
         )
         with sentry_sdk.start_transaction(transaction):
             trace_headers = dict(telemetry_context["trace_headers"])
@@ -209,32 +209,32 @@ def _record_terminal_transaction(
 
 
 def record_dispatch_completion(telemetry_context: ExecutorTelemetryContext) -> None:
-    """Record the terminal host signal without holding a transaction across execution."""
+    """Record the terminal runner signal without holding a transaction across execution."""
     _record_terminal_transaction(
         telemetry_context,
-        name="executor_host.dispatch.completed",
+        name="executor_runner.dispatch.completed",
     )
 
 
 def record_dispatch_cancellation(telemetry_context: ExecutorTelemetryContext) -> None:
-    """Record a cancelled host dispatch without creating an error issue."""
+    """Record a cancelled runner dispatch without creating an error issue."""
     logger.info("Executor dispatch cancelled")
     _record_terminal_transaction(
         telemetry_context,
-        name="executor_host.dispatch.cancelled",
+        name="executor_runner.dispatch.cancelled",
         status=SPANSTATUS.CANCELLED,
     )
 
 
 def capture_dispatch_error(error: BaseException, telemetry_context: ExecutorTelemetryContext) -> None:
-    """Capture a host dispatch error on a bounded trace segment."""
+    """Capture a runner dispatch error on a bounded trace segment."""
     logger.error(
         "Executor dispatch failed",
         exc_info=(type(error), error, error.__traceback__),
     )
     _record_terminal_transaction(
         telemetry_context,
-        name="executor_host.dispatch.failed",
+        name="executor_runner.dispatch.failed",
         status=SPANSTATUS.INTERNAL_ERROR,
         error=error,
     )

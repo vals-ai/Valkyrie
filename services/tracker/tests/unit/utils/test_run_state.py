@@ -490,7 +490,7 @@ class TestRunState:
         database_session.commit()
         original_arguments = benchmark_row.arguments.model_copy(deep=True)
         enqueue = AsyncMock()
-        monkeypatch.setattr("main._enqueue_executor_dispatch", enqueue)
+        monkeypatch.setattr("main._launch_executor_dispatch", enqueue)
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",

@@ -39,7 +39,7 @@ Set this in `.env` or your shell before running CLI commands against a local tra
 make tracker-service
 ```
 
-The API is available at `http://localhost:8000`. Local Compose runs the tracker, PostgreSQL, and Redis only. It does not execute benchmarks. See [Tracker service](/contributing/tracker-service) for the individual targets and test suites.
+The API is available at `http://localhost:8000`. Local Compose runs Tracker and PostgreSQL. Tracker uses `EXECUTOR_LAUNCHER=local` to spawn one runner subprocess per dispatch, but benchmark execution still requires an active executor release and its external services. See [Tracker service](/contributing/tracker-service) for targets and test suites.
 
 ### Run it with hosted-mode authentication
 

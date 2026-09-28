@@ -34,20 +34,16 @@ ALB_HEALTH_INTERVAL_SECONDS = 60
 
 # Ports
 TRACKER_PORT = 8000
-REDIS_PORT = 6379
 POSTGRES_PORT = 5432
 
 BENCHMARK_SERVICE_PORT = 8001
 
-# ElastiCache Redis (shared by Tracker + ExecutorHost)
+# Unused Redis cluster retained for one deployment while old consumers drop imports.
 ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
-
-# ExecutorHost and retained legacy log history
-WORKER_LOG_GROUP_NAME = "/valkyrie/worker"
-EXECUTOR_HOST_LOG_GROUP_NAME = "/valkyrie/executor-host"
+# Executor runner
+EXECUTOR_RUNNER_LOG_GROUP_NAME = "/valkyrie/executor-runner"
 DRIVER_LOG_GROUP_NAME = "/valkyrie/package-r-driver"
-WORKER_SCALING_CPU_PERCENT = 70
-WORKER_STOP_TIMEOUT_SECONDS = 120  # If protection is enabled the task will not be deleted
+RUNNER_STOP_TIMEOUT_SECONDS = 120
 
 # Sandbox cleanup
 SANDBOX_CLEANUP_FUNCTION_NAME = "valkyrie-sandbox-cleanup"
@@ -117,7 +113,6 @@ SHARED_NAMESPACE_ID_PARAMETER_PATH = "shared/cloud-map-namespace-id"
 SHARED_NAMESPACE_ARN_PARAMETER_PATH = "shared/cloud-map-namespace-arn"
 SHARED_ARTIFACT_BUCKET_PARAMETER_PATH = "shared/artifact-bucket-name"
 SHARED_TRACKER_REPOSITORY_URI_PARAMETER_PATH = "shared/tracker-repository-uri"
-SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER_PATH = "shared/executor-host-repository-uri"
 TRACKER_SECURITY_GROUP_PARAMETER_PATH = "tracker/security-group-id"
 TRACKER_ALB_DNS_PARAMETER_PATH = "tracker/alb-dns-name"
 DRIVER_TASK_DEFINITION_PARAMETER_PATH = "driver/task-definition-arn"

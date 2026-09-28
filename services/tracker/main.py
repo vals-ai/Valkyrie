@@ -88,7 +88,6 @@ from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
     SANDBOX_QUEUE_ENABLED,
-    broker,
     classify_benchmark_service_destination,
     create_benchmark_service_url,
 )
@@ -98,6 +97,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     DocentReadingStatus,
     ExecutorDispatch,
+    ExecutorDispatchPayload,
     ExecutorDispatchKind,
     FinalEvaluation,
     Org,
@@ -113,12 +113,14 @@ from tracker.executor.dispatch_control import (
     resolve_enqueue_failure,
     validate_managed_execution_release,
 )
+from tracker.executor.dispatch_payload import seal_payload
+from tracker.executor.launcher import launch_dispatch
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
-from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
+from executor_protocol import ExecutorTelemetryContext
 from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
@@ -182,9 +184,6 @@ _COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attemp
 
 _TaskResult = TypeVar("_TaskResult")
 
-# Tracker publishes the stable wire contract; ExecutorHost resolves the same
-# task name before launching the pinned executor artifact.
-process_benchmark = broker.task(EXECUTOR_TASK_NAME)(executor_task_signature)
 
 
 def _operation_id(route: APIRoute) -> str:
@@ -266,6 +265,23 @@ def _process_benchmark_kwargs(
     }
 
 
+def _persist_dispatch_payload(
+    session: Session,
+    dispatch: ExecutorDispatch,
+    payload: dict[str, Any],
+    telemetry_context: ExecutorTelemetryContext,
+) -> None:
+    sealed = seal_payload(dispatch.id, {**payload, "telemetry_context_json": telemetry_context})
+    session.add(
+        ExecutorDispatchPayload(
+            dispatch_id=dispatch.id,
+            ciphertext=sealed.ciphertext,
+            encrypted_data_key=sealed.encrypted_data_key,
+            nonce=sealed.nonce,
+        )
+    )
+
+
 def _resolve_enqueue_failure(
     bind: Engine | Connection,
     benchmark_id: UUID,
@@ -306,56 +322,40 @@ async def _await_before_cancellation(
     return result, cancellation
 
 
-async def _enqueue_executor_dispatch(
+async def _launch_executor_dispatch(
     dispatch: ExecutorDispatch,
     *,
     session: Session,
-    payload: dict[str, Any],
     verified_task_ids: list[str],
 ) -> None:
-    telemetry_context = _executor_telemetry_context()
-    for attempt in range(3):
-        try:
-            await process_benchmark.kicker().kiq(
-                **payload,
-                telemetry_context_json=telemetry_context,
-                executor_dispatch_id=str(dispatch.id),
-                executor_release_id=dispatch.executor_release_id,
-                executor_artifact_uri=dispatch.executor_artifact_uri,
-                executor_artifact_digest=dispatch.executor_artifact_digest,
-                executor_protocol_version=dispatch.executor_protocol_version,
-            )
+    try:
+        await launch_dispatch(dispatch)
+    except Exception as exc:
+        logger.exception(
+            "Executor dispatch launch acknowledgement failed",
+            extra={"executor_dispatch_id": str(dispatch.id)},
+        )
+        resolution = await asyncio.to_thread(
+            _resolve_enqueue_failure,
+            session.get_bind(),
+            dispatch.benchmark_id,
+            dispatch.id,
+            verified_task_ids,
+        )
+        if resolution == EnqueueFailureResolution.DELIVERED:
             return
-        except Exception as exc:
-            if attempt < 2:
-                await asyncio.sleep(0.1 * (2**attempt))
-                continue
-
-            logger.exception(
-                "Executor dispatch enqueue acknowledgement failed",
-                extra={"executor_dispatch_id": str(dispatch.id)},
-            )
-            resolution = await asyncio.to_thread(
-                _resolve_enqueue_failure,
-                session.get_bind(),
-                dispatch.benchmark_id,
-                dispatch.id,
-                verified_task_ids,
-            )
-            if resolution == EnqueueFailureResolution.DELIVERED:
-                return
-            if resolution == EnqueueFailureResolution.SUPERSEDED:
-                raise HTTPException(
-                    status_code=409, detail="Executor dispatch was superseded by a newer Retry"
-                ) from exc
+        if resolution == EnqueueFailureResolution.SUPERSEDED:
             raise HTTPException(
-                status_code=503,
-                detail={
-                    "message": "Executor dispatch enqueue acknowledgement failed; use Retry to continue",
-                    "benchmark_id": str(dispatch.benchmark_id),
-                    "executor_dispatch_id": str(dispatch.id),
-                },
+                status_code=409, detail="Executor dispatch was superseded by a newer Retry"
             ) from exc
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Executor dispatch enqueue acknowledgement failed; use Retry to continue",
+                "benchmark_id": str(dispatch.benchmark_id),
+                "executor_dispatch_id": str(dispatch.id),
+            },
+        ) from exc
 
 
 async def _delete_uncommitted_agent_copy(
@@ -549,6 +549,7 @@ def _commit_start(
     dispatch_id: UUID,
     task_ids: list[str],
     queue_pool_id: str | None,
+    telemetry_context: ExecutorTelemetryContext,
 ) -> tuple[str, "AdmissionResult"]:
     with Session(bind, expire_on_commit=False) as session:
         benchmark = Benchmark.model_validate(json.loads(benchmark_json))
@@ -561,8 +562,9 @@ def _commit_start(
                 session.add(Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id=task_id))
             dispatch = admit_start_dispatch(session, benchmark=benchmark, dispatch_id=dispatch_id, task_ids=task_ids)
             payload = _process_benchmark_kwargs(benchmark, request, task_ids)
+            _persist_dispatch_payload(session, dispatch, payload, telemetry_context)
             session.commit()
-            return benchmark.model_dump_json(), _admission_result(dispatch, payload, task_ids)
+            return benchmark.model_dump_json(), _admission_result(dispatch, task_ids)
         except Exception as exc:
             try:
                 session.rollback()
@@ -845,6 +847,7 @@ async def _start_benchmark(
             request.contract.name,
             copier=agent_copier,
         )
+        telemetry_context = _executor_telemetry_context()
         commit_task = asyncio.create_task(
             asyncio.to_thread(
                 _commit_start,
@@ -854,12 +857,12 @@ async def _start_benchmark(
                 dispatch_id,
                 verify_response.task_ids,
                 resolved_queue_pool_id,
+                telemetry_context,
             )
         )
         (benchmark_json, result), cancellation = await _await_before_cancellation(commit_task)
         benchmark_row = Benchmark.model_validate(json.loads(benchmark_json))
         executor_dispatch = ExecutorDispatch.model_validate(json.loads(result.dispatch_json))
-        executor_payload = json.loads(result.payload_json)
     except Exception as error:
         cancellation_after_failure: asyncio.CancelledError | None = None
         exc = error
@@ -901,16 +904,15 @@ async def _start_benchmark(
             run_starter.access_key_id,
         )
 
-    enqueue_task = asyncio.create_task(
-        _enqueue_executor_dispatch(
+    launch_task = asyncio.create_task(
+        _launch_executor_dispatch(
             executor_dispatch,
             session=session,
-            payload=executor_payload,
             verified_task_ids=verify_response.task_ids,
         )
     )
     try:
-        _, cancellation = await _await_before_cancellation(enqueue_task, cancellation)
+        _, cancellation = await _await_before_cancellation(launch_task, cancellation)
     except _TaskFailedAfterCancellation as failure:
         raise failure.cancellation from failure.task_error
     if cancellation is not None:
@@ -1461,16 +1463,11 @@ def patch_benchmark_concurrency(
 @dataclass(frozen=True)
 class AdmissionResult:
     dispatch_json: str
-    payload_json: str
     verified_task_ids: tuple[str, ...]
 
 
-def _admission_result(
-    dispatch: ExecutorDispatch,
-    payload: dict[str, Any],
-    task_ids: list[str],
-) -> AdmissionResult:
-    return AdmissionResult(dispatch.model_dump_json(), json.dumps(payload), tuple(task_ids))
+def _admission_result(dispatch: ExecutorDispatch, task_ids: list[str]) -> AdmissionResult:
+    return AdmissionResult(dispatch.model_dump_json(), tuple(task_ids))
 
 
 @dataclass(frozen=True)
@@ -1548,6 +1545,7 @@ def _commit_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    telemetry_context: ExecutorTelemetryContext,
 ) -> AdmissionResult | None:
     with Session(bind, expire_on_commit=False) as session:
         org = session.get(Org, org_id)
@@ -1568,6 +1566,7 @@ def _commit_recovery(
             access_key_harness_config,
             preparation,
             verified_task_ids,
+            telemetry_context,
         )
 
 
@@ -1651,6 +1650,7 @@ async def retry_or_resume_benchmark(
             verified_task_ids = verified.task_ids
         finally:
             await service.close()
+    telemetry_context = _executor_telemetry_context()
     commit_task = asyncio.create_task(
         asyncio.to_thread(
             _commit_recovery,
@@ -1669,6 +1669,7 @@ async def retry_or_resume_benchmark(
             access_key_harness_config=runtime_resolution.access_key_harness_config,
             preparation=preparation,
             verified_task_ids=verified_task_ids,
+            telemetry_context=telemetry_context,
         )
     )
     try:
@@ -1676,16 +1677,15 @@ async def retry_or_resume_benchmark(
     except _TaskFailedAfterCancellation as failure:
         raise failure.cancellation from failure.task_error
     if result is not None:
-        enqueue_task = asyncio.create_task(
-            _enqueue_executor_dispatch(
+        launch_task = asyncio.create_task(
+            _launch_executor_dispatch(
                 ExecutorDispatch.model_validate(json.loads(result.dispatch_json)),
                 session=session,
-                payload=json.loads(result.payload_json),
                 verified_task_ids=list(result.verified_task_ids),
             )
         )
         try:
-            _, cancellation = await _await_before_cancellation(enqueue_task, cancellation)
+            _, cancellation = await _await_before_cancellation(launch_task, cancellation)
         except _TaskFailedAfterCancellation as failure:
             raise failure.cancellation from failure.task_error
     if cancellation is not None:
@@ -1709,6 +1709,7 @@ def _apply_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    telemetry_context: ExecutorTelemetryContext,
 ) -> AdmissionResult | None:
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
@@ -1958,6 +1959,7 @@ def _apply_recovery(
             if transferred.rowcount != len(resumable_evaluations):
                 raise TrackerServiceError("Recovery evaluation ownership changed before dispatch admission")
         executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
+        _persist_dispatch_payload(session, executor_dispatch, executor_payload, telemetry_context)
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()
@@ -1971,7 +1973,7 @@ def _apply_recovery(
         session.rollback()
         raise
 
-    return _admission_result(executor_dispatch, executor_payload, verified_task_ids)
+    return _admission_result(executor_dispatch, verified_task_ids)
 
 
 @app.get("/fetch-benchmarks")

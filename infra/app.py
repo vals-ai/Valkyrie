@@ -28,16 +28,14 @@ env = cdk.Environment(
 shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=env)
 
 tracker_repository: aws_ecr.IRepository | None = None
-executor_host_repository: aws_ecr.IRepository | None = None
 release_test_image_tag: str | None = None
 if stage.is_release_test:
-    if shared.tracker_repository is None or shared.executor_host_repository is None:
+    if shared.tracker_repository is None:
         raise RuntimeError("Release-test shared image repositories were not created")
     release_test_image_tag = os.environ.get(RELEASE_TEST_IMAGE_TAG_ENV)
     if not release_test_image_tag:
         raise ValueError(f"Release-test synthesis requires {RELEASE_TEST_IMAGE_TAG_ENV}")
     tracker_repository = cast(aws_ecr.IRepository, shared.tracker_repository)
-    executor_host_repository = cast(aws_ecr.IRepository, shared.executor_host_repository)
 
 # Tracker service (public-facing with ALB) + RDS database
 tracker = TrackerStack(
@@ -49,14 +47,12 @@ tracker = TrackerStack(
     namespace=shared.namespace,
     hosted_zone=shared.hosted_zone,
     bucket_name=shared.bucket_name,
-    redis_url=shared.redis_url,
-    redis_security_group=shared.redis_security_group,
     tracker_repository=tracker_repository,
     image_tag=release_test_image_tag,
     env=env,
 )
 
-# ExecutorHost and its sealed release-control resources
+# Executor release and maintenance-control resources
 executor = ExecutorStack(
     app,
     # ExecutorStack retains the deployed WorkerStack identity for in-place updates.
@@ -64,15 +60,10 @@ executor = ExecutorStack(
     stage=stage,
     vpc=shared.vpc,
     cluster=shared.cluster,
-    namespace=shared.namespace,
-    redis_url=shared.redis_url,
-    bucket_name=shared.bucket_name,
     database_proxy=tracker.database_proxy,
     db_credentials=tracker.db_credentials,
     tracker_service=tracker.tracker_fargate_service,
     tracker_image=tracker.tracker_image,
-    executor_host_repository=executor_host_repository,
-    image_tag=release_test_image_tag,
     env=env,
 )
 
@@ -91,8 +82,6 @@ if stage.is_release_test:
         db_host=tracker.database_proxy.endpoint,
         db_port=str(POSTGRES_PORT),
         db_credentials=cast(aws_secretsmanager.ISecret, tracker.db_credentials),
-        redis_url=shared.redis_url,
-        redis_security_group=shared.redis_security_group,
         env=env,
     )
     driver.add_dependency(tracker)
@@ -106,7 +95,6 @@ monitoring = MonitoringStack(
     load_balancer=tracker.service.load_balancer,
     target_group=tracker.service.target_group,
     database=tracker.database,
-    redis_cluster=shared.redis_cluster,
     env=env,
 )
 

@@ -133,7 +133,6 @@ class StageConfig:
     runtime_environment: str
     sentry_environment: str
     tracker: ServiceConfig
-    worker: ServiceConfig
     database: DatabaseConfig
     service_log_retention: aws_logs.RetentionDays
     managed_aws: ManagedAWSRuntimeConfig
@@ -143,7 +142,6 @@ BENCH_CONFIG = StageConfig(
     runtime_environment="production",
     sentry_environment=BENCH,
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=2),
-    worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="r7g.large",
         allocated_storage_gb=100,
@@ -165,7 +163,6 @@ PROD_CONFIG = StageConfig(
     runtime_environment="production",
     sentry_environment="production",
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=2),
-    worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="r7g.large",
         allocated_storage_gb=100,
@@ -187,7 +184,6 @@ DEV_CONFIG = StageConfig(
     runtime_environment="dev",
     sentry_environment=DEV,
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=2),
-    worker=ServiceConfig(cpu=8192, memory_mib=32768, min_tasks=4, max_tasks=8),
     database=DatabaseConfig(
         instance_class="t4g.micro",
         allocated_storage_gb=100,
@@ -209,7 +205,6 @@ RELEASE_TEST_CONFIG = StageConfig(
     runtime_environment=RELEASE_TEST,
     sentry_environment=RELEASE_TEST,
     tracker=DEV_CONFIG.tracker,
-    worker=DEV_CONFIG.worker,
     database=DEV_CONFIG.database,
     service_log_retention=DEV_CONFIG.service_log_retention,
     managed_aws=ManagedAWSRuntimeConfig(

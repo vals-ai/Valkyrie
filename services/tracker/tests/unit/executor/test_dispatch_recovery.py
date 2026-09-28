@@ -1,11 +1,19 @@
 """Run with `uv run pytest tests/unit/executor/test_dispatch_recovery.py`."""
 
+from uuid import uuid4
 from collections.abc import Callable
 from threading import Event
 from unittest.mock import Mock
 
 import pytest
 from pytest import MonkeyPatch
+from sqlmodel import Session
+
+from tracker.database.models import (
+    Benchmark, ExecutorDispatch, ExecutorDispatchKind, ExecutorDispatchPayload,
+    ExecutorDispatchStatus, ExecutorRelease,
+)
+from tracker.executor.dispatch_payload import seal_payload
 
 from tracker.executor import dispatch_recovery
 
@@ -46,6 +54,53 @@ def test_reconcile_once_rolls_back_and_reraises_failures(monkeypatch: MonkeyPatc
 
     session.rollback.assert_called_once_with()
     session.commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [ExecutorDispatchStatus.FAILED, ExecutorDispatchStatus.FINISHED, ExecutorDispatchStatus.RUNNING],
+)
+def test_recovery_sweeps_only_nonqueued_payloads(
+    terminal_status: ExecutorDispatchStatus,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    release = ExecutorRelease(
+        id="payload-sweep-release", artifact_uri="s3://artifacts/runner.pex",
+        artifact_digest="a" * 64, protocol_version="3", readiness_verified=True,
+    )
+    benchmark = example_benchmark_object
+    database_session.add_all([release, benchmark])
+    database_session.flush()
+    dispatches = [
+        ExecutorDispatch(
+            id=uuid4(), benchmark_id=benchmark.id, kind=ExecutorDispatchKind.START,
+            executor_release_id=release.id, executor_artifact_uri=release.artifact_uri,
+            executor_artifact_digest=release.artifact_digest,
+            executor_protocol_version=release.protocol_version, status=status,
+        )
+        for status in (ExecutorDispatchStatus.QUEUED, terminal_status)
+    ]
+    for dispatch in dispatches:
+        sealed = seal_payload(dispatch.id, {"sensitive": "secret-marker"})
+        database_session.add(dispatch)
+        database_session.add(ExecutorDispatchPayload(
+            dispatch_id=dispatch.id, ciphertext=sealed.ciphertext,
+            encrypted_data_key=sealed.encrypted_data_key, nonce=sealed.nonce,
+        ))
+    database_session.commit()
+    monkeypatch.setattr(dispatch_recovery, "engine", database_session.get_bind())
+    monkeypatch.setattr(dispatch_recovery, "reconcile_expired_dispatches", lambda _session: 0)
+
+    assert dispatch_recovery.reconcile_expired_dispatches_once() == 0
+
+    database_session.expire_all()
+    queued, nonqueued = dispatches
+    kept = database_session.get(ExecutorDispatchPayload, queued.id)
+    assert kept is not None
+    assert b"secret-marker" not in kept.ciphertext
+    assert database_session.get(ExecutorDispatchPayload, nonqueued.id) is None
 
 
 def test_recovery_loop_retries_after_a_failed_pass(monkeypatch: MonkeyPatch) -> None:

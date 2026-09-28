@@ -78,8 +78,8 @@ def create_executor_task_role(
     bucket: aws_s3.IBucket,
     config: ManagedAWSRuntimeConfig,
 ) -> aws_iam.Role:
-    """Create the executor host application task role."""
-    role = _task_role(scope, "ExecutorTaskRole", stage.phys("ValkyrieExecutorTaskRole"))
+    """Create the one-dispatch executor runner application task role."""
+    role = _task_role(scope, "ExecutorRunnerTaskRole", stage.phys("ValkyrieExecutorRunnerTaskRole"))
     _add_s3_runtime_access(role, bucket)
     account_conditions = _same_account_conditions(role)
     role.add_to_policy(

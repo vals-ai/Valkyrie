@@ -10,7 +10,7 @@ help:
 	@echo "Available commands:"
 	@echo "  make install         - Install local development environment and dependencies"
 	@echo "  make build           - Build Docker images"
-	@echo "  make run             - Start Tracker, PostgreSQL, and Redis with docker-compose"
+	@echo "  make run             - Start Tracker and PostgreSQL with docker-compose"
 	@echo "  make stop            - Stop all services"
 	@echo "  make clean           - Stop services and remove images"
 	@echo "  make logs            - View container logs"

@@ -14,7 +14,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
-from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, DateTime, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -318,6 +318,20 @@ class ExecutorDispatch(SQLModel, table=True):
     heartbeat_at: datetime | None = None
     lease_expires_at: datetime | None = None
     failure_reason: str | None = None
+    ecs_task_arn: str | None = None
+
+
+class ExecutorDispatchPayload(SQLModel, table=True):
+    __tablename__ = "executor_dispatch_payload"
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id")
+    ciphertext: bytes
+    encrypted_data_key: bytes
+    nonce: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(ZoneInfo("UTC")),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class Benchmark(SQLModel, table=True):

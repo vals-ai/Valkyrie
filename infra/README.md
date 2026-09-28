@@ -10,14 +10,12 @@ The self-hosting guide documents reusable architecture and configuration. The ex
 
 ## Architecture
 
-- **Shared Stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
-- **Tracker Stack**: Public API, load balancer, PostgreSQL, and an RDS Proxy for database clients
-- **Executor Stack**: Stable ExecutorHost, executor release storage, sealed release control, and retained Worker logs
-- **Monitoring Stack**: Tracker, load balancer, database, and Redis alarms
+- **Shared Stack**: VPC, ECS cluster, service discovery, and benchmark storage
+- **Tracker Stack**: Public API, load balancer, PostgreSQL, RDS Proxy, KMS payload key, and per-dispatch Fargate runner task definition and logs
+- **Executor Stack**: Immutable executor release storage and sealed release control
+- **Monitoring Stack**: Tracker, load balancer, and database alarms
 
-`ExecutorStack` is the Python owner and `executor` is the deployment scope. Its
-physical CloudFormation name remains `WorkerStack` so deployments update the
-existing stack and retained resources in place.
+`ExecutorStack` remains the Python owner and `executor` the deployment scope; its historical CloudFormation name is `WorkerStack`. Tracker seals dispatch inputs under a KMS-wrapped per-dispatch key in PostgreSQL; the runner consumes them at claim time. New task-definition revisions apply to new launches only.
 
 Bench imports the existing `vals.ai` hosted zone and retains the established
 unsuffixed stack and resource names. Development and production import
@@ -51,8 +49,7 @@ environments hold their own values:
 - `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
   prefixes the Tracker may resolve for benchmark-service authentication
 
-The ExecutorHost task roles can read every Secrets Manager secret in their own
-account and Region. Release-test does not receive this access.
+The runner task roles can read the stage's authorized Secrets Manager secrets. Release-test access is scoped separately.
 
 Dev and production require `SENTRY_DSN_SECRET_NAME` to name an account-local
 Secrets Manager secret containing the DSN. Production also requires
@@ -65,9 +62,7 @@ secrets**, `VALKYRIE_BENCH_ACCOUNT_ID` holds the bench account ID and
 `VALKYRIE_PRODUCTION_ACCOUNT_ID` holds the production account ID. Deployment
 roles and `allowed-account-ids` constrain AWS access to the selected account. The
 `SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay variables.
-The Sentry DSN is injected into both Tracker and ExecutorHost. The host
-propagates each run's trace and request context into its immutable executor
-artifact.
+The Sentry DSN is injected into Tracker and runner tasks. The runner propagates each run's trace and request context into its immutable executor artifact.
 
 The existing `prod` GitHub Environment deploys the bench stage so its OIDC
 subject remains compatible with the established roles. Configure the new
@@ -111,12 +106,26 @@ Manual partial, plan, and credentials-only workflow operations never activate a
 release.
 
 Direct `make deploy` is CDK-only: it does not build, upload, or activate an
-executor release. The first executor-dispatch rollout uses the Monitoring-only
-pre-deployment, manual outage, legacy-queue drain, and separately authorized
-physical `WorkerStack` bootstrap documented in `executor-releases/README.md`. Automated
-executor work fails closed until the bootstrap publishes the stage's sealed
-release-control SSM parameter. Later workflow deployments keep existing
-executions pinned while previous releases drain normally.
+executor release. This hard cutover enters the existing CI-gated executor
+maintenance path once: admission closes, active runs stop, runner tasks are
+confirmed stopped, and the host-free control task completes release activation
+before Tracker resumes. Subsequent runner revisions only affect new tasks;
+deployments do not drain active runs unless separately classified as maintenance.
+
+The Redis queue and executor host have no consumers after this cutover, but
+SharedStack retains the unused Redis cluster and security group and their four
+CloudFormation exports (endpoint address, endpoint port, security group ID,
+cluster reference) for this deployment. TrackerStack likewise retains the
+Tracker service security group ID export. Release-test also keeps the unused
+executor-host ECR repository and its ARN and name exports. Core stacks deploy
+before WorkerStack, so these exports cannot be deleted while previously deployed
+consumers still import them. Remove the retained resources and exports in the
+follow-up cleanup PR together with the host-removal classifier rule. The
+release-test executor-host repository uses `RemovalPolicy.RETAIN` like the other
+release-test image repositories, so removing its construct leaves the physical
+repository; the follow-up must also delete it explicitly
+(`aws ecr delete-repository --force --repository-name valkyrie/release-test/executor-host`
+in the release-test account). Monitoring no longer uses Redis widgets.
 
 For a local plan or an administrator break-glass deployment, follow these
 steps. The preflight rejects the wrong account, Region, or STS identity.

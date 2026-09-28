@@ -1,6 +1,7 @@
-"""ExecutorHost dispatch-store integration against disposable PostgreSQL."""
+"""Executor runner dispatch-store integration against disposable PostgreSQL."""
 
 import asyncio
+import base64
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -9,18 +10,19 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, select
 
-from services.executor_host.supervisor import (  # pyright: ignore[reportMissingImports]
-    ArtifactDispatch,
+from tracker.executor.runner import (
     DispatchAuthority,
     PostgresExecutorDispatchStore,
     RenewalResult,
 )
 from tests.factories import make_benchmark, make_task
+from tracker.executor.dispatch_payload import seal_payload
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
     ErrorResult,
     ExecutorDispatch,
+    ExecutorDispatchPayload,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
@@ -45,6 +47,7 @@ from tracker.executor.dispatch_control import (
 async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     postgres_engine: Engine,
     postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     org = Org(id=uuid4(), name=f"executor-host-store-{uuid4()}")
     benchmark = make_benchmark(
@@ -84,6 +87,9 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         ExecutorDispatchKind.RETRY,
         dispatch_id=uuid4(),
     )
+    benchmark.current_execution_release_id = release.id
+    first_dispatch.assigned_task_ids = [task.task_id]
+    sibling_dispatch.assigned_task_ids = [task.task_id, newer_task.task_id]
     postgres_session.add_all([first_dispatch, sibling_dispatch])
     expired_dispatch = create_executor_dispatch(
         benchmark.id,
@@ -94,7 +100,29 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     expired_dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
     postgres_session.add(expired_dispatch)
     newer_task.started_at = sibling_dispatch.created_at + timedelta(seconds=1)
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
+    for dispatch in (first_dispatch, sibling_dispatch, expired_dispatch):
+        payload = {
+            "start_benchmark_request_json": {
+                "service_headers": {"authorization": "unique-persisted-dispatch-secret-marker"},
+            },
+            "benchmark_id_str": str(benchmark.id),
+            "verified_task_ids": dispatch.assigned_task_ids or [],
+            "telemetry_context_json": {"request_id": "store-request", "trace_headers": {}},
+        }
+        sealed = seal_payload(dispatch.id, payload)
+        postgres_session.add(ExecutorDispatchPayload(
+            dispatch_id=dispatch.id, ciphertext=sealed.ciphertext,
+            encrypted_data_key=sealed.encrypted_data_key, nonce=sealed.nonce,
+            created_at=datetime.now(UTC),
+        ))
     postgres_session.commit()
+    persisted = postgres_session.execute(
+        text("SELECT ciphertext, encrypted_data_key, nonce FROM executor_dispatch_payload WHERE dispatch_id = :dispatch_id"),
+        {"dispatch_id": first_dispatch.id},
+    ).one()
+    assert all(b"unique-persisted-dispatch-secret-marker" not in bytes(column) for column in persisted)
 
     url = postgres_engine.url
     assert url.host is not None
@@ -109,42 +137,31 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
         user=url.username,
         password=url.password,
     )
-    artifact = ArtifactDispatch.from_payload(
-        {
-            "executor_release_id": release.id,
-            "executor_artifact_uri": release.artifact_uri,
-            "executor_artifact_digest": release.artifact_digest,
-            "executor_protocol_version": release.protocol_version,
-        }
-    )
-
-    assert await store.claim(str(expired_dispatch.id), str(benchmark.id), artifact) is None
+    assert await store.claim(str(expired_dispatch.id)) is None
     assert reconcile_expired_dispatches(postgres_session) == 1
     postgres_session.commit()
-    first_authority = await store.claim(str(first_dispatch.id), str(benchmark.id), artifact)
-    assert first_authority is not None
-    assert await store.claim(str(first_dispatch.id), str(benchmark.id), artifact) is None
-    sibling_authority = await store.claim(str(sibling_dispatch.id), str(benchmark.id), artifact)
-    assert sibling_authority is not None
-    assert await store.renew([first_authority, sibling_authority]) == {
-        (str(first_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False)),
-        (str(sibling_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False)),
-    }
+    first_claim = await store.claim(str(first_dispatch.id))
+    assert first_claim is not None
+    assert first_claim.process_payload.arguments["telemetry_context_json"]["request_id"] == "store-request"
+    assert first_claim.process_payload.arguments["start_benchmark_request_json"]["service_headers"]["authorization"] == "unique-persisted-dispatch-secret-marker"
+    first_authority = first_claim.authority
+    assert await store.claim(str(first_dispatch.id)) is None
+    sibling_claim = await store.claim(str(sibling_dispatch.id))
+    assert sibling_claim is not None
+    sibling_authority = sibling_claim.authority
+    assert await store.renew(first_authority) == RenewalResult(True, (True, False))
+    assert await store.renew(sibling_authority) == RenewalResult(True, (True, False))
     postgres_session.expire_all()
     claimed_dispatch = postgres_session.get(type(first_dispatch), first_dispatch.id)
     assert claimed_dispatch is not None
     assert claimed_dispatch.started_at is not None
     assert claimed_dispatch.heartbeat_at is not None
     assert claimed_dispatch.lease_expires_at is not None
-    assert await store.renew([sibling_authority]) == {
-        (str(sibling_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False))
-    }
+    assert await store.renew(sibling_authority) == RenewalResult(True, (True, False))
 
     assert await store.finish(first_authority)
-    assert await store.renew([first_authority, sibling_authority]) == {
-        (str(first_dispatch.id), str(benchmark.id)): RenewalResult(False, (False, False)),
-        (str(sibling_dispatch.id), str(benchmark.id)): RenewalResult(True, (True, False)),
-    }
+    assert await store.renew(first_authority) == RenewalResult(False, (False, False))
+    assert await store.renew(sibling_authority) == RenewalResult(True, (True, False))
     postgres_session.expire_all()
     persisted_benchmark = postgres_session.get(type(benchmark), benchmark.id)
     persisted_task = postgres_session.get(type(task), task.id)
@@ -176,12 +193,30 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
 
 
 @pytest.mark.asyncio
-async def test_renew_classifies_live_locked_and_nonlive_dispatches(
-    postgres_engine: Engine, postgres_session: Session
+@pytest.mark.parametrize(
+    ("status", "stopped", "expired", "locked", "mismatch", "expected"),
+    [
+        (ExecutorDispatchStatus.RUNNING, False, False, False, False, RenewalResult(True, (True, False))),
+        (ExecutorDispatchStatus.RUNNING, False, False, True, False, RenewalResult(False, (True, False))),
+        (ExecutorDispatchStatus.RUNNING, False, True, False, False, RenewalResult(False, (False, False))),
+        (ExecutorDispatchStatus.FINISHED, False, False, False, False, RenewalResult(False, (False, False))),
+        (ExecutorDispatchStatus.RUNNING, True, False, False, False, RenewalResult(True, (True, True))),
+        (ExecutorDispatchStatus.FAILED, True, False, False, False, RenewalResult(False, (False, True))),
+        (ExecutorDispatchStatus.RUNNING, True, False, False, True, RenewalResult(False, (False, False))),
+    ],
+)
+async def test_renew_classifies_one_dispatch_without_batching(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    status: ExecutorDispatchStatus,
+    stopped: bool,
+    expired: bool,
+    locked: bool,
+    mismatch: bool,
+    expected: RenewalResult,
 ) -> None:
     org = Org(id=uuid4(), name=f"lease-contract-{uuid4()}")
-    live = make_benchmark(org_id=org.id, status=BenchmarkStatus.IN_PROGRESS)
-    stopped = make_benchmark(org_id=org.id, status=BenchmarkStatus.STOPPED)
+    benchmark = make_benchmark(org_id=org.id, status=BenchmarkStatus.STOPPED if stopped else BenchmarkStatus.IN_PROGRESS)
     release = ExecutorRelease(
         id=f"lease-contract-{uuid4()}",
         artifact_uri="s3://artifacts/lease.pex",
@@ -193,25 +228,16 @@ async def test_renew_classifies_live_locked_and_nonlive_dispatches(
     postgres_session.add(org)
     postgres_session.flush()
     register_release(postgres_session, release)
-    for benchmark in (live, stopped):
-        pin_benchmark_to_release(benchmark, release)
-        postgres_session.add(benchmark)
+    pin_benchmark_to_release(benchmark, release)
+    postgres_session.add(benchmark)
     postgres_session.flush()
-    healthy, locked, expired, finished = [
-        create_executor_dispatch(live.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4()) for _ in range(4)
-    ]
-    stopped_dispatch = create_executor_dispatch(stopped.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
-    stopped_failed = create_executor_dispatch(stopped.id, release, ExecutorDispatchKind.RETRY, dispatch_id=uuid4())
+    dispatch = create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
     past = datetime.now(UTC) - timedelta(minutes=1)
     future = datetime.now(UTC) + timedelta(minutes=5)
-    for dispatch in (healthy, locked, expired, finished, stopped_dispatch, stopped_failed):
-        dispatch.status = ExecutorDispatchStatus.RUNNING
-        dispatch.heartbeat_at = past
-        dispatch.lease_expires_at = future
-        postgres_session.add(dispatch)
-    expired.lease_expires_at = past
-    finished.status = ExecutorDispatchStatus.FINISHED
-    stopped_failed.status = ExecutorDispatchStatus.FAILED
+    dispatch.status = status
+    dispatch.heartbeat_at = past
+    dispatch.lease_expires_at = past if expired else future
+    postgres_session.add(dispatch)
     postgres_session.commit()
 
     url = postgres_engine.url
@@ -223,41 +249,29 @@ async def test_renew_classifies_live_locked_and_nonlive_dispatches(
         user=url.username,
         password=url.password,
     )
-    authorities = [
-        DispatchAuthority(str(dispatch.id), str(dispatch.benchmark_id))
-        for dispatch in (healthy, locked, expired, finished, stopped_dispatch, stopped_failed)
-    ]
-    mismatched = DispatchAuthority(str(healthy.id), str(stopped.id))
-    connection = store._connect()  # pyright: ignore[reportPrivateUsage]
+    authority = DispatchAuthority(str(dispatch.id), str(benchmark.id) if not mismatch else str(org.id))
+    connection = store._connect() if locked else None  # pyright: ignore[reportPrivateUsage]
     try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT id FROM executordispatch WHERE id = %s FOR UPDATE", (str(locked.id),))
-        results = await asyncio.wait_for(store.renew([*authorities, mismatched]), timeout=2)
+        if connection is not None:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT id FROM executordispatch WHERE id = %s FOR UPDATE", (str(dispatch.id),))
+        result = await asyncio.wait_for(store.renew(authority), timeout=2)
     finally:
-        connection.rollback()
-        connection.close()
+        if connection is not None:
+            connection.rollback()
+            connection.close()
 
-    assert results == {
-        (str(healthy.id), str(live.id)): RenewalResult(True, (True, False)),
-        (str(locked.id), str(live.id)): RenewalResult(False, (True, False)),
-        (str(expired.id), str(live.id)): RenewalResult(False, (False, False)),
-        (str(finished.id), str(live.id)): RenewalResult(False, (False, False)),
-        (str(stopped_dispatch.id), str(stopped.id)): RenewalResult(True, (True, True)),
-        (str(stopped_failed.id), str(stopped.id)): RenewalResult(False, (False, True)),
-        (str(healthy.id), str(stopped.id)): RenewalResult(False, (False, True)),
-    }
+    assert result == expected
     postgres_session.expire_all()
-    refreshed = postgres_session.get(ExecutorDispatch, healthy.id)
-    unrenewed = postgres_session.get(ExecutorDispatch, locked.id)
-    assert refreshed is not None and refreshed.heartbeat_at is not None
-    assert unrenewed is not None and unrenewed.heartbeat_at is not None
-    assert refreshed.heartbeat_at > past.replace(tzinfo=None)
-    assert unrenewed.heartbeat_at == past.replace(tzinfo=None)
-    assert refreshed.lease_expires_at is not None
-    assert unrenewed.lease_expires_at is not None
-    assert refreshed.lease_expires_at > refreshed.heartbeat_at + timedelta(seconds=299)
-    assert unrenewed.lease_expires_at == future.replace(tzinfo=None)
-
+    persisted = postgres_session.get(ExecutorDispatch, dispatch.id)
+    assert persisted is not None and persisted.heartbeat_at is not None
+    if expected.renewed:
+        assert persisted.heartbeat_at > past.replace(tzinfo=None)
+        assert persisted.lease_expires_at is not None
+        assert persisted.lease_expires_at > persisted.heartbeat_at + timedelta(seconds=299)
+    else:
+        assert persisted.heartbeat_at == past.replace(tzinfo=None)
+        assert persisted.lease_expires_at == (past if expired else future).replace(tzinfo=None)
 
 @pytest.mark.asyncio
 async def test_renew_commits_dispatch_lease_while_benchmark_table_is_locked(
@@ -304,8 +318,8 @@ async def test_renew_commits_dispatch_lease_while_benchmark_table_is_locked(
     try:
         with blocker.cursor() as cursor:
             cursor.execute("LOCK TABLE benchmark IN ACCESS EXCLUSIVE MODE")
-        result = await asyncio.wait_for(store.renew([authority]), timeout=4)
-        assert result[authority.dispatch_id, authority.benchmark_id] == RenewalResult(True, None)
+        result = await asyncio.wait_for(store.renew(authority), timeout=4)
+        assert result == RenewalResult(True, None)
         with postgres_engine.connect() as reader:
             after = reader.execute(
                 text("SELECT lease_expires_at FROM executordispatch WHERE id = :id"), {"id": dispatch.id}
@@ -315,8 +329,8 @@ async def test_renew_commits_dispatch_lease_while_benchmark_table_is_locked(
         blocker.rollback()
         blocker.close()
 
-    classified = await store.renew([authority])
-    assert classified[authority.dispatch_id, authority.benchmark_id] == RenewalResult(True, (True, True))
+    classified = await store.renew(authority)
+    assert classified == RenewalResult(True, (True, True))
 
 
 @pytest.mark.parametrize("dispatch_count", [1, 2])
@@ -384,3 +398,110 @@ def test_expiry_cleans_all_admitted_assignments(postgres_session: Session, dispa
         select(ErrorResult).where(col(ErrorResult.task).in_([row.id for row in tasks]))
     ).all()
     assert len(errors) == dispatch_count
+
+
+def _sealed_case(session: Session, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> tuple[PostgresExecutorDispatchStore, ExecutorDispatch]:
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
+    org = Org(id=uuid4(), name=f"runner-claim-{uuid4()}")
+    benchmark = make_benchmark(
+        name="runner-claim", org_id=org.id,
+        contract=AgentContractRequest(name="claim-agent", install_cmd="true", run_cmd="true"),
+        status=BenchmarkStatus.IN_PROGRESS,
+    )
+    release = ExecutorRelease(
+        id=f"runner-claim-{uuid4()}", artifact_uri="s3://artifacts/runner.pex",
+        artifact_digest="a" * 64, protocol_version="1", readiness_verified=True,
+        created_at=datetime.now(UTC),
+    )
+    session.add(org)
+    session.flush()
+    register_release(session, release)
+    pin_benchmark_to_release(benchmark, release)
+    benchmark.current_execution_release_id = release.id
+    session.add(benchmark)
+    session.flush()
+    dispatch = create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
+    dispatch.assigned_task_ids = ["task-0"]
+    session.add(dispatch)
+    sealed = seal_payload(dispatch.id, {
+        "start_benchmark_request_json": {"request_id": "admitted-request"},
+        "benchmark_id_str": str(benchmark.id),
+        "verified_task_ids": ["task-0"],
+        "telemetry_context_json": {"request_id": "admitted-request", "trace_headers": {"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"}},
+    })
+    session.add(ExecutorDispatchPayload(
+        dispatch_id=dispatch.id, ciphertext=sealed.ciphertext,
+        encrypted_data_key=sealed.encrypted_data_key, nonce=sealed.nonce,
+        created_at=datetime.now(UTC),
+    ))
+    session.commit()
+    url = engine.url
+    assert url.host and url.port and url.database and url.username and url.password
+    return PostgresExecutorDispatchStore(
+        host=url.host, port=str(url.port), dbname=url.database,
+        user=url.username, password=url.password,
+    ), dispatch
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claimants_have_one_payload_and_owner(
+    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
+    claims = await asyncio.gather(store.claim(str(dispatch.id)), store.claim(str(dispatch.id)))
+    winners = [claim for claim in claims if claim is not None]
+    assert len(winners) == 1
+    assert winners[0].process_payload.arguments["start_benchmark_request_json"]["request_id"] == "admitted-request"
+    postgres_session.expire_all()
+    assert postgres_session.get(ExecutorDispatchPayload, dispatch.id) is None
+    assert postgres_session.get(ExecutorDispatch, dispatch.id).status == ExecutorDispatchStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_decrypt_failure_rolls_back_claim_and_preserves_payload(
+    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"z" * 32).decode())
+    with pytest.raises(Exception):
+        await store.claim(str(dispatch.id))
+    postgres_session.expire_all()
+    assert postgres_session.get(ExecutorDispatch, dispatch.id).status == ExecutorDispatchStatus.QUEUED
+    assert postgres_session.get(ExecutorDispatchPayload, dispatch.id) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["expired", "superseded", "nonqueued"])
+async def test_nonclaimable_dispatch_never_reads_or_deletes_payload(
+    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
+    if state == "expired":
+        dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(seconds=1)
+    elif state == "superseded":
+        dispatch.status = ExecutorDispatchStatus.FAILED
+        dispatch.failure_reason = "SUPERSEDED"
+    else:
+        dispatch.status = ExecutorDispatchStatus.FINISHED
+    postgres_session.add(dispatch)
+    postgres_session.commit()
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"z" * 32).decode())
+    assert await store.claim(str(dispatch.id)) is None
+    postgres_session.expire_all()
+    assert postgres_session.get(ExecutorDispatchPayload, dispatch.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_missing_queued_payload_is_error_without_claim_commit(
+    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
+    row = postgres_session.get(ExecutorDispatchPayload, dispatch.id)
+    assert row is not None
+    postgres_session.delete(row)
+    postgres_session.commit()
+    with pytest.raises(ValueError, match="no sealed payload"):
+        await store.claim(str(dispatch.id))
+    postgres_session.expire_all()
+    assert postgres_session.get(ExecutorDispatch, dispatch.id).status == ExecutorDispatchStatus.QUEUED

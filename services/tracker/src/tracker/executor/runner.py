@@ -1,4 +1,4 @@
-"""Stable Taskiq host that launches immutable executor artifacts."""
+"""One claimed executor dispatch per runner process."""
 
 from __future__ import annotations
 
@@ -14,30 +14,25 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, TypeVar, Unpack, cast
+from typing import Mapping, Protocol, TypeVar, cast
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
-from redis.asyncio import Redis
-from taskiq import TaskiqEvents
-from taskiq_redis import RedisStreamBroker
+from uuid import UUID
+
 from executor_protocol import (
     DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-    DEFAULT_EXECUTOR_RELEASE_PREFIX,
-    DEFAULT_STABLE_QUEUE_NAME,
-    EXECUTOR_TASK_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
-    ExecutorPayload,
     ExecutorTelemetryContext,
-    executor_payload_benchmark_id,
     normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
     validate_executor_digest,
 )
-from services.executor_host.observability import (
+from tracker.executor.dispatch_payload import SealedPayload, open_payload
+from tracker.executor.runner_observability import (
     capture_dispatch_error,
     configure_observability,
     dispatch_observability_context,
@@ -47,103 +42,7 @@ from services.executor_host.observability import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
-ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
-_PROTECTION_EXPIRY_MINUTES = 120
-_PROTECTION_REFRESH_SECONDS = 30 * 60
-_PROTECTION_RETRY_SECONDS = 30
 _AUTHORITY_LOSS_GRACE_SECONDS = 10
-_ACK_AND_DELETE_SCRIPT = """
-local acknowledged = redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
-if acknowledged == 1 then
-    redis.call("XDEL", KEYS[1], ARGV[2])
-end
-return acknowledged
-"""
-_active_execution_count = 0
-_protection_refresh_task: asyncio.Task[None] | None = None
-_execution_lock = asyncio.Lock()
-
-
-async def _set_task_protection(*, enabled: bool) -> bool:
-    if not ECS_AGENT_URI:
-        return True
-    body: dict[str, object] = {"ProtectionEnabled": enabled}
-    if enabled:
-        body["ExpiresInMinutes"] = _PROTECTION_EXPIRY_MINUTES
-    request = urllib.request.Request(
-        f"{ECS_AGENT_URI}/task-protection/v1/state",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="PUT",
-    )
-
-    def update() -> None:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            response.read()
-
-    update_task = asyncio.create_task(asyncio.to_thread(update))
-    try:
-        await asyncio.shield(update_task)
-    except asyncio.CancelledError:
-        await _await_task_completion(update_task)
-        raise
-    except Exception:
-        logger.exception("Failed to set ECS task protection to %s", enabled)
-        return False
-    return True
-
-
-async def _renew_task_protection(delay_seconds: float) -> None:
-    while True:
-        await asyncio.sleep(delay_seconds)
-        updated = await _set_task_protection(enabled=True)
-        delay_seconds = _PROTECTION_REFRESH_SECONDS if updated is not False else _PROTECTION_RETRY_SECONDS
-
-
-async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            pass
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-async def _acquire_task_protection() -> None:
-    global _active_execution_count, _protection_refresh_task
-    async with _execution_lock:
-        if _active_execution_count == 0:
-            updated = await _set_task_protection(enabled=True)
-            initial_delay = _PROTECTION_REFRESH_SECONDS if updated is not False else _PROTECTION_RETRY_SECONDS
-            _protection_refresh_task = asyncio.create_task(_renew_task_protection(initial_delay))
-        _active_execution_count += 1
-
-
-async def _release_task_protection() -> None:
-    global _active_execution_count, _protection_refresh_task
-    async with _execution_lock:
-        _active_execution_count -= 1
-        if _active_execution_count == 0:
-            refresh_task = _protection_refresh_task
-            _protection_refresh_task = None
-            if refresh_task is not None:
-                refresh_task.cancel()
-                await _await_task_cancellation(refresh_task)
-            await _set_task_protection(enabled=False)
-
-
-async def _await_task_completion(task: asyncio.Task[None]) -> None:
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            pass
-    await task
-
 
 class S3Client(Protocol):
     def download_file(self, bucket: str, key: str, filename: str) -> None:
@@ -228,10 +127,6 @@ class ExecutorProcessPayload:
         )
 
 
-def _payload_string(payload: Mapping[str, object], key: str) -> str:
-    value = payload.get(key)
-    return str(value) if value else ""
-
 
 @dataclass(frozen=True)
 class RenewalResult:
@@ -239,15 +134,18 @@ class RenewalResult:
     classification: tuple[bool, bool] | None  # (live, stopped); None if classification was unavailable
 
 
-class ExecutorDispatchStore(Protocol):
-    async def claim(
-        self,
-        dispatch_id: str,
-        benchmark_id: str,
-        dispatch: ArtifactDispatch,
-    ) -> DispatchAuthority | None: ...
+@dataclass(frozen=True)
+class ClaimedDispatch:
+    authority: DispatchAuthority
+    dispatch: ArtifactDispatch
+    process_payload: ExecutorProcessPayload
+    telemetry_context: ExecutorTelemetryContext
 
-    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]: ...
+
+class ExecutorDispatchStore(Protocol):
+    async def claim(self, dispatch_id: str) -> ClaimedDispatch | None: ...
+
+    async def renew(self, authority: DispatchAuthority) -> RenewalResult: ...
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
 
@@ -255,7 +153,7 @@ class ExecutorDispatchStore(Protocol):
 
 
 class PostgresExecutorDispatchStore:
-    """Persist dispatch lifecycle at the stable process-owner boundary."""
+    """Persist dispatch lifecycle at the per-task process-owner boundary."""
 
     def __init__(
         self,
@@ -275,11 +173,11 @@ class PostgresExecutorDispatchStore:
     @classmethod
     def from_environment(cls) -> PostgresExecutorDispatchStore:
         return cls(
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=os.environ.get("DB_PORT", "5432"),
-            dbname=os.environ.get("DB_NAME", "tracker"),
-            user=os.environ.get("DB_USERNAME", "tracker"),
-            password=os.environ.get("DB_PASSWORD", "tracker"),
+            host=os.environ["DB_HOST"],
+            port=os.environ["DB_PORT"],
+            dbname=os.environ["DB_NAME"],
+            user=os.environ["DB_USERNAME"],
+            password=os.environ["DB_PASSWORD"],
         )
 
     def _connect(self) -> PostgresConnection:
@@ -292,31 +190,10 @@ class PostgresExecutorDispatchStore:
             connect_timeout=5,
         )
 
-    async def claim(
-        self,
-        dispatch_id: str,
-        benchmark_id: str,
-        dispatch: ArtifactDispatch,
-    ) -> DispatchAuthority | None:
-        claimed = await asyncio.to_thread(
-            self._claim,
-            dispatch_id,
-            benchmark_id,
-            dispatch,
-        )
-        if not claimed:
-            return None
-        return DispatchAuthority(
-            dispatch_id=dispatch_id,
-            benchmark_id=benchmark_id,
-        )
+    async def claim(self, dispatch_id: str) -> ClaimedDispatch | None:
+        return await asyncio.to_thread(self._claim, dispatch_id)
 
-    def _claim(
-        self,
-        dispatch_id: str,
-        benchmark_id: str,
-        dispatch: ArtifactDispatch,
-    ) -> bool:
+    def _claim(self, dispatch_id: str) -> ClaimedDispatch | None:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -328,90 +205,96 @@ class PostgresExecutorDispatchStore:
                 FROM benchmark
                 WHERE dispatch.id = %s::uuid
                   AND dispatch.benchmark_id = benchmark.id
-                  AND benchmark.id = %s::uuid
                   AND benchmark.status = 'IN_PROGRESS'
-                  AND dispatch.executor_release_id = %s
-                  AND dispatch.executor_artifact_uri = %s
-                  AND dispatch.executor_artifact_digest = %s
-                  AND dispatch.executor_protocol_version = %s
+                  AND benchmark.current_execution_release_id = dispatch.executor_release_id
                   AND dispatch.status = 'QUEUED'
                   AND dispatch.claim_deadline_at > CURRENT_TIMESTAMP
-                RETURNING dispatch.id
+                RETURNING dispatch.benchmark_id::text, dispatch.executor_release_id,
+                          dispatch.executor_artifact_uri, dispatch.executor_artifact_digest,
+                          dispatch.executor_protocol_version, dispatch.assigned_task_ids
                 """,
-                (
-                    DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-                    dispatch_id,
-                    benchmark_id,
-                    dispatch.release_id,
-                    dispatch.artifact_uri,
-                    dispatch.artifact_digest,
-                    dispatch.protocol_version,
-                ),
+                (DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, dispatch_id),
             )
-            return cursor.fetchone() is not None
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            cursor.execute(
+                """
+                DELETE FROM executor_dispatch_payload
+                WHERE dispatch_id = %s::uuid
+                RETURNING ciphertext, encrypted_data_key, nonce
+                """,
+                (dispatch_id,),
+            )
+            sealed_row = cursor.fetchone()
+            if sealed_row is None:
+                raise ValueError(f"Queued executor dispatch {dispatch_id} has no sealed payload")
+            sealed = SealedPayload(*(bytes(value) for value in sealed_row))
+            payload = open_payload(UUID(dispatch_id), sealed)
+            payload.update({
+                "executor_dispatch_id": dispatch_id,
+                "executor_release_id": row[1],
+                "executor_artifact_uri": row[2],
+                "executor_artifact_digest": row[3],
+                "executor_protocol_version": row[4],
+            })
+            telemetry_context = normalize_executor_telemetry_context(payload.get("telemetry_context_json"))
+            artifact = ArtifactDispatch.from_payload(payload)
+            process_payload = ExecutorProcessPayload.from_payload(
+                payload, telemetry_context=telemetry_context
+            )
+            if process_payload.benchmark_id != row[0] or process_payload.verified_task_ids != row[5]:
+                raise ValueError(f"Executor dispatch {dispatch_id} payload does not match assigned benchmark/tasks")
+            return ClaimedDispatch(
+                authority=DispatchAuthority(dispatch_id=dispatch_id, benchmark_id=row[0]),
+                dispatch=artifact,
+                process_payload=process_payload,
+                telemetry_context=telemetry_context,
+            )
 
-    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]:
-        return await asyncio.to_thread(self._renew, authorities)
+    async def renew(self, authority: DispatchAuthority) -> RenewalResult:
+        return await asyncio.to_thread(self._renew, authority)
 
-    def _renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]:
+    def _renew(self, authority: DispatchAuthority) -> RenewalResult:
         """Commit dispatch-only renewals before bounded benchmark classification."""
-        if not authorities:
-            return {}
-        dispatch_ids = [authority.dispatch_id for authority in authorities]
-        benchmark_ids = [authority.benchmark_id for authority in authorities]
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
-                WITH requested AS (
-                    SELECT id, benchmark_id
-                    FROM unnest(%s::uuid[], %s::uuid[]) AS pair(id, benchmark_id)
-                ), lockable AS (
-                    SELECT d.id, d.benchmark_id
+                WITH lockable AS (
+                    SELECT d.id
                     FROM executordispatch AS d
-                    JOIN requested AS r ON r.id = d.id AND r.benchmark_id = d.benchmark_id
-                    WHERE d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
+                    WHERE d.id = %s::uuid AND d.benchmark_id = %s::uuid
+                      AND d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
                     FOR UPDATE OF d SKIP LOCKED
                 )
                 UPDATE executordispatch AS d
                 SET heartbeat_at = CURRENT_TIMESTAMP,
                     lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
                 FROM lockable AS l
-                WHERE d.id = l.id AND d.benchmark_id = l.benchmark_id
-                RETURNING d.id::text, d.benchmark_id::text
+                WHERE d.id = l.id
+                RETURNING d.id
                 """,
-                (dispatch_ids, benchmark_ids, DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS),
+                (authority.dispatch_id, authority.benchmark_id, DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS),
             )
-            renewed = set(cursor.fetchall())
+            renewed = cursor.fetchone() is not None
             connection.commit()  # A blocked benchmark read must never hold back a confirmed lease.
-            results = {
-                (authority.dispatch_id, authority.benchmark_id): RenewalResult(
-                    renewed=(authority.dispatch_id, authority.benchmark_id) in renewed, classification=None
-                )
-                for authority in authorities
-            }
             try:
                 cursor.execute("SET LOCAL lock_timeout = '1s'")
                 cursor.execute(
                     """
-                    WITH requested AS (
-                        SELECT id, benchmark_id
-                        FROM unnest(%s::uuid[], %s::uuid[]) AS pair(id, benchmark_id)
-                    )
-                    SELECT r.id::text, r.benchmark_id::text,
-                           COALESCE(d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP, FALSE) AS live,
+                    SELECT COALESCE(d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP, FALSE) AS live,
                            COALESCE(b.status = 'STOPPED', FALSE) AS stopped
-                    FROM requested AS r
-                    LEFT JOIN executordispatch AS d ON d.id = r.id AND d.benchmark_id = r.benchmark_id
-                    LEFT JOIN benchmark AS b ON b.id = r.benchmark_id
+                    FROM (SELECT %s::uuid AS id, %s::uuid AS benchmark_id) AS requested
+                    LEFT JOIN executordispatch AS d ON d.id = requested.id AND d.benchmark_id = requested.benchmark_id
+                    LEFT JOIN benchmark AS b ON b.id = requested.benchmark_id
                     """,
-                    (dispatch_ids, benchmark_ids),
+                    (authority.dispatch_id, authority.benchmark_id),
                 )
-                for dispatch_id, benchmark_id, live, stopped in cursor.fetchall():
-                    key = (dispatch_id, benchmark_id)
-                    results[key] = RenewalResult(renewed=results[key].renewed, classification=(live, stopped))
+                live, stopped = cursor.fetchone()
+                return RenewalResult(renewed=renewed, classification=(live, stopped))
             except psycopg2.OperationalError:
                 connection.rollback()  # The committed renewals survive a classification timeout.
-            return results
+                return RenewalResult(renewed=renewed, classification=None)
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await asyncio.to_thread(self._terminalize, authority, task_ids)
@@ -588,22 +471,36 @@ class _LeaseKeeper:
     ) -> None:
         self.store = store
         self.interval_seconds = interval_seconds
-        self.leases: dict[str, tuple[DispatchAuthority, _DispatchLease, asyncio.TimerHandle]] = {}
+        self.authority: DispatchAuthority | None = None
+        self.lease: _DispatchLease | None = None
+        self.timer: asyncio.TimerHandle | None = None
         self.task: asyncio.Task[None] | None = None
 
     def register(self, authority: DispatchAuthority, confirmed_at: float) -> _DispatchLease:
+        if self.authority is not None:
+            raise RuntimeError("Lease keeper already owns a dispatch")
         lease = _DispatchLease(confirmed_at, asyncio.Event(), asyncio.Event())
-        timer = asyncio.get_running_loop().call_at(
+        self.authority = authority
+        self.lease = lease
+        self.timer = asyncio.get_running_loop().call_at(
             confirmed_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, lease.lost.set
         )
-        self.leases[authority.dispatch_id] = (authority, lease, timer)
-        if self.task is None:
-            self.task = asyncio.create_task(self._run())
+        self.task = asyncio.create_task(self._run())
         return lease
 
-    async def unregister(self, authority: DispatchAuthority) -> None:
-        _, _, timer = self.leases.pop(authority.dispatch_id)
-        timer.cancel()
+    async def unregister(self) -> None:
+        if self.timer is not None:
+            self.timer.cancel()
+        if self.task is not None:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+        self.authority = None
+        self.lease = None
+        self.timer = None
+        self.task = None
 
     async def _run(self) -> None:
         while True:
@@ -611,61 +508,47 @@ class _LeaseKeeper:
             try:
                 await self.tick()
             except Exception:
-                logger.exception("Lease keeper failed; stopping all registered dispatches")
-                for _, lease, _ in self.leases.values():
-                    lease.lost.set()
-                self.task = None
+                logger.exception("Lease keeper failed; stopping dispatch")
+                if self.lease is not None:
+                    self.lease.lost.set()
                 return
 
-    async def refresh(self, authority: DispatchAuthority) -> None:
-        current = self.leases.get(authority.dispatch_id)
-        if current is None:
+    async def refresh(self) -> None:
+        authority = self.authority
+        lease = self.lease
+        if authority is None or lease is None:
             return
         checked_at = _monotonic_time()
         try:
-            results = await self.store.renew([authority])
+            outcome = await self.store.renew(authority)
         except Exception:
             logger.exception("Failed to refresh executor dispatch authority; using local lease")
             return
-        self._apply_renewal(
-            authority, current[1], results.get((authority.dispatch_id, authority.benchmark_id)), checked_at
-        )
+        self._apply_renewal(lease, outcome, checked_at)
 
     async def tick(self) -> None:
-        if not self.leases:
+        authority = self.authority
+        lease = self.lease
+        if authority is None or lease is None:
             return
         tick_started_at = _monotonic_time()
-        active = {key: (authority, lease) for key, (authority, lease, _) in self.leases.items()}
         try:
-            results = await self.store.renew([authority for authority, _ in active.values()])
+            outcome = await self.store.renew(authority)
         except Exception:
-            logger.exception("Failed to renew executor dispatch leases; retrying")
+            logger.exception("Failed to renew executor dispatch lease; retrying")
             return
-        for authority, lease in active.values():
-            self._apply_renewal(
-                authority, lease, results.get((authority.dispatch_id, authority.benchmark_id)), tick_started_at
-            )
+        self._apply_renewal(lease, outcome, tick_started_at)
 
-    def _apply_renewal(
-        self,
-        authority: DispatchAuthority,
-        lease: _DispatchLease,
-        outcome: RenewalResult | None,
-        checked_at: float,
-    ) -> None:
-        current = self.leases.get(authority.dispatch_id)
-        if current is None or current[1] is not lease or lease.lost.is_set():
-            return
-        if outcome is None:
-            lease.lost.set()
+    def _apply_renewal(self, lease: _DispatchLease, outcome: RenewalResult, checked_at: float) -> None:
+        if self.lease is not lease or lease.lost.is_set():
             return
         if outcome.renewed and checked_at > lease.last_confirmed_renewal_at and lease.expires_in(_monotonic_time()) > 0:
             lease.last_confirmed_renewal_at = checked_at
-            current[2].cancel()
-            timer = asyncio.get_running_loop().call_at(
+            assert self.timer is not None
+            self.timer.cancel()
+            self.timer = asyncio.get_running_loop().call_at(
                 checked_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, lease.lost.set
             )
-            self.leases[authority.dispatch_id] = (authority, lease, timer)
         if outcome.classification is None:
             return
         live, stopped = outcome.classification
@@ -692,11 +575,8 @@ class ExecutorSupervisor:
         self.cache_dir = cache_dir
         self.s3_client = s3_client
         self.python_executable = python_executable
-        self.artifact_bucket = artifact_bucket or os.environ.get("EXECUTOR_RELEASE_BUCKET", "agentic-harness")
-        self.artifact_prefix = artifact_prefix or os.environ.get(
-            "EXECUTOR_RELEASE_PREFIX",
-            DEFAULT_EXECUTOR_RELEASE_PREFIX,
-        )
+        self.artifact_bucket = artifact_bucket or os.environ["EXECUTOR_RELEASE_BUCKET"]
+        self.artifact_prefix = artifact_prefix or os.environ["EXECUTOR_RELEASE_PREFIX"]
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
         bucket, key = validate_executor_artifact_uri(
@@ -834,47 +714,6 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
-class DeleteAfterAckRedisStreamBroker(RedisStreamBroker):
-    """Delete stream entries after Taskiq acknowledges their processing."""
-
-    def _ack_generator(self, id: str, queue_name: str) -> Callable[[], Awaitable[None]]:
-        async def _ack() -> None:
-            async with Redis(connection_pool=self.connection_pool) as redis_conn:
-                await redis_conn.eval(
-                    _ACK_AND_DELETE_SCRIPT,
-                    1,
-                    queue_name,
-                    self.consumer_group_name,
-                    id,
-                )
-
-        return _ack
-
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
-CACHE_DIR = Path(os.environ.get("EXECUTOR_CACHE_DIR", DEFAULT_CACHE_DIR))
-
-broker = DeleteAfterAckRedisStreamBroker(
-    url=REDIS_URL,
-    queue_name=QUEUE_NAME,
-    consumer_group_name=QUEUE_NAME,
-    idle_timeout=86400000,
-)
-
-
-@broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
-    configure_observability()
-
-
-supervisor = ExecutorSupervisor(CACHE_DIR)
-dispatch_store = PostgresExecutorDispatchStore.from_environment()
-
-
-lease_keeper = _LeaseKeeper(dispatch_store)
-
-
 _Result = TypeVar("_Result")
 _RETRY_INITIAL_SECONDS = 0.1
 _RETRY_MAX_SECONDS = 5.0
@@ -922,123 +761,129 @@ async def run_executor_dispatch(
     *,
     keeper: _LeaseKeeper,
     executor_dispatch_id: str,
-    dispatch: ArtifactDispatch,
-    process_payload: ExecutorProcessPayload,
 ) -> None:
-    protection_task = asyncio.create_task(_acquire_task_protection())
-    try:
-        await asyncio.shield(protection_task)
-    except asyncio.CancelledError:
-        await _await_task_completion(protection_task)
-        release_task = asyncio.create_task(_release_task_protection())
-        await _await_task_completion(release_task)
-        raise
+    claim_started_at = _monotonic_time()
+    attempt_started_at = claim_started_at
 
-    try:
-        claim_started_at = _monotonic_time()
-        attempt_started_at = claim_started_at
+    async def claim() -> ClaimedDispatch | None:
+        nonlocal attempt_started_at
+        attempt_started_at = _monotonic_time()
+        return await store.claim(executor_dispatch_id)
 
-        def claim() -> Awaitable[DispatchAuthority | None]:
-            nonlocal attempt_started_at
-            attempt_started_at = _monotonic_time()
-            return store.claim(executor_dispatch_id, process_payload.benchmark_id, dispatch)
-
-        claim_task = asyncio.create_task(
-            _retry_operational_error(
-                claim,
-                lambda: claim_started_at + DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
-            )
+    claim_task = asyncio.create_task(
+        _retry_operational_error(
+            claim,
+            lambda: claim_started_at + DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
         )
+    )
+    try:
+        claimed = await asyncio.shield(claim_task)
+    except asyncio.CancelledError:
+        claimed = await claim_task
+        if claimed is not None:
+            with dispatch_observability_context(
+                claimed.authority.benchmark_id,
+                claimed.authority.dispatch_id,
+                claimed.dispatch.release_id,
+                claimed.telemetry_context,
+            ) as child_telemetry_context:
+                await _terminalize_after_failure(
+                    store,
+                    claimed.authority,
+                    claimed.process_payload.verified_task_ids,
+                    lambda: attempt_started_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+                )
+                record_dispatch_cancellation(child_telemetry_context)
+        raise
+    if claimed is None:
+        logger.warning("Skipping duplicate, superseded, or non-queued executor dispatch %s", executor_dispatch_id)
+        return
+
+    authority = claimed.authority
+    process_payload = claimed.process_payload
+    dispatch = claimed.dispatch
+    with dispatch_observability_context(
+        authority.benchmark_id, authority.dispatch_id, dispatch.release_id, claimed.telemetry_context
+    ) as child_telemetry_context:
+        process_payload.arguments["telemetry_context_json"] = child_telemetry_context
+        lease = keeper.register(authority, attempt_started_at)
         try:
-            authority = await asyncio.shield(claim_task)
-        except asyncio.CancelledError:
-            authority = await claim_task
-            if authority is not None:
+            try:
+                artifact_path = await executor_supervisor.prepare_artifact(dispatch)
+                await keeper.refresh()
+                await executor_supervisor.run(
+                    artifact_path,
+                    dispatch,
+                    process_payload=process_payload,
+                    authority=authority,
+                    lease=lease,
+                )
+                if not await _retry_operational_error(
+                    lambda: store.finish(authority),
+                    lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+                ):
+                    logger.warning("Executor dispatch %s lost authority before successful finish", authority.dispatch_id)
+            except asyncio.CancelledError:
                 await _terminalize_after_failure(
                     store,
                     authority,
                     process_payload.verified_task_ids,
-                    lambda: attempt_started_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+                    lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                 )
-            raise
-
-        if authority is None:
-            logger.warning(
-                "Skipping duplicate, superseded, or non-queued executor dispatch %s",
-                executor_dispatch_id,
-            )
-            return
-
-        lease = keeper.register(authority, attempt_started_at)
-        try:
-            artifact_path = await executor_supervisor.prepare_artifact(dispatch)
-            await keeper.refresh(authority)
-            await executor_supervisor.run(
-                artifact_path,
-                dispatch,
-                process_payload=process_payload,
-                authority=authority,
-                lease=lease,
-            )
-            if not await _retry_operational_error(
-                lambda: store.finish(authority),
-                lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-            ):
-                logger.warning(
-                    "Executor dispatch %s lost authority before successful finish",
-                    authority.dispatch_id,
+                raise
+            except BaseException:
+                await _terminalize_after_failure(
+                    store,
+                    authority,
+                    process_payload.verified_task_ids,
+                    lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                 )
-        except asyncio.CancelledError:
-            await _terminalize_after_failure(
-                store,
-                authority,
-                process_payload.verified_task_ids,
-                lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-            )
-            raise
-        except BaseException:
-            await _terminalize_after_failure(
-                store,
-                authority,
-                process_payload.verified_task_ids,
-                lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
-            )
-            raise
-        finally:
-            await keeper.unregister(authority)
-    finally:
-        release_task = asyncio.create_task(_release_task_protection())
-        await _await_task_completion(release_task)
-
-
-@broker.task(EXECUTOR_TASK_NAME)
-async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
-    raw_payload: dict[str, object] = dict(payload)
-    with dispatch_observability_context(
-        executor_payload_benchmark_id(raw_payload),
-        _payload_string(raw_payload, "executor_dispatch_id"),
-        _payload_string(raw_payload, "executor_release_id"),
-        normalize_executor_telemetry_context(raw_payload.get("telemetry_context_json")),
-    ) as child_telemetry_context:
-        try:
-            dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
-            dispatch = ArtifactDispatch.from_payload(raw_payload)
-            process_payload = ExecutorProcessPayload.from_payload(
-                raw_payload,
-                telemetry_context=child_telemetry_context,
-            )
-            await run_executor_dispatch(
-                supervisor,
-                dispatch_store,
-                keeper=lease_keeper,
-                executor_dispatch_id=dispatch_id,
-                dispatch=dispatch,
-                process_payload=process_payload,
-            )
-            record_dispatch_completion(child_telemetry_context)
+                raise
         except asyncio.CancelledError:
             record_dispatch_cancellation(child_telemetry_context)
             raise
         except BaseException as error:
             capture_dispatch_error(error, child_telemetry_context)
             raise
+        else:
+            record_dispatch_completion(child_telemetry_context)
+        finally:
+            await keeper.unregister()
+
+
+def _parse_dispatch_id(value: str) -> str:
+    return str(UUID(value))
+
+
+async def _run_main(dispatch_id: str) -> None:
+    loop = asyncio.get_running_loop()
+    store = PostgresExecutorDispatchStore.from_environment()
+    supervisor = ExecutorSupervisor(Path(os.environ["EXECUTOR_CACHE_DIR"]))
+    task = asyncio.create_task(
+        run_executor_dispatch(supervisor, store, keeper=_LeaseKeeper(store), executor_dispatch_id=dispatch_id)
+    )
+    loop.add_signal_handler(signal.SIGTERM, task.cancel)
+    try:
+        await task
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run one executor dispatch")
+    parser.add_argument("--dispatch-id", required=True, type=_parse_dispatch_id)
+    arguments = parser.parse_args()
+    configure_observability()
+    try:
+        asyncio.run(_run_main(arguments.dispatch_id))
+    except asyncio.CancelledError:
+        raise SystemExit(1) from None
+    except Exception:
+        logger.exception("Executor dispatch %s failed", arguments.dispatch_id)
+        raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()
