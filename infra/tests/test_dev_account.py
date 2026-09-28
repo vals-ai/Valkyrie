@@ -303,7 +303,8 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         proxy_id, proxy = next(iter(tracker_template.find_resources("AWS::RDS::DBProxy").items()))
         proxy_properties = proxy["Properties"]
         self.assertTrue(proxy_properties["RequireTLS"])
-        self.assertEqual(proxy_properties["DBProxyName"], "TrackerDatabaseProxy-dev")
+        # Dev already runs this proxy; a new name would replace it.
+        self.assertEqual(proxy_properties["DBProxyName"], "TrackerDatabaseProxy")
         self.assertEqual(proxy_properties["Auth"][0]["SecretArn"], {"Ref": secret_id})
         self.assertEqual(len(proxy_properties["VpcSubnetIds"]), 2)
 
