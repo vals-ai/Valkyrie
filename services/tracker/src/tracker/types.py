@@ -536,6 +536,34 @@ class SingleTaskResponse(BaseModel):
         return _serialize_utc(value)
 
 
+class TaskResultEntry(BaseModel):
+    id: UUID
+    created_at: UTCDateTime
+    current: bool
+    agent_caused_exit_reason: str | None
+    result: dict[str, Any]
+
+
+class TaskResultsResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    results: list[TaskResultEntry]
+
+
+class RollbackTaskRequest(BaseModel):
+    result_id: UUID | None = None
+
+
+class RollbackTaskResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    restored_from_result_id: UUID
+    result_id: UUID
+    artifacts_versioned: bool
+    restored_artifacts: list[str]
+    removed_artifacts: list[str]
+
+
 class AgentEntry(BaseModel):
     name: str
     last_modified: str | None = None

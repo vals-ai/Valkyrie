@@ -13,7 +13,7 @@ from valkyrie.cli.run.start import start
 from valkyrie.cli.run.status import status_runs
 from valkyrie.cli.run.stop import stop
 from valkyrie.cli.run.update import update
-from valkyrie.cli.run.tasks import tasks, task, task_artifacts
+from valkyrie.cli.run.tasks import rollback_task, task, task_artifacts, task_history, tasks
 
 
 @click.group()
@@ -41,6 +41,8 @@ run.add_command(update)
 run.add_command(tasks)
 run.add_command(task)
 run.add_command(task_artifacts)
+run.add_command(task_history)
+run.add_command(rollback_task)
 
 __all__ = [
     "list_runs",

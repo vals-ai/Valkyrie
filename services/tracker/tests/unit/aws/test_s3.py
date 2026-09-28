@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/aws/test_s3.py
 """
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
@@ -850,3 +851,91 @@ async def test_managed_presigned_get_requires_only_the_host_header(
 
     assert query["X-Amz-SignedHeaders"] == ["host"]
     assert "x-amz-expected-bucket-owner" not in query
+
+
+class VersionListPaginator:
+    def __init__(self, pages: list[dict[str, list[dict[str, object]]]]) -> None:
+        self._pages = pages
+
+    async def paginate(self, **_kwargs: str) -> AsyncIterator[dict[str, list[dict[str, object]]]]:
+        for page in self._pages:
+            yield page
+
+
+def _version_client(pages: list[dict[str, list[dict[str, object]]]], *, versioning: str | None) -> AsyncMock:
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.get_bucket_versioning.return_value = {"Status": versioning} if versioning else {}
+    client.get_paginator = MagicMock(return_value=VersionListPaginator(pages))
+    return client
+
+
+async def test_restore_prefix_versions_before_reverts_keys_to_their_state_at_cutoff() -> None:
+    """Rollback must copy back the version live at cutoff, delete keys created later, and leave unchanged keys alone.
+
+    Test cases:
+    - A key overwritten after cutoff is restored from its pre-cutoff version.
+    - A key first written after cutoff receives a delete marker.
+    - A key deleted before cutoff and recreated after is deleted again.
+    - A key unchanged since before cutoff, or already a delete marker, is untouched.
+    - A naive cutoff is treated as UTC.
+    """
+    cutoff = datetime(2026, 9, 1, 12, 0)
+    before = datetime(2026, 9, 1, 11, 0, tzinfo=UTC)
+    after = datetime(2026, 9, 1, 13, 0, tzinfo=UTC)
+    prefix = "benchmarks/run/task/"
+    pages: list[dict[str, list[dict[str, object]]]] = [
+        {
+            "Versions": [
+                {"Key": f"{prefix}agent_output.tar.gz", "VersionId": "v2", "LastModified": after, "IsLatest": True},
+                {"Key": f"{prefix}agent_output.tar.gz", "VersionId": "v1", "LastModified": before, "IsLatest": False},
+                {"Key": f"{prefix}new.txt", "VersionId": "n1", "LastModified": after, "IsLatest": True},
+                {"Key": f"{prefix}stable.txt", "VersionId": "s1", "LastModified": before, "IsLatest": True},
+                {"Key": f"{prefix}revived.txt", "VersionId": "r2", "LastModified": after, "IsLatest": True},
+                {"Key": f"{prefix}revived.txt", "VersionId": "r1", "LastModified": before, "IsLatest": False},
+            ],
+            "DeleteMarkers": [
+                {
+                    "Key": f"{prefix}revived.txt",
+                    "VersionId": "rd",
+                    "LastModified": before + timedelta(minutes=1),
+                    "IsLatest": False,
+                },
+                {"Key": f"{prefix}gone.txt", "VersionId": "gd", "LastModified": after, "IsLatest": True},
+            ],
+        }
+    ]
+    client = _version_client(pages, versioning="Enabled")
+    runtime = _copy_runtime(
+        bucket="test-bucket", client=client, credential_source="managed", expected_bucket_owner="123456789012"
+    )
+
+    restore = await s3_module.restore_prefix_versions_before(prefix, cutoff, runtime)
+
+    assert restore is not None
+    assert restore.restored == [f"{prefix}agent_output.tar.gz"]
+    assert sorted(restore.removed) == [f"{prefix}new.txt", f"{prefix}revived.txt"]
+    client.copy_object.assert_awaited_once_with(
+        Bucket="test-bucket",
+        CopySource={"Bucket": "test-bucket", "Key": f"{prefix}agent_output.tar.gz", "VersionId": "v1"},
+        Key=f"{prefix}agent_output.tar.gz",
+        ExpectedBucketOwner="123456789012",
+    )
+    assert client.delete_object.await_count == 2
+
+
+async def test_restore_prefix_versions_before_reports_unversioned_bucket_and_maps_errors() -> None:
+    """Without versioning nothing can be restored; AWS failures surface as S3Error."""
+    client = _version_client([], versioning=None)
+    runtime = _copy_runtime(
+        bucket="test-bucket", client=client, credential_source="access_key", expected_bucket_owner=None
+    )
+
+    assert await s3_module.restore_prefix_versions_before("benchmarks/run/task/", datetime.now(UTC), runtime) is None
+    client.get_paginator.assert_not_called()
+
+    client.get_bucket_versioning.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetBucketVersioning"
+    )
+    with pytest.raises(S3Error):
+        await s3_module.restore_prefix_versions_before("benchmarks/run/task/", datetime.now(UTC), runtime)

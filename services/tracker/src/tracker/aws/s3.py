@@ -3,7 +3,7 @@
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
@@ -366,6 +366,76 @@ async def list_s3_objects(prefix: str, runtime: AWSRuntime) -> AsyncIterator[str
                         yield s3_object["Key"]
     except (ClientError, BotoCoreError) as e:
         raise S3Error(f"Failed to list objects from S3: {e}") from e
+
+
+@dataclass(frozen=True)
+class PrefixRestore:
+    """Keys changed while restoring a prefix to an earlier point in time."""
+
+    restored: list[str]
+    removed: list[str]
+
+
+@dataclass(frozen=True)
+class _ObjectVersion:
+    version_id: str
+    last_modified: datetime
+    is_latest: bool
+    is_delete_marker: bool
+
+
+@handle_s3_error(message="Failed to restore S3 object versions")
+async def restore_prefix_versions_before(prefix: str, cutoff: datetime, runtime: AWSRuntime) -> PrefixRestore | None:
+    """
+    Make every object under a prefix match its newest version written at or before cutoff.
+
+    Keys that only exist in versions written after cutoff receive a delete marker. Returns None when the bucket does
+    not keep versions, in which case nothing can be restored.
+    """
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=UTC)
+    bucket = runtime.resources.s3_bucket
+    owner_arguments = s3_owner_arguments(runtime)
+    async with runtime.clients.s3_client() as client:
+        versioning = await client.get_bucket_versioning(Bucket=bucket, **owner_arguments)
+        if versioning.get("Status") != "Enabled":
+            return None
+
+        versions_by_key: dict[str, list[_ObjectVersion]] = {}
+        paginator = client.get_paginator("list_object_versions")
+        async for page in paginator.paginate(Bucket=bucket, Prefix=prefix, **owner_arguments):
+            for entry in page.get("Versions", []):
+                versions_by_key.setdefault(entry["Key"], []).append(
+                    _ObjectVersion(entry["VersionId"], entry["LastModified"], entry["IsLatest"], False)
+                )
+            for entry in page.get("DeleteMarkers", []):
+                versions_by_key.setdefault(entry["Key"], []).append(
+                    _ObjectVersion(entry["VersionId"], entry["LastModified"], entry["IsLatest"], True)
+                )
+
+        restore = PrefixRestore(restored=[], removed=[])
+        for key, versions in versions_by_key.items():
+            current = next(version for version in versions if version.is_latest)
+            target = max(
+                (version for version in versions if version.last_modified <= cutoff),
+                key=lambda version: version.last_modified,
+                default=None,
+            )
+            if target is None or target.is_delete_marker:
+                if not current.is_delete_marker:
+                    await client.delete_object(Bucket=bucket, Key=key, **owner_arguments)
+                    restore.removed.append(key)
+                continue
+            if target.version_id == current.version_id:
+                continue
+            await client.copy_object(
+                Bucket=bucket,
+                CopySource={"Bucket": bucket, "Key": key, "VersionId": target.version_id},
+                Key=key,
+                **owner_arguments,
+            )
+            restore.restored.append(key)
+    return restore
 
 
 @handle_s3_error(message="Failed to create presigned URL")

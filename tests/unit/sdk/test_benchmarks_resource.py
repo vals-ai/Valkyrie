@@ -166,7 +166,7 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
     assert artifacts.agent_output_expires_in == 300
 
 
-@pytest.mark.parametrize("method_name", ["task", "artifacts"])
+@pytest.mark.parametrize("method_name", ["task", "artifacts", "task_results", "rollback_task"])
 async def test_task_methods_reject_blank_task_ids(make_client, method_name: str) -> None:
     async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
         method = getattr(client.benchmarks, method_name)
@@ -174,7 +174,7 @@ async def test_task_methods_reject_blank_task_ids(make_client, method_name: str)
             await method(uuid4(), "  ")
 
 
-@pytest.mark.parametrize("method_name", ["task", "artifacts"])
+@pytest.mark.parametrize("method_name", ["task", "artifacts", "task_results", "rollback_task"])
 async def test_task_methods_reject_path_separators(make_client, method_name: str) -> None:
     async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
         method = getattr(client.benchmarks, method_name)
@@ -182,7 +182,7 @@ async def test_task_methods_reject_path_separators(make_client, method_name: str
             await method(uuid4(), "suite/task")
 
 
-@pytest.mark.parametrize("method_name", ["task", "artifacts"])
+@pytest.mark.parametrize("method_name", ["task", "artifacts", "task_results", "rollback_task"])
 @pytest.mark.parametrize("task_id", [".", ".."])
 async def test_task_methods_reject_normalized_dot_segments(make_client, method_name: str, task_id: str) -> None:
     async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:

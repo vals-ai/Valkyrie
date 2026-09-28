@@ -141,6 +141,49 @@ class SingleTaskResponse(ResponseModel):
         return serialize_utc(value)
 
 
+class TaskResultEntry(ResponseModel):
+    """One kept evaluation attempt for a task."""
+
+    id: UUID
+    created_at: datetime
+    current: bool
+    agent_caused_exit_reason: str | None
+    result: dict[str, Any]
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> str:
+        """Serialize the attempt time with an explicit offset."""
+        serialized = serialize_utc(value)
+        assert serialized is not None
+        return serialized
+
+
+class TaskResultsResponse(ResponseModel):
+    """Evaluation history for one task, newest first."""
+
+    task_id: str
+    status: TaskStatus
+    results: list[TaskResultEntry]
+
+
+class RollbackTaskRequest(BaseModel):
+    """Choose which kept evaluation becomes the task's current result; None picks the previous one."""
+
+    result_id: UUID | None = None
+
+
+class RollbackTaskResponse(ResponseModel):
+    """Outcome of restoring an earlier evaluation and its artifacts."""
+
+    task_id: str
+    status: TaskStatus
+    restored_from_result_id: UUID
+    result_id: UUID
+    artifacts_versioned: bool
+    restored_artifacts: list[str]
+    removed_artifacts: list[str]
+
+
 class TaskArtifactsResponse(ResponseModel):
     """Temporary artifact and log links for one task."""
 

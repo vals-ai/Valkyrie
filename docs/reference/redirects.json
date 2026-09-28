@@ -80,6 +80,14 @@
     "destination": "/reference/cli/run#task-artifacts"
   },
   {
+    "source": "/reference/cli/run/task-history",
+    "destination": "/reference/cli/run#task-history"
+  },
+  {
+    "source": "/reference/cli/run/rollback-task",
+    "destination": "/reference/cli/run#rollback-task"
+  },
+  {
     "source": "/reference/cli/agent/install",
     "destination": "/reference/cli/agent#install"
   },
@@ -262,6 +270,14 @@
   {
     "source": "/reference/sdk/benchmarks/artifacts",
     "destination": "/reference/sdk/benchmarks#artifacts"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/task_results",
+    "destination": "/reference/sdk/benchmarks#task-results"
+  },
+  {
+    "source": "/reference/sdk/benchmarks/rollback_task",
+    "destination": "/reference/sdk/benchmarks#rollback-task"
   },
   {
     "source": "/reference/sdk/agents/list",
@@ -500,8 +516,24 @@
     "destination": "/reference/sdk/models/runs#update-benchmark-concurrency-response"
   },
   {
+    "source": "/reference/sdk/models/benchmarks/rollback-task-request",
+    "destination": "/reference/sdk/models/benchmarks#rollback-task-request"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/rollback-task-response",
+    "destination": "/reference/sdk/models/benchmarks#rollback-task-response"
+  },
+  {
     "source": "/reference/sdk/models/benchmarks/task-artifacts-response",
     "destination": "/reference/sdk/models/benchmarks#task-artifacts-response"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/task-result-entry",
+    "destination": "/reference/sdk/models/benchmarks#task-result-entry"
+  },
+  {
+    "source": "/reference/sdk/models/benchmarks/task-results-response",
+    "destination": "/reference/sdk/models/benchmarks#task-results-response"
   },
   {
     "source": "/reference/sdk/models/benchmarks/tasks-response",

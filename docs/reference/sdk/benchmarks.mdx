@@ -144,3 +144,55 @@ async def artifacts(run_id: UUID, task_id: str) -> TaskArtifactsResponse
 <a href="/reference/sdk/models/benchmarks#task-artifacts-response"><code>TaskArtifactsResponse</code></a>
 
 For examples, see the [Python SDK guide](/sdk/resources).
+
+## `client.benchmarks.task_results` {#task-results}
+
+List every kept evaluation attempt for one task, newest first.
+
+```python Signature
+async def task_results(run_id: UUID, task_id: str) -> TaskResultsResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str</span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/benchmarks#task-results-response"><code>TaskResultsResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/resources).
+
+## `client.benchmarks.rollback_task` {#rollback-task}
+
+Make an earlier evaluation the task's current result and restore its artifacts.
+
+```python Signature
+async def rollback_task(run_id: UUID, task_id: str, result_id: UUID | None = None) -> RollbackTaskResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"result_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · UUID | None · default: <code>{"None"}</code></span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/benchmarks#rollback-task-response"><code>RollbackTaskResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/resources).

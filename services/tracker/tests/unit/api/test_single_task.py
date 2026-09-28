@@ -12,14 +12,17 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 import tracker.api.single_task as single_task_module
 from main import app
 from tests.factories import make_error_result, make_evaluation_result, make_task
+from tracker.aws.s3 import PrefixRestore
 from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
+    BenchmarkStatus,
+    FinalEvaluation,
     Org,
     TaskStatus,
 )
@@ -241,3 +244,161 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
             ).status_code
             == status
         )
+
+
+def test_task_results_list_history_newest_first_and_mark_current(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    """History must list every evaluation attempt, flagging only a finished task's newest row as current."""
+    now = datetime.now(ZoneInfo("UTC"))
+    benchmark = example_benchmark_object
+    database_session.add(benchmark)
+    database_session.flush()
+    finished_task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED, finished_at=now)
+    error_task = make_task(benchmark, "error-task", status=TaskStatus.ERROR, finished_at=now)
+    database_session.add_all([finished_task, error_task])
+    database_session.flush()
+    old = make_evaluation_result(finished_task, "old", {"score": 0.0}, now - timedelta(minutes=1))
+    new = make_evaluation_result(finished_task, "new", {"score": 1.0}, now)
+    errored_old = make_evaluation_result(error_task, "errored-old", {"score": 0.5}, now - timedelta(minutes=1))
+    database_session.add_all([old, new, errored_old, make_error_result(error_task, "boom", now)])
+    database_session.commit()
+
+    finished = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/results").json()
+    errored = _client.get(f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}/results").json()
+
+    assert [(entry["id"], entry["current"]) for entry in finished["results"]] == [
+        (str(new.id), True),
+        (str(old.id), False),
+    ]
+    assert finished["results"][1]["result"] == {"score": 0.0}
+    assert [(entry["id"], entry["current"]) for entry in errored["results"]] == [(str(errored_old.id), False)]
+    assert errored["status"] == "ERROR"
+
+
+def test_rollback_task_restores_previous_evaluation_and_artifacts(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    """Rolling back must make the chosen attempt current, revert artifacts to that time, and drop the final score.
+
+    Test cases:
+    - Default target is the attempt before the current one; task detail then shows its result.
+    - Artifacts are restored for the task prefix using the target attempt's timestamp.
+    - The stale FinalEvaluation row is deleted.
+    - An errored task rolls back to its last good evaluation and becomes FINISHED.
+    - Explicit result_id from another task is 404; the current result is 409.
+    """
+    now = datetime.now(ZoneInfo("UTC"))
+    benchmark = example_benchmark_object
+    benchmark.status = BenchmarkStatus.FINISHED
+    benchmark.finished_at = now
+    database_session.add(benchmark)
+    database_session.flush()
+    database_session.add(FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=1.0))
+    finished_task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED, finished_at=now)
+    error_task = make_task(benchmark, "error-task", status=TaskStatus.ERROR, finished_at=now)
+    database_session.add_all([finished_task, error_task])
+    database_session.flush()
+    old = make_evaluation_result(
+        finished_task, "old", {"score": 0.0}, now - timedelta(minutes=5), exit_reason=AgentCausedExitReason.TIMEOUT
+    )
+    new = make_evaluation_result(finished_task, "new", {"score": 1.0}, now)
+    errored_old = make_evaluation_result(error_task, "errored-old", {"score": 0.5}, now - timedelta(minutes=5))
+    database_session.add_all([old, new, errored_old, make_error_result(error_task, "boom", now)])
+    database_session.commit()
+
+    restore = AsyncMock(return_value=PrefixRestore(restored=["agent_output.tar.gz"], removed=["extra.txt"]))
+    monkeypatch.setattr(single_task_module, "restore_prefix_versions_before", restore)
+
+    response = _client.post(
+        f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback", headers=harness_headers, json={}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["restored_from_result_id"] == str(old.id)
+    assert body["artifacts_versioned"] is True
+    assert body["restored_artifacts"] == ["agent_output.tar.gz"]
+    assert body["removed_artifacts"] == ["extra.txt"]
+    restore.assert_awaited_once()
+    assert restore.await_args is not None
+    assert restore.await_args.args[0] == f"benchmarks/{benchmark.id}/{finished_task.task_id}/"
+    assert restore.await_args.args[1] == old.created_at
+
+    detail = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}").json()
+    assert detail["evaluation_result"] == {"score": 0.0}
+    assert detail["agent_caused_exit_reason"] == "TIMEOUT"
+    history = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/results").json()
+    assert [entry["id"] for entry in history["results"]] == [body["result_id"], str(new.id), str(old.id)]
+    database_session.expire_all()
+    assert database_session.exec(select(FinalEvaluation)).first() is None
+
+    errored = _client.post(
+        f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}/rollback", headers=harness_headers, json={}
+    )
+    assert errored.status_code == 200, errored.text
+    assert errored.json()["restored_from_result_id"] == str(errored_old.id)
+    assert errored.json()["status"] == "FINISHED"
+    assert _client.get(f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}").json()["evaluation_result"] == {
+        "score": 0.5
+    }
+
+    wrong_task = _client.post(
+        f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback",
+        headers=harness_headers,
+        json={"result_id": str(errored_old.id)},
+    )
+    assert wrong_task.status_code == 404
+    already_current = _client.post(
+        f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback",
+        headers=harness_headers,
+        json={"result_id": body["result_id"]},
+    )
+    assert already_current.status_code == 409
+    assert restore.await_count == 2
+
+
+def test_rollback_task_rejects_active_runs_unsettled_tasks_and_missing_history(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    """Rollback must not touch state while a run is active, for unsettled tasks, or with nothing to restore."""
+    now = datetime.now(ZoneInfo("UTC"))
+    benchmark = example_benchmark_object
+    database_session.add(benchmark)
+    database_session.flush()
+    finished_task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED, finished_at=now)
+    pending_task = make_task(benchmark, "pending-task")
+    database_session.add_all([finished_task, pending_task])
+    database_session.flush()
+    database_session.add(make_evaluation_result(finished_task, "only", {"score": 1.0}, now))
+    database_session.commit()
+    restore = AsyncMock()
+    monkeypatch.setattr(single_task_module, "restore_prefix_versions_before", restore)
+
+    active = _client.post(
+        f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback", headers=harness_headers, json={}
+    )
+    assert active.status_code == 409
+
+    benchmark.status = BenchmarkStatus.FINISHED
+    benchmark.finished_at = now
+    database_session.add(benchmark)
+    database_session.commit()
+
+    unsettled = _client.post(
+        f"/benchmarks/{benchmark.id}/tasks/{pending_task.task_id}/rollback", headers=harness_headers, json={}
+    )
+    no_history = _client.post(
+        f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}/rollback", headers=harness_headers, json={}
+    )
+
+    assert unsettled.status_code == 409
+    assert no_history.status_code == 404
+    restore.assert_not_awaited()

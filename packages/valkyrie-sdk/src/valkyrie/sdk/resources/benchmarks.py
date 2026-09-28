@@ -10,9 +10,12 @@ from uuid import UUID
 from valkyrie.sdk.models import (
     BenchmarkStatusResponse,
     FetchTasksRequest,
+    RollbackTaskRequest,
+    RollbackTaskResponse,
     SingleBenchmarkResponse,
     SingleTaskResponse,
     TaskArtifactsResponse,
+    TaskResultsResponse,
     TasksResponse,
     TaskSummary,
 )
@@ -86,6 +89,25 @@ class BenchmarksResource:
             "GET",
             f"/benchmarks/{run_id}/tasks/{task_segment}/artifacts",
             TaskArtifactsResponse,
+        )
+
+    async def task_results(self, run_id: UUID, task_id: str) -> TaskResultsResponse:
+        """List every kept evaluation attempt for one task, newest first."""
+        task_segment = self._task_segment(task_id)
+        return await self._sdk.request_model(
+            "GET",
+            f"/benchmarks/{run_id}/tasks/{task_segment}/results",
+            TaskResultsResponse,
+        )
+
+    async def rollback_task(self, run_id: UUID, task_id: str, result_id: UUID | None = None) -> RollbackTaskResponse:
+        """Make an earlier evaluation the task's current result and restore its artifacts."""
+        task_segment = self._task_segment(task_id)
+        return await self._sdk.request_model(
+            "POST",
+            f"/benchmarks/{run_id}/tasks/{task_segment}/rollback",
+            RollbackTaskResponse,
+            json=RollbackTaskRequest(result_id=result_id).model_dump(mode="json"),
         )
 
     @staticmethod

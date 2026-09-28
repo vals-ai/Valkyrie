@@ -1868,6 +1868,74 @@
         "title": "RetryOrResumeBenchmarkResponse",
         "type": "object"
       },
+      "RollbackTaskRequest": {
+        "properties": {
+          "result_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Id"
+          }
+        },
+        "title": "RollbackTaskRequest",
+        "type": "object"
+      },
+      "RollbackTaskResponse": {
+        "properties": {
+          "artifacts_versioned": {
+            "title": "Artifacts Versioned",
+            "type": "boolean"
+          },
+          "removed_artifacts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed Artifacts",
+            "type": "array"
+          },
+          "restored_artifacts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Restored Artifacts",
+            "type": "array"
+          },
+          "restored_from_result_id": {
+            "format": "uuid",
+            "title": "Restored From Result Id",
+            "type": "string"
+          },
+          "result_id": {
+            "format": "uuid",
+            "title": "Result Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "status",
+          "restored_from_result_id",
+          "result_id",
+          "artifacts_versioned",
+          "restored_artifacts",
+          "removed_artifacts"
+        ],
+        "title": "RollbackTaskResponse",
+        "type": "object"
+      },
       "RunArtifactDownloadResponse": {
         "description": "A temporary URL for a single run artifact.",
         "properties": {
@@ -2972,6 +3040,73 @@
           "agent_output_expires_in"
         ],
         "title": "TaskArtifactsResponse",
+        "type": "object"
+      },
+      "TaskResultEntry": {
+        "properties": {
+          "agent_caused_exit_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Caused Exit Reason"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "current",
+          "agent_caused_exit_reason",
+          "result"
+        ],
+        "title": "TaskResultEntry",
+        "type": "object"
+      },
+      "TaskResultsResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/TaskResultEntry"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "status",
+          "results"
+        ],
+        "title": "TaskResultsResponse",
         "type": "object"
       },
       "TaskStatus": {
@@ -4295,6 +4430,115 @@
           }
         },
         "summary": "Get Task Artifacts"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/results": {
+      "get": {
+        "description": "List every evaluation attempt kept for a task so an operator can pick one to roll back to.",
+        "operationId": "get_task_results",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Task Results"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/rollback": {
+      "post": {
+        "description": "Make an earlier evaluation attempt the task's current result and restore its S3 artifacts.\n\nThe chosen attempt is re-recorded as the newest evaluation row (history is never deleted), the task's artifact\nprefix is reverted to the object versions that existed when that attempt was evaluated, and the run's final score\nis discarded so `resume` recomputes it.",
+        "operationId": "rollback_task",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollbackTaskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rollback Task"
       }
     },
     "/check-results-exist": {
