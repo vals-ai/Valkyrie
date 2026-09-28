@@ -36,6 +36,7 @@ from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     OutputArtifact,
 )
+from tracker.egress import EgressPolicy
 from tracker.exceptions import (
     AgentRunFailedError,
     DependencySetupExhaustedError,
@@ -102,10 +103,9 @@ def _fake_stream_download(content_for: Callable[[str], bytes]) -> Callable[[str]
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
-_apply_egress_allowlist = getattr(sandbox_module, "_apply_egress_allowlist")
+_apply_egress_policy = getattr(sandbox_module, "apply_egress_policy")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
 _install_agent_dependencies_with_retries = getattr(sandbox_module, "_install_agent_dependencies_with_retries")
-_stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _upload_output_artifact = getattr(sandbox_module, "_upload_output_artifact")
 
@@ -156,6 +156,55 @@ class TestOutputArtifacts:
         )
 
         assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
+        assert store.put_stream.await_args.kwargs["should_continue"] is execution_is_current
+
+    async def test_upload_output_artifacts_uploads_empty_file_without_streaming(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        """A zero-byte required artifact lands as an empty object under the same authority check.
+
+        Daytona's streaming download raises "No file data received" on an empty file,
+        which used to fail the required artifact and leave it missing from S3.
+        """
+        store = _mock_object_store()
+        artifact = "artifacts/turns.jsonl"
+        uploaded: list[tuple[bytes, str]] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="")
+            if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
+                return ExecResult(exit_code=0, output="0")
+            raise AssertionError(f"unexpected command: {command}")
+
+        def stream_download(remote_path: str) -> AsyncIterator[bytes]:
+            async def chunks() -> AsyncIterator[bytes]:
+                raise ProviderSandboxError(f"No file data received for: {remote_path}")
+                yield b""
+
+            return chunks()
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        _collect_put_stream(store, uploaded)
+
+        execution_is_current = Mock(return_value=True)
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.stream_download = stream_download
+
+        await upload_output_artifacts(
+            mock_sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            store,
+            execution_is_current=execution_is_current,
+        )
+
+        assert uploaded == [(b"", "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
         assert store.put_stream.await_args.kwargs["should_continue"] is execution_is_current
 
     async def test_upload_output_artifacts_skips_upload_when_authority_revoked(
@@ -792,17 +841,13 @@ class TestRunAgent:
         )
         assert archive_calls == []
 
-    async def test_run_agent_wraps_compose_runtime_source(
+    async def test_run_agent_uses_compose_runtime_sandbox(
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
     ) -> None:
         store = _mock_object_store()
-        """Compose runtime sources should route agent setup and execution through the wrapper.
-
-        Test cases:
-        - The mkdir and stream execution helpers receive a ComposeSandbox when runtime_source is compose.
-        """
+        """Agent execution uses the Compose runtime wrapper selected by the lifecycle owner."""
         contract = AgentContractRequest(
             name="test-agent",
             install_cmd="",
@@ -828,18 +873,22 @@ class TestRunAgent:
         mock_sandbox.name = "task-alias"
         mock_sandbox.state = "started"
 
-        await run_agent(
+        agent_sandbox = sandbox_module.runtime_sandbox(
             mock_sandbox,
+            ComposeSource(
+                outer=ImageSource(image="docker:28.3.3-dind"),
+                compose_command="docker compose -f /harbor/compose.yaml",
+            ),
+        )
+
+        await run_agent(
+            agent_sandbox,
             contract,
             "/tmp/problem.txt",
             "task_0",
             lambda _msg: None,
             "/workspace",
             object_store=store,
-            runtime_source=ComposeSource(
-                outer=ImageSource(image="docker:28.3.3-dind"),
-                compose_command="docker compose -f /harbor/compose.yaml",
-            ),
         )
 
         assert observed_sandboxes
@@ -1735,110 +1784,60 @@ class TestUploadAgentArtifacts:
             assert not isinstance(exc_info.value, SandboxSetupError)
 
 
-class TestEgressAllowlist:
-    """Tracker-side egress rule handling around the agent command."""
+class TestEgressPolicy:
+    """Tracker-side replacement of the sandbox egress policy."""
 
-    async def test_stream_command_output_scopes_egress_rules(
+    @pytest.mark.parametrize(
+        ("policy", "expected_event"),
+        [
+            ("*", "clear"),
+            ([], "block"),
+            (["https://api.openai.com"], "modify:https://api.openai.com"),
+        ],
+    )
+    async def test_apply_egress_policy_replaces_provider_policy(
         self,
-        monkeypatch: pytest.MonkeyPatch,
+        policy: EgressPolicy,
+        expected_event: str,
     ) -> None:
-        """Apply egress rules only around a command that has an allowlist.
-
-        Test cases:
-        - A non-empty allowlist applies rules before streaming output.
-        - Egress rules are cleared after the command completes.
-        """
         events: list[str] = []
 
-        async def mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
-            events.append("stream")
-
-            return None, 2.5
-
-        async def mock_modify_egress_rules(allowed_addresses: list[str]) -> None:
+        async def modify(allowed_addresses: list[str]) -> None:
             events.append(f"modify:{','.join(allowed_addresses)}")
 
-        async def mock_clear_egress_rules() -> None:
+        async def block() -> None:
+            events.append("block")
+
+        async def clear() -> None:
             events.append("clear")
 
-        monkeypatch.setattr(sandbox_module, "stream_command_output", mock_stream_command_output)
+        sandbox = Mock()
+        sandbox.modify_egress_rules = modify
+        sandbox.block_all_egress = block
+        sandbox.clear_egress_rules = clear
 
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.modify_egress_rules = mock_modify_egress_rules
-        mock_sandbox.clear_egress_rules = mock_clear_egress_rules
+        await _apply_egress_policy(sandbox, policy)
 
-        def ignore_output(_message: str) -> None:
-            pass
-
-        result = await _stream_command_output_with_egress_allowlist(
-            mock_sandbox,
-            "run-agent.sh",
-            on_output=ignore_output,
-            allowed_addresses=["https://api.openai.com"],
-        )
-
-        assert result == (None, 2.5)
-        assert events == ["modify:https://api.openai.com", "stream", "clear"]
-
-    async def test_stream_command_output_skips_egress_rules_without_allowlist(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Run commands normally when the contract has no egress allowlist.
-
-        Test cases:
-        - Empty allowlists call the existing stream_command_output path.
-        - Provider egress methods are not called.
-        """
-
-        async def mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
-            return None, 1.0
-
-        monkeypatch.setattr(sandbox_module, "stream_command_output", mock_stream_command_output)
-
-        mock_sandbox = Mock()
-        mock_sandbox.modify_egress_rules = AsyncMock()
-        mock_sandbox.clear_egress_rules = AsyncMock()
-
-        def ignore_output(_message: str) -> None:
-            pass
-
-        result = await _stream_command_output_with_egress_allowlist(
-            mock_sandbox,
-            "run-agent.sh",
-            on_output=ignore_output,
-            allowed_addresses=[],
-        )
-
-        assert result == (None, 1.0)
-        mock_sandbox.modify_egress_rules.assert_not_awaited()
-        mock_sandbox.clear_egress_rules.assert_not_awaited()
+        assert events == [expected_event]
 
     @pytest.mark.parametrize(
         ("provider_error", "expected_error", "message"),
         [
-            (ValueError("bad allowlist"), SandboxSetupError, "Failed to apply egress rules: bad allowlist"),
+            (ValueError("bad allowlist"), SandboxSetupError, "Failed to apply egress policy: bad allowlist"),
             (ProviderSandboxError("provider failed"), SandboxError, "provider failed"),
         ],
     )
-    async def test_apply_egress_allowlist_maps_provider_errors(
+    async def test_apply_egress_policy_maps_provider_errors(
         self,
         provider_error: Exception,
         expected_error: type[Exception],
         message: str,
     ) -> None:
-        """Map provider egress failures onto tracker sandbox exceptions.
-
-        Test cases:
-        - Provider validation errors become SandboxSetupError.
-        - Provider sandbox errors become SandboxError.
-        """
-        mock_sandbox = Mock()
-        mock_sandbox.modify_egress_rules = AsyncMock(side_effect=provider_error)
+        sandbox = Mock()
+        sandbox.modify_egress_rules = AsyncMock(side_effect=provider_error)
 
         with pytest.raises(expected_error, match=message):
-            await _apply_egress_allowlist(mock_sandbox, ["https://api.openai.com"])
+            await _apply_egress_policy(sandbox, ["https://api.openai.com"])
 
 
 class TestStreamCommandOutputAgentFailure:

@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    ComposeSource,
     Sandbox,
     SandboxNotFoundError,
     SandboxProvider,
@@ -28,6 +29,7 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from pydantic import ValidationError
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
@@ -60,13 +62,22 @@ from tracker.exceptions import (
     SandboxSetupError,
     TrackerServiceError,
 )
+from tracker.egress import combine_run_egress_policies
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
 from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
-from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import (
+    DependencySetupMode,
+    apply_egress_policy,
+    create_sandbox,
+    install_agent_dependencies,
+    run_agent,
+    runtime_sandbox,
+    upload_agent_artifacts,
+)
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
 from tracker.scheduler.store import PostgresAdvisoryLock, task_evaluation_lock
 from tracker.types import (
@@ -338,18 +349,19 @@ class TaskMonitor:
         self._cancellation_requested = set()
         self._authority = authority
 
-    def _load_state(self, task_ids: list[str]) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            task_states = {
-                task_id: (TaskStatus(status), started_at)
-                for task_id, status, started_at in session.exec(
-                    select(Task.task_id, Task.status, Task.started_at)
-                    .where(col(Task.task_id).in_(task_ids))
-                    .where(Task.benchmark == self._benchmark_id)
-                    .where(Task.org_id == self._org.id)
-                ).all()
-            }
+    def _load_state(
+        self, session: Session, task_ids: list[str]
+    ) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
+        benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+        task_states = {
+            task_id: (TaskStatus(status), started_at)
+            for task_id, status, started_at in session.exec(
+                select(Task.task_id, Task.status, Task.started_at)
+                .where(col(Task.task_id).in_(task_ids))
+                .where(Task.benchmark == self._benchmark_id)
+                .where(Task.org_id == self._org.id)
+            ).all()
+        }
 
         for task_id in task_ids:
             if task_id not in task_states:
@@ -357,15 +369,21 @@ class TaskMonitor:
 
         return benchmark_row, task_states
 
-    def _authority_is_current(self) -> bool:
+    def _read_tick(self, task_ids: list[str]) -> tuple[bool, Benchmark | None, dict[str, tuple[TaskStatus, datetime]]]:
         with Session(bind=engine) as session:
             try:
                 lock_execution_authority(session, self._authority)
             except ExecutionAuthorityRevoked:
-                session.rollback()
-                return False
+                authority_current = False
+            else:
+                authority_current = True
             session.rollback()
-            return True
+
+            if task_ids:
+                benchmark_row, task_states = self._load_state(session, task_ids)
+                return authority_current, benchmark_row, task_states
+
+        return authority_current, None, {}
 
     async def _check_notifications(self, benchmark_row: Benchmark) -> None:
         """Check notification thresholds using DB task counts."""
@@ -382,7 +400,18 @@ class TaskMonitor:
         """
 
         while self._task_tracking or (self._coordinator_done is not None and not self._coordinator_done.is_set()):
-            authority_current = self._authority_is_current()
+            tasks_to_check = [
+                task_id
+                for task_id, tracked_task in self._task_tracking.items()
+                if tracked_task.status != TrackedTaskStatus.DONE
+            ]
+            try:
+                authority_current, benchmark_row, task_states = self._read_tick(tasks_to_check)
+            except OperationalError:
+                logger.warning("Task monitor database read failed; retrying next tick", exc_info=True)
+                await asyncio.sleep(self._TRACK_INTERVAL)
+                continue
+
             for task_id, tracked_task in list(self._task_tracking.items()):
                 if tracked_task.status == TrackedTaskStatus.DONE:
                     del self._task_tracking[task_id]
@@ -394,8 +423,7 @@ class TaskMonitor:
                 await asyncio.sleep(self._TRACK_INTERVAL)
                 continue
 
-            tasks_to_check: list[str] = list(self._task_tracking.keys())
-            benchmark_row, task_states = self._load_state(tasks_to_check)
+            assert benchmark_row is not None
             if self._limiter is not None:
                 await self._limiter.resize(benchmark_row.arguments.concurrency)
 
@@ -413,7 +441,10 @@ class TaskMonitor:
                     self._cancellation_requested.add(task_id)
                     task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
-            await self._check_notifications(benchmark_row)
+            try:
+                await self._check_notifications(benchmark_row)
+            except OperationalError:
+                logger.warning("Task monitor notification read failed; retrying next tick", exc_info=True)
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 
@@ -1087,13 +1118,41 @@ async def _process_task_attempt(
                         ):
                             return {task_id: None}
 
-                # Upload the contract to the sandbox after creating and install the dependencies
+                # Upload the contract before applying any stage-specific network policy.
                 await upload_agent_artifacts(
                     sandbox,
                     start_benchmark_request.contract,
                     str(benchmark_id),
                     object_store,
                 )
+
+                agent_sandbox = runtime_sandbox(sandbox, task_data.source)
+
+                async def install_agent() -> None:
+                    await apply_egress_policy(
+                        agent_sandbox,
+                        start_benchmark_request.contract.install_egress_policy,
+                    )
+                    try:
+                        await install_agent_dependencies(
+                            agent_sandbox,
+                            start_benchmark_request.contract,
+                            log_output,
+                            dependency_setup_recovery.mode,
+                        )
+                    except DependencySetupExhaustedError:
+                        dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
+                        raise
+
+                # Compose setup bootstraps the service that receives agent commands,
+                # so it must run before installation regardless of the declared order.
+                install_after_setup = (
+                    isinstance(task_data.source, ComposeSource) or task_data.agent_install_order == "after_setup"
+                )
+                if not install_after_setup:
+                    await install_agent()
+
+                await apply_egress_policy(sandbox, task_data.egress.setup_task)
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
@@ -1111,6 +1170,9 @@ async def _process_task_attempt(
                 # distinct outage and must receive a new identity.
                 recovery_attempt.mark_replacement_ready()
 
+                if install_after_setup:
+                    await install_agent()
+
                 # Force flush the logs if anything has been buffered
                 task_logs.buffer_logs(force_flush=True)
 
@@ -1119,25 +1181,26 @@ async def _process_task_attempt(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = task_artifact_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                try:
-                    exit_reason, agent_run_time = await run_agent(
-                        sandbox,
-                        start_benchmark_request.contract,
-                        task_data.problem_path,
-                        task_id,
-                        log_output,
-                        task_data.cwd,
-                        object_store=object_store,
-                        agent_output_s3_key=agent_output_s3_key,
-                        agent_timeout=task_data.agent_timeout,
-                        benchmark_id=str(benchmark_id),
-                        runtime_source=task_data.source,
-                        dependency_setup_mode=dependency_setup_recovery.mode,
-                        execution_is_current=execution_is_current,
-                    )
-                except DependencySetupExhaustedError:
-                    dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
-                    raise
+                await apply_egress_policy(
+                    agent_sandbox,
+                    combine_run_egress_policies(
+                        task_data.egress.run,
+                        start_benchmark_request.contract.egress_allowlist,
+                    ),
+                )
+                exit_reason, agent_run_time = await run_agent(
+                    agent_sandbox,
+                    start_benchmark_request.contract,
+                    task_data.problem_path,
+                    task_id,
+                    log_output,
+                    task_data.cwd,
+                    object_store=object_store,
+                    agent_output_s3_key=agent_output_s3_key,
+                    agent_timeout=task_data.agent_timeout,
+                    benchmark_id=str(benchmark_id),
+                    execution_is_current=execution_is_current,
+                )
                 logger.info(
                     "agent.run.complete",
                     extra={
@@ -1177,6 +1240,7 @@ async def _process_task_attempt(
                     },
                 )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
+                await apply_egress_policy(sandbox, task_data.egress.evaluation)
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
                 evaluation_result = await _run_benchmark_service_websocket(

@@ -21,7 +21,6 @@ from tracker.database.models import ExecutorAdmission, ExecutorRelease, Executor
 
 def test_release_entrypoint_loads_database_config_after_sealed_environment() -> None:
     environment = os.environ.copy()
-    environment.update(DATABASE_POOL_SIZE="5", DATABASE_MAX_OVERFLOW="2")
     for name in ("DATABASE_URL", "DB_USERNAME", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME"):
         environment.pop(name, None)
 
@@ -48,8 +47,34 @@ assert engine.url.password == "sealed-password"
 assert engine.url.host == "database.internal"
 assert engine.url.port == 5433
 assert engine.url.database == "sealed-database"
-assert engine.pool.size() == 5
-assert engine.pool._max_overflow == 2
+""",
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_release_engine_does_not_retain_idle_connections(tmp_path: os.PathLike[str]) -> None:
+    environment = {**os.environ, "DATABASE_URL": f"sqlite:///{tmp_path}/release.sqlite3"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+from sqlalchemy import event
+from sqlmodel import Session, select
+from tracker.database.session import engine
+
+connections = []
+event.listen(engine, "connect", lambda connection, _record: connections.append(connection))
+for _ in range(2):
+    with Session(engine) as session:
+        assert session.exec(select(1)).one() == 1
+assert len(connections) == 2, "the engine retained an idle database connection"
 """,
         ],
         check=False,

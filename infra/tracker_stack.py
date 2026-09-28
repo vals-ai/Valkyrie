@@ -27,6 +27,7 @@ from constants import (
     ALB_HEALTH_INTERVAL_SECONDS,
     ALB_IDLE_TIMEOUT_SECONDS,
     ALLOWED_IPS,
+    BENCHMARK_SERVICE_PORT,
     CONTAINER_HEALTH_INTERVAL_SECONDS,
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
@@ -104,8 +105,6 @@ class TrackerStack(Stack):
         # Shared environment variables
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
-            "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
-            "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
@@ -154,9 +153,35 @@ class TrackerStack(Stack):
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
         )
 
+        proxy_security_group = aws_ec2.SecurityGroup(
+            self,
+            "TrackerDbProxySecurityGroup",
+            vpc=vpc,
+            description="Security group for Tracker RDS proxy",
+        )
+        proxy_security_group.add_ingress_rule(
+            peer=aws_ec2.Peer.ipv4(VPC_CIDR),
+            connection=aws_ec2.Port.tcp(POSTGRES_PORT),
+            description="Allow VPC services to connect to RDS proxy",
+        )
+        # Queued sandbox admission holds a session advisory lock while it waits on sandbox creation.
+        # The proxy closes idle clients after 30 minutes by default, which would release that lock.
+        self.database_proxy = self.database.add_proxy(
+            "TrackerDatabaseProxy",
+            vpc=vpc,
+            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
+            secrets=[db_credentials_secret],
+            security_groups=[proxy_security_group],
+            idle_client_timeout=Duration.hours(8),
+        )
+
+        # Retain old endpoint exports until consumer stacks have deployed the proxy endpoint.
+        self.export_value(self.database.db_instance_endpoint_address)
+        self.export_value(self.database.db_instance_endpoint_port)
+
         db_env = {
-            "DB_HOST": self.database.db_instance_endpoint_address,
-            "DB_PORT": self.database.db_instance_endpoint_port,
+            "DB_HOST": self.database_proxy.endpoint,
+            "DB_PORT": str(POSTGRES_PORT),
             "DB_NAME": POSTGRES_DB,
         }
 
@@ -292,6 +317,53 @@ class TrackerStack(Stack):
             assign_public_ip=True,
             public_load_balancer=not stage.is_release_test,
         )
+
+        tracker_security_group = self.service.service.connections.security_groups[0]
+        cfn_tracker_security_group = cast(aws_ec2.CfnSecurityGroup, tracker_security_group.node.default_child)
+        cfn_tracker_security_group.security_group_egress = [
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=POSTGRES_PORT,
+                to_port=POSTGRES_PORT,
+                cidr_ip=VPC_CIDR,
+                description="Tracker PostgreSQL",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=REDIS_PORT,
+                to_port=REDIS_PORT,
+                cidr_ip=VPC_CIDR,
+                description="Tracker and ExecutorHost Redis",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=BENCHMARK_SERVICE_PORT,
+                to_port=BENCHMARK_SERVICE_PORT,
+                cidr_ip=VPC_CIDR,
+                description="Benchmark service Cloud Map calls",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="udp",
+                from_port=53,
+                to_port=53,
+                cidr_ip=VPC_CIDR,
+                description="VPC DNS UDP",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=53,
+                to_port=53,
+                cidr_ip=VPC_CIDR,
+                description="VPC DNS TCP",
+            ),
+            aws_ec2.CfnSecurityGroup.EgressProperty(
+                ip_protocol="tcp",
+                from_port=443,
+                to_port=443,
+                cidr_ip="0.0.0.0/0",
+                description="AWS API endpoints",
+            ),
+        ]
 
         create_tracker_access_logs(
             self,

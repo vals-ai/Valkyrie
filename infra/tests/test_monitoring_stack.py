@@ -222,7 +222,7 @@ def service_templates(
         namespace=shared.namespace,
         redis_url=shared.redis_url,
         bucket_name=shared.bucket_name,
-        database=tracker.database,
+        database_proxy=tracker.database_proxy,
         db_credentials=tracker.db_credentials,
         tracker_service=tracker.tracker_fargate_service,
         tracker_image=tracker.tracker_image,
@@ -725,7 +725,7 @@ class MonitoringStackTest(unittest.TestCase):
                     [
                         {
                             "CidrIp": "10.0.0.0/16",
-                            "Description": "Tracker PostgreSQL",
+                            "Description": "Tracker RDS proxy",
                             "FromPort": 5432,
                             "IpProtocol": "tcp",
                             "ToPort": 5432,

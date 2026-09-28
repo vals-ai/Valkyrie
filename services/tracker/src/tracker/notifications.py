@@ -40,7 +40,7 @@ class NotificationContext(BaseModel):
     def from_benchmark(cls, benchmark_row: "Benchmark", session: "Session", org: "Org") -> NotificationContext:
         from tracker.utils import BenchmarkContext
 
-        details = BenchmarkContext(benchmark_row, session, org).benchmark_details
+        details = BenchmarkContext(benchmark_row, session, org.id).benchmark_details
         return cls(
             benchmark_name=benchmark_row.name,
             agent_name=benchmark_row.arguments.contract.name,

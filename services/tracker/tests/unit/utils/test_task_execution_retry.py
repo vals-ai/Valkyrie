@@ -10,9 +10,15 @@ from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
-from benchmark_service import SandboxNotFoundError, SandboxRecoveryPolicy
+from benchmark_service import ComposeSource, ImageSource, SandboxNotFoundError, SandboxRecoveryPolicy
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-from benchmark_service.schemas import RetrieveTaskResponse, SetupTaskResponse, VolumeMount
+from benchmark_service.schemas import (
+    AgentInstallOrder,
+    BenchmarkEgressPlan,
+    RetrieveTaskResponse,
+    SetupTaskResponse,
+    VolumeMount,
+)
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, desc, select
 
@@ -32,6 +38,7 @@ from tracker.database.models import (
     ExecutorDispatchStatus,
     TaskStatus,
 )
+from tracker.egress import EgressPolicy
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
@@ -59,14 +66,14 @@ class TestTaskExecutionRetry:
                 TaskStatus.FINISHED,
             ),
             (
-                "tracker.utils.task_execution.run_agent",
+                "tracker.utils.task_execution.install_agent_dependencies",
                 DependencySetupExhaustedError("dependency setup exhausted"),
                 None,
                 [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.FINAL_FRESH_SANDBOX],
                 TaskStatus.FINISHED,
             ),
             (
-                "tracker.utils.task_execution.run_agent",
+                "tracker.utils.task_execution.install_agent_dependencies",
                 DependencySetupExhaustedError("dependency setup exhausted"),
                 AgentRunFailedError("fresh sandbox setup failed"),
                 [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.FINAL_FRESH_SANDBOX],
@@ -121,7 +128,6 @@ class TestTaskExecutionRetry:
         async def _fails_first_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             nonlocal call_count
             call_count += 1
-            dependency_modes.append(_kwargs["dependency_setup_mode"])
             if call_count == 1:
                 raise error
             if second_error:
@@ -134,8 +140,17 @@ class TestTaskExecutionRetry:
             if call_count == 1:
                 raise error
 
+        async def _install_dependencies(*args: Any, **_kwargs: Any) -> None:
+            nonlocal call_count
+            dependency_modes.append(args[3])
+            if fail_target == "tracker.utils.task_execution.install_agent_dependencies":
+                call_count += 1
+                if call_count == 1:
+                    raise error
+                if second_error:
+                    raise second_error
+
         async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
-            dependency_modes.append(_kwargs["dependency_setup_mode"])
             return None, 0.0
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
@@ -145,11 +160,14 @@ class TestTaskExecutionRetry:
             return {"status": "success", "score": 1.0}
 
         is_run_agent_target = fail_target == "tracker.utils.task_execution.run_agent"
+        is_install_target = fail_target == "tracker.utils.task_execution.install_agent_dependencies"
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
-        monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
+        monkeypatch.setattr("tracker.utils.task_execution.install_agent_dependencies", _install_dependencies)
+        if not is_install_target:
+            monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
         if not is_run_agent_target:
             monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
@@ -195,6 +213,139 @@ class TestTaskExecutionRetry:
             assert terminal_result.failed_attempt_number is None
         else:
             assert terminal_results == []
+
+    @pytest.mark.parametrize(
+        ("compose_runtime", "agent_install_order", "setup_before_install"),
+        [
+            pytest.param(False, "before_setup", False, id="image-before-setup"),
+            pytest.param(False, "after_setup", True, id="image-after-setup"),
+            pytest.param(True, "before_setup", True, id="compose-before-setup-override"),
+            pytest.param(True, "after_setup", True, id="compose-after-setup"),
+        ],
+    )
+    async def test_process_task_applies_stage_policies_in_lifecycle_order(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+        compose_runtime: bool,
+        agent_install_order: AgentInstallOrder,
+        setup_before_install: bool,
+    ) -> None:
+        """Benchmarks choose install order; Compose always bootstraps first."""
+        contract = contract.model_copy(
+            update={
+                "install_egress": ["https://packages.example.com"],
+                "egress_allowlist": ["https://agent-runtime.example.com"],
+            }
+        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        source = (
+            ComposeSource(
+                outer=ImageSource(image="docker:28-dind"),
+                compose_command="docker compose -f /harbor/compose.yaml",
+            )
+            if compose_runtime
+            else ImageSource(image="test-image:latest")
+        )
+        task_data = make_retrieve_task_response().model_copy(
+            update={
+                "source": source,
+                "agent_install_order": agent_install_order,
+                "egress": BenchmarkEgressPlan(
+                    setup_task=[],
+                    run=["https://benchmark-runtime.example.com"],
+                    evaluation=["https://grading.example.com"],
+                ),
+            }
+        )
+        events: list[str] = []
+        raw_sandbox = Mock(id="raw-sandbox", name="raw-sandbox")
+        agent_sandbox = Mock(id="agent-sandbox", name="agent-sandbox")
+        expected_agent_sandbox = agent_sandbox if compose_runtime else raw_sandbox
+
+        @asynccontextmanager
+        async def create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Mock, None]:
+            try:
+                yield raw_sandbox
+            finally:
+                events.append("teardown")
+
+        async def upload(*_args: Any, **_kwargs: Any) -> None:
+            events.append("upload")
+
+        def wrap(sandbox: Any, observed_source: Any) -> Mock:
+            assert sandbox is raw_sandbox
+            assert observed_source is source
+            events.append("wrap")
+            return expected_agent_sandbox
+
+        async def apply(sandbox: Any, policy: EgressPolicy) -> None:
+            target = "agent" if sandbox is agent_sandbox else "raw"
+            events.append(f"policy:{target}:{policy}")
+
+        async def install(sandbox: Any, *_args: Any, **_kwargs: Any) -> None:
+            assert sandbox is expected_agent_sandbox
+            events.append("install")
+
+        async def retrieve(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return task_data
+
+        async def setup(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+            events.append("setup")
+            return SetupTaskResponse(status="ok")
+
+        async def run(sandbox: Any, *_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            assert sandbox is expected_agent_sandbox
+            events.append("run")
+            return None, 0.0
+
+        async def evaluate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            events.append("evaluate")
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
+        monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", upload)
+        monkeypatch.setattr("tracker.utils.task_execution.runtime_sandbox", wrap)
+        monkeypatch.setattr("tracker.utils.task_execution.apply_egress_policy", apply)
+        monkeypatch.setattr("tracker.utils.task_execution.install_agent_dependencies", install)
+        monkeypatch.setattr("tracker.utils.task_execution.run_agent", run)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve)
+        monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        expected_agent_target = "agent" if compose_runtime else "raw"
+        install_events = [
+            f"policy:{expected_agent_target}:['https://packages.example.com']",
+            "install",
+        ]
+        setup_events = ["policy:raw:[]", "setup"]
+        assert events == [
+            "upload",
+            "wrap",
+            *(setup_events if setup_before_install else install_events),
+            *(install_events if setup_before_install else setup_events),
+            (
+                f"policy:{expected_agent_target}:"
+                "['https://benchmark-runtime.example.com', 'https://agent-runtime.example.com']"
+            ),
+            "run",
+            "policy:raw:['https://grading.example.com']",
+            "evaluate",
+            "teardown",
+        ]
 
     async def test_process_task_retries_when_service_reports_broken_sandbox(
         self,

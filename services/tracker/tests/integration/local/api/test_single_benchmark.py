@@ -4,16 +4,26 @@ Exercise single-benchmark routes through the real app and local database.
 """
 
 import json
+import socket
+import time
+from collections.abc import Generator
 from datetime import UTC, datetime
+from threading import Thread
 from uuid import uuid4
 
+import httpx
 import pytest
+import uvicorn
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import event
-from sqlmodel import Session
+from sqlalchemy import event, text
+from sqlmodel import Session, SQLModel, create_engine
+from testcontainers.postgres import PostgresContainer
 
 from tests.factories import make_benchmark, make_task
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
+    DEFAULT_ORG_NAME,
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
@@ -22,6 +32,7 @@ from tracker.database.models import (
     Org,
     TaskStatus,
 )
+from tracker.database.session import get_session
 
 
 class TestSingleBenchmark:
@@ -93,6 +104,67 @@ class TestSingleBenchmark:
         response = client.get(f"/benchmarks/{unknown_benchmark_id}", headers={"Authorization": "Bearer fake"})
 
         assert response.status_code == 404
+
+
+class TestBenchmarkStatusStreamPostgres:
+    """Live status streams on PostgreSQL."""
+
+    @pytest.mark.usefixtures("bearer_auth")
+    def test_open_stream_releases_postgres_request_and_poll_transactions(self, local_app: FastAPI) -> None:
+        """An open status stream must not hold benchmark locks between events."""
+        with PostgresContainer("postgres:16-alpine") as postgres:
+            engine = create_engine(
+                postgres.get_connection_url(), connect_args={"application_name": "tracker-sse-test-app"}
+            )
+            SQLModel.metadata.create_all(engine)
+            with Session(engine, expire_on_commit=False) as seed_session:
+                seed_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
+                seed_session.commit()
+                benchmark_id = make_benchmark(name="open-stream", session=seed_session).id
+
+            def postgres_request_session() -> Generator[Session, None, None]:
+                with Session(engine, expire_on_commit=False) as request_session:
+                    yield request_session
+
+            local_app.dependency_overrides[get_session] = postgres_request_session
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                port = listener.getsockname()[1]
+                server = uvicorn.Server(uvicorn.Config(local_app, log_level="error", lifespan="off"))
+                server_thread = Thread(target=server.run, kwargs={"sockets": [listener]})
+                server_thread.start()
+                try:
+                    deadline = time.monotonic() + 10
+                    while not server.started and server_thread.is_alive() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    assert server.started
+
+                    with httpx.Client(timeout=10) as http_client:
+                        with http_client.stream(
+                            "GET",
+                            f"http://127.0.0.1:{port}/fetch-benchmark",
+                            params={"benchmark_id": str(benchmark_id), "connect": "true"},
+                            headers=_HARNESS_HEADERS,
+                        ) as response:
+                            assert response.status_code == 200
+                            lines = response.iter_lines()
+                            assert next(lines).startswith("data: ")
+                            with engine.connect() as observer:
+                                idle_backends = observer.execute(
+                                    text(
+                                        "SELECT pid FROM pg_stat_activity "
+                                        "WHERE datname = current_database() "
+                                        "AND application_name = 'tracker-sse-test-app' "
+                                        "AND state = 'idle in transaction' AND pid <> pg_backend_pid()"
+                                    )
+                                ).all()
+                            assert idle_backends == []
+                finally:
+                    server.should_exit = True
+                    server_thread.join(timeout=10)
+                    engine.dispose()
+                    assert not server_thread.is_alive()
 
 
 class TestBenchmarkStatusStream:

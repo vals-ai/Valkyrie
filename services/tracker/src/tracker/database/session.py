@@ -1,20 +1,15 @@
 from collections.abc import Generator
 from typing import Any
 
+from sqlalchemy.pool import NullPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from tracker.config import DATABASE_MAX_OVERFLOW, DATABASE_POOL_SIZE, DATABASE_URL
+from tracker.config import DATABASE_URL
 from tracker.database.models import Benchmark, EvaluationResult, Org, Task
 
 _exposed_models: list[type[SQLModel]] = [Benchmark, EvaluationResult, Org, Task]
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_size=DATABASE_POOL_SIZE,
-    max_overflow=DATABASE_MAX_OVERFLOW,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-)
+engine = create_engine(DATABASE_URL, poolclass=NullPool)
 
 
 def get_session() -> Generator[Session, Any, None]:

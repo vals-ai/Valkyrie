@@ -6,16 +6,19 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 import asyncio
 from datetime import timedelta
 from typing import Any
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import uuid4
 
 import pytest
-from sqlmodel import Session
+from sqlalchemy.exc import OperationalError
+from sqlmodel import Session, select
 
 from tests.utils import TEST_ORG_ID
-from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.database.models import Benchmark, ExecutorDispatch, ExecutorDispatchStatus, Org, Task, TaskStatus
 from tracker.executor.execution_authority import ExecutionAuthority
+from tracker.notifications import NotificationContext
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
+from tracker.utils import task_execution
 
 
 class TestTaskExecution:
@@ -173,6 +176,168 @@ class TestTaskExecution:
         assert task_tracking == {}
         for tracked_task in (done, stopped, superseded):
             getattr(tracked_task, "_coro").close()
+
+    def _monitor_for_task(
+        self,
+        database_session: Session,
+        benchmark_row: Benchmark,
+        executor_authority: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        status: TaskStatus,
+        notifier: Any = None,
+    ) -> tuple[TaskMonitor, TrackedTask, Mock, ExecutionAuthority]:
+        database_session.add(benchmark_row)
+        database_session.commit()
+        authority = executor_authority(benchmark_row, session=database_session)
+        task_row = Task(org_id=TEST_ORG_ID, task_id="monitored", benchmark=benchmark_row.id, status=status)
+        database_session.add(task_row)
+        database_session.commit()
+
+        tracked = TrackedTask(asyncio.sleep(0), self._test_org, authority, task_row.started_at)
+        setattr(tracked, "_status", TrackedTaskStatus.RUNNING)
+        cancellation = Mock()
+        setattr(tracked, "_task", Mock(cancel=cancellation, done=lambda: False))
+        monkeypatch.setattr(task_execution, "engine", database_session.bind)
+        monitor = TaskMonitor(
+            benchmark_row.id,
+            {"monitored": tracked},
+            org=self._test_org,
+            limiter=None,
+            authority=authority,
+            notifier=notifier,
+        )
+
+        return monitor, tracked, cancellation, authority
+
+    @pytest.mark.parametrize("failure_stage", ["authority", "state", "notifications"])
+    async def test_task_monitor_retries_operational_error_without_cancelling(
+        self,
+        failure_stage: str,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        executor_authority: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        notifier = Mock(check_and_notify=AsyncMock()) if failure_stage == "notifications" else None
+        monitor, tracked, cancellation, _authority = self._monitor_for_task(
+            database_session,
+            example_benchmark_object,
+            executor_authority,
+            monkeypatch,
+            status=TaskStatus.IN_PROGRESS if failure_stage == "notifications" else TaskStatus.STOPPED,
+            notifier=notifier,
+        )
+        if failure_stage == "notifications":
+            owner: Any = NotificationContext
+            name = "from_benchmark"
+        else:
+            owner = task_execution
+            name = "lock_execution_authority" if failure_stage == "authority" else "fetch_benchmark_row"
+        original = getattr(owner, name)
+        failed = False
+
+        def fail_once(*args: Any, **kwargs: Any) -> Any:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise OperationalError("SELECT", {}, Exception("connection lost"))
+
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, fail_once)
+        sleep_count = 0
+
+        async def finish_after_recovery(_delay: float) -> None:
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count == 1:
+                cancellation.assert_not_called()
+                if failure_stage == "notifications":
+                    task_row = database_session.exec(select(Task).where(Task.task_id == "monitored")).one()
+                    task_row.status = TaskStatus.STOPPED
+                    database_session.add(task_row)
+                    database_session.commit()
+            elif sleep_count == 2:
+                cancellation.assert_called_once()
+                setattr(tracked, "_status", TrackedTaskStatus.DONE)
+
+        monkeypatch.setattr(task_execution.asyncio, "sleep", finish_after_recovery)
+
+        try:
+            await monitor.track_tasks()
+        finally:
+            getattr(tracked, "_coro").close()
+
+        assert failed
+        assert sleep_count == 3
+        cancellation.assert_called_once()
+
+    async def test_task_monitor_revoked_authority_cancels_once(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        executor_authority: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monitor, tracked, cancellation, authority = self._monitor_for_task(
+            database_session,
+            example_benchmark_object,
+            executor_authority,
+            monkeypatch,
+            status=TaskStatus.IN_PROGRESS,
+        )
+        dispatch = database_session.get(ExecutorDispatch, authority.dispatch_id)
+        assert dispatch is not None
+        dispatch.status = ExecutorDispatchStatus.FINISHED
+        database_session.add(dispatch)
+        database_session.commit()
+        sleep_count = 0
+
+        async def finish_after_cancellation(_delay: float) -> None:
+            nonlocal sleep_count
+            sleep_count += 1
+            cancellation.assert_called_once()
+            if sleep_count == 2:
+                setattr(tracked, "_status", TrackedTaskStatus.DONE)
+
+        monkeypatch.setattr(task_execution.asyncio, "sleep", finish_after_cancellation)
+
+        try:
+            await monitor.track_tasks()
+        finally:
+            getattr(tracked, "_coro").close()
+
+        assert sleep_count == 3
+        cancellation.assert_called_once()
+
+    async def test_task_monitor_unexpected_db_error_propagates(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        executor_authority: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monitor, tracked, cancellation, _authority = self._monitor_for_task(
+            database_session,
+            example_benchmark_object,
+            executor_authority,
+            monkeypatch,
+            status=TaskStatus.STOPPED,
+        )
+
+        def fail_read(_benchmark_id: Any, _session: Session, _org: Org) -> None:
+            raise ValueError("invalid benchmark state")
+
+        monkeypatch.setattr(task_execution, "fetch_benchmark_row", fail_read)
+
+        try:
+            with pytest.raises(ValueError, match="invalid benchmark state"):
+                await monitor.track_tasks()
+        finally:
+            getattr(tracked, "_coro").close()
+
+        cancellation.assert_not_called()
 
     async def test_tracked_task(self) -> None:
         """Tracked task states must match semaphore scheduling and cancellation.

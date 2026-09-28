@@ -93,7 +93,12 @@ _EXPECTED_RESOURCES = {
 }
 _EXPECTED_TYPES = {
     "Artifacts": ("RunArtifactEntry", "RunArtifactsResponse", "RunArtifactDownloadResponse"),
-    "Agents": ("AgentContractRequest", "AgentDownloadURLResponse", "AgentEntry", "AgentsResponse"),
+    "Agents": (
+        "AgentContractRequest",
+        "AgentDownloadURLResponse",
+        "AgentEntry",
+        "AgentsResponse",
+    ),
     "Runs": (
         "AnalyzeEvent",
         "FetchBenchmarkResponse",

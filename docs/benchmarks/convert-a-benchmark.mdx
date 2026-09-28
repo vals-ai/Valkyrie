@@ -77,6 +77,7 @@ from typing import Any
 
 from benchmark_service import BenchmarkService, ImageSource, Resources, Sandbox
 from benchmark_service.schemas import (
+    BenchmarkEgressPlan,
     FinalScoreResult,
     RetrieveTaskResponse,
     StreamChunk,
@@ -133,8 +134,22 @@ Decide your image strategy before writing this method, because it determines wha
 
 Other `source` options are `SnapshotSource` for a provider snapshot and `ComposeSource` when the task needs Docker Compose services. GPUs are requested through resources, for example `Resources(vcpu=8, memory=32, disk=50, gpu=1, gpu_type="H100")`. Nested Docker is available in every sandbox, so a benchmark that runs containers only needs a Docker-capable image and to start `dockerd` itself during setup.
 
+By default, Valkyrie runs the agent contract's install command before `setup_task`. Set `agent_install_order="after_setup"` on `RetrieveTaskResponse` when benchmark setup must prepare the runtime first. `ComposeSource` always runs setup before agent installation because setup starts the service that receives agent commands. This field controls the agent's install command only; `setup_task` remains responsible for benchmark and task dependencies.
+
+A benchmark can set separate outbound network policies for setup, agent execution, and evaluation:
+
+```python
+egress=BenchmarkEgressPlan(
+    setup_task=["https://artifacts.example.com"],
+    run=[],
+    evaluation=[],
+)
+```
+
+Use `"*"` for unrestricted access, `[]` to block all outbound access, or a non-empty list to allow only those URLs, domains, IP addresses, or CIDRs. Setup and evaluation default to `"*"`. Run defaults to `None`, meaning the benchmark has no run-policy opinion; this preserves existing behavior. A legacy non-empty agent `egress_allowlist` adds its destinations to the benchmark run allowlist. The selected setup policy remains active until the agent installation policy is applied. The evaluation policy remains active while Valkyrie evaluates the live task sandbox, including evaluation stream resumption.
+
 <Warning>
-  Hosted sandboxes can only use `linux/amd64` images that pull anonymously. Build with `--platform linux/amd64` and confirm an anonymous pull works, since a private image usually surfaces as sandbox creation or retry errors rather than an image-pull error.
+  Hosted sandboxes require `linux/amd64` images. Public images must pull anonymously. Private Amazon ECR images require the registry and its cross-account pull role to be configured in Daytona before Valkyrie creates the sandbox.
 </Warning>
 
 ### Set up the task

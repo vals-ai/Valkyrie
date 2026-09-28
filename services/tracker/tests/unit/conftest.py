@@ -216,6 +216,8 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
         return None, 0.0
 
     monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _noop)
+    monkeypatch.setattr("tracker.utils.task_execution.apply_egress_policy", _noop)
+    monkeypatch.setattr("tracker.utils.task_execution.install_agent_dependencies", _noop)
     monkeypatch.setattr("tracker.utils.task_execution.run_agent", _noop_run_agent)
 
 
