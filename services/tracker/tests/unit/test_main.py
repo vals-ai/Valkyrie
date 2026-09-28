@@ -199,14 +199,6 @@ class TestTrackerAPI:
         queued_payload = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
         assert queued_payload["dataset_version"] == "release-a"
         assert queued_payload["resolved_dataset_version"]["id"] == "release-a"
-        legacy_payload = {
-            **queued_payload,
-            "dataset_version": {"id": "release-a", "label": "release-a"},
-        }
-        legacy_payload.pop("resolved_dataset_version")
-        legacy_request = RunExecutionRequest.model_validate(legacy_payload)
-        assert legacy_request.dataset_version is None
-        assert legacy_request.resolved_dataset_version == DatasetVersion(id="release-a", label="release-a")
 
         current_default[0] = "release-b"
         queued_request = RunExecutionRequest.model_validate(mock_kicker.queued_calls[0]["start_benchmark_request_json"])

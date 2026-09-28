@@ -139,17 +139,6 @@ class RunExecutionRequest(StartBenchmarkRequest):
 
     resolved_dataset_version: DatasetVersion | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_queued_dataset_version(cls, value: Any) -> Any:
-        if isinstance(value, dict) and isinstance(value.get("dataset_version"), dict):
-            value = {
-                **value,
-                "dataset_version": None,
-                "resolved_dataset_version": value["dataset_version"],
-            }
-        return value
-
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
