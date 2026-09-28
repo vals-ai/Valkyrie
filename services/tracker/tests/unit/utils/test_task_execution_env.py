@@ -12,6 +12,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 from benchmark_service import SandboxSource, TargetedSnapshotSource
@@ -129,8 +130,10 @@ class TestProcessTaskEnvironment:
     """Tracker-owned environment variables passed to agent tasks."""
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize("generation_id", [None, UUID("c2798181-1c4b-40c7-98bf-cf3886cb319c")])
     async def test_process_task_injects_tracker_owned_attribution_env(
         self,
+        generation_id: UUID | None,
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
@@ -163,12 +166,16 @@ class TestProcessTaskEnvironment:
                 "contract": contract.model_copy(update={"name": "transient-agent-name"}),
             }
         )
+        task_row.generation_id = generation_id
+        database_session.add(task_row)
+        database_session.commit()
         captured_env_vars: list[dict[str, str]] = []
 
         def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
                 "RUN_ID": "secret-run-id",
                 "TASK_ID": "secret-task-id",
+                "TASK_GENERATION_ID": "secret-generation-id",
                 "VALKYRIE_AGENT_MODEL": "secret-model",
                 "VALKYRIE_AGENT_VARIANT": "secret-variant",
                 "IDENTITY": '{"source":"secret"}',
@@ -192,6 +199,7 @@ class TestProcessTaskEnvironment:
         assert env_vars["RUN_ID"] == str(benchmark_id)
         assert "QUESTION_ID" not in env_vars
         assert env_vars["TASK_ID"] == "task_0"
+        assert env_vars["TASK_GENERATION_ID"] == (str(generation_id) if generation_id is not None else "")
         assert env_vars["VALKYRIE_AGENT_MODEL"] == "provider/model"
         assert env_vars["VALKYRIE_AGENT_VARIANT"] == "xhigh"
         assert json.loads(env_vars["IDENTITY"]) == {

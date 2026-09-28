@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from benchmark_service import (
@@ -307,6 +308,7 @@ def reset_to_in_progress_status(
             task.finished_at = None
             if retry_mode == RetryMode.FROM_SCRATCH:
                 task.eval_resume_state = None
+                task.generation_id = uuid4()
             session.add(task)
 
         for task_id in new_task_ids:

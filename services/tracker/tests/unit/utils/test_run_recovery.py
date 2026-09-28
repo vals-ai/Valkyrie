@@ -731,8 +731,10 @@ class TestRunRecovery:
             (RetryMode.FROM_SCRATCH, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
         ],
     )
+    @pytest.mark.parametrize("original_generation", [None, UUID("c2798181-1c4b-40c7-98bf-cf3886cb319c")])
     async def test_reset_handles_eval_resume_state(
         self,
+        original_generation: UUID | None,
         retry_mode: RetryMode,
         eval_resume_state: dict[str, str] | None,
         expected_status: TaskStatus,
@@ -749,6 +751,7 @@ class TestRunRecovery:
             benchmark=benchmark_row.id,
             status=TaskStatus.STOPPED,
             eval_resume_state=eval_resume_state,
+            generation_id=original_generation,
         )
         database_session.add(benchmark_row)
         database_session.add(task_row)
@@ -774,6 +777,12 @@ class TestRunRecovery:
         assert verified_task_ids == [task_row.task_id]
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
+
+        if retry_mode == RetryMode.FROM_SCRATCH:
+            assert task_row.generation_id is not None
+            assert task_row.generation_id != original_generation
+        else:
+            assert task_row.generation_id == original_generation
 
     async def test_retry_preserves_previous_task_history_for_export(
         self,

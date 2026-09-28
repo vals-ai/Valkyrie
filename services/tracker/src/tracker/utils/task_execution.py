@@ -1008,6 +1008,7 @@ async def _process_task_attempt(
             **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
+            "TASK_GENERATION_ID": str(task_row.generation_id) if task_row.generation_id is not None else "",
             **_attested_inference_settings(start_benchmark_request.contract),
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics

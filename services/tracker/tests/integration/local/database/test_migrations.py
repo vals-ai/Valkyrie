@@ -635,3 +635,19 @@ def test_current_execution_ownership_migration_rejects_downgrade(
     assert revision == _CURRENT_OWNERSHIP_REVISION
     assert stored_owner == "migration-test-release"
     engine.dispose()
+
+
+def test_task_generation_migration_is_nullable_and_round_trips(migration_database_url: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    try:
+        column = next(c for c in inspect(engine).get_columns("task") if c["name"] == "generation_id")
+        assert column["nullable"] is True
+        assert str(column["type"]) == "UUID"
+    finally:
+        engine.dispose()
+    downgrade = _run_alembic(migration_database_url, "downgrade", "2d3e4f5a6b7c")
+    assert downgrade.returncode == 0, downgrade.stderr
+    upgrade_again = _run_alembic(migration_database_url, "upgrade", "head")
+    assert upgrade_again.returncode == 0, upgrade_again.stderr

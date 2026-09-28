@@ -60,7 +60,7 @@ valkyrie run retry <run-id>
 Either accepts a task subset, a concurrency override, and `--connect` to stream afterwards. Three overrides change what the retried work uses:
 
 - `--update-agent` refreshes the frozen agent from its current S3 bundle, so a re-pushed agent takes effect.
-- `--from-scratch` clears stored evaluation resume state, so a task is graded again from the beginning.
+- `--from-scratch` clears stored evaluation resume state and assigns each selected task a new persistent generation ID. The executor passes it as `TASK_GENERATION_ID`, allowing supporting services (including VCB 1–100) to start fresh instead of restoring older generation checkpoints. Ordinary retries preserve this ID. Old artifacts remain available; the frozen agent bundle is unchanged.
 - `--benchmark-url` replaces the benchmark-service URL stored on the run, which a tunnelled service needs after its URL changes.
 
 `-s` merges a secret mapping into the stored contract, which is how a rotated credential reaches resumed tasks.
