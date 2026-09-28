@@ -3,6 +3,7 @@
 import json
 import os
 import unittest
+from typing import Any
 from unittest import mock
 
 from constants import EXECUTOR_RELEASE_BUCKET_NAME
@@ -13,7 +14,7 @@ from test_monitoring_stack import (
     TEST_PROD_ENV,
     TEST_AWS_ACCOUNT,
     TEST_RELEASE_TEST_ENV,
-    _shared_template,
+    shared_template,
     service_templates,
 )
 
@@ -27,7 +28,7 @@ class ExecutorRunnerStackTest(unittest.TestCase):
             (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
-                shared = _shared_template(stage_name)
+                shared = shared_template(stage_name)
                 tracker, executor, monitoring = service_templates(stage_name)
 
             self.assertEqual(len(shared.find_resources("AWS::ElastiCache::CacheCluster")), 1)
@@ -112,7 +113,7 @@ class ExecutorRunnerStackTest(unittest.TestCase):
             for statement in value["Properties"]["PolicyDocument"]["Statement"]
         ]
 
-        def by_action(action: str) -> list[dict[str, object]]:
+        def by_action(action: str) -> list[dict[str, Any]]:
             return [p for p in policies if action in (p["Action"] if isinstance(p["Action"], list) else [p["Action"]])]
 
         launch = by_action("ecs:RunTask")

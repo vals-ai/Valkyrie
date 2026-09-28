@@ -164,7 +164,7 @@ def _monitoring_template(stage_name: str = BENCH) -> assertions.Template:
     return assertions.Template.from_stack(monitoring)
 
 
-def _shared_template(stage_name: str = BENCH) -> assertions.Template:
+def shared_template(stage_name: str = BENCH) -> assertions.Template:
     app = cdk.App(context=SHARED_STACK_CONTEXT)
     stage = Stage(stage_name)
     shared = SharedStack(
@@ -372,7 +372,7 @@ class MonitoringStackTest(unittest.TestCase):
 
         shared_parameter_names = {
             resource["Properties"]["Name"]
-            for resource in _shared_template(PROD).find_resources("AWS::SSM::Parameter").values()
+            for resource in shared_template(PROD).find_resources("AWS::SSM::Parameter").values()
         }
         self.assertIn("/valkyrie/prod/shared/vpc-id", shared_parameter_names)
 
@@ -638,7 +638,7 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertNotIn("access_logs.s3.enabled", {attribute["Key"] for attribute in attributes})
 
     def test_release_test_owns_immutable_service_image_repositories(self) -> None:
-        release_template = _shared_template(RELEASE_TEST)
+        release_template = shared_template(RELEASE_TEST)
         repositories = release_template.find_resources("AWS::ECR::Repository")
         self.assertEqual(
             {resource["Properties"]["RepositoryName"] for resource in repositories.values()},
@@ -648,7 +648,7 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertTrue(
             all(resource["Properties"]["ImageTagMutability"] == "IMMUTABLE" for resource in repositories.values())
         )
-        self.assertFalse(_shared_template(DEV).find_resources("AWS::ECR::Repository"))
+        self.assertFalse(shared_template(DEV).find_resources("AWS::ECR::Repository"))
 
     def test_release_roles_are_bound_to_stage_environments(self) -> None:
         for stage, role_name, expected_subject in (
@@ -728,7 +728,7 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_deployment_notifications_are_wired_to_deployment_slack_channel(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEPLOYMENT_SLACK_ENV, clear=True):
-            template = _shared_template()
+            template = shared_template()
 
         template.has_resource_properties(
             "AWS::Chatbot::SlackChannelConfiguration",
@@ -765,7 +765,7 @@ class MonitoringStackTest(unittest.TestCase):
     def test_missing_slack_environment_skips_deployment_notification_resources(self) -> None:
         for env in ({}, {SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE"}, TEST_ALERTS_SLACK_ENV):
             with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
-                template = _shared_template()
+                template = shared_template()
 
                 self.assertFalse(
                     _has_resource_property(
@@ -1045,7 +1045,7 @@ class MonitoringStackTest(unittest.TestCase):
             "SENTRY_RELEASE": "deployment-sha",
         }
         with mock.patch.dict(os.environ, sentry_environment, clear=True):
-            tracker_template, executor_template, _ = service_templates(DEV)
+            tracker_template, _, _ = service_templates(DEV)
 
         for template in (tracker_template,):
             template.has_resource_properties(

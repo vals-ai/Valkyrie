@@ -270,9 +270,6 @@ class TrackerStack(Stack):
                 aws_iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AmazonECSTaskExecutionRolePolicy")
             ],
         )
-        db_credentials_secret.grant_read(runner_execution_role)
-        if sentry_secret_name:
-            sentry_secret.grant_read(runner_execution_role)
         runner_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "ExecutorRunnerTaskDef",
