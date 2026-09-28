@@ -2160,6 +2160,68 @@ class TestRunRecovery:
             "task_finished": TaskStatus.FINISHED,
         }
 
+    async def test_running_retry_resets_stopped_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_kicker: MockKicker,
+    ) -> None:
+        """Per-task stops leave the run IN_PROGRESS; those STOPPED tasks must be retryable in place."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="task_stopped", benchmark=benchmark_row.id, status=TaskStatus.STOPPED),
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_stopped_graded",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.STOPPED,
+                    eval_resume_state={"artifacts": "s3://bucket/prefix"},
+                ),
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_running",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.IN_PROGRESS,
+                ),
+                Task(
+                    org_id=TEST_ORG_ID, task_id="task_finished", benchmark=benchmark_row.id, status=TaskStatus.FINISHED
+                ),
+            ]
+        )
+        database_session.commit()
+
+        async def _mock_request_verify_task_ids(*_args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=list(kwargs["task_ids"]))
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            json={"task_ids": ["task_stopped", "task_stopped_graded"]},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200, response.text
+        admitted_payload = mock_kicker.queued_calls[0]
+        assert sorted(admitted_payload["verified_task_ids"]) == ["task_stopped", "task_stopped_graded"]
+
+        database_session.expire_all()
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        assert task_statuses == {
+            "task_stopped": TaskStatus.PENDING,
+            "task_stopped_graded": TaskStatus.EVALUATING,
+            "task_running": TaskStatus.IN_PROGRESS,
+            "task_finished": TaskStatus.FINISHED,
+        }
+
     async def test_running_retry_rejects_missing_current_owner_without_mutation(
         self,
         example_benchmark_object: Benchmark,
