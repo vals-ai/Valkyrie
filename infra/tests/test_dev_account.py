@@ -30,7 +30,7 @@ from constants import (
 )
 from shared import SharedStack
 from executor_stack import ExecutorStack
-from stage import BENCH, DEV, RELEASE_TEST, Stage
+from stage import BENCH, DEV, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
 
 TEST_ACCOUNT = "123456789012"
@@ -198,7 +198,15 @@ class DevAccountInfrastructureTest(unittest.TestCase):
 
         self.assertEqual(
             bucket["Properties"]["LifecycleConfiguration"],
-            {"Rules": [{"AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}, "Status": "Enabled"}]},
+            {
+                "Rules": [
+                    {
+                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
+                        "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+                        "Status": "Enabled",
+                    }
+                ]
+            },
         )
 
         conditional_write_statements = [
@@ -214,6 +222,21 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertEqual(conditional_write["Principal"], {"AWS": "*"})
         self.assertEqual(conditional_write["Condition"], {"Null": {"s3:if-none-match": "true"}})
         self.assertIn("releases/*", json.dumps(conditional_write["Resource"]))
+
+    def test_artifact_retention_preserves_current_objects_and_legacy_bucket(self) -> None:
+        for stage_name in (DEV, PROD, RELEASE_TEST, BENCH):
+            with self.subTest(stage=stage_name):
+                app = cdk.App(context=TEST_CONTEXT)
+                stage = Stage(stage_name)
+                shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
+                template = assertions.Template.from_stack(shared)
+                bucket = next(iter(template.find_resources("AWS::S3::Bucket").values()))
+                rules = bucket["Properties"]["LifecycleConfiguration"]["Rules"]
+                self.assertFalse(any("ExpirationInDays" in rule or "ExpirationDate" in rule for rule in rules))
+                expiration = [
+                    rule["NoncurrentVersionExpiration"] for rule in rules if "NoncurrentVersionExpiration" in rule
+                ]
+                self.assertEqual(expiration, [] if stage_name == BENCH else [{"NoncurrentDays": 30}])
 
     def test_release_test_bucket_remains_account_qualified(self) -> None:
         app = cdk.App(context=TEST_CONTEXT)
