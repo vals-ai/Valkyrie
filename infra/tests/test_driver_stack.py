@@ -83,7 +83,7 @@ class DriverStackTest(unittest.TestCase):
             bucket = aws_s3.Bucket(dependencies, "Bucket")
             tracker_repository = aws_ecr.Repository(dependencies, "TrackerRepository")
             db_credentials = aws_secretsmanager.Secret(dependencies, "DbCredentials")
-    
+
             with self.assertRaisesRegex(ValueError, "release-test"):
                 DriverStack(
                     app,

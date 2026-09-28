@@ -304,7 +304,10 @@ class RuntimeIamTest(unittest.TestCase):
                         and "/releases/*" in json.dumps(statement["Resource"])
                     )
                     release_resource = json.dumps(release_statement["Resource"])
-                    self.assertIn(f"{Stage(BENCH).phys('valkyrie-executor-releases')}-{TEST_AWS_ACCOUNT}/releases/*", release_resource)
+                    self.assertIn(
+                        f"{Stage(BENCH).phys('valkyrie-executor-releases')}-{TEST_AWS_ACCOUNT}/releases/*",
+                        release_resource,
+                    )
                     self.assertIn("/releases/*", release_resource)
                     self.assertNotIn("Condition", release_statement)
                     self.assertNotIn("vs-", json.dumps(release_statement["Resource"]))

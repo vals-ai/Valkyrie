@@ -10,7 +10,6 @@ import os
 import signal
 import sys
 import tempfile
-import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +42,7 @@ from tracker.executor.runner_observability import (
 logger = logging.getLogger(__name__)
 
 _AUTHORITY_LOSS_GRACE_SECONDS = 10
+
 
 class S3Client(Protocol):
     def download_file(self, bucket: str, key: str, filename: str) -> None:
@@ -125,7 +125,6 @@ class ExecutorProcessPayload:
             verified_task_ids=verified_task_ids,
             arguments=arguments,
         )
-
 
 
 @dataclass(frozen=True)
@@ -231,18 +230,18 @@ class PostgresExecutorDispatchStore:
                 raise ValueError(f"Queued executor dispatch {dispatch_id} has no sealed payload")
             sealed = SealedPayload(*(bytes(value) for value in sealed_row))
             payload = open_payload(UUID(dispatch_id), sealed)
-            payload.update({
-                "executor_dispatch_id": dispatch_id,
-                "executor_release_id": row[1],
-                "executor_artifact_uri": row[2],
-                "executor_artifact_digest": row[3],
-                "executor_protocol_version": row[4],
-            })
+            payload.update(
+                {
+                    "executor_dispatch_id": dispatch_id,
+                    "executor_release_id": row[1],
+                    "executor_artifact_uri": row[2],
+                    "executor_artifact_digest": row[3],
+                    "executor_protocol_version": row[4],
+                }
+            )
             telemetry_context = normalize_executor_telemetry_context(payload.get("telemetry_context_json"))
             artifact = ArtifactDispatch.from_payload(payload)
-            process_payload = ExecutorProcessPayload.from_payload(
-                payload, telemetry_context=telemetry_context
-            )
+            process_payload = ExecutorProcessPayload.from_payload(payload, telemetry_context=telemetry_context)
             if process_payload.benchmark_id != row[0] or process_payload.verified_task_ids != row[5]:
                 raise ValueError(f"Executor dispatch {dispatch_id} payload does not match assigned benchmark/tasks")
             return ClaimedDispatch(
@@ -822,7 +821,9 @@ async def run_executor_dispatch(
                     lambda: store.finish(authority),
                     lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
                 ):
-                    logger.warning("Executor dispatch %s lost authority before successful finish", authority.dispatch_id)
+                    logger.warning(
+                        "Executor dispatch %s lost authority before successful finish", authority.dispatch_id
+                    )
             except asyncio.CancelledError:
                 await _terminalize_after_failure(
                     store,

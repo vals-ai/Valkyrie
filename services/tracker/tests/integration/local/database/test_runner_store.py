@@ -112,14 +112,20 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
             "telemetry_context_json": {"request_id": "store-request", "trace_headers": {}},
         }
         sealed = seal_payload(dispatch.id, payload)
-        postgres_session.add(ExecutorDispatchPayload(
-            dispatch_id=dispatch.id, ciphertext=sealed.ciphertext,
-            encrypted_data_key=sealed.encrypted_data_key, nonce=sealed.nonce,
-            created_at=datetime.now(UTC),
-        ))
+        postgres_session.add(
+            ExecutorDispatchPayload(
+                dispatch_id=dispatch.id,
+                ciphertext=sealed.ciphertext,
+                encrypted_data_key=sealed.encrypted_data_key,
+                nonce=sealed.nonce,
+                created_at=datetime.now(UTC),
+            )
+        )
     postgres_session.commit()
     persisted = postgres_session.execute(
-        text("SELECT ciphertext, encrypted_data_key, nonce FROM executor_dispatch_payload WHERE dispatch_id = :dispatch_id"),
+        text(
+            "SELECT ciphertext, encrypted_data_key, nonce FROM executor_dispatch_payload WHERE dispatch_id = :dispatch_id"
+        ),
         {"dispatch_id": first_dispatch.id},
     ).one()
     assert all(b"unique-persisted-dispatch-secret-marker" not in bytes(column) for column in persisted)
@@ -143,7 +149,10 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
     first_claim = await store.claim(str(first_dispatch.id))
     assert first_claim is not None
     assert first_claim.process_payload.arguments["telemetry_context_json"]["request_id"] == "store-request"
-    assert first_claim.process_payload.arguments["start_benchmark_request_json"]["service_headers"]["authorization"] == "unique-persisted-dispatch-secret-marker"
+    assert (
+        first_claim.process_payload.arguments["start_benchmark_request_json"]["service_headers"]["authorization"]
+        == "unique-persisted-dispatch-secret-marker"
+    )
     first_authority = first_claim.authority
     assert await store.claim(str(first_dispatch.id)) is None
     sibling_claim = await store.claim(str(sibling_dispatch.id))
@@ -216,7 +225,9 @@ async def test_renew_classifies_one_dispatch_without_batching(
     expected: RenewalResult,
 ) -> None:
     org = Org(id=uuid4(), name=f"lease-contract-{uuid4()}")
-    benchmark = make_benchmark(org_id=org.id, status=BenchmarkStatus.STOPPED if stopped else BenchmarkStatus.IN_PROGRESS)
+    benchmark = make_benchmark(
+        org_id=org.id, status=BenchmarkStatus.STOPPED if stopped else BenchmarkStatus.IN_PROGRESS
+    )
     release = ExecutorRelease(
         id=f"lease-contract-{uuid4()}",
         artifact_uri="s3://artifacts/lease.pex",
@@ -272,6 +283,7 @@ async def test_renew_classifies_one_dispatch_without_batching(
     else:
         assert persisted.heartbeat_at == past.replace(tzinfo=None)
         assert persisted.lease_expires_at == (past if expired else future).replace(tzinfo=None)
+
 
 @pytest.mark.asyncio
 async def test_renew_commits_dispatch_lease_while_benchmark_table_is_locked(
@@ -400,18 +412,24 @@ def test_expiry_cleans_all_admitted_assignments(postgres_session: Session, dispa
     assert len(errors) == dispatch_count
 
 
-def _sealed_case(session: Session, engine: Engine, monkeypatch: pytest.MonkeyPatch) -> tuple[PostgresExecutorDispatchStore, ExecutorDispatch]:
+def _sealed_case(
+    session: Session, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> tuple[PostgresExecutorDispatchStore, ExecutorDispatch]:
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
     monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
     org = Org(id=uuid4(), name=f"runner-claim-{uuid4()}")
     benchmark = make_benchmark(
-        name="runner-claim", org_id=org.id,
+        name="runner-claim",
+        org_id=org.id,
         contract=AgentContractRequest(name="claim-agent", install_cmd="true", run_cmd="true"),
         status=BenchmarkStatus.IN_PROGRESS,
     )
     release = ExecutorRelease(
-        id=f"runner-claim-{uuid4()}", artifact_uri="s3://artifacts/runner.pex",
-        artifact_digest="a" * 64, protocol_version="1", readiness_verified=True,
+        id=f"runner-claim-{uuid4()}",
+        artifact_uri="s3://artifacts/runner.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+        readiness_verified=True,
         created_at=datetime.now(UTC),
     )
     session.add(org)
@@ -424,29 +442,44 @@ def _sealed_case(session: Session, engine: Engine, monkeypatch: pytest.MonkeyPat
     dispatch = create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4())
     dispatch.assigned_task_ids = ["task-0"]
     session.add(dispatch)
-    sealed = seal_payload(dispatch.id, {
-        "start_benchmark_request_json": {"request_id": "admitted-request"},
-        "benchmark_id_str": str(benchmark.id),
-        "verified_task_ids": ["task-0"],
-        "telemetry_context_json": {"request_id": "admitted-request", "trace_headers": {"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"}},
-    })
-    session.add(ExecutorDispatchPayload(
-        dispatch_id=dispatch.id, ciphertext=sealed.ciphertext,
-        encrypted_data_key=sealed.encrypted_data_key, nonce=sealed.nonce,
-        created_at=datetime.now(UTC),
-    ))
+    sealed = seal_payload(
+        dispatch.id,
+        {
+            "start_benchmark_request_json": {"request_id": "admitted-request"},
+            "benchmark_id_str": str(benchmark.id),
+            "verified_task_ids": ["task-0"],
+            "telemetry_context_json": {
+                "request_id": "admitted-request",
+                "trace_headers": {"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"},
+            },
+        },
+    )
+    session.add(
+        ExecutorDispatchPayload(
+            dispatch_id=dispatch.id,
+            ciphertext=sealed.ciphertext,
+            encrypted_data_key=sealed.encrypted_data_key,
+            nonce=sealed.nonce,
+            created_at=datetime.now(UTC),
+        )
+    )
     session.commit()
     url = engine.url
     assert url.host and url.port and url.database and url.username and url.password
     return PostgresExecutorDispatchStore(
-        host=url.host, port=str(url.port), dbname=url.database,
-        user=url.username, password=url.password,
+        host=url.host,
+        port=str(url.port),
+        dbname=url.database,
+        user=url.username,
+        password=url.password,
     ), dispatch
 
 
 @pytest.mark.asyncio
 async def test_concurrent_claimants_have_one_payload_and_owner(
-    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
     claims = await asyncio.gather(store.claim(str(dispatch.id)), store.claim(str(dispatch.id)))
@@ -460,7 +493,9 @@ async def test_concurrent_claimants_have_one_payload_and_owner(
 
 @pytest.mark.asyncio
 async def test_decrypt_failure_rolls_back_claim_and_preserves_payload(
-    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
     monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"z" * 32).decode())
@@ -474,7 +509,10 @@ async def test_decrypt_failure_rolls_back_claim_and_preserves_payload(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["expired", "superseded", "nonqueued"])
 async def test_nonclaimable_dispatch_never_reads_or_deletes_payload(
-    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch, state: str,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
 ) -> None:
     store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
     if state == "expired":
@@ -494,7 +532,9 @@ async def test_nonclaimable_dispatch_never_reads_or_deletes_payload(
 
 @pytest.mark.asyncio
 async def test_missing_queued_payload_is_error_without_claim_commit(
-    postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
     row = postgres_session.get(ExecutorDispatchPayload, dispatch.id)

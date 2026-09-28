@@ -17,7 +17,11 @@ from tracker.executor.dispatch_control import EnqueueFailureResolution
     ("resolution", "expected_status", "expected_detail"),
     [
         (EnqueueFailureResolution.SUPERSEDED, 409, "Executor dispatch was superseded by a newer Retry"),
-        (EnqueueFailureResolution.FAILED, 503, "Executor dispatch enqueue acknowledgement failed; use Retry to continue"),
+        (
+            EnqueueFailureResolution.FAILED,
+            503,
+            "Executor dispatch enqueue acknowledgement failed; use Retry to continue",
+        ),
     ],
 )
 async def test_launch_failure_preserves_http_contract(
@@ -51,8 +55,6 @@ async def test_ambiguous_launch_acknowledgement_accepts_claimed_dispatch(
 ) -> None:
     dispatch = SimpleNamespace(id=uuid4(), benchmark_id=uuid4())
     monkeypatch.setattr(main, "launch_dispatch", AsyncMock(side_effect=TimeoutError("ECS response lost")))
-    monkeypatch.setattr(
-        main, "_resolve_enqueue_failure", lambda *_args: EnqueueFailureResolution.DELIVERED
-    )
+    monkeypatch.setattr(main, "_resolve_enqueue_failure", lambda *_args: EnqueueFailureResolution.DELIVERED)
 
     await main._launch_executor_dispatch(dispatch, session=database_session, verified_task_ids=[])

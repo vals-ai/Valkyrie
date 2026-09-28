@@ -51,26 +51,34 @@ class FakeS3:
 
 def _claim(content: bytes) -> runner.ClaimedDispatch:
     authority = runner.DispatchAuthority(str(uuid4()), str(uuid4()))
-    artifact = runner.ArtifactDispatch.from_payload({
-        "executor_release_id": "release-1",
-        "executor_artifact_uri": "s3://artifacts/executors/runner.pex",
-        "executor_artifact_digest": hashlib.sha256(content).hexdigest(),
-        "executor_protocol_version": "3",
-    })
+    artifact = runner.ArtifactDispatch.from_payload(
+        {
+            "executor_release_id": "release-1",
+            "executor_artifact_uri": "s3://artifacts/executors/runner.pex",
+            "executor_artifact_digest": hashlib.sha256(content).hexdigest(),
+            "executor_protocol_version": "3",
+        }
+    )
     telemetry: ExecutorTelemetryContext = {"request_id": "admitted-request", "trace_headers": {}}
-    process = runner.ExecutorProcessPayload.from_payload({
-        "start_benchmark_request_json": {"request_id": "admitted-request"},
-        "benchmark_id_str": authority.benchmark_id,
-        "verified_task_ids": ["task-0"],
-    }, telemetry_context=telemetry)
+    process = runner.ExecutorProcessPayload.from_payload(
+        {
+            "start_benchmark_request_json": {"request_id": "admitted-request"},
+            "benchmark_id_str": authority.benchmark_id,
+            "verified_task_ids": ["task-0"],
+        },
+        telemetry_context=telemetry,
+    )
     return runner.ClaimedDispatch(authority, artifact, process, telemetry)
 
 
 def _supervisor(cache: Path, content: bytes) -> tuple[runner.ExecutorSupervisor, FakeS3]:
     client = FakeS3(content)
     return runner.ExecutorSupervisor(
-        cache, s3_client=client, python_executable=sys.executable,
-        artifact_bucket="artifacts", artifact_prefix="executors",
+        cache,
+        s3_client=client,
+        python_executable=sys.executable,
+        artifact_bucket="artifacts",
+        artifact_prefix="executors",
     ), client
 
 
@@ -80,8 +88,12 @@ async def test_duplicate_claim_does_not_start_child(tmp_path: Path) -> None:
     claim = _claim(script)
     store = FakeStore(claim)
     supervisor, client = _supervisor(tmp_path, script)
-    await runner.run_executor_dispatch(supervisor, store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=claim.authority.dispatch_id)
-    await runner.run_executor_dispatch(supervisor, store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=claim.authority.dispatch_id)
+    await runner.run_executor_dispatch(
+        supervisor, store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=claim.authority.dispatch_id
+    )
+    await runner.run_executor_dispatch(
+        supervisor, store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=claim.authority.dispatch_id
+    )
     assert store.finished == [claim.authority]
     assert client.downloads == 1
 
@@ -92,7 +104,9 @@ async def test_artifact_digest_failure_terminalizes_claim(tmp_path: Path) -> Non
     store = FakeStore(claim)
     supervisor, _ = _supervisor(tmp_path, b"wrong artifact")
     with pytest.raises(ValueError, match="digest mismatch"):
-        await runner.run_executor_dispatch(supervisor, store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=claim.authority.dispatch_id)
+        await runner.run_executor_dispatch(
+            supervisor, store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=claim.authority.dispatch_id
+        )
     assert store.terminalized == [(claim.authority, ["task-0"])]
     assert store.finished == []
 
@@ -110,9 +124,14 @@ async def test_cancel_after_claim_terminalizes_before_artifact_preparation(tmp_p
         raise AssertionError("unreachable")
 
     supervisor.prepare_artifact = prepare  # type: ignore[method-assign]
-    task = asyncio.create_task(runner.run_executor_dispatch(
-        supervisor, store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=claim.authority.dispatch_id,
-    ))
+    task = asyncio.create_task(
+        runner.run_executor_dispatch(
+            supervisor,
+            store,
+            keeper=runner._LeaseKeeper(store),
+            executor_dispatch_id=claim.authority.dispatch_id,
+        )
+    )
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -121,7 +140,9 @@ async def test_cancel_after_claim_terminalizes_before_artifact_preparation(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_sigterm_after_child_spawn_terminalizes_and_kills_process_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_sigterm_after_child_spawn_terminalizes_and_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     script = b"import time\nwhile True: time.sleep(1)\n"
     claim = _claim(script)
     store = FakeStore(claim)
@@ -160,15 +181,23 @@ async def test_sigterm_after_child_spawn_terminalizes_and_kills_process_group(tm
 
 @pytest.mark.parametrize("protocol_version", ["1", "2", "3"])
 def test_pinned_protocol_versions_remain_supported(protocol_version: str) -> None:
-    assert runner.ArtifactDispatch.from_payload({
-        "executor_release_id": "release-1", "executor_artifact_uri": "s3://artifacts/executors/runner.pex",
-        "executor_artifact_digest": "a" * 64, "executor_protocol_version": protocol_version,
-    }).protocol_version == protocol_version
+    assert (
+        runner.ArtifactDispatch.from_payload(
+            {
+                "executor_release_id": "release-1",
+                "executor_artifact_uri": "s3://artifacts/executors/runner.pex",
+                "executor_artifact_digest": "a" * 64,
+                "executor_protocol_version": protocol_version,
+            }
+        ).protocol_version
+        == protocol_version
+    )
 
 
 @pytest.mark.asyncio
 async def test_sigterm_handler_cancels_and_awaits_claimed_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claim = _claim(b"artifact")
     store = FakeStore(claim)
@@ -197,7 +226,6 @@ async def test_sigterm_handler_cancels_and_awaits_claimed_dispatch(
         await task
     assert store.terminalized == [(claim.authority, ["task-0"])]
     assert signal.SIGTERM not in handlers
-
 
 
 @pytest.mark.asyncio
@@ -258,6 +286,7 @@ async def test_lease_keeper_rejects_a_second_dispatch_and_stops_on_exit() -> Non
     assert worker.done()
     assert keeper.task is None
 
+
 @pytest.mark.asyncio
 async def test_older_tick_cannot_rewind_newer_refresh_confirmation(
     monkeypatch: pytest.MonkeyPatch,
@@ -305,5 +334,3 @@ async def test_older_tick_cannot_rewind_newer_refresh_confirmation(
         release.set()
         await old_tick
         await keeper.unregister()
-
-

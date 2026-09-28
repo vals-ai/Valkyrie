@@ -893,9 +893,12 @@ class MonitoringStackTest(unittest.TestCase):
                 )
                 tracker_template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
-                    {"Family": Stage(stage_name).phys("ExecutorRunner"), "ContainerDefinitions": assertions.Match.array_with(
-                        [assertions.Match.object_like({"Environment": runner_env})]
-                    )},
+                    {
+                        "Family": Stage(stage_name).phys("ExecutorRunner"),
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [assertions.Match.object_like({"Environment": runner_env})]
+                        ),
+                    },
                 )
 
     def test_tracker_receives_sandbox_queue_flag_from_deployment_environment(self) -> None:

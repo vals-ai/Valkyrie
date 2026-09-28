@@ -10,8 +10,12 @@ from pytest import MonkeyPatch
 from sqlmodel import Session
 
 from tracker.database.models import (
-    Benchmark, ExecutorDispatch, ExecutorDispatchKind, ExecutorDispatchPayload,
-    ExecutorDispatchStatus, ExecutorRelease,
+    Benchmark,
+    ExecutorDispatch,
+    ExecutorDispatchKind,
+    ExecutorDispatchPayload,
+    ExecutorDispatchStatus,
+    ExecutorRelease,
 )
 from tracker.executor.dispatch_payload import seal_payload
 
@@ -67,28 +71,39 @@ def test_recovery_sweeps_only_nonqueued_payloads(
     monkeypatch: MonkeyPatch,
 ) -> None:
     release = ExecutorRelease(
-        id="payload-sweep-release", artifact_uri="s3://artifacts/runner.pex",
-        artifact_digest="a" * 64, protocol_version="3", readiness_verified=True,
+        id="payload-sweep-release",
+        artifact_uri="s3://artifacts/runner.pex",
+        artifact_digest="a" * 64,
+        protocol_version="3",
+        readiness_verified=True,
     )
     benchmark = example_benchmark_object
     database_session.add_all([release, benchmark])
     database_session.flush()
     dispatches = [
         ExecutorDispatch(
-            id=uuid4(), benchmark_id=benchmark.id, kind=ExecutorDispatchKind.START,
-            executor_release_id=release.id, executor_artifact_uri=release.artifact_uri,
+            id=uuid4(),
+            benchmark_id=benchmark.id,
+            kind=ExecutorDispatchKind.START,
+            executor_release_id=release.id,
+            executor_artifact_uri=release.artifact_uri,
             executor_artifact_digest=release.artifact_digest,
-            executor_protocol_version=release.protocol_version, status=status,
+            executor_protocol_version=release.protocol_version,
+            status=status,
         )
         for status in (ExecutorDispatchStatus.QUEUED, terminal_status)
     ]
     for dispatch in dispatches:
         sealed = seal_payload(dispatch.id, {"sensitive": "secret-marker"})
         database_session.add(dispatch)
-        database_session.add(ExecutorDispatchPayload(
-            dispatch_id=dispatch.id, ciphertext=sealed.ciphertext,
-            encrypted_data_key=sealed.encrypted_data_key, nonce=sealed.nonce,
-        ))
+        database_session.add(
+            ExecutorDispatchPayload(
+                dispatch_id=dispatch.id,
+                ciphertext=sealed.ciphertext,
+                encrypted_data_key=sealed.encrypted_data_key,
+                nonce=sealed.nonce,
+            )
+        )
     database_session.commit()
     monkeypatch.setattr(dispatch_recovery, "engine", database_session.get_bind())
     monkeypatch.setattr(dispatch_recovery, "reconcile_expired_dispatches", lambda _session: 0)

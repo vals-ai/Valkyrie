@@ -1041,12 +1041,19 @@ class TestTrackerAPI:
             monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
             monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
             request = StartBenchmarkRequest(
-                contract=contract, benchmark_name="swebench", concurrency=1, task_ids=["task_0"],
-                sandbox_provider="daytona", sandbox_provider_secret_name="provider-secret",
+                contract=contract,
+                benchmark_name="swebench",
+                concurrency=1,
+                task_ids=["task_0"],
+                sandbox_provider="daytona",
+                sandbox_provider_secret_name="provider-secret",
             )
         else:
             request = StartBenchmarkRequest(
-                contract=contract, benchmark_name="swebench", concurrency=1, task_ids=["task_0"],
+                contract=contract,
+                benchmark_name="swebench",
+                concurrency=1,
+                task_ids=["task_0"],
                 harness_config=harness_config,
             )
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
@@ -1063,9 +1070,9 @@ class TestTrackerAPI:
         assert sealed is not None
         assert dispatch.status == ExecutorDispatchStatus.QUEUED
         assert benchmark.current_execution_release_id == dispatch.executor_release_id
-        assert [task.task_id for task in database_session.exec(
-            select(Task).where(Task.benchmark == benchmark.id)
-        ).all()] == ["task_0"]
+        assert [
+            task.task_id for task in database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
+        ] == ["task_0"]
         envelope = mock_launcher.queued_calls[0]
         assert envelope["executor_dispatch_id"] == str(dispatch.id)
         assert envelope["executor_protocol_version"] == protocol_version
@@ -1122,8 +1129,11 @@ class TestTrackerAPI:
         assert task.status == TaskStatus.ERROR
 
     async def test_start_benchmark_superseded_launch_returns_exact_409_body(
-        self, contract: AgentContractRequest, monkeypatch: MonkeyPatch,
-        database_session: Session, harness_config: HarnessConfig,
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
     ) -> None:
         async def supersede_and_fail(dispatch: ExecutorDispatch) -> None:
             with Session(database_session.get_bind()) as session:
@@ -1137,8 +1147,11 @@ class TestTrackerAPI:
         monkeypatch.setattr("main.launch_dispatch", supersede_and_fail)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
-            contract=contract, benchmark_name="swebench", concurrency=1,
-            task_ids=["task_0"], harness_config=harness_config,
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
         )
         response = client.post("/start-benchmark", json=request.model_dump())
         assert response.status_code == 409

@@ -152,7 +152,9 @@ def _run_executor_runner(dsn: str, input_path: str, output_path: str) -> None:
         normalize_executor_telemetry_context(payload["telemetry_context_json"]),
     ) as child_context:
         process_payload = ExecutorProcessPayload.from_payload(payload, telemetry_context=child_context)
-        logging.getLogger("executor-runner.observability.smoke").info("ExecutorRunner dispatched observability smoke run")
+        logging.getLogger("executor-runner.observability.smoke").info(
+            "ExecutorRunner dispatched observability smoke run"
+        )
         Path(output_path).write_text(json.dumps(process_payload.arguments["telemetry_context_json"]))
         _capture_test_error("valkyrie-executor-runner")
         runner_observability.record_dispatch_completion(child_context)

@@ -20,19 +20,26 @@ from testcontainers.postgres import PostgresContainer
 import main
 from tests.factories import make_benchmark
 from tracker.database.models import (
-    AgentContractRequest, BenchmarkStatus, ExecutorAdmission, ExecutorDispatch,
-    ExecutorDispatchPayload, ExecutorDispatchStatus, ExecutorRelease, Org,
+    AgentContractRequest,
+    BenchmarkStatus,
+    ExecutorAdmission,
+    ExecutorDispatch,
+    ExecutorDispatchPayload,
+    ExecutorDispatchStatus,
+    ExecutorRelease,
+    Org,
 )
 from tracker.executor import launcher
 from tracker.executor.release_control import promote_release, register_release
 from tracker.types import StartBenchmarkRequest
 
 
-def test_runner_claims_cached_artifact_and_delivers_admission_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runner_claims_cached_artifact_and_delivers_admission_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     output = tmp_path / "child-observed.json"
     script = (
-        "import json,sys\n"
-        f"from pathlib import Path\nPath({str(output)!r}).write_text(Path(sys.argv[1]).read_text())\n"
+        f"import json,sys\nfrom pathlib import Path\nPath({str(output)!r}).write_text(Path(sys.argv[1]).read_text())\n"
     ).encode()
     digest = hashlib.sha256(script).hexdigest()
     cache = tmp_path / "cache"
@@ -50,14 +57,18 @@ def test_runner_claims_cached_artifact_and_delivers_admission_trace(tmp_path: Pa
                 session.add(org)
                 session.flush()
                 release = ExecutorRelease(
-                    id=f"runner-process-{uuid4()}", artifact_uri="s3://artifacts/executors/cached.pex",
-                    artifact_digest=digest, protocol_version="3", readiness_verified=True,
+                    id=f"runner-process-{uuid4()}",
+                    artifact_uri="s3://artifacts/executors/cached.pex",
+                    artifact_digest=digest,
+                    protocol_version="3",
+                    readiness_verified=True,
                     created_at=datetime.now(UTC),
                 )
                 register_release(session, release)
                 promote_release(session, release.id)
                 benchmark = make_benchmark(
-                    name="runner-process", org_id=org.id,
+                    name="runner-process",
+                    org_id=org.id,
                     contract=AgentContractRequest(name="runner-agent", install_cmd="true", run_cmd="true"),
                     status=BenchmarkStatus.IN_PROGRESS,
                 )
@@ -68,10 +79,17 @@ def test_runner_claims_cached_artifact_and_delivers_admission_trace(tmp_path: Pa
             monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
             monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", local_key)
             request = StartBenchmarkRequest(
-                benchmark_name=benchmark.name, contract=benchmark.arguments.contract, concurrency=1,
+                benchmark_name=benchmark.name,
+                contract=benchmark.arguments.contract,
+                concurrency=1,
             )
             _, admission = main._commit_start(
-                engine, benchmark.model_dump_json(), request, dispatch_id, [], None,
+                engine,
+                benchmark.model_dump_json(),
+                request,
+                dispatch_id,
+                [],
+                None,
                 # Tracker's composite propagator injects both W3C and Sentry headers for the same trace.
                 {
                     "request_id": "admitted-request",
@@ -92,10 +110,14 @@ def test_runner_claims_cached_artifact_and_delivers_admission_trace(tmp_path: Pa
             repo_root = Path(__file__).resolve().parents[5]
             env = {
                 "PYTHONPATH": os.pathsep.join((str(repo_root / "services/tracker/src"), str(repo_root))),
-                "EXECUTOR_CACHE_DIR": str(cache), "EXECUTOR_RELEASE_BUCKET": "artifacts",
+                "EXECUTOR_CACHE_DIR": str(cache),
+                "EXECUTOR_RELEASE_BUCKET": "artifacts",
                 "EXECUTOR_RELEASE_PREFIX": "executors",
-                "DB_HOST": url.host, "DB_PORT": str(url.port), "DB_NAME": url.database,
-                "DB_USERNAME": url.username, "DB_PASSWORD": url.password,
+                "DB_HOST": url.host,
+                "DB_PORT": str(url.port),
+                "DB_NAME": url.database,
+                "DB_USERNAME": url.username,
+                "DB_PASSWORD": url.password,
                 "SENTRY_DSN": "",
             }
             for key, value in env.items():

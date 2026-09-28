@@ -185,7 +185,6 @@ _COMPLETION_CALLBACK_CONFIG = Config(read_timeout=60, retries={"total_max_attemp
 _TaskResult = TypeVar("_TaskResult")
 
 
-
 def _operation_id(route: APIRoute) -> str:
     """Use route function name as operation_id so generated client hooks are short.
     E.g. `list_agents` (not `list_agents_agents_get`)."""
@@ -345,9 +344,7 @@ async def _launch_executor_dispatch(
         if resolution == EnqueueFailureResolution.DELIVERED:
             return
         if resolution == EnqueueFailureResolution.SUPERSEDED:
-            raise HTTPException(
-                status_code=409, detail="Executor dispatch was superseded by a newer Retry"
-            ) from exc
+            raise HTTPException(status_code=409, detail="Executor dispatch was superseded by a newer Retry") from exc
         raise HTTPException(
             status_code=503,
             detail={

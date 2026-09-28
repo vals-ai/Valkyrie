@@ -149,12 +149,15 @@ class FakeEcsClient:
         assert kwargs["services"] == ["Tracker"]
         self.tracker_polls += 1
         return {"services": [{"runningCount": 1 if self.tracker_polls == 1 else 0}]}
+
     def describe_tasks(self, **kwargs: object) -> dict[str, object]:
         self.describe_polls += 1
-        return {"tasks": [
-            {"taskArn": arn, "lastStatus": "RUNNING" if self.describe_polls == 1 else "STOPPED"}
-            for arn in cast(list[str], kwargs["tasks"])
-        ]}
+        return {
+            "tasks": [
+                {"taskArn": arn, "lastStatus": "RUNNING" if self.describe_polls == 1 else "STOPPED"}
+                for arn in cast(list[str], kwargs["tasks"])
+            ]
+        }
 
     def stop_task(self, **kwargs: object) -> dict[str, object]:
         self.stopped_tasks.append(str(kwargs["task"]))
@@ -265,11 +268,13 @@ def test_maintenance_begin_drains_paginated_runner_tasks_before_finish(
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
     assert admission.maintenance_target_sha == target_sha
-    assert ecs.service_updates == [{
-        "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-        "service": "Tracker",
-        "desiredCount": 0,
-    }]
+    assert ecs.service_updates == [
+        {
+            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+            "service": "Tracker",
+            "desiredCount": 0,
+        }
+    ]
     assert ecs.stopped_tasks == ["task-1", "task-2", "pending-runner"]
     assert ecs.list_calls[1]["nextToken"] == "page-2"
     assert ecs.pending_polls == 2
@@ -290,10 +295,12 @@ def test_maintenance_begin_drains_paginated_runner_tasks_before_finish(
         "desiredCount": 2,
     }
     assert len(ecs.service_updates) == 2
-    assert ecs.waited_for == [{
-        "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-        "services": ["Tracker"],
-    }]
+    assert ecs.waited_for == [
+        {
+            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+            "services": ["Tracker"],
+        }
+    ]
 
 
 def test_maintenance_begin_fails_loudly_if_runners_do_not_drain(

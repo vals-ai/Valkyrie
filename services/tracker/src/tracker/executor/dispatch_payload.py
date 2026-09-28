@@ -65,7 +65,5 @@ def open_payload(dispatch_id: UUID, sealed: SealedPayload) -> dict[str, Any]:
             EncryptionContext={"dispatch_id": str(dispatch_id)},
         )["Plaintext"]
     else:
-        data_key = AESGCM(key).decrypt(
-            sealed.encrypted_data_key[:12], sealed.encrypted_data_key[12:], aad
-        )
+        data_key = AESGCM(key).decrypt(sealed.encrypted_data_key[:12], sealed.encrypted_data_key[12:], aad)
     return json.loads(AESGCM(data_key).decrypt(sealed.nonce, sealed.ciphertext, aad))

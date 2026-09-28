@@ -48,7 +48,11 @@ async def test_ecs_retries_ambiguous_error_with_same_token_and_records_one_arn(
     assert observed[0]["count"] == 1
     assert observed[0]["taskDefinition"].endswith("runner:7")
     assert observed[0]["overrides"]["containerOverrides"][0]["command"] == [
-        "/app/.venv/bin/python", "-m", "tracker.executor.runner", "--dispatch-id", str(dispatch_id),
+        "/app/.venv/bin/python",
+        "-m",
+        "tracker.executor.runner",
+        "--dispatch-id",
+        str(dispatch_id),
     ]
     assert recorded == [(dispatch_id, "arn:task:runner")]
 
@@ -83,26 +87,37 @@ async def test_local_launcher_spawns_one_detached_runner(monkeypatch: pytest.Mon
         start_new_session=True,
         env=launcher.os.environ,
     )
+
+
 @pytest.mark.asyncio
 async def test_ecs_task_arn_persists_on_dispatch_row(
-    monkeypatch: pytest.MonkeyPatch, ecs_launcher_env: None,
-    database_session: Session, example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+    ecs_launcher_env: None,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
 ) -> None:
     release = ExecutorRelease(
-        id="arn-test-release", artifact_uri="s3://artifacts/runner.pex",
-        artifact_digest="a" * 64, protocol_version="3", readiness_verified=True,
+        id="arn-test-release",
+        artifact_uri="s3://artifacts/runner.pex",
+        artifact_digest="a" * 64,
+        protocol_version="3",
+        readiness_verified=True,
     )
     benchmark = example_benchmark_object
     dispatch = ExecutorDispatch(
-        benchmark_id=benchmark.id, kind=ExecutorDispatchKind.START,
-        executor_release_id=release.id, executor_artifact_uri=release.artifact_uri,
-        executor_artifact_digest=release.artifact_digest, executor_protocol_version=release.protocol_version,
+        benchmark_id=benchmark.id,
+        kind=ExecutorDispatchKind.START,
+        executor_release_id=release.id,
+        executor_artifact_uri=release.artifact_uri,
+        executor_artifact_digest=release.artifact_digest,
+        executor_protocol_version=release.protocol_version,
     )
     database_session.add_all([release, benchmark, dispatch])
     database_session.commit()
     monkeypatch.setattr(launcher, "engine", database_session.get_bind())
     monkeypatch.setattr(
-        launcher.boto3, "client",
+        launcher.boto3,
+        "client",
         lambda *_args, **_kwargs: SimpleNamespace(
             run_task=lambda **_params: {"tasks": [{"taskArn": "arn:task:persisted"}], "failures": []}
         ),

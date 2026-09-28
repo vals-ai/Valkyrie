@@ -31,6 +31,8 @@ def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
         log_retention_policy=30,
         sandbox_provider_secret_name="test-daytona-secret",
     )
+
+
 @pytest.fixture(autouse=True)
 def local_executor_payload_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")

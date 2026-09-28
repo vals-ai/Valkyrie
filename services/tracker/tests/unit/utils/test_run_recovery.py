@@ -3106,9 +3106,9 @@ async def test_recovery_pins_resources_under_lock_and_execution_uses_saved_bucke
     dispatch = enqueue.call_args.args[0]
     sealed = database_session.get(ExecutorDispatchPayload, dispatch.id)
     assert sealed is not None
-    context = open_payload(
-        dispatch.id, SealedPayload(sealed.ciphertext, sealed.encrypted_data_key, sealed.nonce)
-    )["execution_context_json"]
+    context = open_payload(dispatch.id, SealedPayload(sealed.ciphertext, sealed.encrypted_data_key, sealed.nonce))[
+        "execution_context_json"
+    ]
     assert context["version"] == 3
     request = StartBenchmarkRequest.model_validate(context["start_benchmark_request"])
     assert request.properties == resources

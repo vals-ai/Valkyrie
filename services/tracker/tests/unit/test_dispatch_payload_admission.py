@@ -37,11 +37,17 @@ from tracker.types import HarnessConfig, StartBenchmarkRequest
 client = TestClient(app)
 
 _DISPATCH_ENVELOPE_KEYS = {
-    "telemetry_context_json", "executor_dispatch_id", "executor_release_id",
-    "executor_artifact_uri", "executor_artifact_digest", "executor_protocol_version",
+    "telemetry_context_json",
+    "executor_dispatch_id",
+    "executor_release_id",
+    "executor_artifact_uri",
+    "executor_artifact_digest",
+    "executor_protocol_version",
 }
 _ACCESS_KEY_ENVELOPE_KEYS = {
-    "start_benchmark_request_json", "benchmark_id_str", "verified_task_ids",
+    "start_benchmark_request_json",
+    "benchmark_id_str",
+    "verified_task_ids",
 } | _DISPATCH_ENVELOPE_KEYS
 _MANAGED_ENVELOPE_KEYS = {"execution_context_json"} | _DISPATCH_ENVELOPE_KEYS
 _CALLER_AWS_HEADERS = {
@@ -73,7 +79,8 @@ def _capture_dispatch_payloads(monkeypatch: pytest.MonkeyPatch, database_session
             assert row is not None
             payload = open_payload(dispatch.id, SealedPayload(row.ciphertext, row.encrypted_data_key, row.nonce))
             payload.update(
-                executor_dispatch_id=str(dispatch.id), executor_release_id=dispatch.executor_release_id,
+                executor_dispatch_id=str(dispatch.id),
+                executor_release_id=dispatch.executor_release_id,
                 executor_artifact_uri=dispatch.executor_artifact_uri,
                 executor_artifact_digest=dispatch.executor_artifact_digest,
                 executor_protocol_version=dispatch.executor_protocol_version,

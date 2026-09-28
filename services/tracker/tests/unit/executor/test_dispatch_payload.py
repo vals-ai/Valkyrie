@@ -62,7 +62,10 @@ def test_kms_payload_context_and_integrity(monkeypatch: pytest.MonkeyPatch) -> N
 
         def decrypt(self, **kwargs: object) -> dict[str, bytes]:
             self.decrypted.append(kwargs)
-            if kwargs["CiphertextBlob"] != self.blob or kwargs["EncryptionContext"] != self.generated[-1]["EncryptionContext"]:
+            if (
+                kwargs["CiphertextBlob"] != self.blob
+                or kwargs["EncryptionContext"] != self.generated[-1]["EncryptionContext"]
+            ):
                 raise ValueError("Unrecognized data key or encryption context")
             return {"Plaintext": self.data_key}
 
@@ -70,19 +73,26 @@ def test_kms_payload_context_and_integrity(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "ecs")
     monkeypatch.setenv("EXECUTOR_PAYLOAD_KMS_KEY_ID", "arn:aws:kms:us-east-1:123456789012:key/test")
     monkeypatch.delenv("EXECUTOR_PAYLOAD_LOCAL_KEY", raising=False)
-    monkeypatch.setattr(dispatch_payload.boto3, "client", lambda service: kms if service == "kms" else pytest.fail(service))
+    monkeypatch.setattr(
+        dispatch_payload.boto3, "client", lambda service: kms if service == "kms" else pytest.fail(service)
+    )
     dispatch_id = uuid4()
     payload = {"service_headers": {"authorization": "unique-kms-sensitive-marker"}}
     sealed = seal_payload(dispatch_id, payload)
     assert open_payload(dispatch_id, sealed) == payload
-    assert kms.generated == [{
-        "KeyId": "arn:aws:kms:us-east-1:123456789012:key/test",
-        "KeySpec": "AES_256", "EncryptionContext": {"dispatch_id": str(dispatch_id)},
-    }]
-    assert kms.decrypted == [{
-        "CiphertextBlob": sealed.encrypted_data_key,
-        "EncryptionContext": {"dispatch_id": str(dispatch_id)},
-    }]
+    assert kms.generated == [
+        {
+            "KeyId": "arn:aws:kms:us-east-1:123456789012:key/test",
+            "KeySpec": "AES_256",
+            "EncryptionContext": {"dispatch_id": str(dispatch_id)},
+        }
+    ]
+    assert kms.decrypted == [
+        {
+            "CiphertextBlob": sealed.encrypted_data_key,
+            "EncryptionContext": {"dispatch_id": str(dispatch_id)},
+        }
+    ]
     with pytest.raises(ValueError, match="encryption context"):
         open_payload(uuid4(), sealed)
     assert kms.decrypted[-1]["EncryptionContext"] != kms.generated[0]["EncryptionContext"]

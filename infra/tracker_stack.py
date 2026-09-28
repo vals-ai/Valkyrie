@@ -232,55 +232,73 @@ class TrackerStack(Stack):
             self, "ExecutorReleaseArtifacts", f"{stage.phys(EXECUTOR_RELEASE_BUCKET_NAME)}-{self.account}"
         )
         payload_key = aws_kms.Key(
-            self, "ExecutorPayloadKey", enable_key_rotation=True,
+            self,
+            "ExecutorPayloadKey",
+            enable_key_rotation=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
         )
         runner_security_group = aws_ec2.SecurityGroup(
-            self, "ExecutorRunnerSG", vpc=vpc,
+            self,
+            "ExecutorRunnerSG",
+            vpc=vpc,
             description="No-ingress security group for one-dispatch executor tasks",
             allow_all_outbound=False,
         )
-        runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.tcp(POSTGRES_PORT), "Tracker RDS proxy")
+        runner_security_group.add_egress_rule(
+            aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.tcp(POSTGRES_PORT), "Tracker RDS proxy"
+        )
         runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.udp(53), "VPC DNS UDP")
         runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.tcp(53), "VPC DNS TCP")
-        runner_security_group.add_egress_rule(aws_ec2.Peer.any_ipv4(), aws_ec2.Port.tcp(443), "AWS API endpoints and release artifacts")
+        runner_security_group.add_egress_rule(
+            aws_ec2.Peer.any_ipv4(), aws_ec2.Port.tcp(443), "AWS API endpoints and release artifacts"
+        )
 
         runner_task_role = create_executor_task_role(self, stage, bucket, stage_config.managed_aws)
-        runner_task_role.add_to_policy(aws_iam.PolicyStatement(
-            actions=["s3:GetObject"],
-            resources=[runner_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],
-        ))
+        runner_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["s3:GetObject"],
+                resources=[runner_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],
+            )
+        )
         payload_key.grant_decrypt(runner_task_role)
         runner_execution_role = aws_iam.Role(
-            self, "ExecutorRunnerExecutionRole",
+            self,
+            "ExecutorRunnerExecutionRole",
             role_name=stage.phys("ValkyrieExecutorRunnerExecution"),
             assumed_by=cast(aws_iam.IPrincipal, aws_iam.ServicePrincipal("ecs-tasks.amazonaws.com")),
-            managed_policies=[aws_iam.ManagedPolicy.from_aws_managed_policy_name(
-                "service-role/AmazonECSTaskExecutionRolePolicy"
-            )],
+            managed_policies=[
+                aws_iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AmazonECSTaskExecutionRolePolicy")
+            ],
         )
         db_credentials_secret.grant_read(runner_execution_role)
         if sentry_secret_name:
             sentry_secret.grant_read(runner_execution_role)
         runner_task_def = aws_ecs.FargateTaskDefinition(
-            self, "ExecutorRunnerTaskDef", family=runner_family,
-            cpu=1024, memory_limit_mib=4096, runtime_platform=_ARM64_PLATFORM,
+            self,
+            "ExecutorRunnerTaskDef",
+            family=runner_family,
+            cpu=1024,
+            memory_limit_mib=4096,
+            runtime_platform=_ARM64_PLATFORM,
             task_role=cast(aws_iam.IRole, runner_task_role),
             execution_role=cast(aws_iam.IRole, runner_execution_role),
         )
         runner_task_def.add_container(
-            "ExecutorRunnerContainer", image=tracker_image,
+            "ExecutorRunnerContainer",
+            image=tracker_image,
             logging=aws_ecs.LogDriver.aws_logs(
                 stream_prefix="ExecutorRunner",
                 log_group=aws_logs.LogGroup(
-                    self, "ExecutorRunnerLogGroup",
+                    self,
+                    "ExecutorRunnerLogGroup",
                     log_group_name=stage.phys(EXECUTOR_RUNNER_LOG_GROUP_NAME),
                     retention=stage_config.service_log_retention,
                     removal_policy=cdk.RemovalPolicy.RETAIN,
                 ),
             ),
             environment={
-                **shared_env, **db_env,
+                **shared_env,
+                **db_env,
                 "EXECUTOR_RELEASE_BUCKET": runner_bucket.bucket_name,
                 "EXECUTOR_RELEASE_PREFIX": EXECUTOR_RELEASE_PREFIX,
                 "EXECUTOR_CACHE_DIR": "/tmp/executor-cache",
@@ -307,18 +325,26 @@ class TrackerStack(Stack):
         runner_family_arn = self.format_arn(
             service="ecs", resource="task-definition", resource_name=f"{runner_family}:*"
         )
-        self.tracker_task_role.add_to_policy(aws_iam.PolicyStatement(
-            actions=["ecs:RunTask"], resources=[runner_family_arn],
-            conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
-        ))
-        self.tracker_task_role.add_to_policy(aws_iam.PolicyStatement(
-            actions=["iam:PassRole"],
-            resources=[runner_task_role.role_arn, runner_execution_role.role_arn],
-            conditions={"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}},
-        ))
-        self.tracker_task_role.add_to_policy(aws_iam.PolicyStatement(
-            actions=["kms:GenerateDataKey"], resources=[payload_key.key_arn],
-        ))
+        self.tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["ecs:RunTask"],
+                resources=[runner_family_arn],
+                conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
+            )
+        )
+        self.tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["iam:PassRole"],
+                resources=[runner_task_role.role_arn, runner_execution_role.role_arn],
+                conditions={"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}},
+            )
+        )
+        self.tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["kms:GenerateDataKey"],
+                resources=[payload_key.key_arn],
+            )
+        )
         cdk.CfnOutput(self, "TrackerTaskRoleArn", value=self.tracker_task_role.role_arn)
 
         tracker_task_def.add_container(
@@ -341,7 +367,9 @@ class TrackerStack(Stack):
                 "EXECUTOR_LAUNCHER": "ecs",
                 "EXECUTOR_RUNNER_CLUSTER": cluster.cluster_arn,
                 "EXECUTOR_RUNNER_TASK_DEFINITION": runner_task_def.task_definition_arn,
-                "EXECUTOR_RUNNER_SUBNETS": cdk.Fn.join(",", vpc.select_subnets(subnet_type=aws_ec2.SubnetType.PUBLIC).subnet_ids),
+                "EXECUTOR_RUNNER_SUBNETS": cdk.Fn.join(
+                    ",", vpc.select_subnets(subnet_type=aws_ec2.SubnetType.PUBLIC).subnet_ids
+                ),
                 "EXECUTOR_RUNNER_SECURITY_GROUP": runner_security_group.security_group_id,
                 "EXECUTOR_RUNNER_CONTAINER": "ExecutorRunnerContainer",
                 "EXECUTOR_PAYLOAD_KMS_KEY_ID": payload_key.key_id,

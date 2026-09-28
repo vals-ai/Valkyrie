@@ -108,6 +108,7 @@ class MonitoringStack(cdk.Stack):
             database=database,
             region=self.region,
         )
+
     def _create_alarms(
         self,
         *,
@@ -220,4 +221,3 @@ class MonitoringStack(cdk.Stack):
             comparison_operator=aws_cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
-
