@@ -63,3 +63,16 @@ def test_local_release_launcher_changes_promote_fresh_releases(
     assert old.status == ExecutorReleaseStatus.DRAINING
     assert admission is not None
     assert admission.release_id == back.id
+
+
+def test_local_artifact_store_rejects_keys_outside_its_bucket(tmp_path: Path) -> None:
+    (tmp_path / "secret").write_bytes(b"not an artifact")
+    (tmp_path / "local").mkdir()
+    store = LocalArtifactStore(tmp_path)
+    escaping_key = "executor-releases/../../secret"
+
+    with pytest.raises(ValueError, match="escapes its bucket"):
+        store.download_file("local", escaping_key, str(tmp_path / "copied.pex"))
+    with pytest.raises(ValueError, match="escapes its bucket"):
+        store.open("local", escaping_key)
+    assert not (tmp_path / "copied.pex").exists()

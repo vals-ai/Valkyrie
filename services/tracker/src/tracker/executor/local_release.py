@@ -31,11 +31,19 @@ class LocalArtifactStore:
     def __init__(self, root: Path) -> None:
         self.root = root
 
+    def _path(self, bucket: str, key: str) -> Path:
+        # Release URIs are only prefix-checked, so keep keys like "prefix/../../etc/passwd" inside the bucket.
+        bucket_root = (self.root / bucket).resolve()
+        path = (bucket_root / key).resolve()
+        if not path.is_relative_to(bucket_root):
+            raise ValueError(f"Local executor artifact key escapes its bucket: {key!r}")
+        return path
+
     def open(self, bucket: str, key: str) -> AbstractContextManager[BinaryIO]:
-        return (self.root / bucket / key).open("rb")
+        return self._path(bucket, key).open("rb")
 
     def download_file(self, bucket: str, key: str, filename: str) -> None:
-        shutil.copyfile(self.root / bucket / key, filename)
+        shutil.copyfile(self._path(bucket, key), filename)
 
 
 def register_local_release(session: Session, *, root: Path, bucket: str, prefix: str) -> ExecutorRelease:
