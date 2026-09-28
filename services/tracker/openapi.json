@@ -170,6 +170,24 @@
             "title": "Install Cmd",
             "type": "string"
           },
+          "install_egress": {
+            "anyOf": [
+              {
+                "const": "*",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Egress"
+          },
           "kwargs": {
             "additionalProperties": {
               "type": "string"
@@ -258,6 +276,24 @@
             "default": "",
             "title": "Install Cmd",
             "type": "string"
+          },
+          "install_egress": {
+            "anyOf": [
+              {
+                "const": "*",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Egress"
           },
           "kwargs": {
             "additionalProperties": {
