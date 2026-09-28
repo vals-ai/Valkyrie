@@ -160,6 +160,7 @@ async def test_sigterm_after_child_spawn_terminalizes_and_kills_process_group(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(runner.PostgresExecutorDispatchStore, "from_environment", lambda: store)
     monkeypatch.setattr(runner, "ExecutorSupervisor", lambda _cache: supervisor)
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "ecs")
     monkeypatch.setenv("EXECUTOR_CACHE_DIR", str(tmp_path))
     loop = asyncio.get_running_loop()
     handlers: dict[signal.Signals, object] = {}
@@ -211,6 +212,7 @@ async def test_sigterm_handler_cancels_and_awaits_claimed_dispatch(
 
     supervisor.prepare_artifact = prepare  # type: ignore[method-assign]
     monkeypatch.setattr(runner.PostgresExecutorDispatchStore, "from_environment", lambda: store)
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "ecs")
     monkeypatch.setattr(runner, "ExecutorSupervisor", lambda _cache: supervisor)
     monkeypatch.setenv("EXECUTOR_CACHE_DIR", str(tmp_path))
     loop = asyncio.get_running_loop()

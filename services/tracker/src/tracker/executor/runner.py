@@ -859,7 +859,15 @@ def _parse_dispatch_id(value: str) -> str:
 async def _run_main(dispatch_id: str) -> None:
     loop = asyncio.get_running_loop()
     store = PostgresExecutorDispatchStore.from_environment()
-    supervisor = ExecutorSupervisor(Path(os.environ["EXECUTOR_CACHE_DIR"]))
+    if os.environ["EXECUTOR_LAUNCHER"] == "local":
+        from tracker.executor.local_release import LocalArtifactStore
+
+        supervisor = ExecutorSupervisor(
+            Path(os.environ["EXECUTOR_CACHE_DIR"]),
+            s3_client=LocalArtifactStore(Path(os.environ["EXECUTOR_RELEASE_LOCAL_DIR"])),
+        )
+    else:
+        supervisor = ExecutorSupervisor(Path(os.environ["EXECUTOR_CACHE_DIR"]))
     task = asyncio.create_task(
         run_executor_dispatch(supervisor, store, keeper=_LeaseKeeper(store), executor_dispatch_id=dispatch_id)
     )

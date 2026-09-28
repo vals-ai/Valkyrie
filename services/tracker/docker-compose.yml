@@ -26,9 +26,8 @@ services:
     image: tracker-service
     container_name: tracker-service-container
     build:
-      context: ../..
-      dockerfile: services/tracker/Dockerfile
-    command: ["uv", "run", "--no-sync", "python", "-m", "tracker.serve"]
+      context: .
+    command: ["sh", "-c", "uv run --no-sync python -m tracker.executor.local_release && exec uv run --no-sync python -m tracker.serve"]
     ports:
       - "8000:8000"
     environment:
@@ -42,9 +41,9 @@ services:
       - DB_NAME=tracker
       - DB_USERNAME=tracker
       - DB_PASSWORD=tracker
-      # Runner artifact downloads: set to the release bucket/prefix your AWS credentials can read.
-      - EXECUTOR_RELEASE_BUCKET
-      - EXECUTOR_RELEASE_PREFIX
+      - EXECUTOR_RELEASE_BUCKET=local
+      - EXECUTOR_RELEASE_PREFIX=executor-releases
+      - EXECUTOR_RELEASE_LOCAL_DIR=/tmp/executor-releases
       - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
       - SANDBOX_QUEUE_ENABLED=${SANDBOX_QUEUE_ENABLED:-false}
       - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
