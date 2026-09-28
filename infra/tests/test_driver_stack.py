@@ -198,6 +198,11 @@ class DriverStackTest(unittest.TestCase):
             for logical_id, resource in tracker_template["Resources"].items()
             if resource["Type"] == "AWS::RDS::DBProxy"
         )
+        # Release-test shares the dev account, where proxy names must be unique.
+        self.assertEqual(
+            tracker_template["Resources"][proxy_id]["Properties"]["DBProxyName"],
+            "TrackerDatabaseProxy-release-test",
+        )
         endpoint_export = next(
             output["Export"]["Name"]
             for output in tracker_template["Outputs"].values()

@@ -167,8 +167,10 @@ class TrackerStack(Stack):
         )
         # Queued sandbox admission holds a session advisory lock while it waits on sandbox creation.
         # The proxy closes idle clients after 30 minutes by default, which would release that lock.
+        # Proxy names are unique per account, and release-test shares the dev account.
         self.database_proxy = self.database.add_proxy(
             "TrackerDatabaseProxy",
+            db_proxy_name=stage.phys("TrackerDatabaseProxy"),
             vpc=vpc,
             vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
             secrets=[db_credentials_secret],
