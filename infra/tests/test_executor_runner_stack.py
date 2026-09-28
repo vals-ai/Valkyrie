@@ -173,23 +173,22 @@ class ExecutorRunnerStackTest(unittest.TestCase):
                 "Fn::Join": ["", ["arn:", {"Ref": "AWS::Partition"}, f":s3:::{release_bucket_name}/releases/*"]],
             },
         )
-        runner_sg = next(
-            value["Properties"]
+        # Benchmark services admit only the Tracker service security group, so runners must launch in it.
+        tracker_container = next(
+            container
             for value in resources.values()
-            if value["Type"] == "AWS::EC2::SecurityGroup"
-            and value["Properties"].get("GroupDescription")
-            == "No-ingress security group for one-dispatch executor tasks"
+            if value["Type"] == "AWS::ECS::TaskDefinition"
+            for container in value["Properties"]["ContainerDefinitions"]
+            if container["Name"] == "TrackerContainer"
         )
-        self.assertNotIn("SecurityGroupIngress", runner_sg)
-        self.assertEqual(
-            {(rule["IpProtocol"], rule["FromPort"], rule["CidrIp"]) for rule in runner_sg["SecurityGroupEgress"]},
-            {
-                ("tcp", 5432, "10.0.0.0/16"),
-                ("udp", 53, "10.0.0.0/16"),
-                ("tcp", 53, "10.0.0.0/16"),
-                ("tcp", 443, "0.0.0.0/0"),
-            },
+        runner_security_group = next(
+            variable["Value"]
+            for variable in tracker_container["Environment"]
+            if variable["Name"] == "EXECUTOR_RUNNER_SECURITY_GROUP"
         )
+        tracker_service = next(value for value in resources.values() if value["Type"] == "AWS::ECS::Service")
+        service_groups = tracker_service["Properties"]["NetworkConfiguration"]["AwsvpcConfiguration"]["SecurityGroups"]
+        self.assertEqual([runner_security_group], service_groups)
 
 
 if __name__ == "__main__":

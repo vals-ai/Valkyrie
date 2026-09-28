@@ -237,22 +237,6 @@ class TrackerStack(Stack):
             enable_key_rotation=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
         )
-        runner_security_group = aws_ec2.SecurityGroup(
-            self,
-            "ExecutorRunnerSG",
-            vpc=vpc,
-            description="No-ingress security group for one-dispatch executor tasks",
-            allow_all_outbound=False,
-        )
-        runner_security_group.add_egress_rule(
-            aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.tcp(POSTGRES_PORT), "Tracker RDS proxy"
-        )
-        runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.udp(53), "VPC DNS UDP")
-        runner_security_group.add_egress_rule(aws_ec2.Peer.ipv4(VPC_CIDR), aws_ec2.Port.tcp(53), "VPC DNS TCP")
-        runner_security_group.add_egress_rule(
-            aws_ec2.Peer.any_ipv4(), aws_ec2.Port.tcp(443), "AWS API endpoints and release artifacts"
-        )
-
         runner_task_role = create_executor_task_role(self, stage, bucket, stage_config.managed_aws)
         runner_task_role.add_to_policy(
             aws_iam.PolicyStatement(
@@ -344,7 +328,7 @@ class TrackerStack(Stack):
         )
         cdk.CfnOutput(self, "TrackerTaskRoleArn", value=self.tracker_task_role.role_arn)
 
-        tracker_task_def.add_container(
+        tracker_container = tracker_task_def.add_container(
             "TrackerContainer",
             image=tracker_image,
             logging=aws_ecs.LogDriver.aws_logs(
@@ -367,7 +351,6 @@ class TrackerStack(Stack):
                 "EXECUTOR_RUNNER_SUBNETS": cdk.Fn.join(
                     ",", vpc.select_subnets(subnet_type=aws_ec2.SubnetType.PUBLIC).subnet_ids
                 ),
-                "EXECUTOR_RUNNER_SECURITY_GROUP": runner_security_group.security_group_id,
                 "EXECUTOR_RUNNER_CONTAINER": "ExecutorRunnerContainer",
                 "EXECUTOR_PAYLOAD_KMS_KEY_ID": payload_key.key_id,
                 "AUTH_REQUIRED": auth_required,
@@ -432,6 +415,9 @@ class TrackerStack(Stack):
         )
 
         tracker_security_group = self.service.service.connections.security_groups[0]
+        # Runners use the Tracker service security group, as ExecutorHost did: benchmark
+        # services admit only this group (benchmark-services-registry infra_stack.py allow_from).
+        tracker_container.add_environment("EXECUTOR_RUNNER_SECURITY_GROUP", tracker_security_group.security_group_id)
         cfn_tracker_security_group = cast(aws_ec2.CfnSecurityGroup, tracker_security_group.node.default_child)
         cfn_tracker_security_group.security_group_egress = [
             aws_ec2.CfnSecurityGroup.EgressProperty(
