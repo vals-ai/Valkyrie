@@ -30,6 +30,7 @@ def _scoped(env: dict[str, str], **overrides: Any) -> Any:
         "variant": "xhigh",
         "identity": IDENTITY,
         "org_name": "vals.ai",
+        "agent_timeout": 600,
     }
     kwargs.update(overrides)
     return task_scoped_gateway_key(env, **kwargs)
@@ -90,8 +91,7 @@ async def test_scoped_credential_replaces_the_static_key_and_is_revoked(
         "allowed_models": [MODEL],
         "identity": IDENTITY,
         "variant": "xhigh",
-        # No renew, and some agents run for days.
-        "ttl_seconds": 7 * 24 * 60 * 60,
+        "ttl_seconds": 600 + 2 * 60 * 60,
     }
     assert gateway.payload_for("/service-auth/revoke") == {"lease_id": "lease-1"}
     # Both control-plane calls authenticate as the executor, never as the token.
@@ -257,3 +257,29 @@ async def test_the_gateway_stays_reachable_for_every_tenant(monkeypatch: pytest.
         assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
 
     assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
+
+
+@pytest.mark.parametrize(
+    "agent_timeout,expected",
+    [
+        # The agent's timeout plus room for the waits around it.
+        (600, 600 + 2 * 60 * 60),
+        # Five days is a real benchmark timeout, and it must not be truncated.
+        (5 * 24 * 60 * 60, 5 * 24 * 60 * 60 + 2 * 60 * 60),
+        # No timeout of its own: the gateway's ceiling, which is also the cap.
+        (None, 7 * 24 * 60 * 60),
+        (30 * 24 * 60 * 60, 7 * 24 * 60 * 60),
+    ],
+)
+async def test_the_credential_follows_the_benchmark_timeout(
+    monkeypatch: pytest.MonkeyPatch, agent_timeout: float | None, expected: int
+) -> None:
+    """There is no renew, so a credential shorter than its task loses model
+    access partway through."""
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+
+    async with _scoped(_env(), agent_timeout=agent_timeout):
+        pass
+
+    assert gateway.payload_for("/service-auth")["ttl_seconds"] == expected

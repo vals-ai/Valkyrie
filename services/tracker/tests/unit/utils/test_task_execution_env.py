@@ -233,7 +233,7 @@ class TestProcessTaskEnvironment:
                     "email": "starter@example.com",
                 },
                 "variant": "xhigh",
-                "ttl_seconds": 7 * 24 * 60 * 60,
+                "ttl_seconds": minted[0]["ttl_seconds"],
             }
         ]
 

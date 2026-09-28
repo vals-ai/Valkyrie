@@ -1070,6 +1070,7 @@ async def _process_task_attempt(
                 variant=contract.kwargs.get("variant", ""),
                 identity=identity,
                 org_name=org.name,
+                agent_timeout=task_data.agent_timeout,
             ) as scoped_env_vars:
                 async with create_sandbox(
                     provider=sandbox_provider,

@@ -19,11 +19,22 @@ from tracker.outbound_security import validate_custom_service_destination, valid
 
 logger = get_logger(__name__)
 
-URL_ENV = "MODEL_GATEWAY_URL"
-KEY_ENV = "MODEL_GATEWAY_API_KEY"
-
 # Shared so tasks reuse connections rather than handshake one at a time.
 _client = httpx.AsyncClient()
+
+
+def _ttl_seconds(agent_timeout: float | None) -> int:
+    """How long the credential may outlive its mint.
+
+    The agent's own timeout plus room for what surrounds it: a sandbox creation
+    permit, the build, dependency install and evaluation. There is no renew and
+    expiring mid-task breaks the run, so an agent with no timeout of its own
+    gets the gateway's ceiling, which is also the cap.
+    """
+    ceiling = 7 * 24 * 60 * 60
+    if agent_timeout is None:
+        return ceiling
+    return min(int(agent_timeout) + 2 * 60 * 60, ceiling)
 
 
 async def _post(url: str, path: str, api_key: str, payload: dict[str, Any], timeout: float) -> httpx.Response:
@@ -47,6 +58,7 @@ async def task_scoped_gateway_key(
     variant: str,
     identity: dict[str, str],
     org_name: str,
+    agent_timeout: float | None,
 ) -> AsyncIterator[dict[str, str]]:
     """Yield the sandbox environment with its gateway key scoped to this task.
 
@@ -55,13 +67,13 @@ async def task_scoped_gateway_key(
     model or a gateway credential. A failed mint propagates: falling back to
     the static key would make the scoping silently unreliable.
     """
-    api_key = env_vars.get(KEY_ENV, "")
-    if not env_vars.get(URL_ENV) or not api_key or not attested_model:
+    api_key = env_vars.get("MODEL_GATEWAY_API_KEY", "")
+    if not env_vars.get("MODEL_GATEWAY_URL") or not api_key or not attested_model:
         yield env_vars
         return
 
     # The address is a resolved secret, so check it before sending the key.
-    url = validate_service_url_syntax(env_vars[URL_ENV])
+    url = validate_service_url_syntax(env_vars["MODEL_GATEWAY_URL"])
     validate_custom_service_destination(url, org_name=org_name, auth_required=AUTH_REQUIRED, restrict_vals_hosts=False)
 
     lease = (
@@ -75,9 +87,7 @@ async def task_scoped_gateway_key(
                 "allowed_models": [attested_model],
                 "identity": identity,
                 "variant": variant or None,
-                # No renew, and expiring mid-task breaks the run, so this is
-                # the gateway's ceiling; revoking is what ends the credential.
-                "ttl_seconds": 7 * 24 * 60 * 60,
+                "ttl_seconds": _ttl_seconds(agent_timeout),
             },
             30.0,
         )
@@ -85,7 +95,7 @@ async def task_scoped_gateway_key(
     logger.info(f"Scoped gateway credential to {attested_model} for task {task_id} (lease {lease['lease_id']})")
 
     try:
-        yield {**env_vars, KEY_ENV: lease["token"]}
+        yield {**env_vars, "MODEL_GATEWAY_API_KEY": lease["token"]}
     finally:
         await _revoke(url, api_key, lease["lease_id"])
 
