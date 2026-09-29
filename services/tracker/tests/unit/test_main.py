@@ -128,6 +128,7 @@ class TestTrackerAPI:
     async def _mock_verify_task_ids_error(self, *_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
+    @pytest.mark.parametrize("selected_version", ["release-a", None])
     async def test_dataset_version_survives_default_switch_and_retry(
         self,
         contract: AgentContractRequest,
@@ -136,6 +137,7 @@ class TestTrackerAPI:
         harness_headers: dict[str, str],
         mock_kicker: Any,
         monkeypatch: MonkeyPatch,
+        selected_version: str | None,
     ) -> None:
         current_default = ["release-a"]
         observed_versions: list[str] = []
@@ -174,7 +176,7 @@ class TestTrackerAPI:
             contract=contract,
             benchmark_name="swebench",
             harness_config=harness_config,
-            dataset_version="release-a",
+            dataset_version=selected_version,
         )
 
         started = client.post("/start-benchmark", json=request.model_dump(mode="json"))
@@ -197,7 +199,7 @@ class TestTrackerAPI:
         assert first_run is not None
         assert first_run.arguments.dataset_version == DatasetVersion(id="release-a", label="release-a")
         queued_payload = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
-        assert queued_payload["dataset_version"] == "release-a"
+        assert queued_payload["dataset_version"] == selected_version
         assert queued_payload["resolved_dataset_version"]["id"] == "release-a"
 
         current_default[0] = "release-b"
@@ -321,15 +323,19 @@ class TestTrackerAPI:
         assert response.json()["dataset_version"] is None
         assert response.json()["dataset_version_warning"] == "Unversioned — dataset consistency is not guaranteed."
 
+    @pytest.mark.parametrize("missing_version_endpoint", [False, True])
     async def test_explicit_dataset_version_requires_service_support(
         self,
         contract: AgentContractRequest,
         harness_config: HarnessConfig,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        missing_version_endpoint: bool,
     ) -> None:
         async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
             assert dataset == "default"
+            if missing_version_endpoint:
+                raise BenchmarkServiceError("Version endpoint is unavailable", status_code=404)
 
             return SimpleNamespace(dataset_version_selection=False)
 

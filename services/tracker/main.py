@@ -837,8 +837,12 @@ async def _start_benchmark(
                 try:
                     version_metadata = await benchmark_service.version(dataset=selected_dataset)
                 except BenchmarkServiceError as exc:
-                    if request.dataset_version is not None or exc.status_code not in {404, 405, 501}:
+                    if exc.status_code not in {404, 405, 501}:
                         raise
+                    if request.dataset_version is not None:
+                        raise HTTPException(
+                            status_code=400, detail="This benchmark service cannot select a dataset version"
+                        ) from exc
                     logger.info(
                         "Benchmark service does not expose version metadata; starting run without a pinned version"
                     )
