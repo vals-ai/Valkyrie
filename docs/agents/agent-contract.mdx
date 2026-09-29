@@ -285,7 +285,18 @@ valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swe
 
 ### Companion models
 
-Each task's Model Gateway key only allows the run's model. If other agents in the sandbox call their own models alongside the main one, such as an auditor or a user simulator, declare a `companion_models` kwarg: a comma-separated list of model keys the key also allows.
+Tracker mints a native task-scoped Model Gateway bearer token for the run's model when the Gateway is
+configured and the model is attested. For local controlled accounting, mint and revoke go through SSP
+with Tracker's static Gateway bearer, not the sandbox's scoped bearer. If other agents in the sandbox
+call their own models alongside the main one, such as an auditor or a user simulator, declare a
+`companion_models` kwarg: a comma-separated list of model keys the token also allows. In the local
+controlled-generation accounting path, Tracker routes model requests through SSP by changing only
+`MODEL_GATEWAY_URL` after minting;
+`MODEL_GATEWAY_API_KEY` stays the native scoped token, not the accounting session ID. The token's
+nonrenewable TTL covers the base task timeout, configured cumulative credit cap, and two-hour grace;
+Tracker rejects selected tasks before session creation when this exceeds the seven-day Gateway limit.
+See [controlled-generation timeout accounting](/runs/results-and-outputs#controlled-generation-timeout-accounting-local-mvp)
+for opt-in requirements and local/deployed limits.
 
 ```yaml
 run_cmd: "my_agent --task {problem_statement_path} --model {model} --auditor-model {companion_models}"

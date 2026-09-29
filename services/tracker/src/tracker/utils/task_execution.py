@@ -38,7 +38,7 @@ from tracker.aws.cloudwatch_logs import (
 )
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
-from tracker.runtime.model_gateway import task_scoped_gateway_key
+from tracker.runtime.model_gateway import controlled_gateway_ttl_seconds, task_scoped_gateway_key
 from tracker.runtime.task_logs import TaskLogBuffer
 from tracker.config import (
     ENVIRONMENT,
@@ -579,15 +579,18 @@ async def _create_external_service_deadline(
     task_generation_containment: GenerationContainment | None,
     agent_timeout: float | None,
 ) -> ExternalServiceDeadlineController | None:
-    if EXTERNAL_SERVICE_GATEWAY_URL is None or not _controlled_generation_selected(
-        contract, task_generation_containment, agent_timeout
-    ):
+    if not _controlled_generation_selected(contract, task_generation_containment, agent_timeout):
+        return None
+
+    if not contract.inference_settings_attested or not contract.model or not contract.model.strip():
+        raise TrackerServiceError("Controlled generation requires an attested agent model")
+    if EXTERNAL_SERVICE_GATEWAY_URL is None:
         return None
 
     assert EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS is not None
     assert agent_timeout is not None
-    if contract.model is None:
-        raise TrackerServiceError("External service accounting requires an attested agent model")
+    # Reject an unmintable controlled deadline before creating its SSP session.
+    controlled_gateway_ttl_seconds(agent_timeout, EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS)
     client = ExternalServiceGatewayClient(EXTERNAL_SERVICE_GATEWAY_URL)
     snapshot = await client.create_session(
         session_id=str(uuid4()),
@@ -600,25 +603,6 @@ async def _create_external_service_deadline(
         base_allowance_seconds=agent_timeout,
         credit_cap_seconds=EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
     )
-
-
-def _external_service_environment(
-    secret_references: dict[str, str],
-    deadline: ExternalServiceDeadlineController | None,
-) -> tuple[dict[str, str], dict[str, str]]:
-    if deadline is None:
-        return secret_references, {}
-
-    assert EXTERNAL_SERVICE_GATEWAY_URL is not None
-    filtered_references = {
-        name: reference
-        for name, reference in secret_references.items()
-        if name not in {"MODEL_GATEWAY_URL", "MODEL_GATEWAY_API_KEY"}
-    }
-    return filtered_references, {
-        "MODEL_GATEWAY_URL": EXTERNAL_SERVICE_GATEWAY_URL,
-        "MODEL_GATEWAY_API_KEY": deadline.session_id,
-    }
 
 
 def _persist_external_service_summary(
@@ -1134,12 +1118,8 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
-        secret_references, external_service_environment = _external_service_environment(
-            start_benchmark_request.contract.secrets,
-            external_service_deadline,
-        )
         env_vars = {
-            **(await runtime.resolve_secrets(secret_references)),
+            **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
@@ -1151,7 +1131,6 @@ async def _process_task_attempt(
                 f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
             **recovery_attempt.environment,
-            **external_service_environment,
         }
 
         # We don't want to track the task until the sandbox is actually created.
@@ -1193,13 +1172,20 @@ async def _process_task_attempt(
                 identity=identity,
                 org_name=org.name,
                 agent_timeout=task_data.agent_timeout,
+                accounting_session_id=external_service_deadline.session_id if external_service_deadline else None,
+                accounting_gateway_url=EXTERNAL_SERVICE_GATEWAY_URL if external_service_deadline else None,
+                credit_cap_seconds=external_service_deadline.credit_cap_seconds if external_service_deadline else None,
             ) as scoped_env_vars:
+                sandbox_env_vars = scoped_env_vars
+                if external_service_deadline is not None:
+                    assert EXTERNAL_SERVICE_GATEWAY_URL is not None
+                    sandbox_env_vars = {**scoped_env_vars, "MODEL_GATEWAY_URL": EXTERNAL_SERVICE_GATEWAY_URL}
                 async with create_sandbox(
                     provider=sandbox_provider,
                     sandbox_name=sandbox_name,
                     source=task_data.source,
                     labels=labels,
-                    env_vars=scoped_env_vars,
+                    env_vars=sandbox_env_vars,
                     sandbox_secrets=task_data.sandbox_secrets,
                     resources=task_data.resources,
                     volumes=task_data.volumes,

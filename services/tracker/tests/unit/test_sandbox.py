@@ -62,7 +62,6 @@ from tracker.sandbox import (
     _controlled_completion_precedes_deadline,  # pyright: ignore[reportPrivateUsage]
     _controlled_generation_selected,  # pyright: ignore[reportPrivateUsage]
     _stream_controlled_output,  # pyright: ignore[reportPrivateUsage]
-    _stream_controlled_output_with_egress_allowlist,  # pyright: ignore[reportPrivateUsage]
     create_sandbox,
     run_agent,
     upload_agent_artifacts,
@@ -1137,7 +1136,7 @@ class TestRunAgent:
         legacy_stream = AsyncMock(return_value=(None, 0.0))
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
         monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
-        monkeypatch.setattr(sandbox_module, "_stream_command_output_with_egress_allowlist", legacy_stream)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", legacy_stream)
 
         await run_agent(
             cast(Any, LegacyOnlySandbox()),
@@ -1184,8 +1183,8 @@ class TestRunAgent:
         controlled_stream = AsyncMock(side_effect=AssertionError("controlled path selected"))
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
         monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
-        monkeypatch.setattr(sandbox_module, "_stream_command_output_with_egress_allowlist", legacy_stream)
-        monkeypatch.setattr(sandbox_module, "_stream_controlled_output_with_egress_allowlist", controlled_stream)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", legacy_stream)
+        monkeypatch.setattr(sandbox_module, "_stream_controlled_output", controlled_stream)
         sandbox = Mock(id="sandbox-123", name="task-alias")
 
         reason, _ = await run_agent(
@@ -1244,26 +1243,25 @@ class TestRunAgent:
             update={"final_output": "/logs", "egress_allowlist": ["example.com"]}
         )
         archive = AsyncMock()
+        staged_policy = ["example.com"]
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+        await _apply_egress_policy(controlled_sandbox, staged_policy)
 
-        async def fake_exec(_sandbox: Any, _command: str) -> ExecResult:
-            if _command == "test -e /logs":
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -e /logs":
                 assert workload.kill_calls == 1
                 assert workload.closed.is_set()
+                controlled_sandbox.modify_egress_rules.assert_awaited_once_with(staged_policy)
+                controlled_sandbox.clear_egress_rules.assert_not_awaited()
             return ExecResult(exit_code=0)
 
-        async def fake_clear(_sandbox: Any, fail_on_error: bool) -> None:
-            assert fail_on_error
-            assert workload.kill_calls == 1
-            assert workload.closed.is_set()
-
-        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
-        monkeypatch.setattr(sandbox_module, "_apply_egress_allowlist", AsyncMock())
-        monkeypatch.setattr(sandbox_module, "_clear_egress_allowlist", fake_clear)
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
         monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
 
         reason, _ = await run_agent(
-            cast(Any, sandbox),
+            controlled_sandbox,
             contract,
             "/tmp/problem.txt",
             "task_0",
@@ -1277,30 +1275,31 @@ class TestRunAgent:
 
         assert reason == AgentCausedExitReason.TIMEOUT
         archive.assert_awaited_once()
+        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(staged_policy)
+        controlled_sandbox.clear_egress_rules.assert_not_awaited()
 
-    async def test_run_agent_unconfirmed_timeout_suppresses_collection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_run_agent_unconfirmed_timeout_preserves_run_policy_and_suppresses_collection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
         workload.block_kill = True
         sandbox = _FakeControlledSandbox(workload)
         contract = _controlled_contract().model_copy(
-            update={
-                "final_output": "/logs",
-                "egress_allowlist": ["example.com"],
-            }
+            update={"final_output": "/logs", "egress_allowlist": ["example.com"]}
         )
         archive = AsyncMock()
-        apply_egress = AsyncMock()
-        clear_egress = AsyncMock()
-        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        staged_policy = ["example.com"]
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+        await _apply_egress_policy(controlled_sandbox, staged_policy)
         monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
         monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
-        monkeypatch.setattr(sandbox_module, "_apply_egress_allowlist", apply_egress)
-        monkeypatch.setattr(sandbox_module, "_clear_egress_allowlist", clear_egress)
         monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.01)
 
         with pytest.raises(GenerationTerminationUnconfirmedError):
             await run_agent(
-                cast(Any, sandbox),
+                controlled_sandbox,
                 contract,
                 "/tmp/problem.txt",
                 "task_0",
@@ -1313,8 +1312,8 @@ class TestRunAgent:
             )
 
         archive.assert_not_awaited()
-        apply_egress.assert_awaited_once()
-        clear_egress.assert_not_awaited()
+        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(staged_policy)
+        controlled_sandbox.clear_egress_rules.assert_not_awaited()
 
     async def test_controlled_nonzero_exit_collects_outputs_after_seal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         workload = _FakeControlledWorkload(exit_code=23)
@@ -2216,67 +2215,33 @@ class TestRunAgent:
         workload = _FakeControlledWorkload()
         workload.output_error = SandboxNotFoundError("output lost")
         sandbox = _FakeControlledSandbox(workload)
-        controlled_sandbox = cast(Any, sandbox)
-        controlled_sandbox.modify_egress_rules = AsyncMock()
-        controlled_sandbox.clear_egress_rules = AsyncMock()
 
         with pytest.raises(ControlledGenerationError):
-            await _stream_controlled_output_with_egress_allowlist(
-                controlled_sandbox,
-                "echo done",
-                "/workspace",
-                _ignore_output,
-                ["example.com"],
-                10.0,
-            )
+            await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
 
         assert workload.kill_calls == 1
-        controlled_sandbox.clear_egress_rules.assert_awaited_once_with()
+        assert workload.closed.is_set()
 
-    async def test_controlled_output_error_preserves_egress_when_kill_fails(
-        self,
-    ) -> None:
+    async def test_controlled_output_error_reports_unconfirmed_termination_when_kill_fails(self) -> None:
         workload = _FakeControlledWorkload()
         workload.output_error = SandboxNotFoundError("output lost")
         workload.kill_error = ProviderSandboxError("kill unavailable")
         sandbox = _FakeControlledSandbox(workload)
-        controlled_sandbox = cast(Any, sandbox)
-        controlled_sandbox.modify_egress_rules = AsyncMock()
-        controlled_sandbox.clear_egress_rules = AsyncMock()
 
         with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
-            await _stream_controlled_output_with_egress_allowlist(
-                controlled_sandbox,
-                "echo done",
-                "/workspace",
-                _ignore_output,
-                ["example.com"],
-                10.0,
-            )
+            await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
 
         assert workload.kill_calls == 1
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
-        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(["example.com"])
-        controlled_sandbox.clear_egress_rules.assert_not_awaited()
 
     async def test_controlled_cancellation_kills_before_propagation(self) -> None:
         workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
         sandbox = _FakeControlledSandbox(workload)
-        controlled_sandbox = cast(Any, sandbox)
-        controlled_sandbox.modify_egress_rules = AsyncMock()
-        controlled_sandbox.clear_egress_rules = AsyncMock()
         task = asyncio.create_task(
-            _stream_controlled_output_with_egress_allowlist(
-                controlled_sandbox,
-                "echo done",
-                "/workspace",
-                _ignore_output,
-                ["example.com"],
-                10.0,
-            )
+            _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
         )
-        await asyncio.sleep(0)
+        await workload.output_started.wait()
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -2286,27 +2251,15 @@ class TestRunAgent:
         assert workload.closed.is_set()
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
-        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(["example.com"])
-        controlled_sandbox.clear_egress_rules.assert_awaited_once_with()
 
     async def test_controlled_cancellation_joins_children_when_kill_fails(self) -> None:
         workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
         workload.kill_error = ProviderSandboxError("kill unavailable")
         sandbox = _FakeControlledSandbox(workload)
-        controlled_sandbox = cast(Any, sandbox)
-        controlled_sandbox.modify_egress_rules = AsyncMock()
-        controlled_sandbox.clear_egress_rules = AsyncMock()
         task = asyncio.create_task(
-            _stream_controlled_output_with_egress_allowlist(
-                controlled_sandbox,
-                "echo done",
-                "/workspace",
-                _ignore_output,
-                ["example.com"],
-                10.0,
-            )
+            _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
         )
-        await asyncio.sleep(0)
+        await workload.output_started.wait()
 
         task.cancel()
         with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
@@ -2315,8 +2268,6 @@ class TestRunAgent:
         assert workload.kill_calls == 1
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
-        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(["example.com"])
-        controlled_sandbox.clear_egress_rules.assert_not_awaited()
 
 
 class TestSandboxRetry:

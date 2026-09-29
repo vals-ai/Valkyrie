@@ -30,8 +30,27 @@ An agent contract and its benchmark task must both opt in to `generation_contain
 declarations retain the legacy timeout path; matched declarations require an effective sandbox that
 supports containment, or Tracker rejects the run. A configured local External Service Gateway session
 additionally supplies neutral-time credit; without one, the controlled timeout uses the base allowance
-only. The SDK types are `valkyrie.sdk.models.agents.GenerationContainment` and
-`valkyrie.sdk.models.benchmarks.TaskBreakdown`. This local MVP does not activate the path in production.
+only. Every selected controlled task without an attested agent model is rejected before Tracker creates
+an accounting session or sandbox, regardless of SSP configuration; tasks that do not select controlled
+generation keep the legacy path. The SDK types are `valkyrie.sdk.models.agents.GenerationContainment`
+and `valkyrie.sdk.models.benchmarks.TaskBreakdown`. This local MVP does not activate the path in
+production: deployment configuration and production gateway integration are not supplied here.
+
+For a locally configured accounting session, Tracker resolves and validates the original Model Gateway
+URL and static credential, then sends the privileged `/service-auth` mint request through SSP with
+that static bearer and `X-SSP-Session-ID`. SSP forwards the mint to Model Gateway and binds the
+returned native task-scoped token to the open accounting session. Only after minting does Tracker set
+the sandbox's `MODEL_GATEWAY_URL` to the External Service Gateway (SSP) URL;
+`MODEL_GATEWAY_API_KEY` remains the native scoped token, never the accounting session ID. The
+sandbox sends model requests through SSP with that bearer token; SSP accounts for them and forwards
+them to Model Gateway. On sandbox context exit, Tracker revokes the scoped token through SSP using
+the original static bearer. Local use requires the configured SSP URL and credit cap, an attested
+model, and working native Model Gateway URL and credential. The nonrenewable scoped token's TTL
+covers the base timeout, the full configured cumulative credit cap, and the existing two-hour grace
+(rounded up to whole seconds). If that total exceeds Model Gateway's 604800-second (seven-day) limit,
+Tracker rejects the controlled task before creating an accounting session or sandbox rather than
+minting a token that could expire during its credited runtime. Without SSP configuration, no neutral-time
+credit is applied and the existing Gateway mint TTL and route remain in use.
 
 The gateway reports cumulative accepted neutral external-service overhead. Applied credit is capped
 by the configured cumulative cap, so the effective generation allowance is the base task timeout plus
@@ -41,8 +60,9 @@ An acknowledged `RESUME` establishes a new credited deadline. A sealed accountin
 only after generation absence is confirmed; unconfirmed termination does not proceed to grading.
 
 Controlled tasks expose seven nullable fields in each per-task `task_breakdown`:
-`accounting_session_id` identifies the gateway session; `base_generation_allowance_seconds` is the
-benchmark timeout; `cumulative_time_credit_cap_seconds` is the credit limit;
+`accounting_session_id` identifies the accounting session, not a bearer credential;
+`base_generation_allowance_seconds` is the benchmark timeout;
+`cumulative_time_credit_cap_seconds` is the credit limit;
 `external_service_overhead_seconds` is accepted cumulative overhead;
 `external_service_credit_applied_seconds` is the capped credit;
 `effective_generation_allowance_seconds` is base plus applied credit; and
