@@ -48,7 +48,9 @@ def _install_gateway(monkeypatch: pytest.MonkeyPatch, minted: list[dict[str, Any
     def handle(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/service-auth":
             minted.append(json.loads(request.content))
-            return httpx.Response(200, json={"token": "mgwt_scoped", "lease_id": "lease-1"})
+            return httpx.Response(
+                200, json={"token": "mgwt_scoped", "lease_id": "lease-1", "expires_at": 1_800_000_000.0}
+            )
         assert request.url.path == "/service-auth/revoke", request.url.path
         return httpx.Response(200, json={"revoked": 1})
 
@@ -218,10 +220,7 @@ class TestProcessTaskEnvironment:
         }
         assert env_vars["UNRELATED_SECRET"] == "secret-value"
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
-        # The sandbox receives a task-scoped token, never the executor's key.
         assert env_vars["MODEL_GATEWAY_API_KEY"] == "mgwt_scoped"
-        # Scoped to what the tracker resolved, not to the values the contract's
-        # own secrets tried to inject.
         assert minted == [
             {
                 "run_id": str(benchmark_id),
@@ -232,8 +231,7 @@ class TestProcessTaskEnvironment:
                     "agent_name": contract.name,
                     "email": "starter@example.com",
                 },
-                "variant": "xhigh",
-                "ttl_seconds": minted[0]["ttl_seconds"],
+                "ttl_seconds": 7 * 24 * 60 * 60,
             }
         ]
 

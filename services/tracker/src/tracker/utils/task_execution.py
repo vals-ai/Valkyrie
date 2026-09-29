@@ -1056,16 +1056,13 @@ async def _process_task_attempt(
                 if queue_context is None
                 else f"queued-{task_row.id.hex}-{int(_normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC).timestamp() * 1_000_000):x}"
             )
-            # Here, not earlier: a queued attempt must not hold a credential
-            # while it waits for a turn.
+            # Do not mint while the queued attempt waits for admission.
             contract = start_benchmark_request.contract
             async with task_scoped_gateway_key(
                 env_vars,
                 run_id=str(benchmark_id),
                 task_id=task_row.task_id,
-                # Only what the tracker resolved from the agent's own bundle.
                 attested_model=contract.model if contract.inference_settings_attested else None,
-                variant=contract.kwargs.get("variant", ""),
                 identity=identity,
                 org_name=org.name,
                 agent_timeout=task_data.agent_timeout,
