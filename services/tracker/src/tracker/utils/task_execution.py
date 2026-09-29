@@ -6,8 +6,8 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import Coroutine
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from collections.abc import AsyncGenerator, Coroutine
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -38,6 +38,7 @@ from tracker.aws.cloudwatch_logs import (
 )
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
+from tracker.runtime.model_gateway import task_scoped_gateway_key
 from tracker.runtime.task_logs import TaskLogBuffer
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
@@ -1046,7 +1047,8 @@ async def _process_task_attempt(
         start_sandbox_build_time = time.perf_counter()
         object_store = runtime.objects
 
-        def sandbox_context() -> AbstractAsyncContextManager[Sandbox]:
+        @asynccontextmanager
+        async def sandbox_context() -> AsyncGenerator[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
@@ -1054,18 +1056,31 @@ async def _process_task_attempt(
                 if queue_context is None
                 else f"queued-{task_row.id.hex}-{int(_normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC).timestamp() * 1_000_000):x}"
             )
-            return create_sandbox(
-                provider=sandbox_provider,
-                sandbox_name=sandbox_name,
-                source=task_data.source,
-                labels=labels,
-                env_vars=env_vars,
-                sandbox_secrets=task_data.sandbox_secrets,
-                resources=task_data.resources,
-                volumes=task_data.volumes,
-                creation_semaphore=creation_semaphore,
-                unique_name=queue_context is None,
-            )
+            # Do not mint while the queued attempt waits for admission.
+            contract = start_benchmark_request.contract
+            async with task_scoped_gateway_key(
+                env_vars,
+                run_id=str(benchmark_id),
+                task_id=task_row.task_id,
+                attested_model=contract.model if contract.inference_settings_attested else None,
+                companion_models=contract.kwargs.get("companion_models"),
+                identity=identity,
+                org_name=org.name,
+                agent_timeout=task_data.agent_timeout,
+            ) as scoped_env_vars:
+                async with create_sandbox(
+                    provider=sandbox_provider,
+                    sandbox_name=sandbox_name,
+                    source=task_data.source,
+                    labels=labels,
+                    env_vars=scoped_env_vars,
+                    sandbox_secrets=task_data.sandbox_secrets,
+                    resources=task_data.resources,
+                    volumes=task_data.volumes,
+                    creation_semaphore=creation_semaphore,
+                    unique_name=queue_context is None,
+                ) as sandbox:
+                    yield sandbox
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
