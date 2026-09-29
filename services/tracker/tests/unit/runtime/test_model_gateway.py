@@ -27,6 +27,7 @@ def _scoped(env: dict[str, str], **overrides: Any) -> Any:
         "run_id": "run-1",
         "task_id": "task_0",
         "attested_model": MODEL,
+        "companion_models": None,
         "identity": IDENTITY,
         "org_name": "vals.ai",
         "agent_timeout": 600,
@@ -89,6 +90,20 @@ async def test_scoped_credential_replaces_the_static_key_and_is_revoked(
     }
     assert gateway.payload_for("/service-auth/revoke") == {"lease_id": "lease-1"}
     assert {authorization for _, _, authorization in gateway.requests} == {f"Bearer {STATIC_KEY}"}
+
+
+async def test_companion_models_are_allowed_alongside_the_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+
+    async with _scoped(_env(), companion_models="openai/gpt-5-2025-08-07,anthropic/claude-sonnet-5"):
+        pass
+
+    assert gateway.payload_for("/service-auth")["allowed_models"] == [
+        MODEL,
+        "openai/gpt-5-2025-08-07",
+        "anthropic/claude-sonnet-5",
+    ]
 
 
 @pytest.mark.parametrize(

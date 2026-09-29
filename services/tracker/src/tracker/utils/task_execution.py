@@ -1063,6 +1063,7 @@ async def _process_task_attempt(
                 run_id=str(benchmark_id),
                 task_id=task_row.task_id,
                 attested_model=contract.model if contract.inference_settings_attested else None,
+                companion_models=contract.kwargs.get("companion_models"),
                 identity=identity,
                 org_name=org.name,
                 agent_timeout=task_data.agent_timeout,

@@ -22,6 +22,7 @@ async def task_scoped_gateway_key(
     run_id: str,
     task_id: str,
     attested_model: str | None,
+    companion_models: str | None,
     identity: dict[str, str],
     org_name: str,
     agent_timeout: float | None,
@@ -36,6 +37,9 @@ async def task_scoped_gateway_key(
     url = validate_service_url_syntax(env_vars["MODEL_GATEWAY_URL"])
     validate_custom_service_destination(url, org_name=org_name, auth_required=AUTH_REQUIRED, restrict_vals_hosts=False)
 
+    # Models other agents in the sandbox call alongside the main one.
+    allowed_models = [attested_model, *(companion_models.split(",") if companion_models else [])]
+
     # Tokens cannot renew; an unbounded agent needs the gateway's full cap.
     ttl_seconds = 7 * 24 * 60 * 60
     if agent_timeout is not None:
@@ -47,7 +51,7 @@ async def task_scoped_gateway_key(
         json={
             "run_id": run_id,
             "task_id": task_id,
-            "allowed_models": [attested_model],
+            "allowed_models": allowed_models,
             "identity": identity,
             "ttl_seconds": ttl_seconds,
         },
@@ -57,7 +61,7 @@ async def task_scoped_gateway_key(
     lease = response.json()
     expires_at = datetime.fromtimestamp(lease["expires_at"], UTC).isoformat()
     logger.info(
-        f"Scoped gateway credential to {attested_model} for task {task_id} "
+        f"Scoped gateway credential to {', '.join(allowed_models)} for task {task_id} "
         f"(lease {lease['lease_id']}, expires {expires_at})"
     )
 
