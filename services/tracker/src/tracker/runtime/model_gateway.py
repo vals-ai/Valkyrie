@@ -55,7 +55,9 @@ async def task_scoped_gateway_key(
         if not accounting_gateway_url:
             raise RuntimeError("Controlled task requires an external service gateway URL")
         url = validate_service_url_syntax(accounting_gateway_url)
-        validate_custom_service_destination(url, org_name=org_name, auth_required=AUTH_REQUIRED, restrict_vals_hosts=False)
+        validate_custom_service_destination(
+            url, org_name=org_name, auth_required=AUTH_REQUIRED, restrict_vals_hosts=False
+        )
 
     # Models other agents in the sandbox call alongside the main one.
     allowed_models = [attested_model, *(companion_models.split(",") if companion_models else [])]

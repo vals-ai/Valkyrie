@@ -97,6 +97,7 @@ async def test_scoped_credential_replaces_the_static_key_and_is_revoked(
     assert gateway.session_headers == [None, None]
     assert gateway.urls == ["https://gateway.test/service-auth", "https://gateway.test/service-auth/revoke"]
 
+
 async def test_companion_models_are_allowed_alongside_the_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
     gateway = RecordingGateway()
     gateway.install(monkeypatch)
@@ -218,7 +219,9 @@ async def test_controlled_mint_routes_through_ssp_and_revoke_uses_same_endpoint_
     gateway.install(monkeypatch)
     env = _env()
 
-    async with _scoped(env, accounting_session_id="session-123", accounting_gateway_url="https://ssp.test", credit_cap_seconds=5.0) as scoped:
+    async with _scoped(
+        env, accounting_session_id="session-123", accounting_gateway_url="https://ssp.test", credit_cap_seconds=5.0
+    ) as scoped:
         assert scoped == {**env, "MODEL_GATEWAY_API_KEY": TOKEN}
         assert "X-SSP-Session-ID" not in scoped
         assert gateway.urls == ["https://ssp.test/service-auth"]
@@ -301,9 +304,7 @@ async def test_controlled_task_without_ssp_url_fails_before_mint(
     gateway.install(monkeypatch)
 
     with pytest.raises(RuntimeError, match="Controlled task requires an external service gateway URL"):
-        async with _scoped(
-            _env(), accounting_session_id="session-123", accounting_gateway_url=accounting_gateway_url
-        ):
+        async with _scoped(_env(), accounting_session_id="session-123", accounting_gateway_url=accounting_gateway_url):
             pytest.fail("controlled sandbox must not start without an SSP")
 
     assert gateway.requests == []
