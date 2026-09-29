@@ -871,7 +871,8 @@ async def _start_benchmark(
             except HTTPException:
                 raise
             except (BenchmarkServiceError, httpx.HTTPError, ValueError) as exc:
-                raise HTTPException(status_code=502, detail=f"Failed to select dataset version: {exc}") from exc
+                logger.exception("Failed to select dataset version for %s", request.benchmark_name)
+                raise HTTPException(status_code=502, detail="Failed to select dataset version") from exc
 
         try:
             verify_response = await benchmark_service.verify_task_ids(

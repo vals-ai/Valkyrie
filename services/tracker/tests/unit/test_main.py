@@ -365,7 +365,7 @@ class TestTrackerAPI:
         async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
             assert dataset == "default"
             if failure_mode == "version_error":
-                raise BenchmarkServiceError("Version endpoint failed", status_code=500)
+                raise BenchmarkServiceError("Internal service host: benchmark.internal:8080", status_code=500)
 
             return SimpleNamespace(dataset_version_selection=True)
 
@@ -390,6 +390,7 @@ class TestTrackerAPI:
         response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
 
         assert response.status_code == 502
+        assert response.json()["detail"] == "Failed to select dataset version"
         assert database_session.exec(select(Benchmark)).all() == []
 
     @pytest.mark.parametrize("dataset_version", ["", "x" * 1025])
