@@ -63,6 +63,15 @@ jobs:
         working-directory: infra
         run: make typecheck
 
+      - name: Build the restricted outbound proxy
+        run: docker build -t valsmith-outbound-proxy:test infra/outbound_proxy
+
+      - name: Qualify outbound TLS boundaries
+        working-directory: infra
+        env:
+          VALSMITH_PROXY_TEST_IMAGE: valsmith-outbound-proxy:test
+        run: uv run python -m unittest tests/test_outbound_proxy_runtime.py -v
+
       - name: Enable ARM64 container builds
         uses: docker/setup-qemu-action@v4
 
