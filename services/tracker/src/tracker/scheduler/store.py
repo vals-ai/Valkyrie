@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 from types import TracebackType
@@ -11,12 +12,28 @@ from uuid import UUID
 from sqlalchemy import JSON, case, func, text, type_coerce
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import aliased
-from sqlmodel import Session, col, select, update
+from sqlmodel import Session, col, delete, select, update
 
-from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
+from tracker.database.models import (
+    Benchmark,
+    BenchmarkStatus,
+    ExecutorDispatch,
+    ExecutorDispatchStatus,
+    SandboxBuildReservation,
+    Task,
+    TaskStatus,
+)
 
 _ACTIVE_TASK_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
 _TASK_EVALUATION_LOCK_SCOPE = "task-evaluation"
+
+
+@dataclass(frozen=True)
+class ReservationResourceTotals:
+    vcpu: int
+    memory: int
+    disk: int
+    gpu: int
 
 
 def _advisory_lock_key(resource_id: str) -> int:
@@ -205,17 +222,146 @@ def claim_eligible_task(
     return result.rowcount == 1
 
 
+def building_task_count(session: Session, pool_id: str) -> int:
+    """Return the hard count of BUILDING tasks assigned to one provider pool."""
+    arguments = type_coerce(col(Benchmark.arguments), JSON)
+    return int(
+        session.exec(
+            select(func.count(col(Task.id)))
+            .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
+            .where(col(Task.status) == TaskStatus.BUILDING)
+            .where(arguments["queue_pool_id"].as_string() == pool_id)
+        ).one()
+    )
+
+
+def active_reservation_resources(session: Session, pool_id: str) -> ReservationResourceTotals:
+    """Sum all resources reserved in one provider pool."""
+    row = session.exec(
+        select(
+            func.coalesce(func.sum(col(SandboxBuildReservation.requested_vcpu)), 0),
+            func.coalesce(func.sum(col(SandboxBuildReservation.requested_memory)), 0),
+            func.coalesce(func.sum(col(SandboxBuildReservation.requested_disk)), 0),
+            func.coalesce(func.sum(col(SandboxBuildReservation.requested_gpu)), 0),
+        ).where(col(SandboxBuildReservation.pool_id) == pool_id)
+    ).one()
+    return ReservationResourceTotals(
+        vcpu=int(row[0]),
+        memory=int(row[1]),
+        disk=int(row[2]),
+        gpu=int(row[3]),
+    )
+
+
+def claim_eligible_task_with_reservation(
+    session: Session,
+    pool_id: str,
+    task_row_id: UUID,
+    expected_started_at: datetime,
+    *,
+    build_id: UUID,
+    executor_dispatch_id: UUID,
+    requested_vcpu: int,
+    requested_memory: int,
+    requested_disk: int,
+    requested_gpu: int,
+) -> bool:
+    """Claim the exact FIFO head and insert its reservation in the caller transaction."""
+    if not claim_eligible_task(session, pool_id, task_row_id, expected_started_at):
+        return False
+
+    session.add(
+        SandboxBuildReservation(
+            build_id=build_id,
+            task_row_id=task_row_id,
+            attempt_started_at=expected_started_at,
+            executor_dispatch_id=executor_dispatch_id,
+            pool_id=pool_id,
+            requested_vcpu=requested_vcpu,
+            requested_memory=requested_memory,
+            requested_disk=requested_disk,
+            requested_gpu=requested_gpu,
+        )
+    )
+    session.flush()
+    return True
+
+
+def delete_build_reservation(
+    session: Session,
+    *,
+    build_id: UUID,
+    task_row_id: UUID,
+    expected_started_at: datetime,
+) -> bool:
+    """Delete one exact reservation after its sandbox cleanup is confirmed."""
+    result = session.exec(
+        delete(SandboxBuildReservation)
+        .where(col(SandboxBuildReservation.build_id) == build_id)
+        .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
+        .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
+    )
+    return result.rowcount == 1
+
+
+def promote_reserved_task(
+    session: Session,
+    *,
+    task_row_id: UUID,
+    expected_started_at: datetime,
+    build_id: UUID,
+) -> bool:
+    """Promote one exact reserved build and release its capacity."""
+    active_benchmarks = select(col(Benchmark.id)).where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
+    exact_reservation = (
+        select(col(SandboxBuildReservation.build_id))
+        .where(col(SandboxBuildReservation.build_id) == build_id)
+        .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
+        .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
+        .exists()
+    )
+    promoted = session.exec(
+        update(Task)
+        .where(col(Task.id) == task_row_id)
+        .where(col(Task.started_at) == expected_started_at)
+        .where(col(Task.status) == TaskStatus.BUILDING)
+        .where(col(Task.benchmark).in_(active_benchmarks))
+        .where(exact_reservation)
+        .values(status=TaskStatus.IN_PROGRESS)
+    ).rowcount
+    if promoted != 1:
+        return False
+
+    if not delete_build_reservation(
+        session,
+        build_id=build_id,
+        task_row_id=task_row_id,
+        expected_started_at=expected_started_at,
+    ):
+        raise RuntimeError("Reserved build disappeared during promotion")
+    return True
+
+
 def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> None:
-    """Return abandoned sandbox builds in one provider pool to the queue."""
+    """Return unreserved abandoned sandbox builds in one provider pool to the queue."""
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     queued_benchmarks = select(col(Benchmark.id)).where(
         col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS,
         arguments["queue_pool_id"].as_string() == pool_id,
     )
+    active_reservation = (
+        select(col(SandboxBuildReservation.build_id))
+        .join(ExecutorDispatch, col(ExecutorDispatch.id) == col(SandboxBuildReservation.executor_dispatch_id))
+        .where(col(SandboxBuildReservation.task_row_id) == col(Task.id))
+        .where(col(SandboxBuildReservation.attempt_started_at) == col(Task.started_at))
+        .where(col(ExecutorDispatch.status) == ExecutorDispatchStatus.RUNNING)
+        .exists()
+    )
     session.exec(
         update(Task)
         .where(col(Task.status) == TaskStatus.BUILDING)
         .where(col(Task.benchmark).in_(queued_benchmarks))
+        .where(~active_reservation)
         .values(
             status=TaskStatus.PENDING,
             started_at=case(

@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
-from typing import Protocol
+from typing import Protocol, cast
 from datetime import UTC, datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,16 +16,24 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
-from sqlmodel import Session, create_engine
+from sqlalchemy.schema import DefaultClause
+from sqlmodel import SQLModel, Session, create_engine
 from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
     AgentContractRequest,
+    Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ExecutorDispatch,
+    ExecutorDispatchKind,
+    ExecutorDispatchStatus,
     ExecutorRelease,
     ExecutorReleaseStatus,
     Org,
+    SandboxBuildReservation,
+    Task,
+    TaskStatus,
 )
 
 _TRACKER_ROOT = Path(__file__).resolve().parents[4]
@@ -40,6 +48,8 @@ _DISPATCH_LEASE_REVISION = "6a7b8c9d0e1f"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 _TASK_LISTING_REVISION = "2d3e4f5a6b7c"
 _TASK_LISTING_PREDECESSOR = "1c2d3e4f5a6b"
+_SANDBOX_BUILD_RESERVATION_REVISION = "3e4f5a6b7c8d"
+_SANDBOX_BUILD_RESERVATION_PREDECESSOR = "2d3e4f5a6b7c"
 
 
 def test_migration_graph_has_single_head() -> None:
@@ -173,7 +183,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        _assert_canonical_task_listing_index(index)
+        _assert_canonical_task_listing_index(cast(_TaskListingIndexRow, index))
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
@@ -190,7 +200,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        assert _assert_canonical_task_listing_index(index) == matching_index_oid
+        assert _assert_canonical_task_listing_index(cast(_TaskListingIndexRow, index)) == matching_index_oid
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
     assert downgrade.returncode == 0, downgrade.stderr
@@ -215,7 +225,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        _assert_canonical_task_listing_index(index)
+        _assert_canonical_task_listing_index(cast(_TaskListingIndexRow, index))
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
@@ -593,7 +603,7 @@ def test_current_execution_ownership_migration_rejects_downgrade(
             contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         )
-        session.execute(
+        session.connection().execute(
             text(
                 "INSERT INTO benchmark"
                 " (id, org_id, name, started_at, status, arguments, docent_reading_status,"
@@ -634,4 +644,113 @@ def test_current_execution_ownership_migration_rejects_downgrade(
         ).scalar_one()
     assert revision == _CURRENT_OWNERSHIP_REVISION
     assert stored_owner == "migration-test-release"
+    engine.dispose()
+
+
+def test_sandbox_build_reservation_guard_upgrade_and_downgrade(
+    migration_database_url: str,
+) -> None:
+    def migrate(direction: str, revision: str) -> None:
+        result = _run_alembic(migration_database_url, direction, revision)
+        assert result.returncode == 0, result.stderr
+
+    migrate("upgrade", _SANDBOX_BUILD_RESERVATION_PREDECESSOR)
+    engine = create_engine(migration_database_url)
+    attempt_started_at = datetime(2026, 9, 29, 12)
+    with Session(engine, expire_on_commit=False) as session:
+        org = Org(name=f"migration-reservation-{uuid4()}")
+        session.add(org)
+        session.flush()
+        benchmark = Benchmark(
+            org_id=org.id,
+            name="migration reservation",
+            arguments=BenchmarkArguments(
+                contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
+                concurrency=1,
+                queue_pool_id="pool_migration",
+            ),
+        )
+        session.add(benchmark)
+        session.flush()
+        release = ExecutorRelease(
+            id="migration-reservation-release",
+            artifact_uri="s3://artifacts/migration-reservation.pex",
+            artifact_digest="b" * 64,
+            protocol_version="1",
+        )
+        session.add(release)
+        session.flush()
+        dispatch = ExecutorDispatch(
+            benchmark_id=benchmark.id,
+            kind=ExecutorDispatchKind.START,
+            status=ExecutorDispatchStatus.RUNNING,
+            executor_release_id=release.id,
+            executor_artifact_uri=release.artifact_uri,
+            executor_artifact_digest=release.artifact_digest,
+            executor_protocol_version=release.protocol_version,
+        )
+        session.add(dispatch)
+        session.flush()
+        task = Task(
+            org_id=org.id,
+            task_id="reserved-task",
+            benchmark=benchmark.id,
+            status=TaskStatus.BUILDING,
+            started_at=attempt_started_at,
+        )
+        session.add(task)
+        session.commit()
+
+    migrate("upgrade", _SANDBOX_BUILD_RESERVATION_REVISION)
+    gpu_column = next(
+        column for column in inspect(engine).get_columns("sandboxbuildreservation") if column["name"] == "requested_gpu"
+    )
+    assert str(gpu_column["default"]) in {"0", "0::integer"}
+    model_default = SQLModel.metadata.tables["sandboxbuildreservation"].c["requested_gpu"].server_default
+    assert isinstance(model_default, DefaultClause) and str(model_default.arg) == "0"
+
+    build_id = uuid4()
+    with Session(engine) as session:
+        session.add(
+            SandboxBuildReservation(
+                build_id=build_id,
+                task_row_id=task.id,
+                attempt_started_at=attempt_started_at,
+                executor_dispatch_id=dispatch.id,
+                pool_id="pool_migration",
+                requested_vcpu=1,
+                requested_memory=2,
+                requested_disk=3,
+                requested_gpu=0,
+            )
+        )
+        session.commit()
+
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE task SET status = 'PENDING' WHERE id = :id"), {"id": task.id})
+        status = connection.execute(text("SELECT status FROM task WHERE id = :id"), {"id": task.id}).scalar_one()
+        assert status == TaskStatus.BUILDING.value
+
+        connection.execute(
+            text("UPDATE executordispatch SET status = 'FAILED' WHERE id = :id"),
+            {"id": dispatch.id},
+        )
+        connection.execute(text("UPDATE task SET status = 'PENDING' WHERE id = :id"), {"id": task.id})
+        status = connection.execute(text("SELECT status FROM task WHERE id = :id"), {"id": task.id}).scalar_one()
+        remaining = connection.execute(
+            text("SELECT count(*) FROM sandboxbuildreservation WHERE build_id = :id"), {"id": build_id}
+        ).scalar_one()
+        assert status == TaskStatus.PENDING.value
+        assert remaining == 0
+
+    migrate("downgrade", _SANDBOX_BUILD_RESERVATION_PREDECESSOR)
+    assert "sandboxbuildreservation" not in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        function_exists = connection.execute(
+            text("SELECT count(*) FROM pg_proc WHERE proname = 'guard_sandbox_build_reservation'")
+        ).scalar_one()
+        trigger_exists = connection.execute(
+            text("SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_guard_sandbox_build_reservation'")
+        ).scalar_one()
+        assert function_exists == trigger_exists == 0
     engine.dispose()

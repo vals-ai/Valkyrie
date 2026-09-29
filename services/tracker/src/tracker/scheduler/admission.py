@@ -8,24 +8,42 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from benchmark_service import Resources, Sandbox, SandboxProvider, SandboxSource
+from benchmark_service import (
+    ComposeSource,
+    ImageSource,
+    Resources,
+    Sandbox,
+    SandboxCapacity,
+    SandboxProvider,
+    SandboxSource,
+)
 from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session, col, select, update
 
+from tracker.config import SANDBOX_QUEUE_BUILDING_CAP
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.logging import get_logger
 from tracker.scheduler.store import (
+    ReservationResourceTotals,
+    active_reservation_resources,
+    building_task_count,
     claim_eligible_task,
+    claim_eligible_task_with_reservation,
+    delete_build_reservation,
     eligible_task_is,
+    promote_reserved_task,
     queue_pool_id,
     queue_pool_lock,
     reset_abandoned_builds,
 )
 
-SandboxFactory = Callable[[], AbstractAsyncContextManager[Sandbox]]
+logger = get_logger(__name__)
+
+SandboxFactory = Callable[[UUID | None], AbstractAsyncContextManager[Sandbox]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +141,115 @@ async def _close_stack_before_cancellation(stack: AsyncExitStack) -> None:
         raise
 
 
+def _supports_reserved_admission(source: SandboxSource) -> bool:
+    return isinstance(source, ImageSource) or (
+        isinstance(source, ComposeSource) and isinstance(source.outer, ImageSource)
+    )
+
+
+def _has_reserved_capacity(
+    capacity: SandboxCapacity,
+    resources: Resources,
+    reserved: ReservationResourceTotals,
+) -> bool:
+    if resources.gpu > 0:
+        if capacity.gpu is None:
+            return False
+        if capacity.allowed_gpu_types is not None and (
+            not capacity.allowed_gpu_types
+            or (resources.gpu_type is not None and resources.gpu_type not in capacity.allowed_gpu_types)
+        ):
+            return False
+        gpu_available = capacity.gpu.available - reserved.gpu
+    else:
+        gpu_available = 0
+
+    return (
+        resources.vcpu <= capacity.cpu.available - reserved.vcpu
+        and resources.memory <= capacity.memory.available - reserved.memory
+        and resources.disk <= capacity.disk.available - reserved.disk
+        and resources.gpu <= gpu_available
+    )
+
+
+async def _capacity_for_reserved_admission(
+    context: SandboxQueueContext,
+    source: SandboxSource,
+) -> SandboxCapacity | None:
+    if not _supports_reserved_admission(source):
+        return None
+
+    try:
+        return await context.provider.get_capacity()
+    except Exception:
+        logger.warning(
+            "sandbox.admission.capacity_failed",
+            extra={"pool_id": context.pool_id},
+            exc_info=True,
+        )
+        return None
+
+
+async def _finish_reserved_build(
+    *,
+    stack: AsyncExitStack,
+    context: SandboxQueueContext,
+    task_row_id: UUID,
+    expected_started_at: datetime,
+    authority: ExecutionAuthority,
+    build_id: UUID,
+    create: SandboxFactory,
+) -> Sandbox | None:
+    # If creation has an unknown outcome, the reservation remains until the
+    # outer task transition leaves BUILDING and the database trigger deletes it.
+    sandbox = await stack.enter_async_context(create(build_id))
+
+    with Session(context.engine) as session:
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            promoted = False
+        else:
+            promoted = promote_reserved_task(
+                session,
+                task_row_id=task_row_id,
+                expected_started_at=expected_started_at,
+                build_id=build_id,
+            )
+            if promoted:
+                session.commit()
+            else:
+                session.rollback()
+
+    if promoted:
+        return sandbox
+
+    await _close_stack_before_cancellation(stack)
+    with Session(context.engine) as session:
+        if not delete_build_reservation(
+            session,
+            build_id=build_id,
+            task_row_id=task_row_id,
+            expected_started_at=expected_started_at,
+        ):
+            session.rollback()
+            return None
+
+        now = datetime.now(UTC)
+        active_benchmarks = select(col(Benchmark.id)).where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
+        session.exec(
+            update(Task)
+            .where(col(Task.id) == task_row_id)
+            .where(col(Task.started_at) == expected_started_at)
+            .where(col(Task.status) == TaskStatus.BUILDING)
+            .where(col(Task.benchmark).in_(active_benchmarks))
+            .values(status=TaskStatus.PENDING, started_at=now)
+        )
+        session.commit()
+    return None
+
+
 async def enter_queued_sandbox(
     *,
     stack: AsyncExitStack,
@@ -136,6 +263,7 @@ async def enter_queued_sandbox(
 ) -> Sandbox | None:
     """Wait for this exact attempt's global turn and enter its sandbox context."""
     while True:
+        reserved_build_id: UUID | None = None
         lock = queue_pool_lock(context.engine, context.pool_id)
         async with lock as acquired:
             if acquired:
@@ -163,21 +291,46 @@ async def enter_queued_sandbox(
                     return None
 
                 if eligible and await context.provider.check_admission(source, resources):
+                    capacity = await _capacity_for_reserved_admission(context, source)
                     with Session(lock.connection) as session:
                         try:
                             lock_execution_authority(session, authority)
                         except ExecutionAuthorityRevoked:
                             session.rollback()
                             return None
-                        claimed = claim_eligible_task(
-                            session,
-                            context.pool_id,
-                            task_row_id=task_row_id,
-                            expected_started_at=expected_started_at,
-                        )
+
+                        under_building_cap = building_task_count(session, context.pool_id) < SANDBOX_QUEUE_BUILDING_CAP
+                        if capacity is None:
+                            claimed = under_building_cap and claim_eligible_task(
+                                session,
+                                context.pool_id,
+                                task_row_id=task_row_id,
+                                expected_started_at=expected_started_at,
+                            )
+                        else:
+                            reserved = active_reservation_resources(session, context.pool_id)
+                            reserved_build_id = uuid4()
+                            claimed = (
+                                under_building_cap
+                                and _has_reserved_capacity(capacity, resources, reserved)
+                                and claim_eligible_task_with_reservation(
+                                    session,
+                                    context.pool_id,
+                                    task_row_id=task_row_id,
+                                    expected_started_at=expected_started_at,
+                                    build_id=reserved_build_id,
+                                    executor_dispatch_id=authority.dispatch_id,
+                                    requested_vcpu=resources.vcpu,
+                                    requested_memory=resources.memory,
+                                    requested_disk=resources.disk,
+                                    requested_gpu=resources.gpu,
+                                )
+                            )
+
                         if claimed:
                             session.commit()
                         else:
+                            reserved_build_id = None
                             waiting = _queued_task_state(
                                 session,
                                 task_row_id,
@@ -187,8 +340,8 @@ async def enter_queued_sandbox(
                             if not waiting:
                                 return None
 
-                    if claimed:
-                        sandbox = await stack.enter_async_context(create())
+                    if claimed and capacity is None:
+                        sandbox = await stack.enter_async_context(create(None))
                         with Session(lock.connection) as session:
                             try:
                                 lock_execution_authority(session, authority)
@@ -207,9 +360,19 @@ async def enter_queued_sandbox(
                                     session.rollback()
                         if not started:
                             await _close_stack_before_cancellation(stack)
-
                             return None
 
                         return sandbox
+
+        if reserved_build_id is not None:
+            return await _finish_reserved_build(
+                stack=stack,
+                context=context,
+                task_row_id=task_row_id,
+                expected_started_at=expected_started_at,
+                authority=authority,
+                build_id=reserved_build_id,
+                create=create,
+            )
 
         await asyncio.sleep(context.poll_interval_seconds)

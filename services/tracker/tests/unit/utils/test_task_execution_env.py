@@ -107,11 +107,11 @@ class TestQueuedTaskSource:
             stack: Any,
             task_row_id: Any,
             source: SandboxSource,
-            create: Callable[[], Any],
+            create: Callable[[Any], Any],
             **_kwargs: Any,
         ) -> Any:
             admission_sources.append(source)
-            sandbox = await stack.enter_async_context(create())
+            sandbox = await stack.enter_async_context(create(None))
             with Session(task_engine) as task_session:
                 queued_task = task_session.get(Task, task_row_id)
                 assert queued_task is not None

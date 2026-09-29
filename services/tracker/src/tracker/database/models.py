@@ -15,18 +15,18 @@ from pydantic import (
     model_validator,
 )
 from benchmark_service.schemas import DatasetVersion
-from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, Integer, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
     CheckConstraint,
+    UniqueConstraint,
     Column,
     Field,
     Relationship,
     Session,
     SQLModel,
     TypeDecorator,
-    UniqueConstraint,
     col,
     func,
     select,
@@ -323,6 +323,32 @@ class ExecutorDispatch(SQLModel, table=True):
     heartbeat_at: datetime | None = None
     lease_expires_at: datetime | None = None
     failure_reason: str | None = None
+
+
+class SandboxBuildReservation(SQLModel, table=True):
+    """Capacity held while one exact task attempt is building."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0 AND requested_gpu >= 0",
+            name="sandbox_build_reservation_resources_nonnegative",
+        ),
+        Index("uq_sandboxbuildreservation_task", "task_row_id", unique=True),
+        Index("ix_sandboxbuildreservation_pool", "pool_id"),
+    )
+
+    build_id: UUID = Field(primary_key=True)
+    task_row_id: UUID = Field(foreign_key="task.id")
+    attempt_started_at: datetime
+    executor_dispatch_id: UUID = Field(foreign_key="executordispatch.id")
+    pool_id: str
+    requested_vcpu: int
+    requested_memory: int
+    requested_disk: int
+    requested_gpu: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default=text("0")),
+    )
 
 
 class Benchmark(SQLModel, table=True):
