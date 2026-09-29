@@ -834,8 +834,17 @@ async def _start_benchmark(
         if config.DATASET_VERSION_PINNING_ENABLED:
             selected_dataset = request.dataset or "default"
             try:
-                version_metadata = await benchmark_service.version(dataset=selected_dataset)
-                if version_metadata.dataset_version_selection:
+                try:
+                    version_metadata = await benchmark_service.version(dataset=selected_dataset)
+                except BenchmarkServiceError as exc:
+                    if request.dataset_version is not None or exc.status_code not in {404, 405, 501}:
+                        raise
+                    logger.info(
+                        "Benchmark service does not expose version metadata; starting run without a pinned version"
+                    )
+                    version_metadata = None
+
+                if version_metadata is not None and version_metadata.dataset_version_selection:
                     resolved = await benchmark_service.resolve_dataset(
                         selected_dataset,
                         version=request.dataset_version,
@@ -851,7 +860,7 @@ async def _start_benchmark(
                     )
                     await benchmark_service.close()
                     benchmark_service = execution_request.benchmark_service
-                elif request.dataset_version is not None:
+                elif version_metadata is not None and request.dataset_version is not None:
                     raise HTTPException(
                         status_code=400, detail="This benchmark service cannot select a dataset version"
                     )
