@@ -36,7 +36,6 @@ def _scoped(env: dict[str, str], **overrides: Any) -> Any:
 
 
 class RecordingGateway:
-
     def __init__(self, *, mint_status: int = 200, revoke_status: int = 200) -> None:
         self.mint_status = mint_status
         self.revoke_status = revoke_status

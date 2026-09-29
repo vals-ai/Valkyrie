@@ -1,6 +1,6 @@
 """Task-scoped Model Gateway credentials."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -25,7 +25,7 @@ async def task_scoped_gateway_key(
     identity: dict[str, str],
     org_name: str,
     agent_timeout: float | None,
-) -> AsyncIterator[dict[str, str]]:
+) -> AsyncGenerator[dict[str, str]]:
     """Yield the sandbox environment with a task-scoped gateway key."""
     api_key = env_vars.get("MODEL_GATEWAY_API_KEY", "")
     if not env_vars.get("MODEL_GATEWAY_URL") or not api_key or not attested_model:

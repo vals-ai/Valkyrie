@@ -6,7 +6,7 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1048,7 +1048,7 @@ async def _process_task_attempt(
         object_store = runtime.objects
 
         @asynccontextmanager
-        async def sandbox_context() -> AsyncIterator[Sandbox]:
+        async def sandbox_context() -> AsyncGenerator[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
