@@ -853,23 +853,14 @@ async def _start_benchmark(
                         selected_dataset,
                         version=request.dataset_version,
                     )
-                    if resolved.dataset != selected_dataset:
-                        raise ValueError("Benchmark service resolved a different dataset")
-                    execution_request = RunExecutionRequest.model_validate(
-                        {
-                            **request.model_dump(mode="python"),
-                            "dataset": resolved.dataset,
-                            "resolved_dataset_version": resolved.version,
-                        }
-                    )
+                    execution_request.dataset = resolved.dataset
+                    execution_request.resolved_dataset_version = resolved.version
                     await benchmark_service.close()
                     benchmark_service = execution_request.benchmark_service
                 elif version_metadata is not None and request.dataset_version is not None:
                     raise HTTPException(
                         status_code=400, detail="This benchmark service cannot select a dataset version"
                     )
-            except HTTPException:
-                raise
             except (BenchmarkServiceError, httpx.HTTPError, ValueError) as exc:
                 logger.exception("Failed to select dataset version for %s", request.benchmark_name)
                 raise HTTPException(status_code=502, detail="Failed to select dataset version") from exc

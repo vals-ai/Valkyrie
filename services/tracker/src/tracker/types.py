@@ -302,18 +302,6 @@ class ManagedExecutionContext(BaseModel):
     verified_task_ids: list[str]
     start_benchmark_request: RunExecutionRequest
 
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_run_request(cls, value: Any) -> Any:
-        if isinstance(value, dict):
-            request = value.get("start_benchmark_request")
-            if isinstance(request, StartBenchmarkRequest) and not isinstance(request, RunExecutionRequest):
-                value = {
-                    **value,
-                    "start_benchmark_request": RunExecutionRequest.model_validate(request.model_dump(mode="python")),
-                }
-        return value
-
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":
         validate_managed_execution_request(self.start_benchmark_request)

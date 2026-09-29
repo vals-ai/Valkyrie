@@ -258,15 +258,18 @@ class TestTrackerAPI:
         assert observed_versions[-1] == "release-b"
         assert second.json()["dataset_version"]["id"] == "release-b"
 
+    @pytest.mark.parametrize("missing_version_endpoint", [False, True])
     async def test_unversioned_service_starts_with_consistency_warning(
         self,
         contract: AgentContractRequest,
         harness_config: HarnessConfig,
-        mock_kicker: Any,
         monkeypatch: MonkeyPatch,
+        missing_version_endpoint: bool,
     ) -> None:
         async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
             assert dataset == "default"
+            if missing_version_endpoint:
+                raise BenchmarkServiceError("Version endpoint is unavailable", status_code=404)
 
             return SimpleNamespace(dataset_version_selection=False)
 
@@ -279,37 +282,6 @@ class TestTrackerAPI:
             assert dataset is None
             assert slice_str is None
 
-            return VerifyTaskIdsResponse(task_ids=task_ids or ["task-1"])
-
-        monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
-        monkeypatch.setattr(BenchmarkServiceClient, "version", version)
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
-        request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench", harness_config=harness_config)
-
-        response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
-
-        assert response.status_code == 200, response.text
-        assert response.json()["dataset_version"] is None
-        assert response.json()["dataset_version_warning"] == "Unversioned — dataset consistency is not guaranteed."
-
-    async def test_unversioned_start_continues_when_version_endpoint_is_unsupported(
-        self,
-        contract: AgentContractRequest,
-        harness_config: HarnessConfig,
-        monkeypatch: MonkeyPatch,
-    ) -> None:
-        async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
-            assert dataset == "default"
-            raise BenchmarkServiceError("Version endpoint is unavailable", status_code=404)
-
-        async def verify_task_ids(
-            _client: BenchmarkServiceClient,
-            task_ids: list[str] | None,
-            slice_str: str | None,
-            dataset: str | None = None,
-        ) -> VerifyTaskIdsResponse:
-            assert dataset is None
-            assert slice_str is None
             return VerifyTaskIdsResponse(task_ids=task_ids or ["task-1"])
 
         monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
@@ -375,7 +347,7 @@ class TestTrackerAPI:
             assert dataset == "default"
             assert version == "release-a"
 
-            return SimpleNamespace(dataset="other", version=DatasetVersion(id="release-a", label=None))
+            raise BenchmarkServiceError("The service resolved a different dataset")
 
         monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)

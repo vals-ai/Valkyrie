@@ -55,8 +55,8 @@ def _access_key_request(contract: AgentContractRequest, harness_config: HarnessC
     )
 
 
-def _managed_request(contract: AgentContractRequest) -> StartBenchmarkRequest:
-    return StartBenchmarkRequest(
+def _managed_request(contract: AgentContractRequest) -> RunExecutionRequest:
+    return RunExecutionRequest(
         contract=contract,
         benchmark_name="test-benchmark",
         task_ids=_TASK_IDS,
@@ -66,7 +66,7 @@ def _managed_request(contract: AgentContractRequest) -> StartBenchmarkRequest:
 
 
 def _execution_context(
-    request: StartBenchmarkRequest,
+    request: RunExecutionRequest,
     benchmark_id: UUID,
 ) -> dict[str, Any]:
     return ManagedExecutionContext(
