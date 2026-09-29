@@ -168,12 +168,17 @@ class ProxyRuntimeTest(unittest.TestCase):
         if private_host is None:
             cls.addClassCleanup(docker, "rm", "-f", cls.proxy)
         cls.ports = {port: int(docker("port", cls.proxy, str(port)).rsplit(":", 1)[1]) for port in (3128, 3129)}
-        for _ in range(50):
+        deadline = time.monotonic() + 10
+        probe = cls()
+        while time.monotonic() < deadline:
             try:
-                with socket.create_connection(("127.0.0.1", cls.ports[3128]), timeout=0.2):
+                if b"origin-success" in probe.request("app.daytona.io"):
                     return
-            except OSError:
-                time.sleep(0.1)
+            except (OSError, AssertionError):
+                pass
+            finally:
+                probe.doCleanups()
+            time.sleep(0.1)
         raise AssertionError(f"Proxy failed to start: {docker('logs', cls.proxy)}")
 
     def connect(self, authority: str, port: int = 3128, extra_headers: str = "") -> socket.socket:
@@ -256,6 +261,13 @@ class ProxyRuntimeTest(unittest.TestCase):
         except ConnectionError:
             pass
 
+    def test_tls_stream_arrives_without_truncation(self) -> None:
+        response = self.request("valsmith.vals.ai", path="/stream")
+        headers, separator, body = response.partition(b"\r\n\r\n")
+        self.assertEqual(separator, b"\r\n\r\n")
+        self.assertIn(b" 200 ", headers)
+        self.assertEqual(body, b"0123456789abcdef" * 16384)
+
     def test_websocket_remains_bidirectional(self) -> None:
         secured = self.tls(self.connect("proxy.app.daytona.io:443"), "proxy.app.daytona.io")
         secured.sendall(
@@ -300,8 +312,7 @@ class ProxyRuntimeTest(unittest.TestCase):
             "-c",
             "from pathlib import Path; "
             "print(' '.join(p.parent.name for p in Path('/proc').glob('[0-9]*/cmdline') "
-            "if p.read_bytes().split(bytes([0]))[1:2] == "
-            "[b'/opt/proxy/sni_acl.py']))",
+            "if b'/opt/proxy/sni_acl.py' in p.read_bytes().split(bytes([0]))))",
         ).split()
         self.assertTrue(helper_processes)
         before = docker("logs", self.origin).count("origin-request")
@@ -315,8 +326,15 @@ class ProxyRuntimeTest(unittest.TestCase):
                 *helper_processes,
             )
             connection = self.connect("valsmith.vals.ai:443")
-            with self.assertRaises((TimeoutError, ssl.SSLError, ConnectionError)):
-                self.tls(connection, "valsmith.vals.ai")
+            context = ssl.create_default_context(cafile=str(self.fixture_directory / "origin.pem"))
+            incoming = ssl.MemoryBIO()
+            outgoing = ssl.MemoryBIO()
+            client = context.wrap_bio(incoming, outgoing, server_hostname="valsmith.vals.ai")
+            with self.assertRaises(ssl.SSLWantReadError):
+                client.do_handshake()
+            connection.sendall(outgoing.read())
+            connection.settimeout(40)
+            self.assertEqual(connection.recv(1), b"", "Proxy must close while the helper is stopped")
             self.assertEqual(docker("logs", self.origin).count("origin-request"), before)
         finally:
             docker(
@@ -327,6 +345,7 @@ class ProxyRuntimeTest(unittest.TestCase):
                 "import os, signal, sys; [os.kill(int(pid), signal.SIGCONT) for pid in sys.argv[1:]]",
                 *helper_processes,
             )
+        self.assertEqual(connection.recv(1), b"", "Resuming the helper must not reopen the old tunnel")
         self.assertIn(b"origin-success", self.request("valsmith.vals.ai"))
 
     def test_z_private_dns_is_denied(self) -> None:

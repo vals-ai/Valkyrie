@@ -30,6 +30,15 @@ class Origin(BaseHTTPRequestHandler):
             self.wfile.flush()
             return
 
+        if self.path == "/stream":
+            self.send_response(200)
+            self.send_header("Content-Length", "262144")
+            self.end_headers()
+            for _ in range(64):
+                self.wfile.write(b"0123456789abcdef" * 256)
+                self.wfile.flush()
+            return
+
         if self.path == "/redirect":
             self.send_response(302)
             self.send_header("Location", "https://unapproved.example/secret-canary")
