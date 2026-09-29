@@ -353,6 +353,45 @@ class TestTrackerAPI:
         assert response.status_code == 400
         assert database_session.exec(select(Benchmark)).all() == []
 
+    @pytest.mark.parametrize("failure_mode", ["version_error", "wrong_dataset"])
+    async def test_invalid_dataset_resolution_rejects_run_before_creation(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        failure_mode: str,
+    ) -> None:
+        async def version(_client: BenchmarkServiceClient, dataset: str | None = None) -> SimpleNamespace:
+            assert dataset == "default"
+            if failure_mode == "version_error":
+                raise BenchmarkServiceError("Version endpoint failed", status_code=500)
+
+            return SimpleNamespace(dataset_version_selection=True)
+
+        async def resolve_dataset(
+            _client: BenchmarkServiceClient, dataset: str, version: str | None = None
+        ) -> SimpleNamespace:
+            assert dataset == "default"
+            assert version == "release-a"
+
+            return SimpleNamespace(dataset="other", version=DatasetVersion(id="release-a", label=None))
+
+        monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
+        monkeypatch.setattr(BenchmarkServiceClient, "version", version)
+        monkeypatch.setattr(BenchmarkServiceClient, "resolve_dataset", resolve_dataset)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+            dataset_version="release-a",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+
+        assert response.status_code == 502
+        assert database_session.exec(select(Benchmark)).all() == []
+
     @pytest.mark.parametrize("dataset_version", ["", "x" * 1025])
     async def test_invalid_dataset_version_length_is_rejected(
         self,
