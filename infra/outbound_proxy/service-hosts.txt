@@ -1,5 +1,4 @@
 valsmith.vals.ai
-prod.benchmarks.vals.ai
 re99xljs52.execute-api.us-east-1.amazonaws.com
 api.descope.com
 app.daytona.io

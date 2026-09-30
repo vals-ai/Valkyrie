@@ -13,7 +13,6 @@ from uuid import uuid4
 IMAGE = os.getenv("VALSMITH_PROXY_TEST_IMAGE")
 SERVICE_HOSTS = (
     "valsmith.vals.ai",
-    "prod.benchmarks.vals.ai",
     "re99xljs52.execute-api.us-east-1.amazonaws.com",
     "api.descope.com",
     "app.daytona.io",
@@ -158,6 +157,7 @@ class ProxyRuntimeTest(unittest.TestCase):
         for host in (
             *SERVICE_HOSTS,
             VIEW_HOST,
+            "prod.benchmarks.vals.ai",
             "unapproved.example",
             "child.valsmith.vals.ai",
             "secret-canary.example",
@@ -230,6 +230,7 @@ class ProxyRuntimeTest(unittest.TestCase):
 
     def test_denies_unapproved_authorities_before_tunneling(self) -> None:
         for authority in (
+            "prod.benchmarks.vals.ai:443",
             "unapproved.example:443",
             "child.valsmith.vals.ai:443",
             "11.250.0.10:443",

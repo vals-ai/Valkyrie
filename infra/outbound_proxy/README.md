@@ -12,6 +12,7 @@ separate caller rules for each listener.
 | 3129 | Dataset-view Lambda | Exact name in `view-hosts.txt` |
 
 The bucket-policy Lambda must not have access to either listener.
+The retired `prod.benchmarks.vals.ai` host is denied.
 
 Squid accepts CONNECT to port 443 only. It rejects private destination addresses
 and inspects the TLS ClientHello before forwarding encrypted bytes. The external
