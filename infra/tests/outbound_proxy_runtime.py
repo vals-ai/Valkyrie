@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import socket
 import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,7 +13,7 @@ class Origin(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:
-        print("origin-request", flush=True)
+        print(f"origin-request {self.path}", flush=True)
         if self.headers.get("Upgrade", "").lower() == "websocket":
             key = self.headers["Sec-WebSocket-Key"]
             accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
@@ -51,11 +52,32 @@ class Origin(BaseHTTPRequestHandler):
         self.wfile.write(b"origin-success")
 
 
+class ConcurrentTlsServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 128
+
+    def __init__(self, address: tuple[str, int], context: ssl.SSLContext) -> None:
+        self.context = context
+        super().__init__(address, Origin)
+
+    def process_request_thread(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: tuple[str, int]
+    ) -> None:
+        if not isinstance(request, socket.socket):
+            raise TypeError("TLS origin requires a TCP socket")
+
+        try:
+            request.settimeout(10)
+            with self.context.wrap_socket(request, server_side=True) as secured:
+                super().process_request_thread(secured, client_address)
+        except (ssl.SSLError, OSError):
+            request.close()
+
+
 def main() -> None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain("/fixtures/origin.pem", "/fixtures/origin.key")
-    server = ThreadingHTTPServer(("0.0.0.0", 443), Origin)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server = ConcurrentTlsServer(("0.0.0.0", 443), context)
     Path("/tmp/ready").touch()
     server.serve_forever()
 
