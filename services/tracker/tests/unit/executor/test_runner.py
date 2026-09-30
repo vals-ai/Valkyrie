@@ -399,3 +399,22 @@ def test_runner_failure_reported_by_dispatch_is_not_captured_again(
     _run_main_with(monkeypatch, fail_dispatch)
 
     assert len(sentry_events) == 1
+
+
+def test_runner_failure_is_captured_when_dispatch_telemetry_fails(
+    monkeypatch: pytest.MonkeyPatch, sentry_events: list[dict[str, object]]
+) -> None:
+    def fail_trace(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("trace failed")
+
+    monkeypatch.setattr(sentry_sdk, "continue_trace", fail_trace)
+
+    async def fail_dispatch(_dispatch_id: str) -> None:
+        error = RuntimeError("dispatch failed")
+        runner.capture_dispatch_error(error, {"request_id": "request-abc", "trace_headers": {}})
+        raise error
+
+    dispatch_id = _run_main_with(monkeypatch, fail_dispatch)
+
+    assert len(sentry_events) == 1
+    assert cast(dict[str, str], sentry_events[0]["tags"])["executor_dispatch_id"] == dispatch_id
