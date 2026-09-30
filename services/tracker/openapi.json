@@ -35,6 +35,114 @@
       }
     },
     "schemas": {
+      "AWSBenchmarkArguments": {
+        "additionalProperties": false,
+        "description": "Stored arguments for an AWS run, including legacy rows without resources.",
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "environment": {
+            "const": "aws",
+            "default": "aws",
+            "title": "Environment",
+            "type": "string"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "required": [
+          "contract",
+          "concurrency"
+        ],
+        "title": "AWSBenchmarkArguments",
+        "type": "object"
+      },
       "AWSCredentials": {
         "properties": {
           "aws_access_key_id": {
@@ -492,113 +600,6 @@
           "sandbox_run_duration"
         ],
         "title": "AverageTaskBreakdown",
-        "type": "object"
-      },
-      "BenchmarkArguments": {
-        "additionalProperties": false,
-        "properties": {
-          "concurrency": {
-            "title": "Concurrency",
-            "type": "integer"
-          },
-          "contract": {
-            "$ref": "#/components/schemas/AgentContractRequest-Output"
-          },
-          "dataset": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dataset"
-          },
-          "dataset_version": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DatasetVersion"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "environment": {
-            "const": "aws",
-            "default": "aws",
-            "title": "Environment",
-            "type": "string"
-          },
-          "lambda_function": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lambda Function"
-          },
-          "properties": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AWSResources"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "sandbox_provider": {
-            "default": "daytona",
-            "title": "Sandbox Provider",
-            "type": "string"
-          },
-          "sandbox_provider_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sandbox Provider Secret Name"
-          },
-          "slice_str": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Slice Str"
-          },
-          "task_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Ids"
-          }
-        },
-        "required": [
-          "contract",
-          "concurrency"
-        ],
-        "title": "BenchmarkArguments",
         "type": "object"
       },
       "BenchmarkServiceCatalogResponse": {
@@ -1124,7 +1125,22 @@
       "FetchBenchmarkMetadataResponse": {
         "properties": {
           "benchmark_arguments": {
-            "$ref": "#/components/schemas/BenchmarkArguments"
+            "discriminator": {
+              "mapping": {
+                "aws": "#/components/schemas/AWSBenchmarkArguments",
+                "local": "#/components/schemas/LocalBenchmarkArguments"
+              },
+              "propertyName": "environment"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AWSBenchmarkArguments"
+              },
+              {
+                "$ref": "#/components/schemas/LocalBenchmarkArguments"
+              }
+            ],
+            "title": "Benchmark Arguments"
           },
           "benchmark_id": {
             "format": "uuid",
@@ -1395,7 +1411,22 @@
             ]
           },
           "benchmark_arguments": {
-            "$ref": "#/components/schemas/BenchmarkArguments"
+            "discriminator": {
+              "mapping": {
+                "aws": "#/components/schemas/AWSBenchmarkArguments",
+                "local": "#/components/schemas/LocalBenchmarkArguments"
+              },
+              "propertyName": "environment"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AWSBenchmarkArguments"
+              },
+              {
+                "$ref": "#/components/schemas/LocalBenchmarkArguments"
+              }
+            ],
+            "title": "Benchmark Arguments"
           },
           "benchmark_id": {
             "format": "uuid",
@@ -1550,6 +1581,134 @@
         "title": "HarnessConfig",
         "type": "object"
       },
+      "LocalBenchmarkArguments": {
+        "additionalProperties": false,
+        "description": "Stored arguments with the filesystem resources selected at admission.",
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "environment": {
+            "const": "local",
+            "default": "local",
+            "title": "Environment",
+            "type": "string"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "properties": {
+            "$ref": "#/components/schemas/LocalResources"
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "required": [
+          "contract",
+          "concurrency",
+          "properties"
+        ],
+        "title": "LocalBenchmarkArguments",
+        "type": "object"
+      },
+      "LocalResources": {
+        "properties": {
+          "data_root": {
+            "format": "path",
+            "title": "Data Root",
+            "type": "string"
+          },
+          "secrets_file": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secrets File"
+          }
+        },
+        "required": [
+          "data_root"
+        ],
+        "title": "LocalResources",
+        "type": "object"
+      },
       "LogEventResponse": {
         "description": "One provider-neutral benchmark log event.",
         "properties": {
@@ -1683,8 +1842,11 @@
             "title": "Dataset Version"
           },
           "environment": {
-            "const": "aws",
             "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
             "title": "Environment",
             "type": "string"
           },
@@ -1751,9 +1913,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -2703,8 +2869,11 @@
             "title": "Dataset Version"
           },
           "environment": {
-            "const": "aws",
             "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
             "title": "Environment",
             "type": "string"
           },
@@ -2771,9 +2940,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -3437,7 +3610,7 @@
     },
     "/agents/{name}/download-url": {
       "get": {
-        "description": "Return a 5-minute presigned URL to download agents/<name>.zip.",
+        "description": "Return a download URL for the authorized agent.",
         "operationId": "get_agent_download_url",
         "parameters": [
           {
@@ -3447,6 +3620,16 @@
             "schema": {
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
             }
           },
           {
@@ -3826,6 +4009,16 @@
               "minLength": 1,
               "title": "Path",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
             }
           }
         ],
@@ -4337,7 +4530,7 @@
     },
     "/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts": {
       "get": {
-        "description": "CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page.",
+        "description": "Return log and agent output locations for the task detail page.",
         "operationId": "get_task_artifacts",
         "parameters": [
           {

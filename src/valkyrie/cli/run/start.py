@@ -104,8 +104,8 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'Dataset version:':<17} {version.label or version.id if version else 'not pinned'}")
     if start_benchmark_response.dataset_version_warning:
         click.secho(start_benchmark_response.dataset_version_warning, fg="yellow")
-    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
+    click.echo(f"│ {'Logs:':<17} {start_benchmark_response.cloudwatch_url}")
+    click.echo(f"│ {'Artifacts:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
     if not connect:
         click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))

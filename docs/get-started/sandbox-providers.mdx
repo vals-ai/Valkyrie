@@ -41,6 +41,10 @@ Register the secret:
 valkyrie config provider set daytona DaytonaSecrets
 ```
 
+<Note>
+  `valkyrie config init` moves a legacy `DAYTONA_SECRET_NAME` configuration key to `sandbox_providers.daytona`.
+</Note>
+
 ## Modal
 
 1. [Create an API token](https://modal.com/docs/reference/modal.config#authentication) under `Settings → Tokens → API tokens`, in the Modal workspace that should own the sandboxes. Modal shows the token once, as a CLI command:

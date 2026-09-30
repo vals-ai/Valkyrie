@@ -1,12 +1,19 @@
-"""Local logs survive reopening and retain earlier task attempts."""
+"""Local logs survive reopening and retain earlier task attempts.
+
+Run: pytest tests/unit/local/test_logs.py
+"""
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import Mock
 from uuid import uuid4
 
+import pytest
+
 from tracker.local.logs import FilesystemLogs
-from tracker.runtime.logs import RunLogReference, TaskLogReference, task_log_stream_name
+from tracker.runtime.logs import LogProviderError, RunLogReference, TaskLogReference, task_log_stream_name
 
 
 async def test_attempts_pagination_filters_and_reopening(tmp_path: Path) -> None:
@@ -77,3 +84,71 @@ async def test_byte_cursors_skip_filtered_logs_and_wait_for_complete_records(tmp
     final = await logs.fetch(reference, query="match", cursor=page.next_cursor)
     assert [event.message for event in final.events] == ["match again"]
     assert len((await logs.fetch(reference, start_time=started)).events) == 3
+
+
+@pytest.mark.parametrize("cursor", ["-1", "not-a-byte-offset"])
+async def test_invalid_cursors_are_reported_as_log_errors(tmp_path: Path, cursor: str) -> None:
+    logs = FilesystemLogs(tmp_path)
+
+    with pytest.raises(LogProviderError, match="Invalid local log cursor"):
+        await logs.fetch(RunLogReference(uuid4()), cursor=cursor)
+
+
+async def test_missing_and_corrupt_log_files(tmp_path: Path) -> None:
+    logs = FilesystemLogs(tmp_path)
+    run_id = uuid4()
+    reference = RunLogReference(run_id)
+
+    assert not (await logs.fetch(reference)).events
+
+    await logs.create_benchmark(str(run_id), retention_days=0)
+    Path(logs.benchmark_location(str(run_id))).write_bytes(b"not a JSON record\n")
+
+    with pytest.raises(LogProviderError, match="Failed to read local task logs"):
+        await logs.fetch(reference)
+
+
+async def test_follow_filters_tasks_text_and_time_before_finishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs = FilesystemLogs(tmp_path)
+    run_id = uuid4()
+    started = datetime(2000, 1, 1, tzinfo=UTC)
+    clock = Mock(wraps=datetime)
+    clock.now.return_value = started + timedelta(seconds=10)
+    monkeypatch.setattr("tracker.local.logs.datetime", clock)
+    await logs.create_benchmark(str(run_id), retention_days=0)
+    records = [
+        ("task", 1, "wanted but early"),
+        ("other", 2, "wanted but different task"),
+        ("task", 3, "wanted result"),
+        ("task", 4, "different text"),
+        ("task", 5, "wanted but late"),
+    ]
+    path = Path(logs.benchmark_location(str(run_id)))
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "stream": task_log_stream_name(task, started),
+                    "timestamp": (started + timedelta(seconds=seconds)).timestamp(),
+                    "message": message,
+                }
+            )
+            + "\n"
+            for task, seconds, message in records
+        ),
+        encoding="utf-8",
+    )
+
+    events = [
+        event
+        async for event in logs.stream_task(
+            TaskLogReference(run_id, "task", started),
+            query="wanted",
+            start_time=started + timedelta(seconds=2),
+            end_time=started + timedelta(seconds=4),
+        )
+    ]
+
+    assert [event.message for event in events] == ["wanted result"]

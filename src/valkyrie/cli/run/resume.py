@@ -66,7 +66,7 @@ from valkyrie.cli.tracker_client import TrackerService
     "-u",
     is_flag=True,
     default=False,
-    help="Refresh the frozen agent copy from the current agents/<name>.zip in S3 before resuming.",
+    help="Refresh the frozen agent copy from the current published agent bundle before resuming.",
 )
 @click.option(
     "--from-scratch",

@@ -29,10 +29,9 @@ from tracker.executor.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import SecretsManagerStore
+from tracker.runtime.services import RuntimeServices
 
-from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
+from tracker.utils.resources import fetch_benchmark_row
 
 logger = get_logger(__name__)
 
@@ -131,29 +130,18 @@ async def sandbox_generator(
 
 async def force_stop_sandboxes(
     benchmark_row: Benchmark,
-    sandbox_provider_secret_name: str,
-    aws_runtime: AWSRuntime,
+    runtime: RuntimeServices,
     org: Org,
-    sandbox_provider: str = "daytona",
     task_ids: list[str] | None = None,
 ) -> None:
     """Send provider kill signals without coupling provider teardown to DB state."""
-    benchmark_service = benchmark_row.benchmark_service()
     try:
-        provider = benchmark_service.get_sandbox_provider(
-            await fetch_sandbox_provider_config(
-                sandbox_provider_secret_name, SecretsManagerStore(aws_runtime.clients), sandbox_provider
-            )
-        )
-        sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
-        await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))
+        config = await runtime.get_sandbox_provider_config()
+        async with config.create_provider() as provider:
+            sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
+            await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))
     except Exception:
         logger.exception("Unable to send force-stop signals for benchmark %s", benchmark_row.id)
-    finally:
-        try:
-            await benchmark_service.close()
-        except Exception:
-            logger.exception("Unable to close provider client for benchmark %s", benchmark_row.id)
 
 
 @dataclass(frozen=True)

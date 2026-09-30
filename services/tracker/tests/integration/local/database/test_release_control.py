@@ -21,7 +21,7 @@ from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ExecutorAdmission,
     ExecutorDispatch,
@@ -276,7 +276,7 @@ def test_terminal_recovery_and_promotion_use_the_winning_admission_lock_order(
         org_id=race_org_id,
         name="recovery-first",
         status=BenchmarkStatus.STOPPED,
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),
@@ -364,7 +364,7 @@ def test_start_admission_persists_benchmark_before_pending_task_autoflush(
         org_id=org_id,
         name="start-autoflush",
         status=BenchmarkStatus.IN_PROGRESS,
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="autoflush-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),
@@ -405,7 +405,7 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
             org_id=race_org_id,
             name=name,
             status=BenchmarkStatus.IN_PROGRESS,
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
                 concurrency=1,
             ),
@@ -462,7 +462,7 @@ def test_in_progress_retry_blocks_retirement_of_the_owned_release(
         org_id=race_org_id,
         name="retry-first",
         status=BenchmarkStatus.IN_PROGRESS,
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),
@@ -518,7 +518,7 @@ def test_terminal_retry_after_retirement_uses_the_active_release(postgres_sessio
         org_id=org_id,
         name="terminal-retry",
         status=BenchmarkStatus.ERROR,
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         ),
@@ -567,7 +567,7 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
             org_id=race_org_id,
             name=name,
             status=BenchmarkStatus.ERROR,
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
                 concurrency=1,
             ),
@@ -640,7 +640,7 @@ def test_maintenance_commit_rejects_start_waiting_on_admission_lock(
             org_id=org.id,
             name="maintenance-race-start",
             status=BenchmarkStatus.IN_PROGRESS,
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
                 concurrency=1,
             ),

@@ -1,4 +1,7 @@
-"""Real filesystem coverage for publication, pagination, and cancellation."""
+"""Real filesystem coverage for publication, pagination, and cancellation.
+
+Run: pytest tests/unit/local/test_storage.py
+"""
 
 import asyncio
 import tempfile
@@ -115,3 +118,41 @@ async def test_rejects_symlink_escape(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         await FilesystemObjectStore(root, tmp_path / "staging").put_bytes("escape/outside", b"invalid")
     assert not (tmp_path / "outside").exists()
+
+
+async def test_metadata_and_pagination(tmp_path: Path) -> None:
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
+    for key in ("run/a.txt", "run/a/x", "run/b"):
+        await store.put_bytes(key, key.encode())
+    first, cursor = await store.list_objects_page("run/", cursor=None, limit=2)
+    assert [entry.key for entry in first] == ["run/a.txt", "run/a/x"]
+    assert [entry.size for entry in first] == [9, 7]
+    assert cursor == "run/a/x"
+    last, cursor = await store.list_objects_page("run/", cursor=cursor, limit=2)
+    assert [entry.key for entry in last] == ["run/b"]
+    assert cursor is None
+    assert (await store.stat("run/a.txt")).size == 9
+    with pytest.raises(FileNotFoundError):
+        await store.stat("missing")
+    with pytest.raises(ValueError, match="cursor"):
+        await store.list_objects_page("other/", cursor="run/b", limit=2)
+
+
+async def test_batch_reads_keep_frozen_bytes_and_skip_missing_objects(tmp_path: Path) -> None:
+    store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
+    original = b"\x00original\xff"
+    await store.put_bytes("agents/current.zip", original)
+    await store.copy("agents/current.zip", "runs/frozen.zip")
+    await store.put_bytes("agents/current.zip", b"replacement")
+    await store.put_bytes("runs/deleted.zip", b"obsolete")
+    await store.delete("runs/deleted.zip")
+    await store.delete("runs/deleted.zip")
+
+    async def keys() -> AsyncIterator[str]:
+        for key in ("missing.zip", "runs/frozen.zip", "runs/deleted.zip", "agents/current.zip"):
+            yield key
+
+    objects = [entry async for entry in store.get_many(keys())]
+
+    assert objects == [("runs/frozen.zip", original), ("agents/current.zip", b"replacement")]
+    assert not list((tmp_path / "staging").iterdir())

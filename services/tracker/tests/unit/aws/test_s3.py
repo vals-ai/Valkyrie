@@ -12,6 +12,7 @@ from uuid import uuid4
 import pytest
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from starlette.requests import Request
 
 from tracker.aws import s3 as s3_module
 from tracker.aws.clients import DefaultChainAWSClientProvider
@@ -30,7 +31,7 @@ from tracker.aws.s3 import (
     upload_to_s3,
     upload_stream_to_s3,
 )
-from tracker.api.run_artifacts import get_run_artifact_url, list_run_artifacts
+from tracker.api.run_artifacts import RunArtifactDownloadResponse, get_run_artifact_url, list_run_artifacts
 from tracker.exceptions import S3Error
 
 
@@ -202,7 +203,15 @@ async def test_object_store_read_session_and_listing_preserve_object_metadata(
     monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime
 ) -> None:
     paginator = ObjectListPaginator(
-        [{"Contents": [{"Key": "agents/alpha.zip"}, {"LastModified": "ignored"}, {"Key": "agents/beta.zip"}]}]
+        [
+            {
+                "Contents": [
+                    {"Key": "agents/alpha.zip", "Size": 5},
+                    {"LastModified": "ignored"},
+                    {"Key": "agents/beta.zip", "Size": 4},
+                ]
+            }
+        ]
     )
     client = ReadClient({"agents/alpha.zip": b"alpha"}, paginator)
     monkeypatch.setattr(type(aws_runtime.clients), "s3_client", lambda _provider: client)
@@ -220,7 +229,7 @@ async def test_managed_read_session_and_get_many_apply_owner_guard(
     monkeypatch: pytest.MonkeyPatch,
     aws_runtime: AWSRuntime,
 ) -> None:
-    paginator = ObjectListPaginator([{"Contents": [{"Key": "agents/alpha.zip"}]}])
+    paginator = ObjectListPaginator([{"Contents": [{"Key": "agents/alpha.zip", "Size": 5}]}])
     client = ReadClient({"agents/alpha.zip": b"alpha"}, paginator)
     runtime = AWSRuntime(
         resources=aws_runtime.resources,
@@ -387,7 +396,7 @@ async def test_managed_run_artifact_calls_guard_aws_without_changing_presigned_u
         clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
         expected_bucket_owner="123456789012",
     )
-    run_context = MagicMock(aws_runtime=runtime)
+    run_context = MagicMock(aws_runtime=runtime, objects=S3ObjectStore(runtime))
 
     def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
         return client
@@ -397,7 +406,9 @@ async def test_managed_run_artifact_calls_guard_aws_without_changing_presigned_u
     root = f"benchmarks/{benchmark_id}/"
 
     await list_run_artifacts(benchmark_id, cast(Any, run_context), prefix="", cursor=None, limit=100)
-    response = await get_run_artifact_url(benchmark_id, cast(Any, run_context), path="result.json")
+    response = await get_run_artifact_url(
+        benchmark_id, cast(Any, run_context), Request({"type": "http"}), path="result.json"
+    )
 
     owner = {"ExpectedBucketOwner": "123456789012"}
     client.list_objects_v2.assert_awaited_once_with(
@@ -416,6 +427,7 @@ async def test_managed_run_artifact_calls_guard_aws_without_changing_presigned_u
         Params={"Bucket": "test-bucket", "Key": root + "result.json"},
         ExpiresIn=300,
     )
+    assert isinstance(response, RunArtifactDownloadResponse)
     assert response.download_url == "https://download.test/file"
 
 
@@ -693,7 +705,16 @@ class TestUploadStreamToS3:
         """
         complete = AsyncMock(
             side_effect=ClientError(
-                {"Error": {"Code": "PreconditionFailed"}, "ResponseMetadata": {"HTTPStatusCode": status}},
+                {
+                    "Error": {"Code": "PreconditionFailed"},
+                    "ResponseMetadata": {
+                        "HTTPStatusCode": status,
+                        "RequestId": "request",
+                        "HostId": "host",
+                        "HTTPHeaders": {},
+                        "RetryAttempts": 0,
+                    },
+                },
                 "CompleteMultipartUpload",
             )
             if status

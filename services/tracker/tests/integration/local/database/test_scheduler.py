@@ -42,7 +42,7 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     ExecutorAdmission,
     ExecutorDispatch,
     ExecutorRelease,
@@ -120,7 +120,7 @@ def _run(
     benchmark = Benchmark(
         org_id=org.id,
         name=f"run-{uuid4()}",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
             concurrency=concurrency,
             priority=priority,

@@ -89,7 +89,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
     if benchmark_response.final_score is not None:
         click.echo(f"│ {'Final score:':<12} {benchmark_response.final_score:.1f}%")
-    click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
+    click.echo(f"│ {'Artifacts:':<12} {benchmark_response.s3_bucket_url}")
     analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
     if analysis_line is not None:
         click.echo(f"│ {'Analysis:':<12} {analysis_line}")

@@ -103,9 +103,10 @@ def test_openapi_states_the_storage_requirement_of_each_start_route() -> None:
 def test_openapi_keeps_scheduler_storage_fields_internal() -> None:
     schemas = build_openapi()["components"]["schemas"]
 
-    benchmark_argument_properties = schemas["BenchmarkArguments"]["properties"]
-    assert "priority" not in benchmark_argument_properties
-    assert "queue_pool_id" not in benchmark_argument_properties
+    for model in ("AWSBenchmarkArguments", "LocalBenchmarkArguments"):
+        benchmark_argument_properties = schemas[model]["properties"]
+        assert "priority" not in benchmark_argument_properties
+        assert "queue_pool_id" not in benchmark_argument_properties
     assert "priority" in schemas["StartBenchmarkRequest"]["properties"]
 
 

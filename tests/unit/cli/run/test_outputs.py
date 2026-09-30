@@ -11,7 +11,7 @@ from uuid import UUID
 import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, BenchmarkArguments
+from tracker.database.models import AgentContractRequest, AWSBenchmarkArguments
 from tracker.types import FetchBenchmarkMetadataResponse
 
 from valkyrie.cli.run.outputs import output_path, outputs
@@ -38,7 +38,7 @@ class MockOutputsTracker:
         return FetchBenchmarkMetadataResponse(
             benchmark_id=_RUN_ID,
             benchmark_name="swebench",
-            benchmark_arguments=BenchmarkArguments(
+            benchmark_arguments=AWSBenchmarkArguments(
                 contract=AgentContractRequest(name="agent", install_cmd="install", run_cmd="run"),
                 concurrency=1,
             ),

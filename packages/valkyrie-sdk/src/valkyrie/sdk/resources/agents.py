@@ -105,7 +105,10 @@ class AgentsResource:
             # A separate client must never inherit Tracker credentials for presigned transfers.
             async with httpx.AsyncClient(timeout=120) as client:
                 with tempfile.TemporaryFile() as stream:
-                    async with client.stream("GET", response.download_url) as download:
+                    headers = self._sdk.download_headers(response.download_url)
+                    async with client.stream(
+                        "GET", response.download_url, headers=headers, follow_redirects=not headers
+                    ) as download:
                         download.raise_for_status()
                         downloaded_bytes = 0
                         async for chunk in download.aiter_bytes(chunk_size=1024 * 1024):

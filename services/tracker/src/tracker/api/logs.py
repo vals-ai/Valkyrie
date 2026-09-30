@@ -15,11 +15,11 @@ from sqlmodel import Session, col, select
 
 from tracker.api.dependencies import (
     RunRuntimeDependency,
-    RunAWSDependency,
+    RunBenchmarkDependency,
     load_task_for_benchmark_or_404,
 )
 from tracker.auth import get_current_org
-from tracker.database.models import Org, Task
+from tracker.database.models import Benchmark, Org, Task
 from tracker.database.session import get_session
 from tracker.runtime.logs import (
     LogEvent,
@@ -34,7 +34,7 @@ from tracker.types import LogEventResponse, LogPageResponse
 
 
 def _validate_log_filters(
-    _run_context: RunAWSDependency,
+    _benchmark: RunBenchmarkDependency,
     query: str | None = Query(default=None, min_length=1),
     start_time: datetime | None = None,
     end_time: datetime | None = None,
@@ -53,15 +53,15 @@ router = APIRouter(prefix="/benchmarks", dependencies=[Depends(_validate_log_fil
 
 
 def _task_reference(
-    run_context: RunAWSDependency,
+    benchmark: RunBenchmarkDependency,
     task_id: str = Query(min_length=1),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> TaskLogReference:
-    task = load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
-    run_tasks = _run_tasks(run_context, org, session)
+    task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
+    run_tasks = _run_tasks(benchmark, org, session)
     return TaskLogReference(
-        run_id=run_context.benchmark.id,
+        run_id=benchmark.id,
         task_id=task.task_id,
         started_at=task.started_at,
         siblings=tuple(run_task for run_task in run_tasks if run_task.task_id != task.task_id),
@@ -72,13 +72,13 @@ TaskLogReferenceDependency = Annotated[TaskLogReference, Depends(_task_reference
 
 
 def _run_tasks(
-    run_context: RunAWSDependency,
+    benchmark: Benchmark,
     org: Org,
     session: Session,
 ) -> tuple[RunTaskLogReference, ...]:
     tasks = session.exec(
         select(Task)
-        .where(col(Task.benchmark) == run_context.benchmark.id)
+        .where(col(Task.benchmark) == benchmark.id)
         .where(col(Task.org_id) == org.id)
         .order_by(col(Task.task_id))
     ).all()
@@ -86,25 +86,25 @@ def _run_tasks(
 
 
 def _run_reference(
-    run_context: RunAWSDependency,
+    benchmark: RunBenchmarkDependency,
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> RunLogReference:
     return RunLogReference(
-        run_id=run_context.benchmark.id,
-        tasks=_run_tasks(run_context, org, session),
+        run_id=benchmark.id,
+        tasks=_run_tasks(benchmark, org, session),
     )
 
 
 def _log_reference(
-    run_context: RunAWSDependency,
+    benchmark: RunBenchmarkDependency,
     task_id: str | None = Query(default=None, min_length=1),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> RunLogReference | TaskLogReference:
     if task_id is not None:
-        return _task_reference(run_context, task_id, org, session)
-    return _run_reference(run_context, org, session)
+        return _task_reference(benchmark, task_id, org, session)
+    return _run_reference(benchmark, org, session)
 
 
 LogReferenceDependency = Annotated[RunLogReference | TaskLogReference, Depends(_log_reference)]

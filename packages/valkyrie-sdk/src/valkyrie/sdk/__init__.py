@@ -48,7 +48,7 @@ from valkyrie.sdk.models import (
 )
 
 from valkyrie.sdk.client import ValkyrieClient
-from valkyrie.sdk.config import ValkyrieConfig
+from valkyrie.sdk.config import AWSAccessKeys, AWSConfig, ValkyrieConfig
 from valkyrie.sdk.errors import (
     ValkyrieAPIError,
     ValkyrieConfigError,
@@ -113,6 +113,8 @@ __all__ = [
     "ValkyrieAPIError",
     "ValkyrieClient",
     "ValkyrieConfig",
+    "AWSConfig",
+    "AWSAccessKeys",
     "ValkyrieConfigError",
     "ValkyrieRunAcceptedError",
     "ValkyrieRunError",
