@@ -15,6 +15,7 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import StopBenchmarkResponse, UpdateBenchmarkConcurrencyResponse
 from valkyrie.sdk.models import TaskStatus, TaskSummary
 
+from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run import run
 
 shed_module = import_module("valkyrie.cli.run.shed")
@@ -33,10 +34,10 @@ def summary(task_id: str, status: TaskStatus, minute: int) -> TaskSummary:
 
 
 class MockShedTracker:
-    """Record tracker calls in order and return a configured run status."""
+    """Record tracker calls in order; optionally reject the concurrency update like a run that is not in progress."""
 
-    def __init__(self, status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS) -> None:
-        self.status = status
+    def __init__(self, update_error: str | None = None) -> None:
+        self.update_error = update_error
         self.calls: list[tuple[str, object]] = []
 
     def __enter__(self) -> "MockShedTracker":
@@ -47,7 +48,11 @@ class MockShedTracker:
 
     def update_benchmark_concurrency(self, run_id: UUID, concurrency: int) -> UpdateBenchmarkConcurrencyResponse:
         self.calls.append(("update", concurrency))
-        return UpdateBenchmarkConcurrencyResponse(benchmark_id=run_id, status=self.status, concurrency=concurrency)
+        if self.update_error:
+            raise TrackerServiceError(self.update_error)
+        return UpdateBenchmarkConcurrencyResponse(
+            benchmark_id=run_id, status=BenchmarkStatus.IN_PROGRESS, concurrency=concurrency
+        )
 
     def stop_benchmark(
         self, benchmark_id: UUID, force: bool, task_ids: list[str] | None = None
@@ -90,14 +95,14 @@ def test_newest_over_limit_picks_latest_stoppable_tasks() -> None:
         summary("building", TaskStatus.BUILDING, 7),
     ]
 
-    assert [task.task_id for task in shed_module.newest_over_limit(active, 2)] == ["building", "newer", "middle"]
-    assert [task.task_id for task in shed_module.newest_over_limit(active, 1)] == [
+    assert [task.task_id for task in shed_module._newest_over_limit(active, 2)] == ["building", "newer", "middle"]
+    assert [task.task_id for task in shed_module._newest_over_limit(active, 1)] == [
         "building",
         "newer",
         "middle",
         "oldest",
     ]
-    assert shed_module.newest_over_limit(active, 5) == []
+    assert shed_module._newest_over_limit(active, 5) == []
 
 
 def test_shed_lowers_concurrency_before_stopping_relisted_tasks(
@@ -128,26 +133,26 @@ def test_shed_never_sends_an_empty_stop(
     tracker = MockShedTracker()
     install(monkeypatch, tracker, [[summary("a", TaskStatus.IN_PROGRESS, 0)]] * 2)
 
-    result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "4", "--yes"])
+    result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "4"], input="y\n")
 
     assert result.exit_code == 0, result.output
     assert tracker.calls == [("list", None), ("update", 4), ("list", None)]
     assert "No building or in-progress tasks are above the limit." in result.output
 
 
-def test_shed_does_not_stop_when_concurrency_was_not_applied(
+def test_shed_does_not_stop_when_concurrency_update_is_rejected(
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A run that is no longer in progress keeps its limit, so no tasks are stopped."""
-    tracker = MockShedTracker(status=BenchmarkStatus.STOPPING)
+    """Tracker rejects the update for a run that is not in progress, so the limit is unchanged and nothing is stopped."""
+    tracker = MockShedTracker(update_error="Run is currently in the STOPPING state.")
     install(monkeypatch, tracker, [[summary("a", TaskStatus.IN_PROGRESS, 0), summary("b", TaskStatus.IN_PROGRESS, 1)]])
 
-    result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "1", "--yes"])
+    result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "1"], input="y\n")
 
     assert result.exit_code == 1
     assert tracker.calls == [("list", None), ("update", 1)]
-    assert "concurrency was not updated" in result.output
+    assert "STOPPING" in result.output
 
 
 def test_shed_dry_run_and_cancel_change_nothing(

@@ -620,14 +620,13 @@ Task guidance: [Run guides](/runs/start).
 
 ## `valkyrie run shed` {#shed}
 
-Lower concurrency for an active run, then force stop the most recently admitted building or in-progress tasks until the run is back at the new limit. Evaluating tasks are never stopped. Stopped tasks can be rerun later with `valkyrie run retry`.
+Lower concurrency for an active run, then force stop the newest building or in-progress tasks until the run is back at the new limit. Evaluating tasks are never stopped.
 
 ```bash Syntax
 valkyrie run shed \
   <RUN_ID> \
   --concurrency <INTEGER> \
-  [--dry-run] \
-  [--yes]
+  [--dry-run]
 ```
 
 ```bash Example
@@ -654,11 +653,6 @@ valkyrie run shed \
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--dry-run"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
   <p className="mb-0 mt-1">{"Show the tasks that would be stopped without changing the run"}</p>
-</div>
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--yes"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
-  <p className="mb-0 mt-1">{"Skip the confirmation prompt"}</p>
 </div>
 
 Task guidance: [Run guides](/runs/start).
