@@ -1592,6 +1592,40 @@ def _force_stop_runtime(http_request: Request, benchmark_row: Benchmark, org: Or
     )
 
 
+def _commit_shed(
+    bind: Engine | Connection,
+    org_id: UUID,
+    benchmark_id: UUID,
+    request: ShedBenchmarkRequest,
+) -> list[str]:
+    """Lower the limit and stop the newest tasks above it in one admission-locked transaction."""
+    with Session(bind) as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        try:
+            with session.no_autoflush:
+                lock_executor_admission(session)
+        except MaintenanceModeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state.",
+            )
+        current = benchmark_row.arguments.concurrency
+        if request.concurrency >= current:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Run {benchmark_id} concurrency is {current}; shed can only lower it.",
+            )
+
+        task_ids = apply_shed_benchmark(benchmark_row, request.concurrency, session, org)
+        if not request.dry_run:
+            session.commit()
+        return task_ids
+
+
 @app.post("/benchmarks/{benchmark_id}/shed")
 async def shed_benchmark(
     benchmark_id: TrackedBenchmarkId,
@@ -1607,33 +1641,12 @@ async def shed_benchmark(
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
     runtime = None if request.dry_run else _force_stop_runtime(http_request, benchmark_row, org)
+    # Authentication shares this dependency Session; end its read transaction before waiting on the admission lock.
+    session.close()
 
-    try:
-        with session.no_autoflush:
-            lock_executor_admission(session)
-    except MaintenanceModeError as exc:
-        session.rollback()
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
-    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state.",
-        )
-    current = benchmark_row.arguments.concurrency
-    if request.concurrency >= current:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Run {benchmark_id} concurrency is {current}; shed can only lower it.",
-        )
-
-    task_ids = apply_shed_benchmark(benchmark_row, request.concurrency, session, org)
-    if runtime is None:
-        session.rollback()
-    else:
-        session.commit()
-        if task_ids:
-            await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=task_ids)
+    task_ids = await asyncio.to_thread(_commit_shed, session.get_bind(), org.id, benchmark_id, request)
+    if runtime is not None and task_ids:
+        await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=task_ids)
     return ShedBenchmarkResponse(benchmark_id=benchmark_id, concurrency=request.concurrency, task_ids=task_ids)
 
 

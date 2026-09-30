@@ -144,10 +144,11 @@ async def test_verification_releases_transactions_and_admission_for_other_reques
         assert all(not session.in_transaction() for session, _ in observed_sessions)
 
 
-@pytest.mark.parametrize("operation", ["retry", "start"])
+@pytest.mark.parametrize("operation", ["retry", "start", "shed"])
 async def test_blocking_admission_wait_does_not_block_health(
     operation: str,
     recovery_run: tuple[Benchmark, Task],
+    database_session: Session,
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
     harness_headers: dict[str, str],
@@ -155,6 +156,10 @@ async def test_blocking_admission_wait_does_not_block_health(
     mock_kicker: MockKicker,
 ) -> None:
     benchmark, _ = recovery_run
+    if operation == "shed":
+        benchmark.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark)
+        database_session.commit()
     entered, release = threading.Event(), threading.Event()
     lock_threads: list[int] = []
     loop_thread = threading.get_ident()
@@ -172,8 +177,11 @@ async def test_blocking_admission_wait_does_not_block_health(
 
     monkeypatch.setattr(release_control, "_get_admission", blocked_lock)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
-    url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
-    body = {} if operation == "retry" else _start_body(benchmark, harness_config)
+    url, body = {
+        "retry": (f"/retry-or-resume-benchmark/{benchmark.id}", {}),
+        "start": ("/start-benchmark", _start_body(benchmark, harness_config)),
+        "shed": (f"/benchmarks/{benchmark.id}/shed", {"concurrency": 1, "dry_run": True}),
+    }[operation]
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
         request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
         try:
@@ -187,7 +195,7 @@ async def test_blocking_admission_wait_does_not_block_health(
         response = responses[0]
         assert isinstance(response, httpx.Response)
         assert response.status_code == 200, response.text
-        assert len(mock_kicker.queued_calls) == 1
+        assert len(mock_kicker.queued_calls) == (0 if operation == "shed" else 1)
         assert all(not session.in_transaction() for session, _ in observed_sessions)
 
 
