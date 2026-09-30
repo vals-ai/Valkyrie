@@ -32,7 +32,7 @@ from tracker.database.models import (
 )
 from tracker.executor.release_control import promote_release
 from tracker.runtime.storage import ObjectStore
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import StartBenchmarkRequest
 
 
 client = TestClient(app)
@@ -45,20 +45,7 @@ _DISPATCH_TASK_KWARGS = {
     "executor_artifact_digest",
     "executor_protocol_version",
 }
-_ACCESS_KEY_TASK_KWARGS = {
-    "start_benchmark_request_json",
-    "benchmark_id_str",
-    "verified_task_ids",
-} | _DISPATCH_TASK_KWARGS
 _MANAGED_TASK_KWARGS = {"execution_context_json"} | _DISPATCH_TASK_KWARGS
-_CALLER_AWS_HEADERS = {
-    "x-harness-aws-access-key-id": "caller-access-key",
-    "x-harness-aws-secret-access-key": "caller-secret-key",
-    "x-harness-aws-default-region": "caller-region",
-    "x-harness-aws-session-token": "caller-session-token",
-    "x-harness-aws-profile": "caller-profile",
-    "x-harness-s3-bucket": "caller-bucket",
-}
 
 
 def _configure_managed_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,12 +106,11 @@ def _assert_no_aws_authority(payload: dict[str, Any]) -> None:
     assert "caller_" not in serialized
 
 
-def _start_request(contract: AgentContractRequest, harness_config: HarnessConfig | None) -> StartBenchmarkRequest:
+def _start_request(contract: AgentContractRequest) -> StartBenchmarkRequest:
     return StartBenchmarkRequest(
         contract=contract,
         benchmark_name="producer-contract-test",
         task_ids=["task-1"],
-        harness_config=harness_config,
         sandbox_provider="daytona",
         sandbox_provider_secret_name="provider-secret",
     )
@@ -151,7 +137,7 @@ def test_managed_start_and_resume_emit_credential_free_v3(
     reset_to_in_progress = Mock(return_value=["task-2"])
     monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
 
-    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+    response = client.post("/start-benchmark", json=_start_request(contract).model_dump(mode="json"))
 
     assert response.status_code == 200
     benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
@@ -161,7 +147,6 @@ def test_managed_start_and_resume_emit_credential_free_v3(
     assert set(payloads[0]) == _MANAGED_TASK_KWARGS
     start_context = payloads[0]["execution_context_json"]
     assert start_context["version"] == 3
-    assert start_context["start_benchmark_request"]["harness_config"] is None
     _assert_no_aws_authority(start_context)
 
     _stop_benchmark(benchmark, database_session)
@@ -170,7 +155,6 @@ def test_managed_start_and_resume_emit_credential_free_v3(
 
     response = client.post(
         f"/retry-or-resume-benchmark/{benchmark.id}",
-        headers=_CALLER_AWS_HEADERS,
         json={"secrets": {"MODEL_API_KEY": "resume-model-secret"}},
     )
 
@@ -181,7 +165,6 @@ def test_managed_start_and_resume_emit_credential_free_v3(
     assert resume_context["version"] == 3
     assert resume_context["benchmark_id"] == str(benchmark.id)
     assert resume_context["verified_task_ids"] == ["task-2"]
-    assert resume_context["start_benchmark_request"]["harness_config"] is None
     assert resume_context["start_benchmark_request"]["contract"]["secrets"] == {"MODEL_API_KEY": "resume-model-secret"}
     _assert_no_aws_authority(resume_context)
 
@@ -218,7 +201,7 @@ async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
         )
     object_store.get_bytes.return_value = archive.getvalue()
 
-    resolved = await main._resolve_contract_from_s3(_start_request(contract, None), cast(ObjectStore, object_store))
+    resolved = await main._resolve_contract_from_s3(_start_request(contract), cast(ObjectStore, object_store))
 
     assert resolved.inference_settings_attested is True
     assert resolved.name == "dummy"
@@ -259,7 +242,7 @@ def test_start_clears_a_caller_asserted_attestation(
         }
     )
 
-    response = client.post("/start-benchmark", json=_start_request(claimed, None).model_dump(mode="json"))
+    response = client.post("/start-benchmark", json=_start_request(claimed).model_dump(mode="json"))
 
     assert response.status_code == 200
     resolve_from_s3.assert_not_awaited()
@@ -285,7 +268,7 @@ def test_managed_start_rejects_aws_authority_before_persistence(
         raise AssertionError("invalid managed requests must be rejected before checking S3")
 
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", agent_exists)
-    request = _start_request(contract, None).model_copy(
+    request = _start_request(contract).model_copy(
         update={"service_headers": {"AWS_SECRET_ACCESS_KEY": "credential"}}
     )
 
@@ -305,7 +288,7 @@ def test_managed_start_rejects_aws_authority_from_resolved_contract(
     _configure_managed_runtime(monkeypatch)
     _promote_test_release(database_session)
     payloads = _capture_task_payloads(monkeypatch)
-    request = _start_request(contract.model_copy(update={"install_cmd": "", "run_cmd": ""}), None)
+    request = _start_request(contract.model_copy(update={"install_cmd": "", "run_cmd": ""}))
     resolved_contract = contract.model_copy(update={"secrets": {"aws_profile": "credential"}})
     monkeypatch.setattr("main._resolve_contract_from_s3", AsyncMock(return_value=resolved_contract))
 
@@ -331,7 +314,7 @@ def test_managed_start_requires_a_compatible_executor_release(
     copy = AsyncMock()
     monkeypatch.setattr("main.copy_agent_to_benchmark", copy)
 
-    request = _start_request(contract, None)
+    request = _start_request(contract)
     route = "/start-benchmark"
     if owner_storage:
         route = "/start-benchmark-with-storage"
@@ -364,7 +347,7 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
     )
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
 
-    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+    response = client.post("/start-benchmark", json=_start_request(contract).model_dump(mode="json"))
     assert response.status_code == 200
     benchmark_id = UUID(response.json()["benchmark_id"])
     benchmark = database_session.get(Benchmark, benchmark_id)
@@ -408,7 +391,7 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
     monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
 
-    response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
+    response = client.post("/start-benchmark", json=_start_request(contract).model_dump(mode="json"))
 
     assert response.status_code == 200
     benchmark_id = UUID(response.json()["benchmark_id"])
@@ -453,49 +436,3 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
     } == original_dispatch_ids
     assert payloads == []
 
-
-def test_access_key_start_and_resume_keep_v1_task_kwargs(
-    contract: AgentContractRequest,
-    database_session: Session,
-    harness_config: HarnessConfig,
-    harness_headers: dict[str, str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _promote_test_release(database_session, protocol_version="1")
-    payloads = _capture_task_payloads(monkeypatch)
-
-    async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-        return VerifyTaskIdsResponse(task_ids=["task-1"])
-
-    def reset_to_in_progress(*_args: Any, **_kwargs: Any) -> list[str]:
-        return ["task-1"]
-
-    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
-    monkeypatch.setattr("main.copy_agent_to_benchmark", AsyncMock(return_value=True))
-    monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
-
-    response = client.post(
-        "/start-benchmark",
-        json=_start_request(contract, harness_config).model_dump(mode="json"),
-    )
-
-    assert response.status_code == 200
-    benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
-    assert benchmark is not None
-    assert benchmark.aws_managed is False
-    assert len(payloads) == 1
-    assert set(payloads[0]) == _ACCESS_KEY_TASK_KWARGS
-    assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None
-
-    _stop_benchmark(benchmark, database_session)
-    payloads.clear()
-
-    response = client.post(
-        f"/retry-or-resume-benchmark/{benchmark.id}",
-        headers=harness_headers,
-    )
-
-    assert response.status_code == 200
-    assert len(payloads) == 1
-    assert set(payloads[0]) == _ACCESS_KEY_TASK_KWARGS
-    assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None

@@ -10,7 +10,6 @@ import pytest
 import tracker.aws.s3 as s3_module
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectCopy, copy_agent_to_benchmark
-from tracker.types import HarnessConfig
 
 
 class TestCopyAgentToBenchmark:
@@ -19,7 +18,7 @@ class TestCopyAgentToBenchmark:
     @pytest.mark.parametrize("destination_exists", [False, True])
     async def test_preserves_frozen_agent_copy(
         self,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         destination_exists: bool,
     ) -> None:
@@ -39,7 +38,6 @@ class TestCopyAgentToBenchmark:
         monkeypatch.setattr(s3_module, "get_contract_s3_key", get_contract_s3_key)
         monkeypatch.setattr(s3_module, "s3_object_exists", exists_mock)
         monkeypatch.setattr(s3_module, "copy_s3_object", copy_mock)
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         created = await copy_agent_to_benchmark(
             benchmark_id="bench-123",

@@ -25,7 +25,6 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
-    HarnessConfig,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -151,9 +150,9 @@ class TrackerService:
             return None
 
         with open(config_path) as f:
-            harness_config = yaml.safe_load(f) or {}
+            config = yaml.safe_load(f) or {}
 
-        services = harness_config.get("custom_benchmark_services") or {}
+        services = config.get("custom_benchmark_services") or {}
         return services.get(benchmark_name)
 
     @staticmethod
@@ -172,9 +171,9 @@ class TrackerService:
             return None
 
         with open(config_path) as f:
-            harness_config = yaml.safe_load(f) or {}
+            config = yaml.safe_load(f) or {}
 
-        auth = harness_config.get("benchmark_auth") or {}
+        auth = config.get("benchmark_auth") or {}
         return auth.get(benchmark_name)
 
     @staticmethod
@@ -190,26 +189,10 @@ class TrackerService:
             return None
 
         with open(config_path) as f:
-            harness_config = yaml.safe_load(f) or {}
+            config = yaml.safe_load(f) or {}
 
-        secret_name = harness_config.get("webhook")
+        secret_name = config.get("webhook")
         return secret_name if secret_name else None
-
-    @staticmethod
-    def _resolve_sandbox_provider(sdk_config: ValkyrieConfig, provider: str | None) -> tuple[str, str | None]:
-        try:
-            name, secret = sdk_config.resolve_sandbox_provider(provider)
-        except ValkyrieConfigError as error:
-            raise TrackerServiceError(str(error)) from error
-        return name or "daytona", secret
-
-    @classmethod
-    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str | None]:
-        """Validate the selected sandbox provider before starting a run."""
-        return cls._resolve_sandbox_provider(ValkyrieConfig.from_yaml(config_location()), provider)
-
-    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str | None]:
-        return self._resolve_sandbox_provider(self._sdk_config, provider)
 
     def health_check(self) -> Response:
         """
@@ -337,12 +320,6 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
-            provider_name, sandbox_provider_secret_name = self.resolve_sandbox_provider(provider)
-            access_key_harness_config = None
-            if self._sdk_config.aws is not None:
-                harness = self._sdk_config.aws.harness_config(sandbox_provider_secret_name)
-                if harness is not None:
-                    access_key_harness_config = HarnessConfig.model_validate(harness.model_dump())
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -354,20 +331,19 @@ class TrackerService:
                 lambda_function=lambda_function,
                 dataset=dataset,
                 dataset_version=dataset_version,
-                harness_config=access_key_harness_config,
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services
                 else None,
                 service_headers=service_headers or {},
-                sandbox_provider=provider_name,
-                sandbox_provider_secret_name=(
-                    sandbox_provider_secret_name if access_key_harness_config is None else None
-                ),
+                sandbox_provider=provider,
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,
             )
 
-            body = payload.model_dump(exclude={"environment"})
+            body = payload.model_dump(
+                mode="json",
+                exclude={"environment"} | ({"sandbox_provider"} if provider is None else set[str]()),
+            )
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
 

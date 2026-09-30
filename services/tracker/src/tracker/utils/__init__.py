@@ -1,8 +1,5 @@
 """Back-compat re-export shim for the former tracker/utils.py."""
 
-from tracker.utils.harness_config import (
-    fetch_harness_config,
-)
 from tracker.utils.run_orchestration import (
     catch_errors_during_cleanup,
     commit_benchmark_error,
@@ -81,7 +78,6 @@ __all__ = [
     "fetch_evaluation_results",
     "fetch_filtered_benchmark_rows",
     "fetch_final_score_inputs",
-    "fetch_harness_config",
     "fetch_sandbox_provider_config",
     "fetch_task_row",
     "force_stop_sandboxes",

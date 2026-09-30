@@ -8,17 +8,14 @@ from tracker.database.models import Org
 from starlette.requests import Request
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark
-from tracker.types import HarnessConfig
 
 
 async def test_get_run_runtime_uses_persisted_sandbox_provider(
-    example_benchmark_object: Benchmark, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+    example_benchmark_object: Benchmark, aws_runtime: AWSRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    context = AWSRuntime.from_harness_config(harness_config)
-
     monkeypatch.setattr(
-        "tracker.api.dependencies.resolve_run_aws_runtime_and_access_key_config",
-        Mock(return_value=Mock(runtime=context)),
+        "tracker.api.dependencies.resolve_run_aws_runtime",
+        Mock(return_value=aws_runtime),
     )
     runtime = await get_run_runtime(example_benchmark_object, Request({"type": "http"}), Org(name="test"))
     arguments = example_benchmark_object.arguments

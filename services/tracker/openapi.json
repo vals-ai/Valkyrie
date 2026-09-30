@@ -1,39 +1,5 @@
 {
   "components": {
-    "parameters": {
-      "HarnessAwsAccessKeyId": {
-        "in": "header",
-        "name": "X-Harness-AWS-Access-Key-Id",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      },
-      "HarnessAwsDefaultRegion": {
-        "in": "header",
-        "name": "X-Harness-AWS-Default-Region",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      },
-      "HarnessAwsSecretAccessKey": {
-        "in": "header",
-        "name": "X-Harness-AWS-Secret-Access-Key",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      },
-      "HarnessS3Bucket": {
-        "in": "header",
-        "name": "X-Harness-S3-Bucket",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      }
-    },
     "schemas": {
       "AWSBenchmarkArguments": {
         "additionalProperties": false,
@@ -141,40 +107,6 @@
           "concurrency"
         ],
         "title": "AWSBenchmarkArguments",
-        "type": "object"
-      },
-      "AWSCredentials": {
-        "properties": {
-          "aws_access_key_id": {
-            "title": "Aws Access Key Id",
-            "type": "string"
-          },
-          "aws_default_region": {
-            "title": "Aws Default Region",
-            "type": "string"
-          },
-          "aws_secret_access_key": {
-            "title": "Aws Secret Access Key",
-            "type": "string"
-          },
-          "aws_session_token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Aws Session Token"
-          }
-        },
-        "required": [
-          "aws_access_key_id",
-          "aws_secret_access_key",
-          "aws_default_region"
-        ],
-        "title": "AWSCredentials",
         "type": "object"
       },
       "AWSResources": {
@@ -1549,38 +1481,6 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "HarnessConfig": {
-        "properties": {
-          "aws": {
-            "$ref": "#/components/schemas/AWSCredentials"
-          },
-          "log_group": {
-            "title": "Log Group",
-            "type": "string"
-          },
-          "log_retention_policy": {
-            "title": "Log Retention Policy",
-            "type": "integer"
-          },
-          "s3_bucket": {
-            "title": "S3 Bucket",
-            "type": "string"
-          },
-          "sandbox_provider_secret_name": {
-            "title": "Sandbox Provider Secret Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "aws",
-          "s3_bucket",
-          "log_group",
-          "log_retention_policy",
-          "sandbox_provider_secret_name"
-        ],
-        "title": "HarnessConfig",
-        "type": "object"
-      },
       "LocalBenchmarkArguments": {
         "additionalProperties": false,
         "description": "Stored arguments with the filesystem resources selected at admission.",
@@ -1850,16 +1750,6 @@
             "title": "Environment",
             "type": "string"
           },
-          "harness_config": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/HarnessConfig"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "label": {
             "anyOf": [
               {
@@ -1922,9 +1812,15 @@
             "title": "Properties"
           },
           "sandbox_provider": {
-            "default": "daytona",
-            "title": "Sandbox Provider",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider"
           },
           "sandbox_provider_secret_name": {
             "anyOf": [
@@ -2877,16 +2773,6 @@
             "title": "Environment",
             "type": "string"
           },
-          "harness_config": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/HarnessConfig"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "label": {
             "anyOf": [
               {
@@ -2949,9 +2835,15 @@
             "title": "Properties"
           },
           "sandbox_provider": {
-            "default": "daytona",
-            "title": "Sandbox Provider",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider"
           },
           "sandbox_provider_secret_name": {
             "anyOf": [
@@ -3438,20 +3330,6 @@
       "get": {
         "description": "List agent zips in the configured shared library.",
         "operationId": "list_agents_endpoint",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -3480,18 +3358,6 @@
               "title": "Name",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -3546,18 +3412,6 @@
               "title": "Overwrite",
               "type": "boolean"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "requestBody": {
@@ -3631,18 +3485,6 @@
               "title": "Download",
               "type": "boolean"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -3684,18 +3526,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "requestBody": {
@@ -4207,18 +4037,6 @@
               ],
               "title": "Task Id"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4321,18 +4139,6 @@
               "title": "Task Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4551,18 +4357,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4604,18 +4398,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4671,18 +4453,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4753,20 +4523,6 @@
       "post": {
         "description": "Fetch all task ids for a benchmark dataset.",
         "operationId": "fetch_benchmark_tasks",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5072,18 +4828,6 @@
               ],
               "title": "Task Ids"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -5271,18 +5015,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -5377,18 +5109,6 @@
               ],
               "title": "Concurrency"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "requestBody": {
@@ -5621,18 +5341,6 @@
               "title": "Force",
               "type": "boolean"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "requestBody": {

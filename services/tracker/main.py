@@ -56,11 +56,10 @@ from tracker.aws.managed_storage import (
 )
 from tracker.aws.resolver import (
     http_validate_saved_managed_storage_runtime,
-    inspect_harness_headers,
     resolve_aws_runtime_metadata,
     resolve_managed_sandbox_provider,
     resolve_run_metadata_aws_runtime,
-    resolve_run_aws_runtime_and_access_key_config,
+    resolve_run_aws_runtime,
     resolve_start_aws_runtime,
 )
 from tracker.aws.services import CloudRuntimeFactory, CloudRuntimeServices
@@ -143,7 +142,6 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
     FinalViewResponse,
-    HarnessConfig,
     ManagedExecutionContext,
     ManagedStorageStartBenchmarkRequest,
     Order,
@@ -256,22 +254,16 @@ def _process_benchmark_kwargs(
     request: RunExecutionRequest,
     verified_task_ids: list[str],
 ) -> dict[str, Any]:
-    if benchmark_row.aws_managed:
-        return {
-            "execution_context_json": ManagedExecutionContext(
-                version=3,
-                benchmark_id=benchmark_row.id,
-                verified_task_ids=verified_task_ids,
-                start_benchmark_request=request,
-            ).model_dump(
-                mode="json",
-                exclude={"start_benchmark_request": {"managed_s3_bucket"}},
-            )
-        }
     return {
-        "start_benchmark_request_json": request.model_dump(mode="json", exclude={"managed_s3_bucket"}),
-        "benchmark_id_str": str(benchmark_row.id),
-        "verified_task_ids": verified_task_ids,
+        "execution_context_json": ManagedExecutionContext(
+            version=3,
+            benchmark_id=benchmark_row.id,
+            verified_task_ids=verified_task_ids,
+            start_benchmark_request=request,
+        ).model_dump(
+            mode="json",
+            exclude={"start_benchmark_request": {"managed_s3_bucket"}},
+        )
     }
 
 
@@ -610,9 +602,6 @@ async def start_benchmark_with_storage(
     if not request.managed_s3_bucket:
         raise HTTPException(status_code=400, detail="managed_s3_bucket is required")
 
-    if inspect_harness_headers(http_request).present or request.harness_config is not None:
-        raise HTTPException(status_code=400, detail="Managed storage cannot include AWS credentials")
-
     if request.properties is not None:
         raise HTTPException(status_code=400, detail="Managed storage cannot include AWS properties")
 
@@ -671,7 +660,6 @@ async def _start_benchmark(
                     "sandbox_provider": "docker",
                     "properties": local_config.resources,
                     # Clients fill these from their cloud configuration; a local Tracker never uses them.
-                    "harness_config": None,
                     "sandbox_provider_secret_name": None,
                 }
             )
@@ -679,7 +667,6 @@ async def _start_benchmark(
             raise HTTPException(status_code=400, detail=str(error)) from error
         runtime = LocalRuntimeFactory.create_runtime(local_config.resources.data_root, run_starter.org.id)
         aws_managed = False
-        effective_harness_config = None
         managed_s3_bucket = None
     else:
         if request.environment == "local":
@@ -687,14 +674,10 @@ async def _start_benchmark(
         if request.sandbox_provider == "docker":
             raise HTTPException(status_code=400, detail="AWS execution does not support the Docker sandbox provider")
         assert not isinstance(request.properties, LocalResources)
-        runtime_resolution = resolve_start_aws_runtime(
-            http_request, request.harness_config, run_starter.org.id, request.properties
-        )
-        library_runtime = runtime_resolution.runtime
-        aws_runtime = library_runtime
+        aws_runtime = resolve_start_aws_runtime(http_request, run_starter.org.id, request.properties)
+        library_runtime = aws_runtime
         runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
-        effective_harness_config = runtime_resolution.access_key_harness_config
-        aws_managed = runtime_resolution.aws_managed
+        aws_managed = True
         managed_s3_bucket = request.managed_s3_bucket
     object_store = runtime.objects
 
@@ -737,21 +720,6 @@ async def _start_benchmark(
                 log_group=f"{aws_runtime.resources.log_group}/{managed_s3_bucket}",
             )
             aws_runtime = aws_runtime.with_resources(resources)
-    elif request.environment == "aws":
-        effective_harness_config = cast(HarnessConfig, effective_harness_config)
-        body_provider_secret_name = (
-            request.harness_config.sandbox_provider_secret_name if request.harness_config is not None else None
-        )
-        provider_secret_name = (
-            body_provider_secret_name
-            or request.sandbox_provider_secret_name
-            or effective_harness_config.sandbox_provider_secret_name
-        )
-        if provider_secret_name:
-            effective_harness_config = effective_harness_config.model_copy(
-                update={"sandbox_provider_secret_name": provider_secret_name}
-            )
-
     if request.environment == "aws":
         assert aws_runtime is not None and library_runtime is not None
         runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
@@ -777,7 +745,6 @@ async def _start_benchmark(
     request = request.model_copy(
         update={
             **({"properties": aws_runtime.resources, "managed_s3_bucket": None} if aws_runtime is not None else {}),
-            "harness_config": effective_harness_config,
             "service_headers": forward_tracker_api_key(
                 service_headers,
                 http_request.headers.get("x-api-key"),
@@ -814,11 +781,7 @@ async def _start_benchmark(
                 detail="Queue priority requires a sandbox provider configured for admission",
             )
     else:
-        provider_secret_name = (
-            request.sandbox_provider_secret_name
-            if aws_managed
-            else cast(HarnessConfig, request.harness_config).sandbox_provider_secret_name
-        )
+        provider_secret_name = request.sandbox_provider_secret_name
         assert provider_secret_name is not None
         provider_config = await fetch_sandbox_provider_config(
             provider_secret_name,
@@ -1159,12 +1122,12 @@ async def analyze_benchmark(
     """
     if benchmark_row.arguments.environment == "local":
         raise HTTPException(status_code=400, detail="This operation requires an AWS run")
-    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+    aws_runtime = resolve_run_aws_runtime(
         http_request,
         org_id=org.id,
         aws_managed=benchmark_row.aws_managed,
         properties=benchmark_row.arguments.properties,
-    ).runtime
+    )
     if benchmark_row.aws_managed:
         await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
@@ -1354,12 +1317,12 @@ async def _retrieve_results(
         raise HTTPException(
             status_code=400, detail="Local results are available directly; S3 export requires an AWS run"
         )
-    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+    aws_runtime = resolve_run_aws_runtime(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         properties=benchmark_row.arguments.properties,
         org_id=org.id,
-    ).runtime
+    )
     if benchmark_row.aws_managed:
         await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
@@ -1446,21 +1409,12 @@ async def validate_tasks_exist(
     return requested_task_ids
 
 
-def _resolve_force_stop_provider_secret_name(
-    benchmark_row: Benchmark,
-    access_key_harness_config: HarnessConfig | None,
-) -> str:
-    """Return the persisted or access-key provider secret name for force-stop."""
+def _resolve_force_stop_provider_secret_name(benchmark_row: Benchmark) -> str:
+    """Return the persisted provider secret name for force-stop."""
     provider_secret_name = benchmark_row.arguments.sandbox_provider_secret_name
-    if not provider_secret_name and access_key_harness_config is not None:
-        provider_secret_name = access_key_harness_config.sandbox_provider_secret_name
     if provider_secret_name:
         return provider_secret_name
-
-    detail = "The run does not have a sandbox provider secret name."
-    if access_key_harness_config is not None:
-        detail += " Provide the x-harness-sandbox-provider-secret-name header and retry."
-    raise HTTPException(status_code=400, detail=detail)
+    raise HTTPException(status_code=400, detail="The run does not have a sandbox provider secret name.")
 
 
 @app.post("/stop-benchmark/{benchmark_id}")
@@ -1497,25 +1451,17 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
-    if benchmark_row.arguments.environment == "local":
+    if benchmark_row.arguments.environment == "local" or not force:
         provider_secret_name = None
-        runtime_resolution = None
+        aws_runtime = None
     else:
-        runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+        aws_runtime = resolve_run_aws_runtime(
             http_request,
             aws_managed=benchmark_row.aws_managed,
             properties=benchmark_row.arguments.properties,
             org_id=org.id,
         )
-
-        provider_secret_name = (
-            _resolve_force_stop_provider_secret_name(
-                benchmark_row,
-                runtime_resolution.access_key_harness_config,
-            )
-            if force
-            else None
-        )
+        provider_secret_name = _resolve_force_stop_provider_secret_name(benchmark_row)
 
     benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
     if benchmark_row.status not in valid_stop_states:
@@ -1530,9 +1476,9 @@ async def stop_benchmark(
         runtime = LocalRuntimeFactory.create_runtime(benchmark_row.arguments.properties.data_root, org.id)
         await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=selected_task_ids)
     elif provider_secret_name is not None:
-        assert runtime_resolution is not None
+        assert aws_runtime is not None
         runtime = CloudRuntimeFactory.create_runtime(
-            runtime_resolution.runtime,
+            aws_runtime,
             sandbox_provider=benchmark_row.arguments.sandbox_provider,
             sandbox_provider_secret_name=provider_secret_name,
         )
@@ -1675,7 +1621,6 @@ def _commit_recovery(
     secrets: dict[str, str],
     benchmark_url: str | None,
     lambda_function: str | None,
-    access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
     update_agent: bool = False,
@@ -1696,7 +1641,6 @@ def _commit_recovery(
             lambda_function,
             session,
             org,
-            access_key_harness_config,
             preparation,
             verified_task_ids,
             update_agent=update_agent,
@@ -1801,24 +1745,22 @@ async def retry_or_resume_benchmark(
         benchmark_url,
         secrets,
     )
-    runtime_resolution = None
+    aws_runtime: AWSRuntime | None = None
     if isinstance(preparation.properties, LocalResources):
         if local_config.resources is None:
             raise HTTPException(status_code=400, detail="Server has no local configuration")
         if lambda_function:
             raise HTTPException(status_code=400, detail="Local execution does not support AWS callbacks")
-        access_key_harness_config = None
     else:
-        runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+        aws_runtime = resolve_run_aws_runtime(
             http_request,
             properties=preparation.properties,
             aws_managed=preparation.aws_managed,
             org_id=org_id,
         )
-        access_key_harness_config = runtime_resolution.access_key_harness_config
         if preparation.aws_managed:
-            await http_validate_saved_managed_storage_runtime(runtime_resolution.runtime, org_id=org_id)
-            preparation = replace(preparation, resolved_properties=runtime_resolution.runtime.resources)
+            await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org_id)
+            preparation = replace(preparation, resolved_properties=aws_runtime.resources)
     api_key = http_request.headers.get("x-api-key")
     effective_headers = forward_tracker_api_key(
         service_headers,
@@ -1845,11 +1787,11 @@ async def retry_or_resume_benchmark(
             library_store = LocalRuntimeFactory.create_runtime(preparation.properties.data_root, org_id).objects
             agent_copier = library_store
         else:
-            assert runtime_resolution is not None
-            run_runtime = runtime_resolution.runtime
+            assert aws_runtime is not None
+            run_runtime = aws_runtime
             # Managed agent aliases live in the deployment library bucket; caller AWS headers never select it.
             library_runtime = (
-                resolve_run_aws_runtime_and_access_key_config(http_request, aws_managed=True, org_id=org_id).runtime
+                resolve_run_aws_runtime(http_request, aws_managed=True, org_id=org_id)
                 if preparation.aws_managed
                 else run_runtime
             )
@@ -1879,7 +1821,6 @@ async def retry_or_resume_benchmark(
             secrets=secrets,
             benchmark_url=benchmark_url,
             lambda_function=lambda_function,
-            access_key_harness_config=access_key_harness_config,
             preparation=preparation,
             verified_task_ids=verified_task_ids,
             update_agent=update_agent,
@@ -1935,7 +1876,6 @@ def _apply_recovery(
     lambda_function: str | None,
     session: Session,
     org: Org,
-    access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
     *,
@@ -2095,10 +2035,11 @@ def _apply_recovery(
                     update={"secrets": {**prospective_request.contract.secrets, **secrets}}
                 )
                 prospective_request = prospective_request.model_copy(update={"contract": prospective_contract})
-            try:
-                validate_managed_execution_request(prospective_request)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if prospective_request.environment == "aws":
+                try:
+                    validate_managed_execution_request(prospective_request)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         if recovery_task_ids is not None:
             verified_task_ids = recovery_task_ids
@@ -2171,11 +2112,7 @@ def _apply_recovery(
                 service_headers=effective_service_headers,
             )
         else:
-            access_key_harness_config = cast(HarnessConfig, access_key_harness_config)
-            resume_request = benchmark_row.access_key_start_benchmark_request(
-                access_key_harness_config,
-                service_headers=effective_service_headers,
-            )
+            raise TrackerServiceError("Access-key runs are no longer supported. Start a new run.")
         dispatch_kind = ExecutorDispatchKind.RETRY if retry else ExecutorDispatchKind.RESUME
         executor_dispatch = admit_recovery_dispatch(
             session,

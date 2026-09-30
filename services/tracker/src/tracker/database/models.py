@@ -45,7 +45,6 @@ if TYPE_CHECKING:
     from tracker.types import (
         BenchmarkTableRow,
         FetchBenchmarkMetadataResponse,
-        HarnessConfig,
         RunExecutionRequest,
     )
 
@@ -425,40 +424,6 @@ class Benchmark(SQLModel, table=True):
 
         return errors_by_task_id
 
-    def access_key_start_benchmark_request(
-        self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
-    ) -> "RunExecutionRequest":
-        from tracker.types import RunExecutionRequest
-
-        if self.aws_managed:
-            raise ValueError("Managed runs cannot create access-key execution requests")
-
-        # Older rows may persist the provider secret only in benchmark arguments.
-        if self.arguments.sandbox_provider_secret_name:
-            harness_config = harness_config.model_copy(
-                update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
-            )
-
-        return RunExecutionRequest(
-            environment=self.arguments.environment,
-            properties=self.arguments.properties,
-            contract=self.arguments.contract,
-            benchmark_name=self.name,
-            concurrency=self.arguments.concurrency,
-            priority=self.arguments.priority,
-            task_ids=self.arguments.task_ids,
-            slice_str=self.arguments.slice_str,
-            lambda_function=self.arguments.lambda_function,
-            dataset=self.arguments.dataset,
-            resolved_dataset_version=self.arguments.dataset_version,
-            harness_config=harness_config,
-            sandbox_provider=self.arguments.sandbox_provider,
-            custom_benchmark_service=self.custom_benchmark_service,
-            webhook_secret_name=self.webhook_secret_name,
-            webhook_intervals=self.webhook_intervals,
-            service_headers=service_headers or {},
-        )
-
     def local_start_benchmark_request(self, service_headers: dict[str, str]) -> "RunExecutionRequest":
         from tracker.types import RunExecutionRequest
 
@@ -476,7 +441,7 @@ class Benchmark(SQLModel, table=True):
 
         if not self.aws_managed:
             raise ValueError("Access-key runs cannot create managed execution requests")
-        if not self.arguments.sandbox_provider_secret_name:
+        if self.arguments.environment == "aws" and not self.arguments.sandbox_provider_secret_name:
             raise ValueError("Managed runs require a sandbox provider secret name")
 
         return RunExecutionRequest(
@@ -491,7 +456,6 @@ class Benchmark(SQLModel, table=True):
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
             resolved_dataset_version=self.arguments.dataset_version,
-            harness_config=None,
             sandbox_provider=self.arguments.sandbox_provider,
             sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,

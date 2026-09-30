@@ -2,21 +2,18 @@ from functools import lru_cache
 from typing import Any
 
 import click
-from tracker.aws.clients import ExplicitCredentialsAWSClientProvider, LocalChainAWSClientProvider
+from tracker.aws.clients import LocalChainAWSClientProvider
 from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.types import AWSCredentials
 
 from valkyrie.sdk import ValkyrieConfig, ValkyrieConfigError
 from valkyrie.cli.runtime_config import config_location
 
 
 @lru_cache(maxsize=4)
-def _aws_runtime(resources: AWSResources, credentials: AWSCredentials | None) -> AWSRuntime:
+def _aws_runtime(resources: AWSResources) -> AWSRuntime:
     return AWSRuntime(
         resources=resources,
-        clients=LocalChainAWSClientProvider(resources.region)
-        if credentials is None
-        else ExplicitCredentialsAWSClientProvider(credentials),
+        clients=LocalChainAWSClientProvider(resources.region),
     )
 
 
@@ -29,23 +26,14 @@ def aws_runtime() -> AWSRuntime:
     if config.aws is None:
         raise click.ClickException("AWS resources are not configured. Run 'valkyrie config init' first.")
     aws = config.aws
-    resources = AWSResources(
-        region=aws.aws_default_region,
-        s3_bucket=aws.s3_bucket,
-        log_group=aws.log_group,
-        log_retention_days=aws.log_retention_policy,
-    )
-    credentials = None
-    if aws.credentials is not None:
-        credentials = AWSCredentials(
-            aws_access_key_id=aws.credentials.aws_access_key_id.get_secret_value(),
-            aws_secret_access_key=aws.credentials.aws_secret_access_key.get_secret_value(),
-            aws_session_token=aws.credentials.aws_session_token.get_secret_value()
-            if aws.credentials.aws_session_token
-            else None,
-            aws_default_region=resources.region,
+    return _aws_runtime(
+        AWSResources(
+            region=aws.aws_default_region,
+            s3_bucket=aws.s3_bucket,
+            log_group=aws.log_group,
+            log_retention_days=aws.log_retention_policy,
         )
-    return _aws_runtime(resources, credentials)
+    )
 
 
 def fetch_bucket_name() -> str:

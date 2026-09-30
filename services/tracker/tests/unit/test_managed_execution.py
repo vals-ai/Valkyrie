@@ -1,4 +1,4 @@
-"""Tests for managed and access-key executor inputs.
+"""Tests for managed executor inputs and retired access-key rejection.
 
 Run: uv run pytest tests/unit/test_managed_execution.py
 """
@@ -23,9 +23,15 @@ from tracker.aws.resolver import ManagedAWSEligibilityError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org
+from tracker.database.models import (
+    AgentContractRequest,
+    AWSBenchmarkArguments,
+    Benchmark,
+    BenchmarkStatus,
+    Org,
+)
 from tracker.exceptions import TrackerServiceError
-from tracker.types import HarnessConfig, ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
+from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 from tracker.utils.run_orchestration import (
     _parse_queued_execution,  # pyright: ignore[reportPrivateUsage]
@@ -37,21 +43,16 @@ _EXPECTED_BUCKET_OWNER = "123456789012"
 
 
 @pytest.fixture
-def aws_runtime(harness_config: HarnessConfig) -> AWSRuntime:
-    resources = AWSRuntime.from_harness_config(harness_config).resources
+def aws_runtime() -> AWSRuntime:
     return AWSRuntime(
-        resources,
-        DefaultChainAWSClientProvider(resources.region),
+        AWSResources(
+            region="us-east-1",
+            s3_bucket="test-bucket",
+            log_group="test-log-group",
+            log_retention_days=30,
+        ),
+        DefaultChainAWSClientProvider("us-east-1"),
         expected_bucket_owner=_EXPECTED_BUCKET_OWNER,
-    )
-
-
-def _access_key_request(contract: AgentContractRequest, harness_config: HarnessConfig) -> StartBenchmarkRequest:
-    return StartBenchmarkRequest(
-        contract=contract,
-        benchmark_name="test-benchmark",
-        task_ids=_TASK_IDS,
-        harness_config=harness_config,
     )
 
 
@@ -99,24 +100,30 @@ def _persist_benchmark(
     return benchmark
 
 
+def _persist_access_key_benchmark(session: Session, contract: AgentContractRequest) -> Benchmark:
+    """Persist a pre-migration run row stored with access-key execution."""
+    benchmark = Benchmark(
+        org_id=TEST_ORG_ID,
+        name="test-benchmark",
+        aws_managed=False,
+        arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
+    )
+    session.add(benchmark)
+    session.commit()
+    return benchmark
+
+
 def test_persisted_request_reconstruction_rejects_invalid_aws_modes(
     contract: AgentContractRequest,
-    harness_config: HarnessConfig,
     database_session: Session,
 ) -> None:
-    access_key_benchmark = _persist_benchmark(
-        database_session,
-        _access_key_request(contract, harness_config),
-        aws_managed=False,
-    )
+    access_key_benchmark = _persist_access_key_benchmark(database_session, contract)
     managed_benchmark = _persist_benchmark(
         database_session,
         _managed_request(contract),
         aws_managed=True,
     )
 
-    with pytest.raises(ValueError, match="Managed runs cannot create access-key"):
-        managed_benchmark.access_key_start_benchmark_request(harness_config)
     with pytest.raises(ValueError, match="Access-key runs cannot create managed"):
         access_key_benchmark.managed_start_benchmark_request()
 
@@ -127,15 +134,8 @@ def test_persisted_request_reconstruction_rejects_invalid_aws_modes(
 
 def test_benchmark_creation_rejects_inconsistent_managed_inputs(
     contract: AgentContractRequest,
-    harness_config: HarnessConfig,
     database_session: Session,
 ) -> None:
-    with pytest.raises(ValueError, match="AWS mode does not match"):
-        _persist_benchmark(
-            database_session,
-            _access_key_request(contract, harness_config),
-            aws_managed=True,
-        )
     with pytest.raises(ValueError, match="AWS mode does not match"):
         _persist_benchmark(
             database_session,
@@ -150,24 +150,21 @@ def test_benchmark_creation_rejects_inconsistent_managed_inputs(
         _persist_benchmark(database_session, invalid_managed_request, aws_managed=True)
 
 
-def test_taskiq_adapter_accepts_exact_access_key_shape(
-    contract: AgentContractRequest,
-    harness_config: HarnessConfig,
-) -> None:
-    request = _access_key_request(contract, harness_config)
+def test_taskiq_adapter_rejects_access_key_shape(contract: AgentContractRequest) -> None:
+    request = RunExecutionRequest(
+        contract=contract,
+        benchmark_name="test-benchmark",
+        task_ids=_TASK_IDS,
+    )
     benchmark_id = uuid4()
 
-    execution = _parse_queued_execution(
-        request.model_dump(mode="json"),
-        str(benchmark_id),
-        _TASK_IDS,
-        None,
-    )
-
-    assert execution.request == RunExecutionRequest.model_validate(request.model_dump(mode="python"))
-    assert execution.benchmark_id == benchmark_id
-    assert execution.verified_task_ids == _TASK_IDS
-    assert execution.aws_managed is False
+    with pytest.raises(ValueError, match="access-key benchmark requests are no longer supported"):
+        _parse_queued_execution(
+            request.model_dump(mode="json"),
+            str(benchmark_id),
+            _TASK_IDS,
+            None,
+        )
 
 
 def test_taskiq_adapter_accepts_v2_envelope_only(contract: AgentContractRequest) -> None:
@@ -184,13 +181,9 @@ def test_taskiq_adapter_accepts_v2_envelope_only(contract: AgentContractRequest)
     assert execution.request == RunExecutionRequest.model_validate(request.model_dump(mode="python"))
     assert execution.benchmark_id == benchmark_id
     assert execution.verified_task_ids == _TASK_IDS
-    assert execution.aws_managed is True
 
 
-def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
-    contract: AgentContractRequest,
-    harness_config: HarnessConfig,
-) -> None:
+def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(contract: AgentContractRequest) -> None:
     request = _managed_request(contract)
     benchmark_id = uuid4()
     context = _execution_context(request, benchmark_id)
@@ -202,29 +195,17 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
     with pytest.raises(ValueError, match="managed execution context is invalid"):
         _parse_queued_execution(None, None, None, invalid_version)
 
-    request_with_credentials = request.model_copy(update={"harness_config": harness_config})
     context_with_credentials = {
         **context,
-        "start_benchmark_request": request_with_credentials.model_dump(mode="json"),
+        "start_benchmark_request": {
+            **context["start_benchmark_request"],
+            "harness_config": {
+                "aws": {"aws_access_key_id": "key", "aws_secret_access_key": "secret"},
+            },
+        },
     }
     with pytest.raises(ValueError, match="managed execution context is invalid"):
         _parse_queued_execution(None, None, None, context_with_credentials)
-
-    with pytest.raises(ValueError, match="incomplete"):
-        _parse_queued_execution(
-            _access_key_request(contract, harness_config).model_dump(mode="json"),
-            None,
-            _TASK_IDS,
-            None,
-        )
-
-    with pytest.raises(ValueError, match="access-key benchmark request has no AWS configuration"):
-        _parse_queued_execution(
-            request.model_dump(mode="json"),
-            str(benchmark_id),
-            _TASK_IDS,
-            None,
-        )
 
     request_without_provider = request.model_copy(update={"sandbox_provider": "", "sandbox_provider_secret_name": None})
     context_without_provider = {
@@ -254,35 +235,31 @@ async def test_queued_execution_parse_failure_marks_run_error(
 
 async def test_managed_execution_for_access_key_row_marks_run_error(
     contract: AgentContractRequest,
-    harness_config: HarnessConfig,
     database_session: Session,
     process_benchmark_env: None,
     executor_authority_kwargs: Any,
 ) -> None:
-    access_key_request = _access_key_request(contract, harness_config)
-    benchmark = _persist_benchmark(database_session, access_key_request, aws_managed=False)
+    benchmark = _persist_access_key_benchmark(database_session, contract)
     context = _execution_context(_managed_request(contract), benchmark.id)
 
     await process_benchmark(execution_context_json=context, **executor_authority_kwargs(benchmark))
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Queued managed execution does not match the stored access-key run mode" in (benchmark.error_message or "")
+    assert "Access-key runs are no longer supported" in (benchmark.error_message or "")
 
 
 async def test_access_key_execution_for_managed_row_marks_run_error(
     contract: AgentContractRequest,
-    harness_config: HarnessConfig,
     database_session: Session,
     process_benchmark_env: None,
     executor_authority_kwargs: Any,
 ) -> None:
     managed_request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, managed_request, aws_managed=True)
-    access_key_request = _access_key_request(contract, harness_config)
 
     await process_benchmark(
-        start_benchmark_request_json=access_key_request.model_dump(mode="json"),
+        start_benchmark_request_json=managed_request.model_dump(mode="json"),
         benchmark_id_str=str(benchmark.id),
         verified_task_ids=_TASK_IDS,
         **executor_authority_kwargs(benchmark),
@@ -290,7 +267,7 @@ async def test_access_key_execution_for_managed_row_marks_run_error(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Queued access-key execution does not match the stored managed run mode" in (benchmark.error_message or "")
+    assert "access-key benchmark requests are no longer supported" in (benchmark.error_message or "")
 
 
 async def test_ineligible_managed_execution_marks_run_error(
@@ -412,10 +389,7 @@ async def test_managed_execution_completes_with_the_deployment_runtime(
     assert finalized_span["status"] == "FINISHED"
 
 
-@pytest.mark.parametrize("aws_managed", [False, True])
 async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
-    aws_managed: bool,
-    harness_config: HarnessConfig,
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -427,9 +401,6 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
             "lambda_function": "result-handler",
         }
     )
-    if not aws_managed:
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        request = request.model_copy(update={"harness_config": harness_config})
 
     benchmark_id = uuid4()
     calls: list[str] = []
@@ -469,8 +440,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
-    expected_preflight = ["agent_secrets", "webhook_secret", "lambda"] if aws_managed else []
-    assert calls == ["logs", *expected_preflight, "sandbox_provider_secret"]
+    assert calls == ["logs", "agent_secrets", "webhook_secret", "lambda", "sandbox_provider_secret"]
 
 
 async def test_managed_preflight_failure_happens_before_sandbox(
@@ -597,15 +567,6 @@ async def test_owner_execution_validates_saved_location_before_preparation(
 
     deployment.assert_called_once_with(TEST_ORG_ID, resources)
     validation.assert_awaited_once_with(owner_runtime, org_id=TEST_ORG_ID)
-
-
-def test_access_key_dispatch_rejects_managed_override(
-    contract: AgentContractRequest,
-    harness_config: HarnessConfig,
-) -> None:
-    request = _access_key_request(contract, harness_config).model_copy(update={"managed_s3_bucket": "vs-dev-owner-42"})
-    with pytest.raises(ValueError, match="admission-only storage override"):
-        _parse_queued_execution(request.model_dump(mode="json"), str(uuid4()), _TASK_IDS, None)
 
 
 async def test_v2_null_resources_reject_owner_deployment_fallback(

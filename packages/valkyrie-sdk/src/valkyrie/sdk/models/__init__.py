@@ -18,7 +18,7 @@ from valkyrie.sdk.models.benchmarks import (
     TasksResponse,
     TaskSummary,
 )
-from valkyrie.sdk.models.config import AWSCredentials, AWSResources, HarnessConfig, LocalResources
+from valkyrie.sdk.models.config import AWSResources, LocalResources
 from .logs import LogEvent, LogPage  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.models.runs import (
     AnalyzeBenchmarkRequest,
@@ -77,7 +77,7 @@ __all__ = [
     "RunArtifactEntry",
     "RunArtifactsResponse",
     "RunArtifactDownloadResponse",
-    "AWSCredentials",
+
     "AWSResources",
     "LocalResources",
     "AgentContractRequest",
@@ -111,7 +111,7 @@ __all__ = [
     "FetchTasksRequest",
     "FinalEvaluation",
     "FinalViewResponse",
-    "HarnessConfig",
+
     "LogEvent",
     "LogPage",
     "Order",

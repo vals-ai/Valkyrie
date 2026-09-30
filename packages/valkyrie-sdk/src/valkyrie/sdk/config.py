@@ -10,7 +10,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 from valkyrie.sdk.errors import ValkyrieConfigError
-from valkyrie.sdk.models import AWSCredentials, HarnessConfig
 
 DEFAULT_CONFIG_PATH = Path("~/.config/valkyrie/valkyrie.yaml")
 TRACKER_URLS: dict[str, str] = {
@@ -20,17 +19,17 @@ TRACKER_URLS: dict[str, str] = {
 }
 # Top-level keys from the flat config layout and the nested path that replaced each one.
 LEGACY_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
-    "AWS_ACCESS_KEY_ID": ("aws", "credentials", "AWS_ACCESS_KEY_ID"),
-    "AWS_SECRET_ACCESS_KEY": ("aws", "credentials", "AWS_SECRET_ACCESS_KEY"),
-    "AWS_SESSION_TOKEN": ("aws", "credentials", "AWS_SESSION_TOKEN"),
     "AWS_DEFAULT_REGION": ("aws", "AWS_DEFAULT_REGION"),
     "S3_BUCKET": ("aws", "S3_BUCKET"),
     "LOG_GROUP": ("aws", "LOG_GROUP"),
     "LOG_RETENTION_POLICY": ("aws", "LOG_RETENTION_POLICY"),
-    "DAYTONA_SECRET_NAME": ("sandbox_providers", "daytona"),
 }
 # Flat keys the SDK model accepted before the nested layout; code callers may still pass them.
-_FLAT_SDK_KEYS = frozenset(LEGACY_CONFIG_KEYS) - {"DAYTONA_SECRET_NAME"}
+_FLAT_SDK_KEYS = frozenset(LEGACY_CONFIG_KEYS)
+# Flat keys retired with client-supplied AWS credentials and provider secrets.
+RETIRED_CONFIG_KEYS: frozenset[str] = frozenset(
+    {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "DAYTONA_SECRET_NAME"}
+)
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
 
 
@@ -56,30 +55,11 @@ def migrate_legacy_config_keys(config: dict[str, Any], keys: Iterable[str] = LEG
         target.setdefault(key, config.pop(legacy_key))
 
 
-class AWSAccessKeys(BaseModel):
-    """Static AWS credentials."""
-
-    model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
-
-    aws_access_key_id: SecretStr = Field(alias="AWS_ACCESS_KEY_ID", repr=False)
-    aws_secret_access_key: SecretStr = Field(alias="AWS_SECRET_ACCESS_KEY", repr=False)
-    aws_session_token: SecretStr | None = Field(default=None, alias="AWS_SESSION_TOKEN", repr=False)
-
-    @field_validator("aws_access_key_id", "aws_secret_access_key")
-    @classmethod
-    def reject_blank_required_secrets(cls, value: SecretStr) -> SecretStr:
-        """Reject blank required secret values."""
-        if not value.get_secret_value().strip():
-            raise ValueError("must not be blank")
-        return value
-
-
 class AWSConfig(BaseModel):
-    """AWS resources with optional static credentials."""
+    """AWS resources used by local operations."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
 
-    credentials: AWSAccessKeys | None = None
     aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
     s3_bucket: str = Field(alias="S3_BUCKET")
     log_group: str = Field(default="benchmarks", alias="LOG_GROUP")
@@ -97,32 +77,9 @@ class AWSConfig(BaseModel):
             raise ValueError("must not be blank")
         return value
 
-    def harness_config(self, provider_secret_name: str | None) -> HarnessConfig | None:
-        """Build the nested harness config expected by the tracker."""
-        if self.credentials is None:
-            return None
-        if provider_secret_name is None:
-            raise ValkyrieConfigError("AWS execution requires a sandbox provider secret")
-        return HarnessConfig(
-            aws=AWSCredentials(
-                aws_access_key_id=self.credentials.aws_access_key_id.get_secret_value(),
-                aws_secret_access_key=self.credentials.aws_secret_access_key.get_secret_value(),
-                aws_default_region=self.aws_default_region,
-                aws_session_token=(
-                    self.credentials.aws_session_token.get_secret_value()
-                    if self.credentials.aws_session_token
-                    else None
-                ),
-            ),
-            s3_bucket=self.s3_bucket,
-            log_group=self.log_group,
-            log_retention_policy=self.log_retention_policy,
-            sandbox_provider_secret_name=provider_secret_name,
-        )
-
 
 class ValkyrieConfig(BaseModel):
-    """Validated SDK configuration with optional caller-supplied AWS access."""
+    """Validated SDK configuration for API-key-authenticated runs."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
 
@@ -130,8 +87,6 @@ class ValkyrieConfig(BaseModel):
     tracker_url_override: str | None = Field(default=None, alias="tracker_url")
     api_key: SecretStr | None = Field(default=None, repr=False)
     aws: AWSConfig | None = None
-    sandbox_providers: dict[str, str] = Field(default_factory=dict, repr=False)
-    default_sandbox_provider: str | None = None
     custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
     benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
     webhook: str | None = Field(default=None, repr=False)
@@ -156,14 +111,28 @@ class ValkyrieConfig(BaseModel):
         migrate_legacy_config_keys(config, _FLAT_SDK_KEYS)
         return config
 
-    @model_validator(mode="after")
-    def validate_access_key_configuration(self) -> "ValkyrieConfig":
-        if self.aws is not None and self.aws.credentials is not None and not self.sandbox_providers:
-            raise ValueError(
-                "sandbox_providers are required with AWS configuration. "
-                "Run `valkyrie config provider set <provider> <secret-name>`."
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_config_keys(cls, data: object) -> object:
+        """Reject credential and provider-secret settings retired by deployment-managed resolution."""
+        if not isinstance(data, dict):
+            return data
+        retired = [
+            key for key in data if isinstance(key, str) and key.upper() in RETIRED_CONFIG_KEYS
+        ]
+        aws = data.get("aws")
+        if isinstance(aws, dict) and "credentials" in aws:
+            retired.append("aws.credentials")
+        for key in ("sandbox_providers", "default_sandbox_provider"):
+            if key in data:
+                retired.append(key)
+        if retired:
+            raise ValkyrieConfigError(
+                f"Invalid Valkyrie config: {', '.join(retired)} are no longer supported. "
+                "Runs resolve AWS resources and the sandbox provider from the Vals deployment; "
+                "remove them or re-run `valkyrie config init`."
             )
-        return self
+        return data
 
     @property
     def tracker_url(self) -> str:
@@ -196,6 +165,11 @@ class ValkyrieConfig(BaseModel):
 
         if not isinstance(raw_config, dict):
             raise ValkyrieConfigError(f"Valkyrie config at {config_path} must contain a YAML mapping")
+        if retired_keys := [key for key in RETIRED_CONFIG_KEYS if key in raw_config]:
+            raise ValkyrieConfigError(
+                f"Invalid Valkyrie config at {config_path}: {', '.join(retired_keys)} are no longer supported. "
+                "Remove them or re-run `valkyrie config init`."
+            )
         if legacy_keys := [key for key in LEGACY_CONFIG_KEYS if key in raw_config]:
             migrations = ", ".join(f"{key} -> {'.'.join(LEGACY_CONFIG_KEYS[key])}" for key in legacy_keys)
             raise ValkyrieConfigError(
@@ -210,39 +184,9 @@ class ValkyrieConfig(BaseModel):
         except ValidationError as exc:
             raise ValkyrieConfigError(f"Invalid Valkyrie config at {config_path}: {exc}") from exc
 
-    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str | None, str | None]:
-        """Resolve the selected sandbox provider and secret name."""
-        if not self.sandbox_providers:
-            return provider or self.default_sandbox_provider, None
-        provider_name = provider or self.default_sandbox_provider or next(iter(self.sandbox_providers))
-        secret_name = self.sandbox_providers.get(provider_name)
-        if secret_name is None:
-            configured = ", ".join(self.sandbox_providers)
-            raise ValkyrieConfigError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
-        return provider_name, secret_name
-
     def request_headers(self) -> dict[str, str]:
-        """Build API-key and harness headers for tracker requests."""
+        """Build the API-key header for tracker requests."""
         headers: dict[str, str] = {}
-        if self.aws is not None and self.aws.credentials is not None:
-            values: dict[str, str | None] = {
-                "AWS_ACCESS_KEY_ID": self.aws.credentials.aws_access_key_id.get_secret_value(),
-                "AWS_SECRET_ACCESS_KEY": self.aws.credentials.aws_secret_access_key.get_secret_value(),
-                "AWS_DEFAULT_REGION": self.aws.aws_default_region,
-                "AWS_SESSION_TOKEN": self.aws.credentials.aws_session_token.get_secret_value()
-                if self.aws.credentials.aws_session_token
-                else None,
-                "S3_BUCKET": self.aws.s3_bucket,
-                "LOG_GROUP": self.aws.log_group,
-                "LOG_RETENTION_POLICY": str(self.aws.log_retention_policy),
-            }
-            headers.update(
-                {
-                    f"X-Harness-{key.replace('_', '-').title()}": value
-                    for key, value in values.items()
-                    if value is not None
-                }
-            )
         if self.api_key and (api_key := self.api_key.get_secret_value()):
             headers["X-Api-Key"] = api_key
         return headers

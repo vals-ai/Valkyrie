@@ -11,7 +11,6 @@ from tracker import config
 from tracker.aws.clients import (
     AWSClientProvider,
     DefaultChainAWSClientProvider,
-    ExplicitCredentialsAWSClientProvider,
     LocalChainAWSClientProvider,
 )
 from tracker.aws.managed_storage import (
@@ -26,7 +25,6 @@ from tracker.aws.resolver import (
     validate_saved_managed_storage_runtime,
 )
 from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.types import AWSCredentials
 
 _ACCOUNT_ID = "123456789012"
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -500,13 +498,6 @@ async def test_submission_validation_stays_uncached_for_the_read_path(
 @pytest.mark.parametrize(
     "clients",
     [
-        ExplicitCredentialsAWSClientProvider(
-            AWSCredentials(
-                aws_access_key_id="caller-key",
-                aws_secret_access_key="caller-secret",
-                aws_default_region="us-east-1",
-            )
-        ),
         LocalChainAWSClientProvider("us-east-1"),
     ],
 )

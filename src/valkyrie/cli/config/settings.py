@@ -12,18 +12,15 @@ from valkyrie.cli.runtime_config import (
 )
 from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.cli.config.state import ConfigValue, load_config, read_config_if_exists, write_config
-from valkyrie.sdk.config import migrate_legacy_config_keys
+from valkyrie.sdk.config import RETIRED_CONFIG_KEYS, migrate_legacy_config_keys
 
 
 _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
-    "AWS_ACCESS_KEY_ID": None,  # AWS ACCESS KEY
-    "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
     "AWS_DEFAULT_REGION": None,  # What region your secrets are in
     "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
     "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }
-_STATIC_AWS_CREDENTIAL_KEYS = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
 
 
 def _rotate_matching_benchmark_auth(config: dict[str, Any], new_api_key: str) -> int:
@@ -100,37 +97,46 @@ def init() -> None:
                 )
             )
 
+        environment_variables = {}
         if runtime.mode == "managed":
-            environment_variables = {}
             click.echo(
                 "Managed AWS execution is enabled. Runs resolve AWS resources and the "
                 "sandbox provider from the Vals deployment.\n"
             )
-            aws = current_config.get("aws") or {}
-            if aws.get("credentials"):
-                click.echo(
-                    "Existing AWS credentials were kept; runs use access-key AWS execution "
-                    "while they remain configured.\n"
+        else:
+            click.echo(
+                click.style(
+                    "Managed AWS execution is not enabled for this organization; "
+                    "hosted runs will be rejected until Vals support enables it.\n",
+                    fg="yellow",
                 )
-            else:
-                removed = [
-                    key for key in ("aws", "sandbox_providers", "default_sandbox_provider") if key in current_config
-                ]
-                for key in removed:
-                    current_config.pop(key, None)
-                if removed:
-                    click.echo(
-                        f"Removed local {', '.join(removed)} settings; managed runs resolve them from the Vals deployment.\n"
-                    )
+            )
+        removed = [
+            key
+            for key in (
+                "aws",
+                "sandbox_providers",
+                "default_sandbox_provider",
+                *sorted(RETIRED_CONFIG_KEYS),
+            )
+            if key in current_config
+        ]
+        for key in removed:
+            current_config.pop(key, None)
+        if removed:
+            click.echo(
+                f"Removed local {', '.join(removed)} settings; runs resolve them from the Vals deployment.\n"
+            )
 
     if environment_variables:
         aws = current_config.setdefault("aws", {})
         for key, default in environment_variables.items():
-            target = aws.setdefault("credentials", {}) if key in _STATIC_AWS_CREDENTIAL_KEYS else aws
-            sourced = target.get(key) or os.environ.get(key)
+            sourced = aws.get(key) or os.environ.get(key)
             if sourced:
-                click.echo(f"  {key}: sourced from {'environment' if not target.get(key) else 'existing config'}")
-                target[key] = sourced
+                click.echo(
+                    f"  {key}: sourced from {'environment' if not aws.get(key) else 'existing config'}"
+                )
+                aws[key] = sourced
                 continue
 
             if not default:
@@ -146,7 +152,7 @@ def init() -> None:
             else:
                 value = click.prompt(f"  {key}", default=str(default)).strip()
 
-            target[key] = value
+            aws[key] = value
 
     if mode != "hosted":
         current_config.pop("api_key", None)
@@ -180,9 +186,7 @@ def set(key: str, value: str) -> None:
     if config_value is ConfigValue.API_KEY:
         rotated_benchmark_auth = _rotate_matching_benchmark_auth(current, value)
 
-    if config_value.value in _STATIC_AWS_CREDENTIAL_KEYS:
-        current.setdefault("aws", {}).setdefault("credentials", {})[config_value.value] = value
-    elif config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
+    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
         current.setdefault("aws", {})[config_value.value] = value
     else:
         current[config_value.value] = value
@@ -213,19 +217,12 @@ def config_remove(key: str) -> None:
             f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
         )
 
-    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES and config_value.value not in _STATIC_AWS_CREDENTIAL_KEYS:
+    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
         raise click.ClickException(
             f"Key '{key}' is required and cannot be removed. Consider using `valkyrie config set` to update it."
         )
 
-    if config_value.value in _STATIC_AWS_CREDENTIAL_KEYS:
-        aws = current.get("aws", {})
-        credentials = aws.get("credentials", {})
-        credentials.pop(config_value.value, None)
-        if not credentials:
-            aws.pop("credentials", None)
-    else:
-        current.pop(config_value.value, None)
+    current.pop(config_value.value, None)
 
     write_config(current)
 

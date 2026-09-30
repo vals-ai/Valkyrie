@@ -50,7 +50,6 @@ from tracker.database.models import (
 from tracker.egress import EgressPolicy
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode, apply_egress_policy, create_sandbox
-from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
 
 
@@ -95,7 +94,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         fail_target: str,
         error: SandboxSetupError,
@@ -115,7 +113,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
 
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
@@ -239,7 +236,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         stage: str | None,
         policy: EgressPolicy,
@@ -251,7 +247,7 @@ class TestTaskExecutionRetry:
             contract = contract.model_copy(update={"egress_allowlist": policy})
         elif stage is not None:
             task_data = task_data.model_copy(update={"egress": task_data.egress.model_copy(update={stage: policy})})
-        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         # Keep Docker's real unsupported egress methods; only container/provider I/O is replaced.
         sandbox = DockerSandbox(
             cast(Any, Mock()),
@@ -300,7 +296,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         compose_runtime: bool,
         agent_install_order: AgentInstallOrder,
@@ -316,7 +311,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         source = (
             ComposeSource(
@@ -424,7 +418,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """A service-reported broken sandbox retries on a fresh sandbox instead of failing terminally.
@@ -438,7 +431,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -508,7 +500,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """A service error without the broken-sandbox signature stays terminal.
@@ -520,7 +511,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -566,7 +556,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         failure_site: str,
     ) -> None:
@@ -583,7 +572,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -645,13 +633,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -705,7 +691,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         max_attempts: int | None,
         failures: int,
@@ -715,7 +700,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("benchmark_service.client.time.time", lambda: 1_234.5)
@@ -778,13 +762,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         task_row.status = TaskStatus.EVALUATING
         task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
@@ -833,13 +815,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         task_row.status = TaskStatus.EVALUATING
         task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
@@ -881,13 +861,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
 
         create_sandbox_kwargs: dict[str, Any] = {}

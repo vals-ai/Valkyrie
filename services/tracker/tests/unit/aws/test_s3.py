@@ -221,7 +221,9 @@ async def test_object_store_read_session_and_listing_preserve_object_metadata(
         listed = [stored_object async for stored_object in reader.list_objects("agents/")]
 
     assert [stored_object.key for stored_object in listed] == ["agents/alpha.zip", "agents/beta.zip"]
-    assert paginator.calls == [{"Bucket": "test-bucket", "Prefix": "agents/"}]
+    assert paginator.calls == [
+        {"Bucket": "test-bucket", "Prefix": "agents/", "ExpectedBucketOwner": "123456789012"}
+    ]
     assert client.entries == 1
 
 

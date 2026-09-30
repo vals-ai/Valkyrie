@@ -346,11 +346,6 @@ def start(
 
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
-    try:
-        TrackerService.validate_sandbox_provider(provider)
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
-
     service_headers = benchmark_service_headers(benchmark, headers)
 
     # Webhook notification setup (may print a warning before the boxes)

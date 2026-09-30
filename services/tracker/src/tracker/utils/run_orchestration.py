@@ -539,30 +539,11 @@ async def finalize_all_error_run(
         return False
 
 
-def _parse_start_benchmark_request(payload: dict[str, Any]) -> RunExecutionRequest:
-    """Validate a queued request without serializing credential-bearing input in errors."""
-    request: RunExecutionRequest | None
-    try:
-        request = RunExecutionRequest.model_validate(payload)
-    except ValidationError as exc:
-        # Log field locations only; rendering the full error would expose input
-        # values, which include AWS credentials on this payload.
-        logger.warning(
-            f"Queued benchmark request failed validation: {exc.errors(include_url=False, include_input=False)}"
-        )
-        request = None
-
-    if request is None:
-        raise ValueError("Queued benchmark request is invalid and cannot be processed.")
-    return request
-
-
 @dataclass(frozen=True)
 class _QueuedExecution:
     request: RunExecutionRequest
     benchmark_id: UUID
     verified_task_ids: list[str]
-    aws_managed: bool
     context_version: int | None = None
 
 
@@ -573,21 +554,7 @@ def _parse_queued_execution(
     execution_context_json: dict[str, Any] | None,
 ) -> _QueuedExecution:
     if execution_context_json is None:
-        if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
-            raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
-        request = _parse_start_benchmark_request(start_benchmark_request_json)
-        if request.environment == "aws" and request.harness_config is None:
-            raise ValueError("Queued access-key benchmark request has no AWS configuration.")
-
-        if request.managed_s3_bucket is not None:
-            raise ValueError("Queued execution cannot include an admission-only storage override.")
-
-        return _QueuedExecution(
-            request=request,
-            benchmark_id=UUID(benchmark_id_str),
-            verified_task_ids=verified_task_ids,
-            aws_managed=False,
-        )
+        raise ValueError("Queued access-key benchmark requests are no longer supported.")
 
     if start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
         raise ValueError("Queued benchmark request mixes access-key and managed execution inputs.")
@@ -599,7 +566,6 @@ def _parse_queued_execution(
         request=context.start_benchmark_request,
         benchmark_id=context.benchmark_id,
         verified_task_ids=context.verified_task_ids,
-        aws_managed=True,
         context_version=context.version,
     )
 
@@ -722,12 +688,8 @@ async def _process_benchmark(
         ):
             pass
 
-        if execution.aws_managed != benchmark_row.aws_managed:
-            queued_mode = "managed" if execution.aws_managed else "access-key"
-            stored_mode = "managed" if benchmark_row.aws_managed else "access-key"
-            raise TrackerServiceError(
-                f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
-            )
+        if benchmark_row.arguments.environment == "aws" and not benchmark_row.aws_managed:
+            raise TrackerServiceError("Access-key runs are no longer supported")
 
         if start_benchmark_request.resolved_dataset_version != benchmark_row.arguments.dataset_version or (
             benchmark_row.arguments.dataset_version is not None

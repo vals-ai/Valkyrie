@@ -18,7 +18,6 @@ from tracker.aws import cloudwatch_logs
 from tracker.aws.clients import (
     AWSClientProvider,
     DefaultChainAWSClientProvider,
-    ExplicitCredentialsAWSClientProvider,
 )
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
@@ -29,14 +28,7 @@ from tracker.aws.cloudwatch_logs import (
 from tracker.aws.runtime import AWSResources
 from tracker.aws.s3 import handle_s3_error
 from tracker.exceptions import CloudWatchError, S3Error
-from tracker.types import AWSCredentials
 from tracker.runtime.logs import sanitize_log_stream_name as _sanitize_log_stream_name
-
-_AWS = AWSCredentials(
-    aws_access_key_id="test-key",
-    aws_secret_access_key="test-secret",
-    aws_default_region="us-east-1",
-)
 
 _AWS_RESOURCES = AWSResources(
     region="us-east-1",
@@ -48,53 +40,6 @@ _AWS_RESOURCES = AWSResources(
 
 class TestAWSClientProviders:
     """Credential selection and presigned URL lifetime behavior."""
-
-    @pytest.mark.parametrize("session_token", [None, "test-session-token"])
-    async def test_explicit_provider_forwards_optional_session_token(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        session_token: str | None,
-    ) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
-        boto_client_factory = MagicMock()
-        monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
-        monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
-
-        credentials = AWSCredentials(
-            aws_access_key_id=f"test-key-{session_token or 'none'}",
-            aws_secret_access_key="test-secret",
-            aws_default_region="us-east-1",
-            aws_session_token=session_token,
-        )
-        provider = ExplicitCredentialsAWSClientProvider(credentials)
-
-        provider.s3_client()
-        provider.cloudwatch_logs_client()
-        provider.cloudwatch_logs_async_client()
-        provider.secretsmanager_async_client()
-        provider.lambda_client()
-
-        session_factory.assert_called_once_with(
-            aws_access_key_id=credentials.aws_access_key_id,
-            aws_secret_access_key=credentials.aws_secret_access_key,
-            aws_session_token=session_token,
-            region_name=credentials.aws_default_region,
-        )
-        assert session.client.call_args_list == [
-            call("s3", config=ANY),
-            call("logs"),
-            call("secretsmanager"),
-            call("lambda", config=None),
-        ]
-        assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
-            "logs",
-        }
-        for constructed in boto_client_factory.call_args_list:
-            assert constructed.kwargs["aws_access_key_id"] == credentials.aws_access_key_id
-            assert constructed.kwargs["aws_secret_access_key"] == credentials.aws_secret_access_key
-            assert constructed.kwargs["aws_session_token"] == session_token
-            assert constructed.kwargs["region_name"] == credentials.aws_default_region
 
     async def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         session = MagicMock()
@@ -128,12 +73,12 @@ class TestAWSClientProviders:
             assert credential_arguments.isdisjoint(constructed.kwargs)
 
     async def test_async_clients_on_one_event_loop_share_a_session(self) -> None:
-        s3_session = getattr(ExplicitCredentialsAWSClientProvider(_AWS), "_s3_session")
+        s3_session = getattr(DefaultChainAWSClientProvider(region="us-east-1"), "_s3_session")
 
         assert s3_session() is s3_session()
 
     def test_async_clients_on_different_event_loops_use_separate_sessions(self) -> None:
-        s3_session = getattr(ExplicitCredentialsAWSClientProvider(_AWS), "_s3_session")
+        s3_session = getattr(DefaultChainAWSClientProvider(region="us-east-1"), "_s3_session")
 
         async def running_loop_session() -> aioboto3.Session:
             return s3_session()
@@ -143,7 +88,6 @@ class TestAWSClientProviders:
     @pytest.mark.parametrize(
         ("provider", "requested_seconds", "expected_seconds"),
         [
-            (ExplicitCredentialsAWSClientProvider(_AWS), 86_400, 86_400),
             (DefaultChainAWSClientProvider(region="us-east-1"), 86_400, 3_600),
             (DefaultChainAWSClientProvider(region="us-east-1"), 300, 300),
         ],
@@ -196,7 +140,6 @@ class TestS3ClientRetry:
     @pytest.mark.parametrize(
         "provider",
         [
-            pytest.param(ExplicitCredentialsAWSClientProvider(_AWS), id="explicit"),
             pytest.param(DefaultChainAWSClientProvider("us-east-1"), id="default-chain"),
         ],
     )

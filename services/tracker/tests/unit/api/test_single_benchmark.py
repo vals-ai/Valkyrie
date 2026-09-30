@@ -69,16 +69,7 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     database_session.add_all([other_org, other_benchmark])
     database_session.commit()
 
-    response = _client.get(
-        f"/benchmarks/{benchmark.id}",
-        headers={
-            "x-harness-aws-access-key-id": "test-key",
-            "x-harness-aws-secret-access-key": "test-secret",
-            "x-harness-aws-default-region": "us-east-1",
-            "x-harness-s3-bucket": "test-bucket",
-            "x-harness-log-group": "test-log-group",
-        },
-    )
+    response = _client.get(f"/benchmarks/{benchmark.id}")
     other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}")
 
     response_body = response.json()

@@ -18,8 +18,8 @@ from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 from starlette.requests import Request
 
-import tracker.utils.harness_config as harness_config_module
 from main import app
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
@@ -37,14 +37,13 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.executor.release_control import promote_release
-from tracker.types import FetchBenchmarksRequest, HarnessConfig, RunExecutionRequest, StartBenchmarkRequest
+from tracker.types import FetchBenchmarksRequest, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
-    fetch_harness_config,
     fetch_sandbox_provider_config,
     has_runnable_tasks,
     save_eval_resume_state,
@@ -52,7 +51,6 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
 )
 
-_parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
 client = TestClient(app)
 _ACTIVE_ATTEMPT = datetime(2026, 7, 1)
@@ -65,7 +63,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
         id="test-release",
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     database_session.add(release)
@@ -87,9 +85,7 @@ class TestRunState:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    async def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
-        self, harness_config: HarnessConfig
-    ) -> None:
+    async def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(self) -> None:
         """Sandbox provider config should combine client-selected type with the production secret shape.
 
         Test cases:
@@ -119,7 +115,6 @@ class TestRunState:
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        harness_headers: dict[str, str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
@@ -169,7 +164,6 @@ class TestRunState:
         # Test request to stop the benchmark
         response: Response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=false",
-            headers=harness_headers,
         )
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
@@ -226,7 +220,6 @@ class TestRunState:
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        harness_headers: dict[str, str],
     ) -> None:
         """Tests the flow of updating the benchmark related objects to the proper states when resuming a benchmark
 
@@ -266,7 +259,6 @@ class TestRunState:
         # Test request to resume the benchmark
         response: Response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
-            headers=harness_headers,
         )
         assert response.status_code == 200, response.text
         assert response.json() == {"status": "success"}
@@ -304,7 +296,6 @@ class TestRunState:
         # Call resume benchmark with retry enabled
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
-            headers=harness_headers,
         )
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
@@ -319,8 +310,6 @@ class TestRunState:
         contract: AgentContractRequest,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        harness_config: HarnessConfig,
-        harness_headers: dict[str, str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tests edge cases for resuming a benchmark
@@ -340,7 +329,6 @@ class TestRunState:
 
         response: Response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
-            headers=harness_headers,
         )
         assert response.status_code == 200
 
@@ -360,7 +348,6 @@ class TestRunState:
         # No stopped tasks to resume, but this is allowed (re-runs post-task steps like lambda)
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
-            headers=harness_headers,
         )
         assert response.status_code == 200
 
@@ -378,26 +365,20 @@ class TestRunState:
             concurrency=5,
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
             slice_str=":10",
-            harness_config=harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
             sandbox_provider="modal",
+            sandbox_provider_secret_name="ModalSecrets",
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(
             original_start_benchmark_request,
             self._test_starter,
-            aws_managed=False,
+            aws_managed=True,
         )
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
-        recreated_start_benchmark_request = benchmark_row.access_key_start_benchmark_request(harness_config)
+        recreated_start_benchmark_request = benchmark_row.managed_start_benchmark_request()
         assert recreated_start_benchmark_request == RunExecutionRequest.model_validate(
-            original_start_benchmark_request.model_copy(
-                update={
-                    "harness_config": harness_config.model_copy(
-                        update={"sandbox_provider_secret_name": "ModalSecrets"}
-                    ),
-                }
-            ).model_dump(mode="python")
+            original_start_benchmark_request.model_dump(mode="python")
         )
 
         # Assert we have 5 tasks in the database
@@ -425,7 +406,6 @@ class TestRunState:
         response = client.post(
             f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
             json={"task_ids": ["task_5"]},
-            headers=harness_headers,
         )
         assert response.status_code == 500
         assert response.json() == {"detail": "Benchmark service request failed"}
@@ -445,7 +425,6 @@ class TestRunState:
         response = client.post(
             f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
             json={"task_ids": task_ids},
-            headers=harness_headers,
         )
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
@@ -459,7 +438,6 @@ class TestRunState:
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        harness_headers: dict[str, str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -471,7 +449,6 @@ class TestRunState:
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
-            headers=harness_headers,
             json={"secrets": {"MODEL_API_KEY": "replacement"}},
         )
 
@@ -965,32 +942,3 @@ def test_fetch_filtered_by_label(database_session: Session) -> None:
 
     assert total == 1
     assert rows[0].label == "Nightly"
-
-
-class TestLogRetentionPolicy:
-    """Log retention policy validation at helper and request boundaries."""
-
-    def test_parse_log_retention_policy_rejects_invalid_value(self) -> None:
-        with pytest.raises(HTTPException) as exc_info:
-            _parse_log_retention_policy("not-a-number", source="test")
-
-        assert exc_info.value.status_code == 400
-
-    def test_fetch_harness_config_rejects_invalid_retention_header(self) -> None:
-        request = Request(
-            {
-                "type": "http",
-                "headers": [
-                    (b"x-harness-aws-access-key-id", b"A"),
-                    (b"x-harness-aws-secret-access-key", b"s"),
-                    (b"x-harness-aws-default-region", b"us-east-1"),
-                    (b"x-harness-s3-bucket", b"bucket"),
-                    (b"x-harness-log-retention-policy", b"not-a-number"),
-                ],
-            }
-        )
-
-        with pytest.raises(HTTPException) as exc_info:
-            fetch_harness_config(request)
-
-        assert exc_info.value.status_code == 400

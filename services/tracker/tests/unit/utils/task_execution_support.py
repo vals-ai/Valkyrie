@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.runtime.services import RuntimeServices
@@ -26,7 +27,8 @@ from tracker.database.models import (
 )
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.scheduler.admission import SandboxQueueContext
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.aws.runtime import AWSResources
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
@@ -89,7 +91,6 @@ def make_retrieve_task_response(problem_path: str = "/tmp/problem_statement.txt"
 def create_task_environment(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     run_starter: RequestIdentity | None = None,
 ) -> tuple[StartBenchmarkRequest, Task, UUID, ExecutionAuthority]:
     """Persist the benchmark and task rows required by process-task tests.
@@ -97,7 +98,6 @@ def create_task_environment(
     Arguments
     - contract: Agent contract used by the benchmark request.
     - database_session: Test database session receiving the rows.
-    - harness_config: Harness configuration stored with the request.
     - run_starter: Optional identity that started the benchmark.
 
     Returns
@@ -108,12 +108,19 @@ def create_task_environment(
         contract=contract,
         concurrency=1,
         task_ids=["task_0"],
-        harness_config=harness_config,
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name="test-daytona-secret",
+        properties=AWSResources(
+            region="us-east-1",
+            s3_bucket="test-bucket",
+            log_group="test-log-group",
+            log_retention_days=30,
+        ),
     )
     benchmark_row = start_benchmark_request_to_benchmark(
         start_benchmark_request,
         run_starter or _TEST_STARTER,
-        aws_managed=False,
+        aws_managed=True,
     )
     benchmark_row.status = BenchmarkStatus.IN_PROGRESS
     database_session.add(benchmark_row)
@@ -127,7 +134,7 @@ def create_task_environment(
         id="task-execution-test-release",
         artifact_uri="s3://artifacts/task-execution-test.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     database_session.add(release)

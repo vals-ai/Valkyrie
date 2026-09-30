@@ -5,6 +5,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from dotenv import load_dotenv
 from sqlalchemy import event
 from sqlalchemy.pool import ConnectionPoolEntry
@@ -24,8 +25,9 @@ from tracker.database.models import (
     ExecutorRelease,
     Org,
 )
+from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.executor.execution_authority import ExecutionAuthority
-from tracker.types import AWSCredentials
 
 _ = load_dotenv()
 
@@ -37,12 +39,17 @@ def clear_managed_storage_validation_cache() -> None:
 
 
 @pytest.fixture
-def aws_credentials() -> AWSCredentials:
-    """Provide deterministic AWS credentials for non-live tests."""
-    return AWSCredentials(
-        aws_access_key_id="test-aws-access-key-id",
-        aws_secret_access_key="test-aws-secret-access-key",
-        aws_default_region="us-east-1",
+def aws_runtime() -> AWSRuntime:
+    """Provide a deterministic default-chain runtime for non-live tests."""
+    return AWSRuntime(
+        resources=AWSResources(
+            region="us-east-1",
+            s3_bucket="test-bucket",
+            log_group="test-log-group",
+            log_retention_days=30,
+        ),
+        clients=DefaultChainAWSClientProvider("us-east-1"),
+        expected_bucket_owner="123456789012",
     )
 
 
@@ -93,7 +100,7 @@ def executor_authority_kwargs(
                     id=release_id,
                     artifact_uri="s3://artifacts/authority-test-release.pex",
                     artifact_digest="a" * 64,
-                    protocol_version="1",
+                    protocol_version=SUPPORTED_PROTOCOL_VERSION,
                     readiness_verified=True,
                 )
                 authority_session.add(release)

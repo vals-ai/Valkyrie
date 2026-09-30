@@ -17,19 +17,6 @@ from tests.utils import TEST_ORG_ID
 from tracker.auth import get_current_org
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
-from tracker.types import AWSCredentials, HarnessConfig
-
-
-@pytest.fixture
-def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
-    """Provide deterministic harness configuration for local integration tests."""
-    return HarnessConfig(
-        aws=aws_credentials,
-        s3_bucket="test-bucket",
-        log_group="test-log-group",
-        log_retention_policy=30,
-        sandbox_provider_secret_name="test-daytona-secret",
-    )
 
 
 @pytest.fixture(autouse=True)

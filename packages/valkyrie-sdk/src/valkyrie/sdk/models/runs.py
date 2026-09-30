@@ -11,7 +11,7 @@ from pydantic import BaseModel, BeforeValidator, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
-from valkyrie.sdk.models.config import AWSResources, HarnessConfig, LocalResources
+from valkyrie.sdk.models.config import AWSResources, LocalResources
 
 
 class TaskStatus(str, Enum):
@@ -82,10 +82,9 @@ class StartBenchmarkRequest(BaseModel):
     lambda_function: str | None = None
     dataset: str | None = None
     dataset_version: str | None = Field(default=None, min_length=1, max_length=1024)
-    harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
-    sandbox_provider: str = "daytona"
+    sandbox_provider: str | None = None
     sandbox_provider_secret_name: str | None = None
     service_auth_header_name: str | None = None
     service_auth_secret_name: str | None = None

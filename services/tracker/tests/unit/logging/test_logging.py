@@ -23,7 +23,7 @@ from tracker.logging import (
 )
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.middleware import LoggingContextMiddleware
-from tracker.types import AWSCredentials, HarnessConfig
+from tracker.types import AgentContractRequest, StartBenchmarkRequest
 
 
 class ContextLogRecord(logging.LogRecord):
@@ -57,37 +57,26 @@ def _configure_test_logging(monkeypatch: pytest.MonkeyPatch, environment: str) -
     configure_logging()
 
 
-def test_aws_credentials_are_excluded_from_log_repr() -> None:
-    credentials = AWSCredentials(
-        aws_access_key_id="AKIA_REPR_SENTINEL",
-        aws_secret_access_key="secret-repr-sentinel",
-        aws_session_token="session-repr-sentinel",
-        aws_default_region="us-east-1",
-    )
-    harness_config = HarnessConfig(
-        aws=credentials,
-        s3_bucket="test-bucket",
-        log_group="test-log-group",
-        log_retention_policy=30,
-        sandbox_provider_secret_name="test-provider-secret",
+def test_service_headers_are_excluded_from_log_repr() -> None:
+    request = StartBenchmarkRequest(
+        contract=AgentContractRequest(name="agent", run_cmd="run"),
+        benchmark_name="test",
+        service_headers={"Authorization": "secret-repr-sentinel"},
     )
     formatter = logging.Formatter("%(message)s")
 
-    for value in (credentials, harness_config):
-        record = logging.LogRecord(
-            name="tracker.test_credentials",
-            level=logging.ERROR,
-            pathname="",
-            lineno=0,
-            msg="AWS request failed: %r",
-            args=(value,),
-            exc_info=None,
-        )
-        output = formatter.format(record)
+    record = logging.LogRecord(
+        name="tracker.test_credentials",
+        level=logging.ERROR,
+        pathname="",
+        lineno=0,
+        msg="AWS request failed: %r",
+        args=(request,),
+        exc_info=None,
+    )
+    output = formatter.format(record)
 
-        assert "AKIA_REPR_SENTINEL" not in output
-        assert "secret-repr-sentinel" not in output
-        assert "session-repr-sentinel" not in output
+    assert "secret-repr-sentinel" not in output
 
 
 class TestContextFilter:

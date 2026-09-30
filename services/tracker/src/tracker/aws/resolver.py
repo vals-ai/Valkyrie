@@ -1,9 +1,7 @@
-"""Select request-provided or deployment-managed AWS authority."""
+"""Resolve deployment-managed AWS authority."""
 
 from collections import OrderedDict
-from dataclasses import dataclass
 from time import monotonic
-from typing import Never
 from uuid import UUID
 
 from fastapi import HTTPException, Request
@@ -16,14 +14,9 @@ from tracker.aws.managed_storage import (
     validate_managed_storage_bucket,
 )
 from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.types import AWSCredentials, HarnessConfig, StartBenchmarkRequest
+from tracker.types import StartBenchmarkRequest
 
-_REQUIRED_HARNESS_HEADER_KEYS = (
-    "aws_access_key_id",
-    "aws_secret_access_key",
-    "aws_default_region",
-    "s3_bucket",
-)
+_HARNESS_HEADER_PREFIX = "x-harness-"
 
 _MANAGED_STORAGE_VALIDATION_CACHE_LIMIT = 512
 _ManagedStorageValidationKey = tuple[UUID, str, str, str, str]
@@ -42,122 +35,16 @@ class ManagedAWSConfigurationError(ManagedAWSError):
     """The deployment's managed AWS configuration is invalid."""
 
 
-@dataclass(frozen=True)
-class AWSRuntimeResolution:
-    """Resolved AWS runtime and any access-key configuration used to build it."""
-
-    runtime: AWSRuntime
-    access_key_harness_config: HarnessConfig | None
-
-    @property
-    def aws_managed(self) -> bool:
-        """Return whether deployment-managed AWS authority was selected."""
-        return self.access_key_harness_config is None
-
-    def with_submission_properties(self, properties: AWSResources | None) -> "AWSRuntimeResolution":
-        """Apply caller resources while keeping managed submissions on deployment resources."""
-        if properties is None:
-            return self
-        if self.aws_managed and properties != self.runtime.resources:
-            raise HTTPException(
-                status_code=400, detail="Managed run properties must match the deployment AWS resources"
-            )
-
-        return AWSRuntimeResolution(self.runtime.with_resources(properties), self.access_key_harness_config)
-
-
-@dataclass(frozen=True)
-class HarnessHeaderInspection:
-    """Presence and completeness of access-key request headers."""
-
-    present: bool
-    config: HarnessConfig | None
-    first_missing_key: str | None
-
-
-def parse_log_retention_policy(value: int | str | None, *, source: str) -> int:
-    """Parse a positive log-retention value, defaulting to 30 days."""
-    if value in (None, ""):
-        return 30
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
+def _reject_harness_headers(request: Request) -> None:
+    """Reject requests carrying retired client-supplied AWS credential headers."""
+    if any(key.startswith(_HARNESS_HEADER_PREFIX) for key in request.headers):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid log_retention_policy from {source}: must be an integer",
-        ) from exc
-    if parsed <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid log_retention_policy from {source}: must be positive",
+            detail=(
+                "Client-supplied AWS credentials are no longer supported; "
+                "runs resolve AWS resources from the deployment configuration."
+            ),
         )
-    return parsed
-
-
-def _parse_harness_headers(request: Request) -> dict[str, str]:
-    """Normalize access-key request headers into field names."""
-    prefix = "x-harness-"
-    return {
-        key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
-    }
-
-
-def _build_harness_config(flat: dict[str, str]) -> HarnessConfig:
-    """Build a harness config from complete normalized headers."""
-    return HarnessConfig(
-        aws=AWSCredentials(
-            aws_access_key_id=flat["aws_access_key_id"],
-            aws_secret_access_key=flat["aws_secret_access_key"],
-            aws_default_region=flat["aws_default_region"],
-            aws_session_token=flat.get("aws_session_token"),
-        ),
-        s3_bucket=flat["s3_bucket"],
-        log_group=flat.get("log_group") or "",
-        log_retention_policy=parse_log_retention_policy(
-            flat.get("log_retention_policy"),
-            source="request headers",
-        ),
-        sandbox_provider_secret_name=flat.get("sandbox_provider_secret_name") or flat.get("daytona_secret_name") or "",
-    )
-
-
-def inspect_harness_headers(request: Request) -> HarnessHeaderInspection:
-    """Inspect access-key headers without treating their absence as an error."""
-    flat = _parse_harness_headers(request)
-    first_missing_key = next((key for key in _REQUIRED_HARNESS_HEADER_KEYS if not flat.get(key)), None)
-    return HarnessHeaderInspection(
-        present=bool(flat),
-        config=_build_harness_config(flat) if first_missing_key is None else None,
-        first_missing_key=first_missing_key,
-    )
-
-
-def _raise_missing_header(key: str) -> Never:
-    """Raise a client error naming a missing access-key header."""
-    header_name = key.replace("_", "-")
-    raise HTTPException(status_code=400, detail=f"Missing harness config header 'x-harness-{header_name}'")
-
-
-def fetch_harness_config(request: Request) -> HarnessConfig:
-    """Return complete access-key request headers or name the first missing header."""
-    header_inspection = inspect_harness_headers(request)
-    if header_inspection.config is not None:
-        return header_inspection.config
-    assert header_inspection.first_missing_key is not None
-    _raise_missing_header(header_inspection.first_missing_key)
-
-
-def resolve_start_harness_config(request: Request, body_config: HarnessConfig | None) -> HarnessConfig | None:
-    """Apply access-key header-over-body precedence for a start request."""
-    header_inspection = inspect_harness_headers(request)
-    if header_inspection.config is not None:
-        return header_inspection.config
-    if body_config is not None:
-        return body_config
-    if header_inspection.present:
-        assert header_inspection.first_missing_key is not None
-        _raise_missing_header(header_inspection.first_missing_key)
-    return None
 
 
 def _eligible_org_ids() -> frozenset[UUID]:
@@ -275,52 +162,47 @@ def _http_deployment_runtime(org_id: UUID, properties: AWSResources | None = Non
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _deployment_runtime_with_submission_properties(org_id: UUID, properties: AWSResources | None) -> AWSRuntime:
+    """Build the deployment runtime, rejecting properties that differ from it."""
+    runtime = _http_deployment_runtime(org_id)
+    if properties is not None and properties != runtime.resources:
+        raise HTTPException(
+            status_code=400, detail="Managed run properties must match the deployment AWS resources"
+        )
+    return runtime.with_resources(properties) if properties is not None else runtime
+
+
 def resolve_start_aws_runtime(
     request: Request,
-    body_config: HarnessConfig | None,
     org_id: UUID,
     properties: AWSResources | None = None,
-) -> AWSRuntimeResolution:
-    """Resolve a new run without reinterpreting partial access-key input as managed."""
-    harness_config = resolve_start_harness_config(request, body_config)
-    if harness_config is not None:
-        return AWSRuntimeResolution(
-            AWSRuntime.from_harness_config(harness_config), harness_config
-        ).with_submission_properties(properties)
+) -> AWSRuntime:
+    """Resolve deployment AWS authority for a new run."""
+    _reject_harness_headers(request)
     if not config.AWS_MANAGED_SUBMISSIONS_ENABLED:
         raise HTTPException(
             status_code=503,
             detail="Managed AWS submissions are temporarily unavailable. Try again later or contact Vals support.",
         )
 
-    return AWSRuntimeResolution(_http_deployment_runtime(org_id), None).with_submission_properties(properties)
+    return _deployment_runtime_with_submission_properties(org_id, properties)
 
 
-def resolve_run_aws_runtime_and_access_key_config(
+def resolve_run_aws_runtime(
     request: Request,
     *,
     aws_managed: bool,
     org_id: UUID,
     properties: AWSResources | None = None,
-) -> AWSRuntimeResolution:
-    """Resolve AWS authority and retain any access-key harness configuration."""
-    if aws_managed:
-        return AWSRuntimeResolution(_http_deployment_runtime(org_id, properties), None)
-
-    header_inspection = inspect_harness_headers(request)
-    if not header_inspection.present:
+) -> AWSRuntime:
+    """Resolve deployment AWS authority for an existing run."""
+    _reject_harness_headers(request)
+    if not aws_managed:
         raise HTTPException(
             status_code=400,
-            detail="This run was started with access-key AWS and requires its legacy AWS configuration.",
+            detail="This run was started with access-key AWS, which is no longer supported. Start a new run.",
         )
-    if header_inspection.config is None:
-        assert header_inspection.first_missing_key is not None
-        _raise_missing_header(header_inspection.first_missing_key)
-
-    harness_config = header_inspection.config
-    return AWSRuntimeResolution(
-        AWSRuntime.from_harness_config(harness_config).with_resources(properties), harness_config
-    )
+    return _http_deployment_runtime(org_id, properties)
 
 
 def resolve_run_metadata_aws_runtime(
@@ -330,14 +212,11 @@ def resolve_run_metadata_aws_runtime(
     org_id: UUID,
     properties: AWSResources | None = None,
 ) -> AWSRuntime | None:
-    """Resolve AWS authority when access-key metadata links may be omitted."""
-    if aws_managed:
-        return _http_deployment_runtime(org_id, properties)
-
-    harness_config = inspect_harness_headers(request).config
-    if harness_config is None:
+    """Resolve deployment AWS authority for metadata links on an existing run."""
+    if not aws_managed:
         return None
-    return AWSRuntime.from_harness_config(harness_config).with_resources(properties)
+    _reject_harness_headers(request)
+    return _http_deployment_runtime(org_id, properties)
 
 
 def reset_managed_storage_validation_cache() -> None:
@@ -413,12 +292,8 @@ def resolve_agent_library_aws_runtime(
     request: Request,
     org_id: UUID,
 ) -> AWSRuntime:
-    """Resolve agent-library operations from complete headers or managed eligibility."""
-    header_inspection = inspect_harness_headers(request)
-    if header_inspection.config is not None:
-        return AWSRuntime.from_harness_config(header_inspection.config)
-    if header_inspection.first_missing_key is not None and header_inspection.present:
-        _raise_missing_header(header_inspection.first_missing_key)
+    """Resolve agent-library operations to deployment AWS authority."""
+    _reject_harness_headers(request)
     return _http_deployment_runtime(org_id)
 
 

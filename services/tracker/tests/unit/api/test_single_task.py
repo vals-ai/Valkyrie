@@ -126,7 +126,6 @@ def test_task_artifacts_only_presign_existing_output(
     database_session: Session,
     example_benchmark_object: Benchmark,
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
 ) -> None:
     """Artifact detail must return useful links without signing a missing output archive.
 
@@ -147,12 +146,10 @@ def test_task_artifacts_only_presign_existing_output(
 
     found_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
-        headers=harness_headers,
     )
     object_exists.return_value = False
     missing_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts",
-        headers=harness_headers,
     )
 
     expected_key = f"benchmarks/{benchmark.id}/{task.task_id}/agent_output.tar.gz"
@@ -180,10 +177,9 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
     database_session: Session,
     example_benchmark_object: Benchmark,
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
 ) -> None:
     from botocore.exceptions import ClientError
-    from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+    from tracker.aws.clients import DefaultChainAWSClientProvider
 
     benchmark = example_benchmark_object
     other_org = Org(id=uuid4(), name="other-artifacts")
@@ -202,11 +198,10 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
     }
     client.head_object.return_value = {"ContentLength": 2}
     client.generate_presigned_url.return_value = "https://download.test/file"
-    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", lambda _: client)
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", lambda _: client)
     response = _client.get(
         f"/benchmarks/{benchmark.id}/artifacts",
         params={"prefix": task_id, "cursor": "previous", "limit": 2},
-        headers=harness_headers,
     )
     assert response.status_code == 200, response.text
     assert response.json() == {
@@ -214,26 +209,31 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
         "next_cursor": "next",
     }
     client.list_objects_v2.assert_awaited_once_with(
-        Bucket="test-bucket", Prefix=root + task_id, MaxKeys=2, ContinuationToken="previous"
+        Bucket="test-bucket",
+        Prefix=root + task_id,
+        MaxKeys=2,
+        ExpectedBucketOwner="123456789012",
+        ContinuationToken="previous",
     )
     response = _client.get(
         f"/benchmarks/{benchmark.id}/artifacts/download-url",
         params={"path": f"{task_id}/result.json"},
-        headers=harness_headers,
     )
     assert response.status_code == 200
     assert response.json()["download_url"] == "https://download.test/file"
     client.generate_presigned_url.assert_awaited_once_with(
-        "get_object", Params={"Bucket": "test-bucket", "Key": root + f"{task_id}/result.json"}, ExpiresIn=300
+        "get_object",
+        Params={"Bucket": "test-bucket", "Key": root + f"{task_id}/result.json"},
+        ExpiresIn=300,
     )
     for endpoint, params in (("artifacts", {}), ("artifacts/download-url", {"path": "file"})):
         assert (
-            _client.get(f"/benchmarks/{other.id}/{endpoint}", params=params, headers=harness_headers).status_code == 404
+            _client.get(f"/benchmarks/{other.id}/{endpoint}", params=params).status_code == 404
         )
     for path in ("../other", "/outside", "task/../file", "a\\b"):
         assert (
             _client.get(
-                f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": path}, headers=harness_headers
+                f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": path}
             ).status_code
             == 400
         )
@@ -241,7 +241,7 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
         client.head_object.side_effect = ClientError({"Error": {"Code": code}}, "HeadObject")
         assert (
             _client.get(
-                f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": "file"}, headers=harness_headers
+                f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": "file"}
             ).status_code
             == status
         )

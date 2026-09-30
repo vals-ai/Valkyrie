@@ -23,7 +23,6 @@ from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
-from tracker.types import AWSCredentials, HarnessConfig
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
@@ -36,39 +35,6 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 # Import the app after configuring the AWS environment.
 from main import app
-
-
-@pytest.fixture
-def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
-    return HarnessConfig(
-        aws=aws_credentials,
-        s3_bucket="test-bucket",
-        log_group="test-log-group",
-        log_retention_policy=30,
-        sandbox_provider_secret_name="test-daytona-secret",
-    )
-
-
-@pytest.fixture
-def harness_headers(harness_config: HarnessConfig) -> dict[str, str]:
-    """Provide complete access-key request headers."""
-    headers = {
-        "X-Harness-AWS-Access-Key-Id": harness_config.aws.aws_access_key_id,
-        "X-Harness-AWS-Secret-Access-Key": harness_config.aws.aws_secret_access_key,
-        "X-Harness-AWS-Default-Region": harness_config.aws.aws_default_region,
-        "X-Harness-S3-Bucket": harness_config.s3_bucket,
-        "X-Harness-Log-Group": harness_config.log_group,
-        "X-Harness-Log-Retention-Policy": str(harness_config.log_retention_policy),
-        "X-Harness-Sandbox-Provider-Secret-Name": harness_config.sandbox_provider_secret_name,
-    }
-    if harness_config.aws.aws_session_token:
-        headers["X-Harness-AWS-Session-Token"] = harness_config.aws.aws_session_token
-    return headers
-
-
-@pytest.fixture
-def aws_runtime(harness_config: HarnessConfig) -> AWSRuntime:
-    return AWSRuntime.from_harness_config(harness_config)
 
 
 @pytest.fixture
@@ -105,6 +71,24 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.put_bytes", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
+
+
+@pytest.fixture(autouse=True)
+def managed_deployment_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give managed-execution tests an eligible deployment configuration."""
+    for key, value in {
+        "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
+        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
+        "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
+        "AWS_DEPLOYMENT_REGION": "us-east-1",
+        "AWS_DEPLOYMENT_S3_BUCKET": "test-bucket",
+        "AWS_DEPLOYMENT_LOG_GROUP": "test-log-group",
+        "AWS_DEPLOYMENT_LOG_RETENTION_DAYS": "30",
+        "AWS_DEPLOYMENT_SANDBOX_PROVIDER": "daytona",
+        "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME": "test-daytona-secret",
+    }.items():
+        monkeypatch.setattr("tracker.config." + key, value)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
 
 
 @pytest.fixture(autouse=True)
@@ -265,15 +249,14 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
     monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+    monkeypatch.setattr("tracker.aws.services.dry_run_lambda", AsyncMock())
 
 
 @pytest.fixture
-async def runtime_services(
-    aws_runtime: AWSRuntime, harness_config: HarnessConfig
-) -> AsyncGenerator[RuntimeServices, None]:
+async def runtime_services(aws_runtime: AWSRuntime) -> AsyncGenerator[RuntimeServices, None]:
     """Compose the task runtime using the shared deterministic AWS configuration."""
     runtime = CloudRuntimeFactory.create_runtime(
         aws_runtime,
-        sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
+        sandbox_provider_secret_name="test-daytona-secret",
     )
     yield runtime

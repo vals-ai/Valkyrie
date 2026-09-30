@@ -39,7 +39,6 @@ from tracker.database.models import (
 )
 from tracker.scheduler.admission import SandboxQueueContext
 import tracker.runtime.model_gateway as model_gateway_module
-from tracker.types import HarnessConfig
 
 
 def _install_gateway(monkeypatch: pytest.MonkeyPatch, minted: list[dict[str, Any]]) -> None:
@@ -77,13 +76,11 @@ class TestQueuedTaskSource:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         source = TargetedSnapshotSource(snapshot="snapshot", target="us-west-3")
         task_response = make_retrieve_task_response().model_copy(update={"source": source})
@@ -151,7 +148,6 @@ class TestProcessTaskEnvironment:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(
@@ -171,7 +167,6 @@ class TestProcessTaskEnvironment:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
             run_starter,
         )
         start_benchmark_request = start_benchmark_request.model_copy(
@@ -241,7 +236,6 @@ class TestProcessTaskEnvironment:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """A caller-supplied contract must not reach setup as trusted settings."""
@@ -257,7 +251,6 @@ class TestProcessTaskEnvironment:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         captured_env_vars: list[dict[str, str]] = []
 
@@ -281,7 +274,6 @@ class TestProcessTaskEnvironment:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """A contract names its own secrets' variables, so it can put anything
@@ -298,7 +290,6 @@ class TestProcessTaskEnvironment:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         captured_env_vars: list[dict[str, str]] = []
         minted: list[dict[str, Any]] = []
@@ -329,14 +320,12 @@ class TestProcessTaskEnvironment:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"inference_settings_attested": True})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         captured_env_vars: list[dict[str, str]] = []
 
@@ -370,14 +359,12 @@ class TestProcessTaskEnvironment:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"LEGACY_API_KEY": "aws-secret"}})
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         captured: dict[str, dict[str, str]] = {}
         resolved_inputs: list[dict[str, str]] = []
@@ -415,13 +402,11 @@ class TestProcessTaskEnvironment:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         sibling = Task(
             org_id=task_row.org_id,
@@ -472,12 +457,11 @@ class TestProcessTaskEnvironment:
 async def test_task_waits_for_final_log_write(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     runtime_services: RuntimeServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Task completion must not race a buffered write still running in a thread."""
-    request, task, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+    request, task, benchmark_id, authority = create_task_environment(contract, database_session)
     loop = asyncio.get_running_loop()
     writing = asyncio.Event()
     release_write = threading.Event()

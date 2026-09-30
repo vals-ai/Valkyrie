@@ -62,21 +62,6 @@ class BenchmarkDetails(BaseModel):
     docent_reading_url: str | None = None
 
 
-class AWSCredentials(BaseModel, frozen=True):
-    aws_access_key_id: str = Field(repr=False)
-    aws_secret_access_key: str = Field(repr=False)
-    aws_default_region: str
-    aws_session_token: str | None = Field(default=None, repr=False)
-
-
-class HarnessConfig(BaseModel):
-    aws: AWSCredentials
-    s3_bucket: str
-    log_group: str
-    log_retention_policy: int
-    sandbox_provider_secret_name: str
-
-
 class StartBenchmarkRequest(BaseModel):
     environment: Literal["aws", "local"] = "aws"
     properties: AWSResources | LocalResources | None = None
@@ -97,15 +82,24 @@ class StartBenchmarkRequest(BaseModel):
     lambda_function: str | None = None
     dataset: str | None = None
     dataset_version: str | None = Field(default=None, min_length=1, max_length=1024)
-    harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
-    sandbox_provider: str = "daytona"
+    sandbox_provider: str | None = None
     sandbox_provider_secret_name: str | None = None
     service_auth_header_name: str | None = None
     service_auth_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_credential_fields(cls, data: object) -> object:
+        """Reject client-supplied AWS credentials, which are no longer supported."""
+        if isinstance(data, dict) and data.get("harness_config") is not None:
+            raise ValueError(
+                "harness_config is no longer supported; runs resolve AWS resources from the deployment"
+            )
+        return data
 
     @model_validator(mode="after")
     def validate_execution_environment(self) -> "StartBenchmarkRequest":
@@ -113,7 +107,7 @@ class StartBenchmarkRequest(BaseModel):
             if isinstance(self.properties, LocalResources):
                 raise ValueError("AWS execution cannot include local resources")
             return self
-        if self.harness_config is not None or isinstance(self.properties, AWSResources):
+        if isinstance(self.properties, AWSResources):
             raise ValueError("Local execution cannot include AWS configuration")
         if self.sandbox_provider != "docker" or self.sandbox_provider_secret_name is not None:
             raise ValueError("Local execution requires Docker without a provider secret")
@@ -133,9 +127,7 @@ class StartBenchmarkRequest(BaseModel):
 
     @property
     def sandbox_provider_secret_reference(self) -> str | None:
-        """Resolve the provider reference from legacy or managed configuration."""
-        if self.harness_config is not None and self.harness_config.sandbox_provider_secret_name:
-            return self.harness_config.sandbox_provider_secret_name
+        """Return the configured sandbox provider secret name."""
         return self.sandbox_provider_secret_name
 
     @property
@@ -303,7 +295,7 @@ def _contains_forbidden_managed_aws_key(value: object) -> bool:
 
 
 def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
-    if request.harness_config is not None or _contains_forbidden_managed_aws_key(request.model_dump(mode="python")):
+    if _contains_forbidden_managed_aws_key(request.model_dump(mode="python")):
         raise ValueError("Managed execution cannot include AWS credentials")
     if not request.sandbox_provider or not request.sandbox_provider_secret_name:
         raise ValueError("Managed execution requires a sandbox provider and provider secret name")
@@ -319,7 +311,8 @@ class ManagedExecutionContext(BaseModel):
 
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":
-        validate_managed_execution_request(self.start_benchmark_request)
+        if self.start_benchmark_request.environment == "aws":
+            validate_managed_execution_request(self.start_benchmark_request)
         if self.start_benchmark_request.managed_s3_bucket is not None:
             raise ValueError("Queued execution cannot include an admission-only storage override")
 

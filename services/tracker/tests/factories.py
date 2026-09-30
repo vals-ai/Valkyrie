@@ -63,10 +63,13 @@ def make_benchmark(
         label=label,
         started_by_id=started_by_id,
         started_by_email=started_by_email,
+        aws_managed=True,
         arguments=AWSBenchmarkArguments(
             contract=contract or AgentContractRequest(name=agent_name, model=model, install_cmd="i", run_cmd="r"),
             dataset=dataset,
             concurrency=concurrency,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         ),
     )
     if started_at is not None:

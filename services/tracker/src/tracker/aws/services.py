@@ -106,24 +106,19 @@ class CloudRuntimeFactory:
             raise TrackerServiceError("Queued AWS resources differ from the saved run")
 
         properties = properties or request.properties
-        aws_runtime = (
-            deployment_aws_runtime(org_id, properties)
-            if request.harness_config is None
-            else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
-        )
+        aws_runtime = deployment_aws_runtime(org_id, properties)
         if context_version == 2 and aws_runtime.resources.s3_bucket.startswith(("vs-dev-", "vs-prod-")):
             raise TrackerServiceError("Protocol 2 cannot execute owner storage")
 
-        if request.harness_config is None:
-            try:
-                await validate_saved_managed_storage_runtime(aws_runtime, org_id=org_id)
-            except ManagedStorageError as exc:
-                raise TrackerServiceError(str(exc)) from exc
+        try:
+            await validate_saved_managed_storage_runtime(aws_runtime, org_id=org_id)
+        except ManagedStorageError as exc:
+            raise TrackerServiceError(str(exc)) from exc
 
         runtime = cls.create_runtime(
             aws_runtime,
-            sandbox_provider=request.sandbox_provider,
-            sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
+            sandbox_provider=request.sandbox_provider or "daytona",
+            sandbox_provider_secret_name=request.sandbox_provider_secret_name,
         )
         await runtime.prepare_execution(request, benchmark_id)
         return runtime

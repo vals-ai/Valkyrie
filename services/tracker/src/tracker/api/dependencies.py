@@ -11,7 +11,7 @@ from tracker.auth import get_current_org
 from tracker.aws.resolver import (
     http_validate_saved_managed_storage_runtime,
     resolve_agent_library_aws_runtime,
-    resolve_run_aws_runtime_and_access_key_config,
+    resolve_run_aws_runtime,
 )
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org, Task
@@ -56,12 +56,12 @@ async def get_run_runtime(
     if arguments.environment == "local":
         return LocalRuntimeFactory.create_runtime(arguments.properties.data_root, org.id)
 
-    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+    aws_runtime = resolve_run_aws_runtime(
         request,
         aws_managed=benchmark.aws_managed,
         properties=arguments.properties,
         org_id=org.id,
-    ).runtime
+    )
     if benchmark.aws_managed:
         await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 

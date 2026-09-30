@@ -16,7 +16,6 @@ from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     BenchmarkServiceEntry,
     FetchBenchmarkTasksRequest,
-    HarnessConfig,
     StartBenchmarkRequest,
 )
 from tracker.utils.resources import create_benchmark_service_client
@@ -30,11 +29,10 @@ _ASCII_CONTROL_URLS = [
 ]
 
 
-def _start_benchmark_request(harness_config: HarnessConfig, **overrides: object) -> StartBenchmarkRequest:
+def _start_benchmark_request(**overrides: object) -> StartBenchmarkRequest:
     values: dict[str, object] = {
         "contract": AgentContractRequest(name="agent"),
         "benchmark_name": "swebench",
-        "harness_config": harness_config,
     }
     values.update(overrides)
     return StartBenchmarkRequest.model_validate(values)
@@ -59,7 +57,6 @@ class TestBenchmarkServiceNameValidation:
     def test_benchmark_name_rejects_url_parser_control(
         self,
         benchmark_name: str,
-        harness_config: HarnessConfig,
     ) -> None:
         """Reject names that can alter the derived benchmark-service destination."""
         with pytest.raises(ValueError, match="Invalid benchmark name"):
@@ -69,19 +66,18 @@ class TestBenchmarkServiceNameValidation:
             FetchBenchmarkTasksRequest(benchmark_name=benchmark_name)
 
         with pytest.raises(ValidationError):
-            _start_benchmark_request(harness_config, benchmark_name=benchmark_name)
+            _start_benchmark_request(benchmark_name=benchmark_name)
 
     def test_benchmark_name_preserves_supported_dns_label(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
     ) -> None:
         """Keep a normal hosted benchmark name unchanged in the derived URL."""
         monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", None)
 
         assert create_benchmark_service_url("swebench") == "http://swebench.local:8001"
         assert FetchBenchmarkTasksRequest(benchmark_name="swebench").benchmark_name == "swebench"
-        assert _start_benchmark_request(harness_config).benchmark_name == "swebench"
+        assert _start_benchmark_request().benchmark_name == "swebench"
 
 
 class TestBenchmarkServiceDestination:
@@ -210,14 +206,13 @@ class TestCustomServiceUrlValidation:
     def test_custom_service_url_rejects_parser_and_credential_controls(
         self,
         service_url: str,
-        harness_config: HarnessConfig,
     ) -> None:
         """Reject custom service URLs whose syntax can obscure routing or credentials."""
         with pytest.raises(ValidationError):
             FetchBenchmarkTasksRequest(benchmark_name="swebench", custom_benchmark_service=service_url)
 
         with pytest.raises(ValidationError):
-            _start_benchmark_request(harness_config, custom_benchmark_service=service_url)
+            _start_benchmark_request(custom_benchmark_service=service_url)
 
         with pytest.raises(ValidationError):
             BenchmarkServiceEntry(name="swebench", url=service_url)
@@ -230,7 +225,6 @@ class TestCustomServiceUrlValidation:
 
     def test_custom_service_url_preserves_intentional_internal_http_service(
         self,
-        harness_config: HarnessConfig,
     ) -> None:
         """Preserve the documented custom/internal benchmark-service capability."""
         request = FetchBenchmarkTasksRequest(
@@ -239,7 +233,6 @@ class TestCustomServiceUrlValidation:
         )
 
         start_request = _start_benchmark_request(
-            harness_config,
             custom_benchmark_service="http://internal-swebench.example.com:8001/",
         )
         service_entry = BenchmarkServiceEntry(

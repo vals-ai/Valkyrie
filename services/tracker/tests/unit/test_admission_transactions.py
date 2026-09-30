@@ -32,7 +32,8 @@ from tracker.database.models import (
 from tracker.executor import release_control
 from tracker.executor.release_control import promote_release
 from tracker.logging import benchmark_id_var
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker import config
+from tracker.types import StartBenchmarkRequest
 
 
 @pytest.fixture
@@ -86,13 +87,27 @@ def observed_sessions(database_session: Session, monkeypatch: pytest.MonkeyPatch
     return sessions
 
 
-def _start_body(benchmark: Benchmark, harness_config: HarnessConfig) -> dict[str, Any]:
+def _start_body(benchmark: Benchmark) -> dict[str, Any]:
     return StartBenchmarkRequest(
         benchmark_name=benchmark.name,
         contract=benchmark.arguments.contract,
         task_ids=["task_0"],
-        harness_config=harness_config,
     ).model_dump(mode="json")
+
+
+@pytest.fixture(autouse=True)
+def managed_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every admission request resolves the deployment-managed runtime."""
+    monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", True)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "us-east-1")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "test-bucket")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "test-log-group")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER", "daytona")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", "test-daytona-secret")
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
 
 
 @pytest.mark.parametrize("contender", ["retry", "start"])
@@ -101,8 +116,6 @@ async def test_verification_releases_transactions_and_admission_for_other_reques
     recovery_run: tuple[Benchmark, Task],
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
-    harness_config: HarnessConfig,
     mock_kicker: MockKicker,
 ) -> None:
     benchmark, _ = recovery_run
@@ -120,7 +133,7 @@ async def test_verification_releases_transactions_and_admission_for_other_reques
 
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
-        first = asyncio.create_task(client.post(url, json={}, headers=harness_headers))
+        first = asyncio.create_task(client.post(url, json={}))
         try:
             await asyncio.wait_for(entered.wait(), timeout=2)
             assert len(observed_sessions) == 2  # Auth and prepare, each already closed.
@@ -130,8 +143,8 @@ async def test_verification_releases_transactions_and_admission_for_other_reques
             admission_lock.assert_not_called()
             assert (await asyncio.wait_for(client.get("/health"), timeout=2)).status_code == 200
             second_url = url if contender == "retry" else "/start-benchmark"
-            body = {} if contender == "retry" else _start_body(benchmark, harness_config)
-            second = await asyncio.wait_for(client.post(second_url, json=body, headers=harness_headers), timeout=2)
+            body = {} if contender == "retry" else _start_body(benchmark)
+            second = await asyncio.wait_for(client.post(second_url, json=body), timeout=2)
             assert second.status_code == 200, second.text
             assert not first.done()
         finally:
@@ -150,8 +163,6 @@ async def test_blocking_admission_wait_does_not_block_health(
     recovery_run: tuple[Benchmark, Task],
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
-    harness_config: HarnessConfig,
     mock_kicker: MockKicker,
 ) -> None:
     benchmark, _ = recovery_run
@@ -173,9 +184,9 @@ async def test_blocking_admission_wait_does_not_block_health(
     monkeypatch.setattr(release_control, "_get_admission", blocked_lock)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
-    body = {} if operation == "retry" else _start_body(benchmark, harness_config)
+    body = {} if operation == "retry" else _start_body(benchmark)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
-        request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
+        request = asyncio.create_task(client.post(url, json=body))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
             assert (await asyncio.wait_for(client.get("/health"), timeout=2)).status_code == 200
@@ -200,8 +211,6 @@ async def test_cancellation_during_commit_observes_outcome_before_propagating(
     database_session: Session,
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
-    harness_config: HarnessConfig,
 ) -> None:
     benchmark, _ = recovery_run
     commit_entered = threading.Event()
@@ -238,9 +247,9 @@ async def test_cancellation_during_commit_observes_outcome_before_propagating(
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
-    body = {} if operation == "retry" else _start_body(benchmark, harness_config)
+    body = {} if operation == "retry" else _start_body(benchmark)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
-        request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
+        request = asyncio.create_task(client.post(url, json=body))
         assert await asyncio.to_thread(commit_entered.wait, 2)
         request.cancel()
         await asyncio.sleep(0)
@@ -266,8 +275,6 @@ async def test_start_cancellation_enqueues_after_bind_failure_and_chains_cause(
     database_session: Session,
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
-    harness_config: HarnessConfig,
 ) -> None:
     benchmark, _ = recovery_run
     commit_entered = threading.Event()
@@ -301,9 +308,9 @@ async def test_start_cancellation_enqueues_after_bind_failure_and_chains_cause(
     monkeypatch.setattr(main_module.logger, "exception", bind_failure_log)
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
-    body = _start_body(benchmark, harness_config)
+    body = _start_body(benchmark)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
-        request = asyncio.create_task(client.post("/start-benchmark", json=body, headers=harness_headers))
+        request = asyncio.create_task(client.post("/start-benchmark", json=body))
         assert await asyncio.to_thread(commit_entered.wait, 2)
         request.cancel()
         await asyncio.sleep(0)
@@ -327,8 +334,6 @@ async def test_cancellation_during_enqueue_waits_for_completion(
     recovery_run: tuple[Benchmark, Task],
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
-    harness_config: HarnessConfig,
 ) -> None:
     benchmark, _ = recovery_run
     enqueue_entered = asyncio.Event()
@@ -348,9 +353,9 @@ async def test_cancellation_during_enqueue_waits_for_completion(
     monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
-    body = {} if operation == "retry" else _start_body(benchmark, harness_config)
+    body = {} if operation == "retry" else _start_body(benchmark)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
-        request = asyncio.create_task(client.post(url, json=body, headers=harness_headers))
+        request = asyncio.create_task(client.post(url, json=body))
         await asyncio.wait_for(enqueue_entered.wait(), timeout=2)
         request.cancel()
         assert not request.done()
@@ -371,7 +376,6 @@ async def test_recovery_rechecks_verified_state_before_mutating_or_dispatching(
     database_session: Session,
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
-    harness_headers: dict[str, str],
     mock_kicker: MockKicker,
 ) -> None:
     benchmark, task = recovery_run
@@ -389,7 +393,6 @@ async def test_recovery_rechecks_verified_state_before_mutating_or_dispatching(
             client.post(
                 f"/retry-or-resume-benchmark/{benchmark_id}",
                 json={"secrets": {"REQUEST_SECRET": "new"}},
-                headers=harness_headers,
             )
         )
         try:
@@ -457,7 +460,7 @@ async def test_recovery_rechecks_verified_state_before_mutating_or_dispatching(
                     "REQUEST_SECRET": "new",
                 }
                 assert persisted_run.label == "concurrent-label"
-                payload = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+                payload = mock_kicker.queued_calls[0]["execution_context_json"]["start_benchmark_request"]
                 assert payload["concurrency"] == 9
                 assert payload["contract"]["secrets"] == persisted_run.arguments.contract.secrets
                 assert len(mock_kicker.queued_calls) == 1
