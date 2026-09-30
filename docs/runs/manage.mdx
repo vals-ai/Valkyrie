@@ -57,7 +57,7 @@ valkyrie run shed <run-id> --concurrency 10 --dry-run
 valkyrie run shed <run-id> --concurrency 10
 ```
 
-The new limit must be below the current one. Tasks are admitted oldest `started_at` first, so the ones with the latest `started_at` are the newest. Evaluating tasks are never stopped and still count toward the limit. The command lists the tasks again after lowering the limit, so it also catches any admitted since the preview. Stopped tasks can be rerun with `run retry` once the rate limits clear; they restart from the beginning.
+The new limit must be below the current one; the tracker rejects a shed that would keep or raise it. Tasks are admitted oldest `started_at` first, so the ones with the latest `started_at` are the newest. Evaluating tasks still count toward the limit but are never stopped: the tracker lowers the limit, picks the tasks, and stops them in one locked transaction, so a task that has moved on to evaluating since the preview is left alone. Stopped tasks can be rerun with `run retry` once the rate limits clear; they restart from the beginning.
 
 ## Choose resume or retry
 

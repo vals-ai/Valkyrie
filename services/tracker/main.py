@@ -81,6 +81,7 @@ from tracker.runtime.artifacts import (
     copy_agent_to_benchmark,
 )
 from tracker.runtime.secrets import resolve_secrets
+from tracker.runtime.services import RuntimeServices
 from tracker.runtime.storage import ObjectCopier, ObjectStore, StoredObjectCopy
 from tracker.agent.schemas import AgentConfig
 from tracker.config import (
@@ -150,6 +151,8 @@ from tracker.types import (
     RunExecutionRequest,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
+    ShedBenchmarkRequest,
+    ShedBenchmarkResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
@@ -178,7 +181,7 @@ from tracker.utils import (
     update_benchmark_resume_arguments,
 )
 from tracker.utils.resources import fetch_sandbox_provider_config
-from tracker.utils.run_control import RetryState, prepare_retry_state
+from tracker.utils.run_control import RetryState, apply_shed_benchmark, prepare_retry_state
 
 configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
@@ -1568,6 +1571,70 @@ def _update_benchmark_concurrency(
             detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state.",
         )
     return benchmark_row
+
+
+def _force_stop_runtime(http_request: Request, benchmark_row: Benchmark, org: Org) -> RuntimeServices:
+    """Resolve the runtime that can send force-stop signals to the run's sandboxes."""
+    if benchmark_row.arguments.environment == "local":
+        return LocalRuntimeFactory.create_runtime(benchmark_row.arguments.properties.data_root, org.id)
+    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+        http_request,
+        aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
+        org_id=org.id,
+    )
+    return CloudRuntimeFactory.create_runtime(
+        runtime_resolution.runtime,
+        sandbox_provider=benchmark_row.arguments.sandbox_provider,
+        sandbox_provider_secret_name=_resolve_force_stop_provider_secret_name(
+            benchmark_row, runtime_resolution.access_key_harness_config
+        ),
+    )
+
+
+@app.post("/benchmarks/{benchmark_id}/shed")
+async def shed_benchmark(
+    benchmark_id: TrackedBenchmarkId,
+    request: ShedBenchmarkRequest,
+    http_request: Request,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> ShedBenchmarkResponse:
+    """Lower an active run's concurrency and force stop the newest tasks above the new limit.
+
+    Selection and the stop transition happen in one locked transaction, so a task that has moved on to
+    evaluating is never stopped. With ``dry_run`` the transaction is rolled back and only the selection is returned.
+    """
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    runtime = None if request.dry_run else _force_stop_runtime(http_request, benchmark_row, org)
+
+    try:
+        with session.no_autoflush:
+            lock_executor_admission(session)
+    except MaintenanceModeError as exc:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state.",
+        )
+    current = benchmark_row.arguments.concurrency
+    if request.concurrency >= current:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Run {benchmark_id} concurrency is {current}; shed can only lower it.",
+        )
+
+    task_ids = apply_shed_benchmark(benchmark_row, request.concurrency, session, org)
+    if runtime is None:
+        session.rollback()
+    else:
+        session.commit()
+        if task_ids:
+            await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=task_ids)
+    return ShedBenchmarkResponse(benchmark_id=benchmark_id, concurrency=request.concurrency, task_ids=task_ids)
 
 
 @app.patch("/benchmarks/{benchmark_id}/concurrency")

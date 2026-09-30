@@ -14,7 +14,7 @@ from benchmark_service import (
     SandboxQuery,
 )
 from benchmark_service.client import BenchmarkServiceError
-from sqlmodel import Session, asc, col, func, or_, select, update
+from sqlmodel import Session, asc, col, desc, func, or_, select, update
 
 from tracker.database.models import (
     Benchmark,
@@ -81,6 +81,34 @@ def apply_stop_benchmark(
     elif task_ids is None and result.rowcount > 0:
         benchmark_row.status = BenchmarkStatus.STOPPING
         session.add(benchmark_row)
+
+
+def apply_shed_benchmark(benchmark_row: Benchmark, concurrency: int, session: Session, org: Org) -> list[str]:
+    """Lower the concurrency limit and stop the newest tasks above it, without committing the transaction.
+
+    The caller must hold the benchmark row lock. Evaluating tasks count toward the limit but are never
+    stopped, so their evaluation state survives. Returns the stopped task ids, newest first.
+    """
+    run_tasks = (col(Task.benchmark) == benchmark_row.id, col(Task.org_id) == org.id)
+    active_count = session.exec(
+        select(func.count(col(Task.id)))
+        .where(*run_tasks)
+        .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
+    ).one()
+    shed_tasks = session.exec(
+        select(Task)
+        .where(*run_tasks)
+        .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS]))
+        .order_by(desc(Task.started_at), desc(Task.id))
+        .limit(max(active_count - concurrency, 0))
+        .with_for_update()
+    ).all()
+
+    for task in shed_tasks:
+        task.status = TaskStatus.STOPPED
+    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
+    session.add(benchmark_row)
+    return [task.task_id for task in shed_tasks]
 
 
 async def initiate_stop_benchmark(

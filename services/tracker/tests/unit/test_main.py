@@ -9,7 +9,7 @@ import logging
 import re
 import tarfile
 from collections.abc import AsyncIterator
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -802,6 +802,140 @@ class TestTrackerAPI:
         assert persisted is not None
         assert persisted.status == BenchmarkStatus.STOPPED
         assert persisted.arguments.concurrency == 9
+
+    @staticmethod
+    def _add_shed_tasks(database_session: Session, benchmark: Benchmark) -> None:
+        """Persist one task per status; ``started_at`` grows with the position in the list."""
+        statuses = [
+            ("task_evaluating", TaskStatus.EVALUATING),
+            ("task_oldest", TaskStatus.IN_PROGRESS),
+            ("task_building", TaskStatus.BUILDING),
+            ("task_newest", TaskStatus.IN_PROGRESS),
+            ("task_pending", TaskStatus.PENDING),
+        ]
+        first_started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        database_session.add(benchmark)
+        database_session.add_all(
+            Task(
+                org_id=TEST_ORG_ID,
+                task_id=task_id,
+                benchmark=benchmark.id,
+                status=status,
+                started_at=first_started + timedelta(minutes=position),
+            )
+            for position, (task_id, status) in enumerate(statuses)
+        )
+        database_session.commit()
+
+    @staticmethod
+    def _task_statuses(database_session: Session, benchmark: Benchmark) -> dict[str, TaskStatus]:
+        database_session.expire_all()
+        tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
+        return {task.task_id: task.status for task in tasks}
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_shed_benchmark_stops_newest_tasks_above_new_limit(
+        self,
+        dry_run: bool,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        """Three of four active tasks are above a limit of two; the evaluating one is spared."""
+        self._add_shed_tasks(database_session, example_benchmark_object)
+        statuses_before = self._task_statuses(database_session, example_benchmark_object)
+        force_stop = AsyncMock()
+        monkeypatch.setattr(main_module, "force_stop_sandboxes", force_stop)
+
+        response = client.post(
+            f"/benchmarks/{example_benchmark_object.id}/shed",
+            json={"concurrency": 2, "dry_run": dry_run},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "benchmark_id": str(example_benchmark_object.id),
+            "concurrency": 2,
+            "task_ids": ["task_newest", "task_building"],
+        }
+        database_session.refresh(example_benchmark_object)
+        if dry_run:
+            assert example_benchmark_object.arguments.concurrency == 5
+            assert self._task_statuses(database_session, example_benchmark_object) == statuses_before
+            force_stop.assert_not_awaited()
+        else:
+            assert example_benchmark_object.arguments.concurrency == 2
+            assert self._task_statuses(database_session, example_benchmark_object) == {
+                **statuses_before,
+                "task_newest": TaskStatus.STOPPED,
+                "task_building": TaskStatus.STOPPED,
+            }
+            force_stop.assert_awaited_once()
+            assert force_stop.await_args is not None
+            assert force_stop.await_args.kwargs["task_ids"] == ["task_newest", "task_building"]
+
+    def test_shed_benchmark_lowers_limit_without_stopping_when_within_it(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        self._add_shed_tasks(database_session, example_benchmark_object)
+        statuses_before = self._task_statuses(database_session, example_benchmark_object)
+        force_stop = AsyncMock()
+        monkeypatch.setattr(main_module, "force_stop_sandboxes", force_stop)
+
+        response = client.post(
+            f"/benchmarks/{example_benchmark_object.id}/shed",
+            json={"concurrency": 4},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["task_ids"] == []
+        database_session.refresh(example_benchmark_object)
+        assert example_benchmark_object.arguments.concurrency == 4
+        assert self._task_statuses(database_session, example_benchmark_object) == statuses_before
+        force_stop.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("status", "concurrency", "expected_status"),
+        [
+            (BenchmarkStatus.IN_PROGRESS, 5, 400),
+            (BenchmarkStatus.IN_PROGRESS, 6, 400),
+            (BenchmarkStatus.STOPPED, 2, 409),
+        ],
+    )
+    def test_shed_benchmark_rejects_raising_the_limit_or_inactive_runs(
+        self,
+        status: BenchmarkStatus,
+        concurrency: int,
+        expected_status: int,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_headers: dict[str, str],
+    ) -> None:
+        example_benchmark_object.status = status
+        self._add_shed_tasks(database_session, example_benchmark_object)
+        statuses_before = self._task_statuses(database_session, example_benchmark_object)
+        force_stop = AsyncMock()
+        monkeypatch.setattr(main_module, "force_stop_sandboxes", force_stop)
+
+        response = client.post(
+            f"/benchmarks/{example_benchmark_object.id}/shed",
+            json={"concurrency": concurrency},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == expected_status, response.text
+        database_session.refresh(example_benchmark_object)
+        assert example_benchmark_object.arguments.concurrency == 5
+        assert self._task_statuses(database_session, example_benchmark_object) == statuses_before
+        force_stop.assert_not_awaited()
 
     def test_trailing_slash_does_not_redirect(self, monkeypatch: MonkeyPatch) -> None:
         """

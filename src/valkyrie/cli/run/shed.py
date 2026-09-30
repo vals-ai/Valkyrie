@@ -1,19 +1,12 @@
 """Lower a run's concurrency and force stop the newest tasks above the new limit."""
 
-import asyncio
 from uuid import UUID
 
 import click
-from valkyrie.sdk import ValkyrieClient, ValkyrieSDKError
-from valkyrie.sdk.models import FetchTasksRequest, Order, TaskStatus, TaskSummary
 
-from valkyrie.cli.display import format_table, terminal_safe
+from valkyrie.cli.display import terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.runtime_config import config_location, tracker_service_url
 from valkyrie.cli.tracker_client import TrackerService
-
-_ACTIVE_STATUSES = [TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
-_STOPPABLE_STATUSES = [TaskStatus.BUILDING, TaskStatus.IN_PROGRESS]
 
 
 @click.command(
@@ -35,58 +28,27 @@ def shed(run_id: UUID, concurrency: int, dry_run: bool) -> None:
     """Lower concurrency, then force stop the newest tasks above the new limit."""
     try:
         with TrackerService() as tracker:
-            current = tracker.fetch_benchmark_metadata(run_id).benchmark_arguments.concurrency
-            if concurrency >= current:
-                raise click.ClickException(
-                    f"Run {run_id} concurrency is {current}; --concurrency must be lower to shed load."
-                )
-            planned = _newest_over_limit(asyncio.run(_active_tasks(run_id)), concurrency)
+            planned = tracker.shed_benchmark(run_id, concurrency, dry_run=True).task_ids
+            _print_tasks(planned, "Would force stop")
             if dry_run:
-                _print_tasks(planned, "Would force stop")
                 return
             if not click.confirm(
-                f"Lower concurrency from {current} to {concurrency} and force stop the {len(planned)} newest task(s) "
-                f"in run {run_id}?"
+                f"Lower run {run_id} concurrency to {concurrency} and force stop the {len(planned)} newest task(s)?"
             ):
                 click.echo("Cancelled.")
                 return
 
-            response = tracker.update_benchmark_concurrency(run_id, concurrency)
-            click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
-            victims = _newest_over_limit(asyncio.run(_active_tasks(run_id)), response.concurrency)
-            if victims:
-                _ = tracker.stop_benchmark(run_id, force=True, task_ids=[task.task_id for task in victims])
-        _print_tasks(victims, "Force stopped")
-    except (TrackerServiceError, ValkyrieSDKError) as error:
+            response = tracker.shed_benchmark(run_id, concurrency, dry_run=False)
+        click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
+        _print_tasks(response.task_ids, "Force stopped")
+    except TrackerServiceError as error:
         raise click.ClickException(str(error)) from error
 
 
-def _newest_over_limit(active: list[TaskSummary], concurrency: int) -> list[TaskSummary]:
-    """Return the newest stoppable tasks that keep the run above ``concurrency``.
-
-    Tasks are admitted oldest ``started_at`` first, so the largest ``started_at`` values are the newest admissions.
-    """
-    stoppable = sorted(
-        (task for task in active if task.status in _STOPPABLE_STATUSES),
-        key=lambda task: (task.started_at, task.id),
-        reverse=True,
-    )
-    return stoppable[: max(len(active) - concurrency, 0)]
-
-
-async def _active_tasks(run_id: UUID) -> list[TaskSummary]:
-    """List active tasks by paging over the whole run in task-id order, which status changes cannot reorder."""
-    request = FetchTasksRequest(sort="task_id", sort_dir=Order.ASC, limit=500)
-    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
-        return [task async for task in client.benchmarks.iter_tasks(run_id, request) if task.status in _ACTIVE_STATUSES]
-
-
-def _print_tasks(tasks: list[TaskSummary], action: str) -> None:
-    if not tasks:
+def _print_tasks(task_ids: list[str], action: str) -> None:
+    if not task_ids:
         click.echo("No building or in-progress tasks are above the limit.")
         return
-    rows = [
-        {"Task": terminal_safe(task.task_id, preserve_newlines=False), "Status": task.status.value} for task in tasks
-    ]
-    click.echo(f"{action}:")
-    format_table(rows, ["Task", "Status"], total_count=len(tasks), item_name="task")
+    click.echo(f"{action} {len(task_ids)} task(s):")
+    for task_id in task_ids:
+        click.echo(f"  {terminal_safe(task_id, preserve_newlines=False)}")

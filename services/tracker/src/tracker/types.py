@@ -354,6 +354,17 @@ class UpdateBenchmarkConcurrencyResponse(BaseModel):
     concurrency: int
 
 
+class ShedBenchmarkRequest(BaseModel):
+    concurrency: int = Field(ge=1, strict=True)
+    dry_run: bool = False
+
+
+class ShedBenchmarkResponse(BaseModel):
+    benchmark_id: UUID
+    concurrency: int
+    task_ids: list[str]
+
+
 class Order(str, Enum):
     ASC = "asc"
     DESC = "desc"

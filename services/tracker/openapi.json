@@ -2557,6 +2557,52 @@
         "title": "SchedulerWaitingEntryResponse",
         "type": "object"
       },
+      "ShedBenchmarkRequest": {
+        "properties": {
+          "concurrency": {
+            "minimum": 1.0,
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "concurrency"
+        ],
+        "title": "ShedBenchmarkRequest",
+        "type": "object"
+      },
+      "ShedBenchmarkResponse": {
+        "properties": {
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "concurrency",
+          "task_ids"
+        ],
+        "title": "ShedBenchmarkResponse",
+        "type": "object"
+      },
       "SingleBenchmarkResponse": {
         "description": "Single-run view: BenchmarkTableRow fields plus optional final_score.",
         "properties": {
@@ -4356,6 +4402,69 @@
           }
         },
         "summary": "Stream Task Logs"
+      }
+    },
+    "/benchmarks/{benchmark_id}/shed": {
+      "post": {
+        "description": "Lower an active run's concurrency and force stop the newest tasks above the new limit.\n\nSelection and the stop transition happen in one locked transaction, so a task that has moved on to\nevaluating is never stopped. With ``dry_run`` the transaction is rolled back and only the selection is returned.",
+        "operationId": "shed_benchmark",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
+          },
+          {
+            "$ref": "#/components/parameters/HarnessS3Bucket"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShedBenchmarkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShedBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Shed Benchmark"
       }
     },
     "/benchmarks/{benchmark_id}/tasks": {

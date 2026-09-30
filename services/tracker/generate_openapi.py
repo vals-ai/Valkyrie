@@ -24,6 +24,7 @@ HARNESS_OPERATIONS = (
     ("/analyze-benchmark/{benchmark_id}", "post"),
     ("/benchmarks/{benchmark_id}/logs", "get"),
     ("/benchmarks/{benchmark_id}/logs/stream", "get"),
+    ("/benchmarks/{benchmark_id}/shed", "post"),
     ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts", "get"),
     ("/check-results-exist", "get"),
     ("/fetch-benchmark", "get"),
