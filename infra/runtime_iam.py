@@ -28,6 +28,8 @@ def managed_runtime_environment(
         "AWS_DEPLOYMENT_S3_BUCKET": bucket.bucket_name,
         "AWS_DEPLOYMENT_LOG_GROUP": stage.phys(config.benchmark_log_group_prefix),
         "AWS_DEPLOYMENT_LOG_RETENTION_DAYS": str(config.benchmark_log_retention_days),
+        "AWS_DEPLOYMENT_SANDBOX_PROVIDER": config.sandbox_provider,
+        "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME": config.sandbox_provider_secret_name,
         "AWS_MANAGED_SUBMISSIONS_ENABLED": str(config.submissions_enabled).lower(),
         "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS": config.managed_storage_org_environments_json,
         "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": str(config.managed_storage_submissions_enabled).lower(),

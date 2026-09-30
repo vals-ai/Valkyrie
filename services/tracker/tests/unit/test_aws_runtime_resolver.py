@@ -14,13 +14,14 @@ from main import app
 from tracker import config
 from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
 from tracker.aws.resolver import (
+    resolve_managed_sandbox_provider,
     resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark
-from tracker.types import HarnessConfig, ManagedExecutionContext, RunExecutionRequest
+from tracker.types import HarnessConfig, ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 _OTHER_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -63,6 +64,12 @@ def _configure_managed_runtime(
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket" if resources_configured else None)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group" if resources_configured else None)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30" if resources_configured else None)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER", "daytona" if resources_configured else None)
+    monkeypatch.setattr(
+        config,
+        "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME",
+        "deployment-provider-secret" if resources_configured else None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -451,6 +458,81 @@ def test_managed_start_cannot_override_deployment_resources(monkeypatch: pytest.
     with pytest.raises(HTTPException) as error:
         resolve_start_aws_runtime(_request(), None, _ORG_ID, replace(original.runtime.resources, s3_bucket="other"))
     assert error.value.status_code == 400
+
+
+def _managed_start_request(**overrides: object) -> StartBenchmarkRequest:
+    return StartBenchmarkRequest(
+        contract=AgentContractRequest(name="agent", run_cmd="run"),
+        benchmark_name="test",
+        **cast(Any, overrides),
+    )
+
+
+@pytest.mark.parametrize("sandbox_provider", ["daytona", ""])
+def test_managed_request_uses_deployment_sandbox_provider_default(
+    monkeypatch: pytest.MonkeyPatch, sandbox_provider: str
+) -> None:
+    """A managed request without a provider secret resolves the deployment default pair."""
+    _configure_managed_runtime(monkeypatch)
+    request = _managed_start_request(sandbox_provider=sandbox_provider)
+
+    resolved = resolve_managed_sandbox_provider(request)
+
+    assert resolved.sandbox_provider == "daytona"
+    assert resolved.sandbox_provider_secret_name == "deployment-provider-secret"
+
+
+def test_managed_request_honors_explicit_provider_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit provider and secret pair is not rewritten to the deployment default."""
+    _configure_managed_runtime(monkeypatch)
+    request = _managed_start_request(sandbox_provider="modal", sandbox_provider_secret_name="ModalSecrets")
+
+    resolved = resolve_managed_sandbox_provider(request)
+
+    assert resolved.sandbox_provider == "modal"
+    assert resolved.sandbox_provider_secret_name == "ModalSecrets"
+
+
+def test_managed_request_rejects_unknown_provider_without_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Naming a non-default provider without a secret fails instead of switching providers."""
+    _configure_managed_runtime(monkeypatch)
+    request = _managed_start_request(sandbox_provider="modal")
+
+    with pytest.raises(HTTPException) as error:
+        resolve_managed_sandbox_provider(request)
+
+    assert error.value.status_code == 400
+    assert "no configured secret for sandbox provider 'modal'" in error.value.detail
+
+
+def test_managed_request_requires_deployment_sandbox_provider_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deployment without provider defaults reports a configuration error, not a client error."""
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", None)
+    request = _managed_start_request()
+
+    with pytest.raises(HTTPException) as error:
+        resolve_managed_sandbox_provider(request)
+
+    assert error.value.status_code == 500
+    assert "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME" in error.value.detail
+
+
+def test_managed_start_errors_do_not_direct_users_to_access_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hosted managed failures give supported recovery steps instead of AWS credential setup."""
+    _configure_managed_runtime(monkeypatch, submissions_enabled=False)
+    with pytest.raises(HTTPException) as error:
+        resolve_start_aws_runtime(_request(), None, _ORG_ID)
+    assert error.value.status_code == 503
+    assert "access key" not in error.value.detail.lower()
+    assert "Try again later or contact Vals support" in error.value.detail
+
+    _configure_managed_runtime(monkeypatch, eligible=False)
+    with pytest.raises(HTTPException) as error:
+        resolve_start_aws_runtime(_request(), None, _ORG_ID)
+    assert error.value.status_code == 403
+    assert "access key" not in error.value.detail.lower()
+    assert "Contact Vals support" in error.value.detail
 
 
 def test_local_start_is_rejected_before_aws_resolution(monkeypatch: pytest.MonkeyPatch) -> None:

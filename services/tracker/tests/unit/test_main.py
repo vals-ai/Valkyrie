@@ -13,7 +13,7 @@ from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import ANY, AsyncMock, MagicMock, Mock
 from uuid import UUID, uuid4
 
 import httpx
@@ -38,6 +38,7 @@ from executor_protocol import SUPPORTED_PROTOCOL_VERSION, ExecutorTelemetryConte
 from main import app, tracker_service_error_handler
 from tests.storage_lifecycle_support import MemoryS3
 from tests.utils import TEST_ORG_ID, async_iterator
+from tracker import config
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
@@ -1061,6 +1062,45 @@ class TestTrackerAPI:
         assert benchmark_row is not None
         assert benchmark_row.arguments.priority == 3
         assert benchmark_row.arguments.queue_pool_id is not None
+
+    async def test_start_benchmark_managed_resolves_deployment_sandbox_provider(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        mock_kicker: Any,
+    ) -> None:
+        """A managed submission without provider fields persists the deployment defaults."""
+        monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", True)
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER", "daytona")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", "deployment-provider-secret")
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
+        provider_config = Mock()
+        provider_config.create_provider.return_value = Mock(admission_pool_id="shared-pool", close=AsyncMock())
+        fetch_provider = AsyncMock(return_value=provider_config)
+        monkeypatch.setattr("main.fetch_sandbox_provider_config", fetch_provider)
+        monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench")
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200, response.json()
+        fetch_provider.assert_awaited_once_with("deployment-provider-secret", ANY, "daytona")
+        benchmark_row = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+        assert benchmark_row is not None
+        assert benchmark_row.aws_managed is True
+        assert benchmark_row.arguments.sandbox_provider == "daytona"
+        assert benchmark_row.arguments.sandbox_provider_secret_name == "deployment-provider-secret"
+        queued_request = mock_kicker.queued_calls[0]["execution_context_json"]["start_benchmark_request"]
+        assert queued_request["sandbox_provider"] == "daytona"
+        assert queued_request["sandbox_provider_secret_name"] == "deployment-provider-secret"
 
     @pytest.mark.parametrize(
         ("priority", "expected_status"),

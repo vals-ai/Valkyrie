@@ -54,6 +54,8 @@ class DatabaseConfig:
 class ManagedAWSRuntimeConfig:
     benchmark_log_group_prefix: str
     benchmark_log_retention_days: int
+    sandbox_provider: str = "daytona"
+    sandbox_provider_secret_name: str = ""
     deployment_role_org_ids: tuple[str, ...] = ()
     submissions_enabled: bool = False
     managed_storage_org_environments: Mapping[UUID, frozenset[str]] = field(default_factory=dict[UUID, frozenset[str]])
@@ -247,14 +249,19 @@ def config_for(stage: Stage) -> StageConfig:
 
     deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")
     tracker_secret_name_prefixes = _csv_environment("AWS_TRACKER_SECRET_NAME_PREFIXES")
+    sandbox_provider = os.environ.get("AWS_DEPLOYMENT_SANDBOX_PROVIDER") or config.managed_aws.sandbox_provider
+    sandbox_provider_secret_name = os.environ.get("AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", "")
     if os.environ.get("DESCOPE_PROJECT_ID") == _OFFLINE_SYNTH_SECRET_PREFIX:
         deployment_role_org_ids = deployment_role_org_ids or (_OFFLINE_SYNTH_ORG_ID,)
         tracker_secret_name_prefixes = tracker_secret_name_prefixes or (_OFFLINE_SYNTH_SECRET_PREFIX,)
+        sandbox_provider_secret_name = sandbox_provider_secret_name or _OFFLINE_SYNTH_SECRET_PREFIX
     if config.managed_aws.submissions_enabled:
         if not deployment_role_org_ids:
             raise ValueError(f"{stage.name} deployments require AWS_DEPLOYMENT_ROLE_ORG_IDS.")
         if not tracker_secret_name_prefixes:
             raise ValueError(f"{stage.name} deployments require AWS_TRACKER_SECRET_NAME_PREFIXES.")
+        if not sandbox_provider_secret_name:
+            raise ValueError(f"{stage.name} deployments require AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME.")
 
     managed_storage_org_environments = _managed_storage_environment_mapping(
         "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS",
@@ -276,6 +283,8 @@ def config_for(stage: Stage) -> StageConfig:
         managed_aws=replace(
             config.managed_aws,
             deployment_role_org_ids=deployment_role_org_ids,
+            sandbox_provider=sandbox_provider,
+            sandbox_provider_secret_name=sandbox_provider_secret_name,
             managed_storage_org_environments=managed_storage_org_environments,
             managed_storage_submissions_enabled=managed_storage_submissions_enabled,
             tracker_secret_name_prefixes=tracker_secret_name_prefixes,

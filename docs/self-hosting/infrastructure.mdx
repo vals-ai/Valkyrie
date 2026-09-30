@@ -46,10 +46,11 @@ Synthesis reads a few deployment-specific values from the environment, so export
 ```bash
 export AWS_DEPLOYMENT_ROLE_ORG_IDS=<organization-uuid>[,<organization-uuid>]
 export AWS_TRACKER_SECRET_NAME_PREFIXES=<secrets-manager-name-prefix>[,<prefix>]
+export AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME=<secrets-manager-secret-name>
 export SENTRY_DSN_SECRET_NAME=<secrets-manager-secret-name>
 ```
 
-`AWS_DEPLOYMENT_ROLE_ORG_IDS` lists the organization ids allowed to submit managed runs, and `AWS_TRACKER_SECRET_NAME_PREFIXES` lists the Secrets Manager name prefixes the tracker is allowed to read for benchmark-service authentication. A deployment with authentication enabled also needs `DESCOPE_PROJECT_ID` and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`.
+`AWS_DEPLOYMENT_ROLE_ORG_IDS` lists the organization ids allowed to submit managed runs, and `AWS_TRACKER_SECRET_NAME_PREFIXES` lists the Secrets Manager name prefixes the tracker is allowed to read for benchmark-service authentication. `AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME` names the secret the tracker resolves for managed runs that do not name a provider secret; `AWS_DEPLOYMENT_SANDBOX_PROVIDER` optionally overrides the default provider. A deployment with authentication enabled also needs `DESCOPE_PROJECT_ID` and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`.
 
 Run the commands below from `infra/`, replacing the angle-bracket placeholders first. Start by inspecting every stack change:
 

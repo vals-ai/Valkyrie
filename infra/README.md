@@ -50,6 +50,9 @@ environments hold their own values:
   to submit managed runs
 - `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
   prefixes the Tracker may resolve for benchmark-service authentication
+- `AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME` -- the Secrets Manager name the
+  Tracker resolves for managed runs that do not name a provider secret;
+  `AWS_DEPLOYMENT_SANDBOX_PROVIDER` optionally overrides the default provider
 
 The ExecutorHost task roles can read every Secrets Manager secret in their own
 account and Region. Release-test does not receive this access.
@@ -134,6 +137,7 @@ export DESCOPE_PROJECT_ID="dev-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
 export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
 export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
+export AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME="dev-provider-secret"
 ```
 
    Use the target stage's values. Bench and production also require their

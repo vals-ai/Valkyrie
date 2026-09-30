@@ -16,7 +16,7 @@ from tracker.aws.managed_storage import (
     validate_managed_storage_bucket,
 )
 from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.types import AWSCredentials, HarnessConfig
+from tracker.types import AWSCredentials, HarnessConfig, StartBenchmarkRequest
 
 _REQUIRED_HARNESS_HEADER_KEYS = (
     "aws_access_key_id",
@@ -220,11 +220,42 @@ def organization_can_use_managed_aws(org_id: UUID) -> bool:
     return org_id in _eligible_org_ids()
 
 
+def _deployment_sandbox_provider() -> tuple[str, str]:
+    """Return the deployment's default sandbox provider and its secret name."""
+    if not config.AWS_DEPLOYMENT_SANDBOX_PROVIDER or not config.AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME:
+        raise ManagedAWSConfigurationError(
+            "Managed AWS configuration is missing AWS_DEPLOYMENT_SANDBOX_PROVIDER or "
+            "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME"
+        )
+    return config.AWS_DEPLOYMENT_SANDBOX_PROVIDER, config.AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME
+
+
+def resolve_managed_sandbox_provider(request: StartBenchmarkRequest) -> StartBenchmarkRequest:
+    """Fill deployment sandbox-provider defaults omitted by a managed submission."""
+    if request.sandbox_provider_secret_name:
+        return request
+    try:
+        provider, secret_name = _deployment_sandbox_provider()
+    except ManagedAWSConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if request.sandbox_provider and request.sandbox_provider != provider:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Managed execution has no configured secret for sandbox provider "
+                f"'{request.sandbox_provider}' (deployment default: '{provider}'). "
+                "Provide a provider secret name or use the deployment default provider."
+            ),
+        )
+    return request.model_copy(update={"sandbox_provider": provider, "sandbox_provider_secret_name": secret_name})
+
+
 def deployment_aws_runtime(org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
     """Build a default-chain runtime for an eligible organization."""
     if not organization_can_use_managed_aws(org_id):
         raise ManagedAWSEligibilityError(
-            "Managed AWS access is not available for this organization. Configure AWS access keys and try again."
+            "Managed AWS access is not available for this organization. "
+            "Contact Vals support to enable managed AWS for this organization."
         )
     resources = _managed_resources(properties)
     return AWSRuntime(
@@ -259,7 +290,7 @@ def resolve_start_aws_runtime(
     if not config.AWS_MANAGED_SUBMISSIONS_ENABLED:
         raise HTTPException(
             status_code=503,
-            detail="Managed AWS submissions are temporarily unavailable. Configure AWS access keys and try again.",
+            detail="Managed AWS submissions are temporarily unavailable. Try again later or contact Vals support.",
         )
 
     return AWSRuntimeResolution(_http_deployment_runtime(org_id), None).with_submission_properties(properties)

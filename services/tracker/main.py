@@ -58,6 +58,7 @@ from tracker.aws.resolver import (
     http_validate_saved_managed_storage_runtime,
     inspect_harness_headers,
     resolve_aws_runtime_metadata,
+    resolve_managed_sandbox_provider,
     resolve_run_metadata_aws_runtime,
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
@@ -699,11 +700,7 @@ async def _start_benchmark(
 
     if aws_managed:
         assert aws_runtime is not None
-        if not request.sandbox_provider or not request.sandbox_provider_secret_name:
-            raise HTTPException(
-                status_code=400,
-                detail="Managed runs require a sandbox provider and sandbox provider secret name.",
-            )
+        request = resolve_managed_sandbox_provider(request)
         try:
             validate_managed_execution_request(request)
         except ValueError as exc:
