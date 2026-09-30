@@ -357,6 +357,21 @@ class UpdateBenchmarkConcurrencyResponse(ResponseModel):
     concurrency: int
 
 
+class ShedBenchmarkRequest(BaseModel):
+    """A concurrency limit below the run's current one; ``dry_run`` only previews the tasks to stop."""
+
+    concurrency: int = Field(ge=1, strict=True)
+    dry_run: bool = False
+
+
+class ShedBenchmarkResponse(ResponseModel):
+    """The new limit and the newest tasks stopped (or, on a dry run, selected) to get under it."""
+
+    benchmark_id: UUID
+    concurrency: int
+    task_ids: list[str]
+
+
 class FilterOptionsResponse(ResponseModel):
     """Values available for run filters in the caller's organization."""
 

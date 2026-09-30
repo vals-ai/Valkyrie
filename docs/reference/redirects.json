@@ -232,6 +232,10 @@
     "destination": "/reference/sdk/runs#update-concurrency"
   },
   {
+    "source": "/reference/sdk/runs/shed",
+    "destination": "/reference/sdk/runs#shed"
+  },
+  {
     "source": "/reference/sdk/runs/stop",
     "destination": "/reference/sdk/runs#stop"
   },
@@ -490,6 +494,14 @@
   {
     "source": "/reference/sdk/models/benchmarks/single-task-response",
     "destination": "/reference/sdk/models/benchmarks#single-task-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/shed-benchmark-request",
+    "destination": "/reference/sdk/models/runs#shed-benchmark-request"
+  },
+  {
+    "source": "/reference/sdk/models/runs/shed-benchmark-response",
+    "destination": "/reference/sdk/models/runs#shed-benchmark-response"
   },
   {
     "source": "/reference/sdk/models/runs/start-benchmark-response",

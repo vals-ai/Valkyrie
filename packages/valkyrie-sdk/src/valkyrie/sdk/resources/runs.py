@@ -39,6 +39,8 @@ from valkyrie.sdk.models import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    ShedBenchmarkRequest,
+    ShedBenchmarkResponse,
     UpdateBenchmarkConcurrencyRequest,
     UpdateBenchmarkConcurrencyResponse,
 )
@@ -476,6 +478,16 @@ class RunsResource:
             "PATCH",
             f"/benchmarks/{run_id}/concurrency",
             UpdateBenchmarkConcurrencyResponse,
+            json=request.model_dump(mode="json"),
+        )
+
+    async def shed(self, run_id: UUID, *, concurrency: int, dry_run: bool = False) -> ShedBenchmarkResponse:
+        """Lower an active run's concurrency and force stop the newest tasks above the new limit."""
+        request = ShedBenchmarkRequest(concurrency=concurrency, dry_run=dry_run)
+        return await self._sdk.request_model(
+            "POST",
+            f"/benchmarks/{run_id}/shed",
+            ShedBenchmarkResponse,
             json=request.model_dump(mode="json"),
         )
 

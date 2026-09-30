@@ -468,6 +468,34 @@ async def update_concurrency(run_id: UUID, *, concurrency: int) -> UpdateBenchma
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
+## `client.runs.shed` {#shed}
+
+Lower an active run's concurrency and force stop the newest tasks above the new limit.
+
+```python Signature
+async def shed(run_id: UUID, *, concurrency: int, dry_run: bool = False) -> ShedBenchmarkResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"concurrency"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · int</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"dry_run"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/runs#shed-benchmark-response"><code>ShedBenchmarkResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
 ## `client.runs.stop` {#stop}
 
 Stop a run or selected tasks.

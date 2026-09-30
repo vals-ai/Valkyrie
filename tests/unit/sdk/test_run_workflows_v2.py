@@ -293,6 +293,24 @@ async def test_update_concurrency(make_client) -> None:
     assert result.concurrency == 7
 
 
+async def test_shed(make_client) -> None:
+    run_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == f"/benchmarks/{run_id}/shed"
+        assert json.loads(request.content) == {"concurrency": 3, "dry_run": True}
+        return httpx.Response(200, json={"benchmark_id": str(run_id), "concurrency": 3, "task_ids": ["task_newest"]})
+
+    async with make_client(handler) as client:
+        result = await client.runs.shed(run_id, concurrency=3, dry_run=True)
+        for invalid in (0, -1, True):
+            with pytest.raises(ValueError):
+                await client.runs.shed(run_id, concurrency=invalid)
+    assert result.concurrency == 3
+    assert result.task_ids == ["task_newest"]
+
+
 async def test_run_iteration_rejects_repeated_cursor(make_client) -> None:
     from valkyrie.sdk import FetchBenchmarksRequest
 

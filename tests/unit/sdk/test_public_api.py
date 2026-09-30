@@ -61,6 +61,8 @@ EXPECTED_ALL = [
     "SchedulerWaitingEntryResponse",
     "SingleBenchmarkResponse",
     "SingleTaskResponse",
+    "ShedBenchmarkRequest",
+    "ShedBenchmarkResponse",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
     "UpdateBenchmarkConcurrencyRequest",
