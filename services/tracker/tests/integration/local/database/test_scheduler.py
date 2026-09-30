@@ -1409,6 +1409,71 @@ async def test_recovery_requeues_reserved_build_only_after_its_creator_dies(
     assert _reservation_count(postgres_engine, context.pool_id) == 0
 
 
+async def test_stopped_reservation_holds_capacity_until_its_creator_lets_go(
+    postgres_engine: Engine,
+    postgres_session: Session,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    context = _context(postgres_engine, provider_pool_id, [], reserved=True)
+    _, _, (task,) = _run(postgres_session, context.pool_id, [("stopped", TaskStatus.PENDING, _ATTEMPT)])
+    _reserve(postgres_session, context.pool_id, task)
+    _update_task(postgres_engine, task, TaskStatus.STOPPED, task.started_at)
+
+    build_lock = store.task_build_lock(postgres_engine, task.id)
+    assert await build_lock.acquire()
+    try:
+        await admission.recover_queued_pool(context)
+
+        assert _reservation_count(postgres_engine, context.pool_id) == 1
+    finally:
+        await build_lock.release()
+
+    await admission.recover_queued_pool(context)
+
+    assert _task(postgres_engine, task).status == TaskStatus.STOPPED
+    assert _reservation_count(postgres_engine, context.pool_id) == 0
+
+
+async def test_cancellation_while_leaving_the_pool_lock_releases_the_build_lock(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_authority: Any,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    events: list[str] = []
+    context = _context(postgres_engine, provider_pool_id, events, reserved=True)
+    _, benchmark, (task,) = _run(postgres_session, context.pool_id, [("cancelled", TaskStatus.PENDING, _ATTEMPT)])
+    authority = executor_authority(benchmark, session=postgres_session)
+
+    class CancelledWhileReleasing(store.PostgresAdvisoryLock):
+        async def release(self) -> None:
+            await super().release()
+            if _reservation_count(postgres_engine, context.pool_id) == 1:
+                raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        admission,
+        "queue_pool_lock",
+        lambda engine, pool_id: CancelledWhileReleasing(engine, resource_id=store.queue_pool_lock_id(pool_id)),
+    )
+
+    async with AsyncExitStack() as stack:
+        with pytest.raises(asyncio.CancelledError):
+            await _enter(stack, context, task, events, authority)
+
+    assert events == ["capacity", "read_capacity"]
+    assert _task(postgres_engine, task).status == TaskStatus.BUILDING
+    assert _reservation_count(postgres_engine, context.pool_id) == 1
+    assert await _build_lock_is_free(postgres_engine, task)
+    assert await _pool_lock_is_free(postgres_engine, context.pool_id)
+
+    await admission.recover_queued_pool(context)
+
+    assert _task(postgres_engine, task).status == TaskStatus.PENDING
+    assert _reservation_count(postgres_engine, context.pool_id) == 0
+
+
 @pytest.mark.parametrize("interruption", ["superseded", "stopped", "revoked"])
 async def test_reserved_promotion_requires_exact_attempt_live_run_and_authority(
     interruption: str,

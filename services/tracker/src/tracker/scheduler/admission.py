@@ -196,11 +196,15 @@ async def _claim_reserved_build(
     task_row_id: UUID,
     expected_started_at: datetime,
     capacity: SandboxCapacity,
+    reserved: ActiveReservations,
     resources: Resources,
 ) -> PostgresAdvisoryLock | None:
-    """Claim the head with a reservation and return the build lock proving its creator is alive."""
-    reserved = active_reservations(session, context.pool_id)
-    if reserved.count >= SANDBOX_QUEUE_BUILDING_CAP or not _fits_unreserved_capacity(capacity, resources, reserved):
+    """Claim the head with a reservation and return the build lock proving its creator is alive.
+
+    ``reserved`` must be read before ``capacity``: a build promoted in between then
+    counts in both, never in neither.
+    """
+    if not _fits_unreserved_capacity(capacity, resources, reserved):
         return None
 
     build_lock = task_build_lock(context.engine, task_row_id)
@@ -296,95 +300,100 @@ async def enter_queued_sandbox(
     while True:
         build_lock: PostgresAdvisoryLock | None = None
         lock = queue_pool_lock(context.engine, context.pool_id)
-        async with lock as acquired:
-            if acquired:
-                _reset_abandoned_pool_builds(lock.connection, context.pool_id)
-                with Session(lock.connection) as session:
-                    try:
-                        lock_execution_authority(session, authority)
-                    except ExecutionAuthorityRevoked:
-                        session.rollback()
-                        return None
-                    eligible = eligible_task_is(
-                        session,
-                        context.pool_id,
-                        task_row_id,
-                        expected_started_at,
-                    )
-                    waiting = eligible or _queued_task_state(
-                        session,
-                        task_row_id,
-                        expected_started_at,
-                    ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
-                    below_cap = (
-                        not reserves or active_reservations(session, context.pool_id).count < SANDBOX_QUEUE_BUILDING_CAP
-                    )
-                    session.rollback()
-
-                if not waiting:
-                    return None
-
-                if eligible and below_cap and await context.provider.check_admission(source, resources):
-                    capacity = await _reservable_capacity(context) if reserves else None
+        try:
+            async with lock as acquired:
+                if acquired:
+                    _reset_abandoned_pool_builds(lock.connection, context.pool_id)
                     with Session(lock.connection) as session:
                         try:
                             lock_execution_authority(session, authority)
                         except ExecutionAuthorityRevoked:
                             session.rollback()
                             return None
-                        if capacity is not None:
-                            build_lock = await _claim_reserved_build(
-                                session=session,
-                                context=context,
-                                task_row_id=task_row_id,
-                                expected_started_at=expected_started_at,
-                                capacity=capacity,
-                                resources=resources,
-                            )
-                            claimed = build_lock is not None
-                        else:
-                            claimed = claim_eligible_task(
-                                session,
-                                context.pool_id,
-                                task_row_id=task_row_id,
-                                expected_started_at=expected_started_at,
-                            )
-                            if claimed:
-                                session.commit()
-                        if not claimed:
-                            waiting = _queued_task_state(
-                                session,
-                                task_row_id,
-                                expected_started_at,
-                            ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
-                            session.rollback()
-                            if not waiting:
-                                return None
+                        eligible = eligible_task_is(
+                            session,
+                            context.pool_id,
+                            task_row_id,
+                            expected_started_at,
+                        )
+                        waiting = eligible or _queued_task_state(
+                            session,
+                            task_row_id,
+                            expected_started_at,
+                        ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
+                        reserved = active_reservations(session, context.pool_id)
+                        session.rollback()
 
-                    if claimed and build_lock is None:
-                        sandbox = await stack.enter_async_context(create())
+                    if not waiting:
+                        return None
+
+                    below_cap = not reserves or reserved.count < SANDBOX_QUEUE_BUILDING_CAP
+                    if eligible and below_cap and await context.provider.check_admission(source, resources):
+                        capacity = await _reservable_capacity(context) if reserves else None
                         with Session(lock.connection) as session:
                             try:
                                 lock_execution_authority(session, authority)
                             except ExecutionAuthorityRevoked:
                                 session.rollback()
-                                started = False
+                                return None
+                            if capacity is not None:
+                                build_lock = await _claim_reserved_build(
+                                    session=session,
+                                    context=context,
+                                    task_row_id=task_row_id,
+                                    expected_started_at=expected_started_at,
+                                    capacity=capacity,
+                                    reserved=reserved,
+                                    resources=resources,
+                                )
+                                claimed = build_lock is not None
                             else:
-                                started = _start_claimed_task(
+                                claimed = claim_eligible_task(
                                     session,
+                                    context.pool_id,
                                     task_row_id=task_row_id,
                                     expected_started_at=expected_started_at,
                                 )
-                                if started:
+                                if claimed:
                                     session.commit()
-                                else:
+                            if not claimed:
+                                waiting = _queued_task_state(
+                                    session,
+                                    task_row_id,
+                                    expected_started_at,
+                                ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
+                                session.rollback()
+                                if not waiting:
+                                    return None
+
+                        if claimed and build_lock is None:
+                            sandbox = await stack.enter_async_context(create())
+                            with Session(lock.connection) as session:
+                                try:
+                                    lock_execution_authority(session, authority)
+                                except ExecutionAuthorityRevoked:
                                     session.rollback()
-                        if not started:
-                            await _close_stack_before_cancellation(stack)
+                                    started = False
+                                else:
+                                    started = _start_claimed_task(
+                                        session,
+                                        task_row_id=task_row_id,
+                                        expected_started_at=expected_started_at,
+                                    )
+                                    if started:
+                                        session.commit()
+                                    else:
+                                        session.rollback()
+                            if not started:
+                                await _close_stack_before_cancellation(stack)
 
-                            return None
+                                return None
 
-                        return sandbox
+                            return sandbox
+        except BaseException:
+            if build_lock is not None:
+                await build_lock.release()
+            raise
 
         if build_lock is not None:
             return await _finish_reserved_build(

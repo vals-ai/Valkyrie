@@ -388,7 +388,11 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> Non
 
 
 def release_stale_reservations(session: Session, pool_id: str) -> int:
-    """Drop reservations whose exact task attempt is no longer building."""
+    """Drop reservations whose attempt is no longer building once its creator has let go.
+
+    A stopped attempt keeps its capacity while the creator still holds the build
+    lock, because the sandbox it is creating or deleting still occupies the provider.
+    """
     live_attempt = (
         select(col(Task.id))
         .where(col(Task.id) == col(SandboxBuildReservation.task_row_id))
@@ -396,8 +400,16 @@ def release_stale_reservations(session: Session, pool_id: str) -> int:
         .where(col(Task.status) == TaskStatus.BUILDING)
         .exists()
     )
-    return session.exec(
-        delete(SandboxBuildReservation)
+    stale_task_ids = session.exec(
+        select(col(SandboxBuildReservation.task_row_id))
         .where(col(SandboxBuildReservation.pool_id) == queue_pool_lock_id(pool_id))
         .where(~live_attempt)
+    ).all()
+    released_task_ids = [
+        task_row_id for task_row_id in stale_task_ids if _try_task_build_transaction_lock(session, task_row_id)
+    ]
+    if not released_task_ids:
+        return 0
+    return session.exec(
+        delete(SandboxBuildReservation).where(col(SandboxBuildReservation.task_row_id).in_(released_task_ids))
     ).rowcount
