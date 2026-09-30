@@ -189,7 +189,7 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
 
     assert persisted_benchmark is not None
     assert persisted_benchmark.status == BenchmarkStatus.ERROR
-    assert persisted_benchmark.error_message == "Executor host failed"
+    assert persisted_benchmark.error_message == "Executor dispatch failed"
     assert persisted_task is not None
     assert persisted_task.status == TaskStatus.ERROR
     assert persisted_newer_task is not None

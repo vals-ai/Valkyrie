@@ -152,6 +152,7 @@ class TestSentrySetup:
         sentry_module.init_sentry("valkyrie-worker", environment="test")
 
         assert init_mock.call_args.kwargs["environment"] == "bench"
+        assert init_mock.call_args.kwargs["include_local_variables"] is False
         assert init_mock.call_args.kwargs["before_send_transaction"] is sentry_module._before_send_transaction
         integrations = init_mock.call_args.kwargs["integrations"]
         otlp_integrations = [i for i in integrations if isinstance(i, OTLPIntegration)]

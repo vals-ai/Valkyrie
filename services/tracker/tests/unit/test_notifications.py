@@ -220,7 +220,7 @@ class TestSlackNotifierFireAndForget:
         """
 
         secret_store = MagicMock()
-        secret_store.get.return_value = "https://hooks.slack.com/test"
+        secret_store.get = AsyncMock(return_value="https://hooks.slack.com/test")
         notifier = _make_notifier(aws_runtime, secret_store=secret_store)
         mock_http_client.post = AsyncMock(side_effect=webhook_error)
 
@@ -238,13 +238,13 @@ class TestSlackNotifierSecretResolution:
     ) -> None:
         """SlackNotifier resolves the webhook URL through its secret store."""
         secret_store = MagicMock()
-        secret_store.get.return_value = "https://hooks.slack.com/resolved"
+        secret_store.get = AsyncMock(return_value="https://hooks.slack.com/resolved")
         notifier = _make_notifier(aws_runtime, secret_name="my/webhook/secret", secret_store=secret_store)
         mock_http_client.post = AsyncMock(return_value=MagicMock(status_code=200))
 
         await notifier.check_and_notify(_make_context(finished_tasks=50))
 
-        secret_store.get.assert_called_once_with("my/webhook/secret")
+        secret_store.get.assert_awaited_once_with("my/webhook/secret")
         mock_http_client.post.assert_called_once()
         call_args = mock_http_client.post.call_args
         assert call_args[0][0] == "https://hooks.slack.com/resolved"
@@ -269,9 +269,9 @@ class TestSlackNotifierSecretResolution:
         """
         secret_store = MagicMock()
         secret_store.get = (
-            MagicMock(side_effect=secret_result)
+            AsyncMock(side_effect=secret_result)
             if isinstance(secret_result, Exception)
-            else MagicMock(return_value=secret_result)
+            else AsyncMock(return_value=secret_result)
         )
         notifier = _make_notifier(aws_runtime, secret_name="invalid/secret", secret_store=secret_store)
 

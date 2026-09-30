@@ -13,6 +13,36 @@ valkyrie config init
 
 Initialization selects a [hosting mode](/get-started/hosting) and collects its required AWS and tracker credentials.
 
+The SDK and CLI use the same nested AWS configuration:
+
+```yaml
+aws:
+  AWS_DEFAULT_REGION: us-east-1
+  S3_BUCKET: benchmark-artifacts
+  LOG_GROUP: benchmarks
+  LOG_RETENTION_POLICY: 365
+  credentials:
+    AWS_ACCESS_KEY_ID: <access-key-id>
+    AWS_SECRET_ACCESS_KEY: <secret-access-key>
+sandbox_providers:
+  daytona: DaytonaSecrets
+```
+
+Omit `credentials` for managed execution with local AWS operations using the AWS SDK credential chain. Omit `aws` when the client needs no AWS resources.
+
+## Migrate an existing configuration
+
+SDK 0.3.0 requires the nested YAML layout shown above. Edit the file named in the error without rerunning interactive setup:
+
+1. Move `AWS_DEFAULT_REGION`, `S3_BUCKET`, `LOG_GROUP`, and `LOG_RETENTION_POLICY` under `aws`.
+2. Move `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and any `AWS_SESSION_TOKEN` under `aws.credentials`. If these keys are already directly under `aws`, move them into its `credentials` mapping.
+3. Replace a legacy `DAYTONA_SECRET_NAME` entry with `sandbox_providers.daytona`.
+4. Keep each existing value and remove its old entry. Keep API keys, existing sandbox providers, benchmark settings, and other unrelated settings unchanged.
+
+If a container or CI job creates this file from a secret or template, update that source before upgrading its SDK or CLI. Otherwise, the next start will recreate the old layout. For interactive setup, `valkyrie config init` also moves legacy top-level keys, but asks configuration questions and can change settings for the selected hosting mode.
+
+Python callers passing flat AWS aliases or field names to `ValkyrieConfig.model_validate()` still work with a `DeprecationWarning`; this compatibility does not apply to YAML files. Update attribute reads to the nested models: for example, use `config.aws.s3_bucket` instead of `config.s3_bucket`, and `config.aws.credentials.aws_access_key_id` for a static access key. Check that `config.aws` and, when needed, `config.aws.credentials` are not `None` first.
+
 ## Set or remove a value
 
 ```bash

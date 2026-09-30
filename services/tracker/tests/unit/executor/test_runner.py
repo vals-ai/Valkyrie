@@ -165,7 +165,7 @@ async def test_sigterm_after_child_spawn_terminalizes_and_kills_process_group(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(runner.PostgresExecutorDispatchStore, "from_environment", lambda: store)
-    monkeypatch.setattr(runner, "ExecutorSupervisor", lambda _cache: supervisor)
+    monkeypatch.setattr(runner, "ExecutorSupervisor", lambda _cache, **_kwargs: supervisor)
     monkeypatch.setenv("EXECUTOR_CACHE_DIR", str(tmp_path))
     loop = asyncio.get_running_loop()
     handlers: dict[signal.Signals, object] = {}
@@ -185,7 +185,7 @@ async def test_sigterm_after_child_spawn_terminalizes_and_kills_process_group(
     assert store.terminalized == [(claim.authority, ["task-0"])]
 
 
-@pytest.mark.parametrize("protocol_version", ["1", "2", "3"])
+@pytest.mark.parametrize("protocol_version", ["1", "2", "3", "4"])
 def test_pinned_protocol_versions_remain_supported(protocol_version: str) -> None:
     assert (
         runner.ArtifactDispatch.from_payload(
@@ -217,7 +217,7 @@ async def test_sigterm_handler_cancels_and_awaits_claimed_dispatch(
 
     supervisor.prepare_artifact = prepare  # type: ignore[method-assign]
     monkeypatch.setattr(runner.PostgresExecutorDispatchStore, "from_environment", lambda: store)
-    monkeypatch.setattr(runner, "ExecutorSupervisor", lambda _cache: supervisor)
+    monkeypatch.setattr(runner, "ExecutorSupervisor", lambda _cache, **_kwargs: supervisor)
     monkeypatch.setenv("EXECUTOR_CACHE_DIR", str(tmp_path))
     loop = asyncio.get_running_loop()
     handlers: dict[signal.Signals, object] = {}
@@ -418,3 +418,45 @@ def test_runner_failure_is_captured_when_dispatch_telemetry_fails(
 
     assert len(sentry_events) == 1
     assert cast(dict[str, str], sentry_events[0]["tags"])["executor_dispatch_id"] == dispatch_id
+
+
+@pytest.mark.asyncio
+async def test_source_release_runs_checkout_entrypoint_and_rejects_wrong_root(tmp_path: Path) -> None:
+    from executor_protocol import source_executor_artifact_uri
+
+    root = tmp_path / "source"
+    module = root / "tracker" / "executor"
+    module.mkdir(parents=True)
+    (module.parent / "__init__.py").touch()
+    (module / "__init__.py").touch()
+    (module / "entrypoint.py").write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "payload = json.loads(Path(sys.argv[1]).read_text())\n"
+        "Path(payload['output']).write_text(payload['benchmark_id_str'])\n"
+    )
+    output = tmp_path / "result.txt"
+    dispatch = runner.ArtifactDispatch(
+        release_id="source-release",
+        artifact_uri=source_executor_artifact_uri(root),
+        artifact_digest="a" * 64,
+        protocol_version="4",
+    )
+    supervisor = runner.ExecutorSupervisor(tmp_path, source_root=root)
+    artifact = await supervisor.prepare_artifact(dispatch)
+    assert artifact == root
+    with pytest.raises(ValueError, match="configured source root"):
+        await runner.ExecutorSupervisor(tmp_path, source_root=tmp_path).prepare_artifact(dispatch)
+
+    await supervisor.run(
+        artifact,
+        dispatch,
+        process_payload=runner.ExecutorProcessPayload(
+            benchmark_id="benchmark-source",
+            verified_task_ids=["task-0"],
+            arguments={"benchmark_id_str": "benchmark-source", "output": str(output)},
+        ),
+        authority=runner.DispatchAuthority("dispatch-source", "benchmark-source"),
+        lease=runner._DispatchLease(asyncio.get_running_loop().time(), asyncio.Event(), asyncio.Event()),
+    )
+    assert output.read_text() == "benchmark-source"

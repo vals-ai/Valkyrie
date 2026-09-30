@@ -6,8 +6,8 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import Coroutine
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from collections.abc import AsyncGenerator, Coroutine
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -33,11 +33,11 @@ from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, col, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.aws.cloudwatch_logs import (
-    task_log_stream_name,
-)
+from tracker.runtime.logs import task_log_stream_name
+from tracker.runtime.secrets import resolve_secrets
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
+from tracker.runtime.model_gateway import task_scoped_gateway_key
 from tracker.runtime.task_logs import TaskLogBuffer
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
@@ -57,6 +57,7 @@ from tracker.database.session import engine
 from tracker.exceptions import (
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
+    InvalidSandboxConfigurationError,
     OutputArtifactError,
     SandboxSetupError,
     TrackerServiceError,
@@ -992,6 +993,24 @@ async def _process_task_attempt(
                 raise e from e
 
         task_data = await recovery_attempt.retrieve_task()
+        # Generation creates an unrestricted network; Docker cannot replace it between stages.
+        unrestricted_docker = sandbox_provider_config.type == "docker"
+        run_egress_policy = combine_run_egress_policies(
+            task_data.egress.run, start_benchmark_request.contract.egress_allowlist
+        )
+        if unrestricted_docker and any(
+            policy != "*"
+            for policy in (
+                start_benchmark_request.contract.install_egress_policy,
+                task_data.egress.setup_task,
+                run_egress_policy,
+                task_data.egress.evaluation,
+            )
+        ):
+            raise InvalidSandboxConfigurationError(
+                "Local Docker execution requires unrestricted egress for every stage; "
+                "egress allowlists and blocked-network policies are not supported"
+            )
         if sandbox_provider is None:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
@@ -1026,7 +1045,7 @@ async def _process_task_attempt(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
+            **(await resolve_secrets(start_benchmark_request.contract.secrets, runtime.secrets)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
@@ -1046,7 +1065,8 @@ async def _process_task_attempt(
         start_sandbox_build_time = time.perf_counter()
         object_store = runtime.objects
 
-        def sandbox_context() -> AbstractAsyncContextManager[Sandbox]:
+        @asynccontextmanager
+        async def sandbox_context() -> AsyncGenerator[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
@@ -1054,18 +1074,31 @@ async def _process_task_attempt(
                 if queue_context is None
                 else f"queued-{task_row.id.hex}-{int(_normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC).timestamp() * 1_000_000):x}"
             )
-            return create_sandbox(
-                provider=sandbox_provider,
-                sandbox_name=sandbox_name,
-                source=task_data.source,
-                labels=labels,
-                env_vars=env_vars,
-                sandbox_secrets=task_data.sandbox_secrets,
-                resources=task_data.resources,
-                volumes=task_data.volumes,
-                creation_semaphore=creation_semaphore,
-                unique_name=queue_context is None,
-            )
+            # Do not mint while the queued attempt waits for admission.
+            contract = start_benchmark_request.contract
+            async with task_scoped_gateway_key(
+                env_vars,
+                run_id=str(benchmark_id),
+                task_id=task_row.task_id,
+                attested_model=contract.model if contract.inference_settings_attested else None,
+                companion_models=contract.kwargs.get("companion_models"),
+                identity=identity,
+                org_name=org.name,
+                agent_timeout=task_data.agent_timeout,
+            ) as scoped_env_vars:
+                async with create_sandbox(
+                    provider=sandbox_provider,
+                    sandbox_name=sandbox_name,
+                    source=task_data.source,
+                    labels=labels,
+                    env_vars=scoped_env_vars,
+                    sandbox_secrets=task_data.sandbox_secrets,
+                    resources=task_data.resources,
+                    volumes=task_data.volumes,
+                    creation_semaphore=creation_semaphore,
+                    unique_name=queue_context is None,
+                ) as sandbox:
+                    yield sandbox
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
@@ -1111,10 +1144,11 @@ async def _process_task_attempt(
                 agent_sandbox = runtime_sandbox(sandbox, task_data.source)
 
                 async def install_agent() -> None:
-                    await apply_egress_policy(
-                        agent_sandbox,
-                        start_benchmark_request.contract.install_egress_policy,
-                    )
+                    if not unrestricted_docker:
+                        await apply_egress_policy(
+                            agent_sandbox,
+                            start_benchmark_request.contract.install_egress_policy,
+                        )
                     try:
                         await install_agent_dependencies(
                             agent_sandbox,
@@ -1134,7 +1168,8 @@ async def _process_task_attempt(
                 if not install_after_setup:
                     await install_agent()
 
-                await apply_egress_policy(sandbox, task_data.egress.setup_task)
+                if not unrestricted_docker:
+                    await apply_egress_policy(sandbox, task_data.egress.setup_task)
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
@@ -1163,13 +1198,8 @@ async def _process_task_attempt(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = task_artifact_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                await apply_egress_policy(
-                    agent_sandbox,
-                    combine_run_egress_policies(
-                        task_data.egress.run,
-                        start_benchmark_request.contract.egress_allowlist,
-                    ),
-                )
+                if not unrestricted_docker:
+                    await apply_egress_policy(agent_sandbox, run_egress_policy)
                 exit_reason, agent_run_time = await run_agent(
                     agent_sandbox,
                     start_benchmark_request.contract,
@@ -1222,7 +1252,8 @@ async def _process_task_attempt(
                     },
                 )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                await apply_egress_policy(sandbox, task_data.egress.evaluation)
+                if not unrestricted_docker:
+                    await apply_egress_policy(sandbox, task_data.egress.evaluation)
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
                 evaluation_result = await _run_benchmark_service_websocket(

@@ -5,13 +5,22 @@ Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
-from benchmark_service import ComposeSource, ImageSource, SandboxNotFoundError, SandboxRecoveryPolicy
+from benchmark_service import (
+    ComposeSource,
+    DockerProviderConfig,
+    ImageSource,
+    SandboxNotFoundError,
+    SandboxRecoveryPolicy,
+)
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.sandbox.local.docker import DockerSandbox
 from benchmark_service.schemas import (
     AgentInstallOrder,
     BenchmarkEgressPlan,
@@ -40,7 +49,7 @@ from tracker.database.models import (
 )
 from tracker.egress import EgressPolicy
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
-from tracker.sandbox import DependencySetupMode
+from tracker.sandbox import DependencySetupMode, apply_egress_policy, create_sandbox
 from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
 
@@ -213,6 +222,69 @@ class TestTaskExecutionRetry:
             assert terminal_result.failed_attempt_number is None
         else:
             assert terminal_results == []
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize(
+        ("stage", "policy"),
+        [(None, "*")]
+        + [
+            (stage, policy)
+            for stage in ("install", "setup_task", "run", "evaluation")
+            for policy in ([], ["example.com"])
+        ]
+        + [("legacy_agent", ["example.com"])],
+    )
+    async def test_docker_generation_requires_an_unrestricted_plan_before_creation(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+        stage: str | None,
+        policy: EgressPolicy,
+    ) -> None:
+        task_data = make_retrieve_task_response().model_copy(update={"source": ImageSource(image="python:3.12-slim")})
+        if stage == "install":
+            contract = contract.model_copy(update={"install_egress": policy})
+        elif stage == "legacy_agent":
+            contract = contract.model_copy(update={"egress_allowlist": policy})
+        elif stage is not None:
+            task_data = task_data.model_copy(update={"egress": task_data.egress.model_copy(update={stage: policy})})
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+        # Keep Docker's real unsupported egress methods; only container/provider I/O is replaced.
+        sandbox = DockerSandbox(
+            cast(Any, Mock()),
+            cast(
+                Any,
+                SimpleNamespace(id="docker-task", labels={}, state="running", created=datetime(2026, 1, 1, tzinfo=UTC)),
+            ),
+        )
+        provider = AsyncMock()
+        provider.__aenter__.return_value = provider
+        provider.create_sandbox.return_value = sandbox
+
+        def provider_factory(_config: DockerProviderConfig) -> Any:
+            return provider
+
+        monkeypatch.setattr(DockerProviderConfig, "create_provider", provider_factory)
+        monkeypatch.setattr(
+            runtime_services, "get_sandbox_provider_config", AsyncMock(return_value=DockerProviderConfig())
+        )
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=task_data))
+        monkeypatch.setattr(task_execution_module, "create_sandbox", create_sandbox)
+        monkeypatch.setattr(task_execution_module, "apply_egress_policy", apply_egress_policy)
+
+        result = await run_process_task(request, task_row, benchmark_id, runtime_services, authority)
+
+        if stage is None:
+            assert result == {"task_0": {"status": "success", "score": 1.0}}
+            assert provider.create_sandbox.call_args.args[0].network_block_all is False
+        else:
+            assert result == {"task_0": None}
+            assert not provider.create_sandbox.called
+            error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).one()
+            assert "requires unrestricted egress for every stage" in error.error_message
 
     @pytest.mark.parametrize(
         ("compose_runtime", "agent_install_order", "setup_before_install"),

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, BeforeValidator, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
-from valkyrie.sdk.models.config import AWSResources, HarnessConfig
+from valkyrie.sdk.models.config import AWSResources, HarnessConfig, LocalResources
 
 
 class TaskStatus(str, Enum):
@@ -59,11 +59,18 @@ class Order(str, Enum):
     DESC = "desc"
 
 
+class DatasetVersion(ResponseModel):
+    """Exact dataset release saved for a run."""
+
+    id: str = Field(min_length=1, max_length=1024, pattern=r"^[!-~]+$")
+    label: str | None = Field(max_length=256)
+
+
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
 
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
+    environment: Literal["aws", "local"] = "aws"
+    properties: AWSResources | LocalResources | None = None
     managed_s3_bucket: str | None = None
     contract: AgentContractRequest
     benchmark_name: str
@@ -74,6 +81,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: str | None = Field(default=None, min_length=1, max_length=1024)
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -138,6 +146,8 @@ class StartBenchmarkResponse(ResponseModel):
     concurrency: int
     started_at: datetime
     task_count: int
+    dataset_version: DatasetVersion | None = None
+    dataset_version_warning: str | None = None
     cloudwatch_url: str
     s3_bucket_url: str
     storage_bucket: str | None = None
@@ -208,19 +218,46 @@ class FetchBenchmarksResponse(ResponseModel):
     next_cursor: str | None = None
 
 
-class BenchmarkArguments(ResponseModel):
+class _BenchmarkArguments(ResponseModel):
     """Arguments retained with a completed run."""
 
     contract: AgentContractRequest
     concurrency: int
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: DatasetVersion | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
+
+
+class AWSBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments for an AWS run."""
+
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
+
+
+class LocalBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments for a local run."""
+
+    environment: Literal["local"] = "local"
+    properties: LocalResources
+
+
+def _default_environment(value: Any) -> Any:
+    """Treat arguments from a Tracker that predates local runs as AWS."""
+    if isinstance(value, dict):
+        return {"environment": "aws", **value}
+    return value
+
+
+BenchmarkArguments = Annotated[
+    AWSBenchmarkArguments | LocalBenchmarkArguments,
+    Field(discriminator="environment"),
+    BeforeValidator(_default_environment),
+]
 
 
 class FetchBenchmarkMetadataResponse(ResponseModel):
