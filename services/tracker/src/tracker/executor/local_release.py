@@ -15,7 +15,6 @@ from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from sqlmodel import Session, col, select
 
 from tracker.database.models import ExecutorRelease, ExecutorReleaseStatus
-from tracker.database.session import engine
 from tracker.executor.release_control import activate_release
 
 # The launcher runs whatever executor code is installed in this image, so a local release is not
@@ -85,6 +84,9 @@ def main() -> None:
     root = Path(os.environ["EXECUTOR_RELEASE_LOCAL_DIR"])
     bucket = os.environ["EXECUTOR_RELEASE_BUCKET"]
     prefix = os.environ["EXECUTOR_RELEASE_PREFIX"]
+    # Imported here because tracker.config reconfigures logging, which would replace the runner's handlers.
+    from tracker.database.session import engine
+
     with Session(engine, expire_on_commit=False) as session:
         release = register_local_release(session, root=root, bucket=bucket, prefix=prefix)
         session.commit()

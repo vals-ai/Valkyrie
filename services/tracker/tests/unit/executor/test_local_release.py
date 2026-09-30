@@ -1,6 +1,10 @@
 """Local Compose release registration and runner artifact access."""
 
 import hashlib
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -76,3 +80,21 @@ def test_local_artifact_store_rejects_keys_outside_its_bucket(tmp_path: Path) ->
     with pytest.raises(ValueError, match="escapes its bucket"):
         store.open("local", escaping_key)
     assert not (tmp_path / "copied.pex").exists()
+
+
+def test_runner_logs_keep_dispatch_context_after_loading_local_artifact_store() -> None:
+    # A fresh interpreter matches the runner process; other tests may already have loaded tracker.config.
+    script = (
+        "import logging\n"
+        "from tracker.executor import runner_observability\n"
+        "runner_observability.configure_observability()\n"
+        "runner_observability.dispatch_id_var.set('dispatch-123')\n"
+        "from tracker.executor.local_release import LocalArtifactStore\n"
+        "logging.getLogger('tracker.executor.runner').info('after local store import')\n"
+    )
+    env = {key: value for key, value in os.environ.items() if key != "SENTRY_DSN"}
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True)
+
+    record = json.loads(result.stdout.strip().splitlines()[-1])
+    assert record["message"] == "after local store import"
+    assert record["executor_dispatch_id"] == "dispatch-123"
