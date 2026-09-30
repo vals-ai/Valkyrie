@@ -229,6 +229,23 @@ def test_config_rejects_flat_keys_beside_typed_models(typed_model: str) -> None:
         ValkyrieConfig.model_validate(values)
 
 
+def test_from_yaml_stale_webhook_key_warns_and_loads(tmp_path: Path) -> None:
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        """
+api_key: vals-key
+webhook: SlackWebhookSecret
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.warns(UserWarning, match="webhook"):
+        config = ValkyrieConfig.from_yaml(config_path)
+
+    assert config.request_headers()["X-Api-Key"] == "vals-key"
+    assert "webhook" not in config.model_fields_set
+
+
 def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
     with pytest.raises(ValkyrieConfigError, match="Could not read"):
         ValkyrieClient.from_config(tmp_path / "missing.yaml")
