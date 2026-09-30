@@ -106,3 +106,12 @@ def test_aws_runtime_rejects_partial_explicit_credentials(
         match="Field required",
     ):
         s3_config.aws_runtime()
+
+
+def test_aws_operation_rejects_a_local_only_configuration(config_path: Path) -> None:
+    config_path.write_text(yaml.safe_dump({"tracker_url": "http://127.0.0.1:8000"}))
+
+    with pytest.raises(click.ClickException, match="AWS resources are not configured") as error:
+        s3_config.aws_runtime()
+
+    assert "valkyrie config init" in str(error.value)

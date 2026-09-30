@@ -321,3 +321,22 @@ def test_set_and_remove_aws_credentials_preserves_resources(config_path: Path) -
     assert yaml.safe_load(config_path.read_text()) == {
         "aws": {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}
     }
+
+
+def test_set_aws_resources_and_remove_optional_key_preserves_config(config_path: Path, cli_runner: CliRunner) -> None:
+    config_path.write_text(yaml.safe_dump({"tracker_url": "http://127.0.0.1:8000", "api_key": "test-key"}))
+    for key, value in (("AWS_DEFAULT_REGION", "us-west-2"), ("S3_BUCKET", "local-client-bucket")):
+        result = cli_runner.invoke(settings.set, [key, value])
+        assert result.exit_code == 0, result.output
+
+    result = cli_runner.invoke(settings.config_remove, ["api_key"])
+
+    assert result.exit_code == 0, result.output
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved == {
+        "tracker_url": "http://127.0.0.1:8000",
+        "aws": {"AWS_DEFAULT_REGION": "us-west-2", "S3_BUCKET": "local-client-bucket"},
+    }
+    configured = ValkyrieConfig.from_yaml(config_path)
+    assert configured.aws is not None
+    assert configured.aws.s3_bucket == "local-client-bucket"

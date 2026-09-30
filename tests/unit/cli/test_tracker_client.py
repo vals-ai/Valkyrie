@@ -1211,3 +1211,29 @@ def test_service_list_merges_hosted_and_custom_services(
     assert by_name["swebench"].url == "http://local-swebench"
     assert by_name["fab"].url == "https://fab.benchmarks.vals.ai"
     assert by_name["custombench"].url == "http://custombench"
+
+
+@pytest.mark.parametrize(
+    ("providers", "provider", "expected"),
+    [
+        ({"daytona": "DaytonaSecrets"}, None, ("daytona", "DaytonaSecrets")),
+        ({}, "docker", ("docker", None)),
+        ({"daytona": "DaytonaSecrets"}, "missing", None),
+    ],
+)
+def test_validate_provider_reads_config_and_reports_unknown_choices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    providers: dict[str, str],
+    provider: str | None,
+    expected: tuple[str, str | None] | None,
+) -> None:
+    configuration = tmp_path / "providers.yaml"
+    configuration.write_text(yaml.safe_dump({"sandbox_providers": providers}))
+    monkeypatch.setattr("valkyrie.cli.tracker_client.config_location", lambda: configuration)
+
+    if expected is None:
+        with pytest.raises(TrackerServiceError, match="Unknown sandbox provider.*Configured providers: daytona"):
+            TrackerService.validate_sandbox_provider(provider)
+    else:
+        assert TrackerService.validate_sandbox_provider(provider) == expected
