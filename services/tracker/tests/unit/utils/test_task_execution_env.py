@@ -541,6 +541,7 @@ class TestProcessTaskEnvironment:
 
         assert result == {"task_0": None}
         evaluate_instance.assert_not_awaited()
+
     @pytest.mark.parametrize(
         ("gateway_url", "task_enabled", "timeout", "base_only"),
         [
@@ -574,7 +575,6 @@ class TestProcessTaskEnvironment:
             assert deadline is None
         create_session.assert_not_awaited()
 
-
     @pytest.mark.parametrize("persisted_retry", [False, True], ids=["new-attempt", "live-retry"])
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_base_only_task_runs_without_model_or_ssp_session(
@@ -587,9 +587,7 @@ class TestProcessTaskEnvironment:
         persisted_retry: bool,
     ) -> None:
         contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
-        request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
         original_deadline = datetime.now(UTC) + timedelta(seconds=5) if persisted_retry else None
         if original_deadline is not None:
             task_row.credited_wall_deadline_at = original_deadline
@@ -639,12 +637,8 @@ class TestProcessTaskEnvironment:
         runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
-        request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
-        response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": True}
-        )
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": True})
         teardown_complete = asyncio.Event()
 
         @asynccontextmanager

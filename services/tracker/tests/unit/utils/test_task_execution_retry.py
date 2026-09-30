@@ -719,9 +719,7 @@ class TestTaskExecutionRetry:
         runtime_services: RuntimeServices,
         status: TaskStatus,
     ) -> None:
-        request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
         if status == TaskStatus.EVALUATING:
             bind_task_to_dispatch(database_session, task_row, authority)
             task_row.status = status
@@ -759,9 +757,7 @@ class TestTaskExecutionRetry:
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
         bind_task_to_dispatch(database_session, task_row, authority)
         task_row.status = TaskStatus.EVALUATING
         task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
@@ -803,20 +799,14 @@ class TestTaskExecutionRetry:
         runtime_services: RuntimeServices,
     ) -> None:
         contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
-        request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
-        response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": True}
-        )
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
+        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": True})
         saved_state = {"artifact_prefix": "s3://bucket/run"}
         resume_started = asyncio.Event()
 
         async def disconnected_stream(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
             on_eval_resume_state(saved_state)
-            raise BenchmarkServiceStreamClosedError(
-                close_code=1011, close_reason="keepalive timeout", idle_s=30.0
-            )
+            raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
 
         async def stalled_resume(*_args: Any, eval_resume_state: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
             assert eval_resume_state == saved_state

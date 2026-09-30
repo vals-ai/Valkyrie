@@ -1343,8 +1343,10 @@ class TestRunAgent:
         client = BeginResponseLost()
         sandbox = _FakeControlledSandbox(_FakeControlledWorkload())
         controller = ExternalServiceDeadlineController(
-            client=cast(Any, client), snapshot=_accounting_snapshot(),
-            base_allowance_seconds=10.0, credit_cap_seconds=5.0,
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=5.0,
         )
         sealed: list[ExternalServiceAccountingSummary] = []
 

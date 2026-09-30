@@ -70,13 +70,17 @@ class ExternalServiceGatewayClient:
     ) -> AccountingSessionSnapshot:
         if self._client is not None:
             response = await self._client.request(
-                method, f"{self.base_url}{path}", json=json,
+                method,
+                f"{self.base_url}{path}",
+                json=json,
                 headers={"X-SSP-Control-Token": self.control_token},
             )
         else:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 response = await client.request(
-                    method, f"{self.base_url}{path}", json=json,
+                    method,
+                    f"{self.base_url}{path}",
+                    json=json,
                     headers={"X-SSP-Control-Token": self.control_token},
                 )
         response.raise_for_status()
@@ -178,7 +182,11 @@ class ExternalServiceDeadlineController:
     async def end_generation(self, now: float | None = None) -> None:
         if self.active_since is None:
             raise ValueError("No generation interval is active")
-        if self.client is not None and self.snapshot is not None and self.snapshot.state != AccountingSessionState.SEALED:
+        if (
+            self.client is not None
+            and self.snapshot is not None
+            and self.snapshot.state != AccountingSessionState.SEALED
+        ):
             self._accept(await self.client.end_generation(self.session_id, self.interval_index))
         ended_at = time.monotonic() if now is None else now
         self.active_elapsed_seconds += max(0.0, ended_at - self.active_since)

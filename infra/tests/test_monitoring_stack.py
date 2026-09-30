@@ -878,7 +878,10 @@ class MonitoringStackTest(unittest.TestCase):
             if statement.get("Action") == "secretsmanager:GetSecretValue"
         ]
         self.assertTrue(
-            any(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*" in json.dumps(resource) for resource in tracker_secret_resources)
+            any(
+                f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*" in json.dumps(resource)
+                for resource in tracker_secret_resources
+            )
         )
         self.assertFalse(any("secret:*" in json.dumps(resource) for resource in tracker_secret_resources))
 

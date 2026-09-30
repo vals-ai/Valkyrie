@@ -807,6 +807,7 @@ async def _stream_controlled_output(
         except BaseException as control_error:
             original.add_note(f"Gateway cleanup after confirmed stop failed: {control_error!r}")
             logger.exception("Could not seal gateway after confirmed workload stop")
+
     deadline_task = asyncio.create_task(wait_for_deadline(deadline))
     output_complete = False
     sealed_summary: ExternalServiceAccountingSummary | None = None
@@ -900,7 +901,9 @@ async def _stream_controlled_output(
         if sealed_summary is not None:
             assert on_accounting_sealed is not None
             await on_accounting_sealed(sealed_summary)
-        effective_timeout = deadline_controller.effective_allowance_seconds() if deadline_controller is not None else timeout
+        effective_timeout = (
+            deadline_controller.effective_allowance_seconds() if deadline_controller is not None else timeout
+        )
         return AgentCausedExitReason.TIMEOUT, effective_timeout
     except ControlledGenerationError as error:
         await _cancel_and_join_controlled_tasks(wait_task, output_task)

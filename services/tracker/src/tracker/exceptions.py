@@ -8,6 +8,7 @@ class TrackerServiceError(Exception):
 
     pass
 
+
 class CreditedTaskWallTimeExceeded(TrackerServiceError):
     """An opted-in task exceeded the total wall lifetime of its scoped credential."""
 

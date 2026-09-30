@@ -603,6 +603,7 @@ async def _create_external_service_deadline(
         credit_cap_seconds=EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
     )
 
+
 def _persist_external_service_summary(
     summary: ExternalServiceAccountingSummary,
     *,

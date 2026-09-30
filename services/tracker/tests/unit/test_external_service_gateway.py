@@ -63,7 +63,9 @@ async def test_control_client_authenticates_and_transmits_generation_phases() ->
         requests.append(request)
         assert request.headers["X-SSP-Control-Token"] == "tracker-control"
         path = request.url.path
-        state = "SEALED" if path.endswith("/resolve") else "ARBITRATING" if path.endswith("/arbitration/begin") else "OPEN"
+        state = (
+            "SEALED" if path.endswith("/resolve") else "ARBITRATING" if path.endswith("/arbitration/begin") else "OPEN"
+        )
         active = path.endswith("/generation/begin")
         interval_index = 1 if "/generation/" in path else 0
         return httpx.Response(200, json=_snapshot(state=state, active=active, interval_index=interval_index))
@@ -95,9 +97,7 @@ async def test_control_client_authenticates_and_transmits_generation_phases() ->
         ("POST", "/sessions/session-1/arbitration/resolve"),
     ]
     assert json.loads(requests[0].content) == {"session_id": "session-1"}
-    assert [json.loads(request.content) for request in requests[1:3]] == [
-        {"interval_index": 1}, {"interval_index": 1}
-    ]
+    assert [json.loads(request.content) for request in requests[1:3]] == [{"interval_index": 1}, {"interval_index": 1}]
     assert json.loads(requests[-1].content) == {"decision": "SEAL"}
 
 
@@ -112,6 +112,7 @@ async def test_control_client_rejects_unauthorized_session_operations() -> None:
         assert exc.value.response.status_code == 401
     finally:
         await http_client.aclose()
+
 
 async def test_one_active_interval_excludes_setup_and_caps_external_credit() -> None:
     snapshot = AccountingSessionSnapshot.model_validate(_snapshot(overhead_ms=12_500, revision=4, epoch=2))
@@ -149,6 +150,7 @@ async def test_two_active_intervals_preserve_remaining_budget_across_idle_gap() 
     assert controller.elapsed_seconds(1000.0) == 22.0
     assert controller.deadline(1000.0) == 1008.0
     assert controller.interval_index == 2
+
 
 def test_deadline_controller_rejects_a_snapshot_for_another_session() -> None:
     controller = ExternalServiceDeadlineController(
