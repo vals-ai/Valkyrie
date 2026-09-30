@@ -125,7 +125,7 @@ class SlackNotifier:
     async def _send_webhook(self, text: str) -> None:
         """Fire and forget — exceptions are caught and logged, never raised."""
         try:
-            secret_value = self._secret_store.get(self._secret_name)
+            secret_value = await self._secret_store.get(self._secret_name)
             if not isinstance(secret_value, str):
                 logger.warning(
                     f"Webhook secret '{self._secret_name}' returned a dict, expected a plain string URL. Skipping notification."

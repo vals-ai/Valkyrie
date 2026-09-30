@@ -12,36 +12,11 @@ from tracker.exceptions import SecretsError
 
 
 _ORIGINAL_GET = SecretsManagerStore.get
-_ORIGINAL_GET_ASYNC = SecretsManagerStore.get_async
 
 
 @pytest.fixture(autouse=True)
 def use_real_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SecretsManagerStore, "get", _ORIGINAL_GET)
-    monkeypatch.setattr(SecretsManagerStore, "get_async", _ORIGINAL_GET_ASYNC)
-
-
-class FakeSecretsManagerClient:
-    def __init__(self, response: dict[str, Any] | None = None, error: ClientError | None = None) -> None:
-        self.response = response or {}
-        self.error = error
-        self.secret_ids: list[str] = []
-
-    def get_secret_value(self, *, SecretId: str) -> dict[str, Any]:
-        self.secret_ids.append(SecretId)
-        if self.error is not None:
-            raise self.error
-        return self.response
-
-
-class FakeClientProvider:
-    def __init__(self, client: FakeSecretsManagerClient) -> None:
-        self.client = client
-        self.calls = 0
-
-    def secretsmanager_client(self) -> FakeSecretsManagerClient:
-        self.calls += 1
-        return self.client
 
 
 class FakeAsyncSecretsManagerClient:
@@ -91,13 +66,15 @@ class FakeAsyncClientProvider:
         ("plain-text", "plain-text"),
     ],
 )
-def test_get_preserves_json_and_raw_string_domains(secret_string: str, expected: object) -> None:
-    client = FakeSecretsManagerClient({"SecretString": secret_string})
-    provider = FakeClientProvider(client)
+async def test_get_preserves_json_and_raw_string_domains(secret_string: str, expected: object) -> None:
+    client = FakeAsyncSecretsManagerClient({"SecretString": secret_string})
+    context = FakeAsyncClientContext(client)
+    provider = FakeAsyncClientProvider(context)
 
-    assert SecretsManagerStore(cast(AWSClientProvider, provider)).get("named-secret") == expected
+    assert await SecretsManagerStore(cast(AWSClientProvider, provider)).get("named-secret") == expected
     assert client.secret_ids == ["named-secret"]
     assert provider.calls == 1
+    assert context.exited
 
 
 @pytest.mark.parametrize(
@@ -108,48 +85,21 @@ def test_get_preserves_json_and_raw_string_domains(secret_string: str, expected:
         ("ThrottlingException", ""),
     ],
 )
-def test_get_preserves_client_error_translation_and_cause(code: str, message: str) -> None:
+async def test_get_preserves_client_error_translation_and_cause(code: str, message: str) -> None:
     provider_error = ClientError({"Error": {"Code": code, "Message": "provider failure"}}, "GetSecretValue")
-    client = FakeSecretsManagerClient(error=provider_error)
+    client = FakeAsyncSecretsManagerClient(error=provider_error)
 
     with pytest.raises(SecretsError) as captured:
-        SecretsManagerStore(cast(AWSClientProvider, FakeClientProvider(client))).get("named-secret")
+        await SecretsManagerStore(cast(AWSClientProvider, FakeAsyncClientProvider(FakeAsyncClientContext(client)))).get(
+            "named-secret"
+        )
 
     expected = message or f"Failed to retrieve secret 'named-secret': {provider_error}"
     assert str(captured.value) == f"Secret error: {expected}"
     assert captured.value.__cause__ is provider_error
 
 
-async def test_get_async_uses_cancellable_client_and_shared_decoding() -> None:
-    client = FakeAsyncSecretsManagerClient({"SecretString": '{"key": "value"}'})
-    context = FakeAsyncClientContext(client)
-    provider = FakeAsyncClientProvider(context)
-
-    result = await SecretsManagerStore(cast(AWSClientProvider, provider)).get_async("named-secret")
-
-    assert result == {"key": "value"}
-    assert client.secret_ids == ["named-secret"]
-    assert provider.calls == 1
-    assert context.exited
-
-
-async def test_get_async_preserves_client_error_translation_and_cause() -> None:
-    provider_error = ClientError(
-        {"Error": {"Code": "AccessDeniedException", "Message": "provider failure"}},
-        "GetSecretValue",
-    )
-    client = FakeAsyncSecretsManagerClient(error=provider_error)
-
-    with pytest.raises(SecretsError) as captured:
-        await SecretsManagerStore(
-            cast(AWSClientProvider, FakeAsyncClientProvider(FakeAsyncClientContext(client)))
-        ).get_async("named-secret")
-
-    assert str(captured.value) == "Secret error: Access denied when retrieving secret 'named-secret'"
-    assert captured.value.__cause__ is provider_error
-
-
-async def test_get_async_cancels_underlying_request_and_exits_client() -> None:
+async def test_get_cancels_underlying_request_and_exits_client() -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
 
@@ -164,7 +114,7 @@ async def test_get_async_cancels_underlying_request_and_exits_client() -> None:
 
     context = FakeAsyncClientContext(BlockingClient())
     task = asyncio.create_task(
-        SecretsManagerStore(cast(AWSClientProvider, FakeAsyncClientProvider(context))).get_async("named-secret")
+        SecretsManagerStore(cast(AWSClientProvider, FakeAsyncClientProvider(context))).get("named-secret")
     )
     await started.wait()
 
@@ -177,7 +127,7 @@ async def test_get_async_cancels_underlying_request_and_exits_client() -> None:
 
 
 def test_store_constructs_without_accessing_the_client() -> None:
-    provider = FakeClientProvider(FakeSecretsManagerClient({"SecretString": "value"}))
+    provider = FakeAsyncClientProvider(FakeAsyncClientContext(FakeAsyncSecretsManagerClient({"SecretString": "value"})))
 
     SecretsManagerStore(cast(AWSClientProvider, provider))
 

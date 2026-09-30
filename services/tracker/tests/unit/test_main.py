@@ -973,11 +973,11 @@ class TestTrackerAPI:
             provider = Mock(admission_pool_id=provider_pool_id, close=AsyncMock())
             provider_config = Mock()
             provider_config.create_provider.return_value = provider
-            monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
+            monkeypatch.setattr("main.fetch_sandbox_provider_config", AsyncMock(return_value=provider_config))
         else:
             monkeypatch.setattr(
                 "main.fetch_sandbox_provider_config",
-                Mock(side_effect=RuntimeError("provider resolution must not run")),
+                AsyncMock(side_effect=RuntimeError("provider resolution must not run")),
             )
         request = StartBenchmarkRequest(
             contract=contract,
@@ -1056,7 +1056,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
         monkeypatch.setattr(
             "main.fetch_sandbox_provider_config",
-            Mock(side_effect=RuntimeError("Modal credentials must not be resolved for admission")),
+            AsyncMock(side_effect=RuntimeError("Modal credentials must not be resolved for admission")),
         )
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         request = StartBenchmarkRequest(
@@ -1086,7 +1086,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
         provider_config = Mock()
         provider_config.create_provider.return_value = Mock(admission_pool_id="shared-pool", close=AsyncMock())
-        monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
+        monkeypatch.setattr("main.fetch_sandbox_provider_config", AsyncMock(return_value=provider_config))
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         monkeypatch.setattr(
             "main.copy_agent_to_benchmark",
@@ -1832,7 +1832,7 @@ class TestTrackerAPI:
             observed_headers.update(getattr(service_client, "_headers"))
             return VerifyTaskIdsResponse(task_ids=["task_0"])
 
-        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {"X-Descope-Api-Key": "custom-service-key"}
 
         monkeypatch.setattr(main_module, "resolve_secrets", _mock_resolve_secrets)
@@ -1875,7 +1875,7 @@ class TestTrackerAPI:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
-        def fetch_modal_secret(_self: object, name: str) -> dict[str, str]:
+        async def fetch_modal_secret(_self: object, name: str) -> dict[str, str]:
             return {"MODAL_TOKEN_ID": "test-id", "MODAL_TOKEN_SECRET": "test-secret"} if name == "ModalSecrets" else {}
 
         monkeypatch.setattr(
@@ -2319,7 +2319,7 @@ class TestTrackerAPI:
         ) -> str:
             return f"https://download.example/{s3_key}?expires={expiration}"
 
-        def _mock_invoke_lambda(
+        async def _mock_invoke_lambda(
             _clients: object,
             _function_name: str,
             payload: dict[str, Any],
@@ -3445,8 +3445,20 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     assert response.json()["cloudwatch_url"] == expected_log_url
 
     logs_client = Mock()
+    logs_client.create_log_group = AsyncMock()
+    logs_client.put_retention_policy = AsyncMock()
     logs_client.filter_log_events.return_value = {"events": []}
-    monkeypatch.setattr(DefaultChainAWSClientProvider, "cloudwatch_logs_client", lambda _provider: logs_client)
+    async_logs_client = MagicMock()
+    async_logs_client.__aenter__.return_value = logs_client
+
+    def cloudwatch_client(_provider: DefaultChainAWSClientProvider) -> Mock:
+        return logs_client
+
+    def cloudwatch_async_client(_provider: DefaultChainAWSClientProvider) -> MagicMock:
+        return async_logs_client
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "cloudwatch_logs_client", cloudwatch_client)
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "cloudwatch_logs_async_client", cloudwatch_async_client)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _create_cloudwatch_benchmark)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _write_cloudwatch_log)
     runtime = await CloudRuntimeFactory.create_execution_runtime(
@@ -3504,7 +3516,9 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     assert archived == [saved_result]
     payloads: list[dict[str, Any]] = []
 
-    def invoke_lambda(_clients: object, _function: str, payload: dict[str, Any], **_arguments: Any) -> dict[str, str]:
+    async def invoke_lambda(
+        _clients: object, _function: str, payload: dict[str, Any], **_arguments: Any
+    ) -> dict[str, str]:
         payloads.append(payload)
         return {"reading_plan_url": "https://analysis.example/result"}
 

@@ -3,11 +3,13 @@
 Run: uv run pytest tests/unit/aws/test_clients.py
 """
 
+import asyncio
 import re
 from datetime import datetime, timezone
 from typing import cast
-from unittest.mock import ANY, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
+import aioboto3
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -49,7 +51,7 @@ class TestAWSClientProviders:
     """Credential selection and presigned URL lifetime behavior."""
 
     @pytest.mark.parametrize("session_token", [None, "test-session-token"])
-    def test_explicit_provider_forwards_optional_session_token(
+    async def test_explicit_provider_forwards_optional_session_token(
         self,
         monkeypatch: pytest.MonkeyPatch,
         session_token: str | None,
@@ -70,7 +72,7 @@ class TestAWSClientProviders:
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
+        provider.cloudwatch_logs_async_client()
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
@@ -80,11 +82,14 @@ class TestAWSClientProviders:
             aws_session_token=session_token,
             region_name=credentials.aws_default_region,
         )
-        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
+        assert session.client.call_args_list == [
+            call("s3", config=ANY),
+            call("logs"),
+            call("secretsmanager"),
+            call("lambda", config=None),
+        ]
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
-            "secretsmanager",
-            "lambda",
         }
         for constructed in boto_client_factory.call_args_list:
             assert constructed.kwargs["aws_access_key_id"] == credentials.aws_access_key_id
@@ -92,7 +97,7 @@ class TestAWSClientProviders:
             assert constructed.kwargs["aws_session_token"] == session_token
             assert constructed.kwargs["region_name"] == credentials.aws_default_region
 
-    def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         session = MagicMock()
         session_factory = MagicMock(return_value=session)
         boto_client_factory = MagicMock()
@@ -104,21 +109,37 @@ class TestAWSClientProviders:
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
+        provider.cloudwatch_logs_async_client()
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
         session_factory.assert_called_once_with(region_name=region)
-        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
+        assert session.client.call_args_list == [
+            call("s3", config=ANY),
+            call("logs"),
+            call("secretsmanager"),
+            call("lambda", config=None),
+        ]
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
-            "secretsmanager",
-            "lambda",
         }
         credential_arguments = {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
         for constructed in boto_client_factory.call_args_list:
             assert constructed.kwargs["region_name"] == region
             assert credential_arguments.isdisjoint(constructed.kwargs)
+
+    async def test_async_clients_on_one_event_loop_share_a_session(self) -> None:
+        s3_session = getattr(ExplicitCredentialsAWSClientProvider(_AWS), "_s3_session")
+
+        assert s3_session() is s3_session()
+
+    def test_async_clients_on_different_event_loops_use_separate_sessions(self) -> None:
+        s3_session = getattr(ExplicitCredentialsAWSClientProvider(_AWS), "_s3_session")
+
+        async def running_loop_session() -> aioboto3.Session:
+            return s3_session()
+
+        assert asyncio.run(running_loop_session()) is not asyncio.run(running_loop_session())
 
     @pytest.mark.parametrize(
         ("provider", "requested_seconds", "expected_seconds"),
@@ -271,6 +292,10 @@ class TestWriteBenchmarkLogEvent:
         client = MagicMock()
         client_provider = MagicMock(spec=AWSClientProvider)
         client_provider.cloudwatch_logs_client.return_value = client
+        client_provider.cloudwatch_logs_async_client.return_value = client
+        client.__aenter__.return_value = client
+        client.create_log_group = AsyncMock()
+        client.put_retention_policy = AsyncMock()
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", set[str]())
         return (
             client,
@@ -306,29 +331,38 @@ class TestWriteBenchmarkLogEvent:
         assert stream_name in str(exc_info.value)
         client.put_log_events.assert_not_called()
 
-    def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
 
-        sink.create_benchmark("bench123", retention_days=30)
+        await sink.create_benchmark("bench123", retention_days=30)
 
-        client.create_log_group.assert_called_once_with(logGroupName="/valkyrie/worker/bench123")
-        client.put_retention_policy.assert_called_once_with(
+        client.create_log_group.assert_awaited_once_with(logGroupName="/valkyrie/worker/bench123")
+        client.put_retention_policy.assert_awaited_once_with(
             logGroupName="/valkyrie/worker/bench123",
             retentionInDays=30,
         )
 
-    def test_create_benchmark_ignores_existing_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_retries_cancelled_retention_for_existing_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retry retention when cancellation leaves an already-created log group."""
         client, _, sink = self._sink_with_mock_client(monkeypatch)
-        client.create_log_group.side_effect = ClientError(
-            {"Error": {"Code": "ResourceAlreadyExistsException"}},
-            "CreateLogGroup",
-        )
+        client.create_log_group.side_effect = [
+            None,
+            ClientError({"Error": {"Code": "ResourceAlreadyExistsException"}}, "CreateLogGroup"),
+        ]
+        client.put_retention_policy.side_effect = [asyncio.CancelledError(), None]
 
-        sink.create_benchmark("bench123", retention_days=30)
+        with pytest.raises(asyncio.CancelledError):
+            await sink.create_benchmark("bench123", retention_days=30)
+        await sink.create_benchmark("bench123", retention_days=30)
 
-        client.put_retention_policy.assert_not_called()
+        assert client.put_retention_policy.await_args_list == [
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+        ]
 
-    def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
         client.create_log_group.side_effect = ClientError(
             {"Error": {"Code": "AccessDeniedException"}},
@@ -336,7 +370,7 @@ class TestWriteBenchmarkLogEvent:
         )
 
         with pytest.raises(CloudWatchError, match="Failed to create log group"):
-            sink.create_benchmark("bench123", retention_days=30)
+            await sink.create_benchmark("bench123", retention_days=30)
 
     def test_blank_message_does_not_create_client_or_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, client_provider, sink = self._sink_with_mock_client(monkeypatch)
