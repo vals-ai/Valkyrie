@@ -74,6 +74,26 @@ async def test_ecs_rejects_definitive_failure_without_recording_arn(
 
 
 @pytest.mark.asyncio
+async def test_ecs_accepted_launch_survives_arn_write_failure(
+    monkeypatch: pytest.MonkeyPatch, ecs_launcher_env: None
+) -> None:
+    run_task = Mock(return_value={"tasks": [{"taskArn": "arn:task:accepted"}], "failures": []})
+    record = Mock(side_effect=RuntimeError("database unavailable"))
+    log_exception = Mock()
+    monkeypatch.setattr(launcher.boto3, "client", lambda *_args, **_kwargs: SimpleNamespace(run_task=run_task))
+    monkeypatch.setattr(launcher, "_record_task_arn", record)
+    monkeypatch.setattr(launcher.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(launcher.logger, "exception", log_exception)
+
+    await launcher.launch_dispatch(SimpleNamespace(id=uuid4()))
+
+    run_task.assert_called_once()
+    assert record.call_count == 3
+    log_exception.assert_called_once()
+    assert "arn:task:accepted" in log_exception.call_args.args
+
+
+@pytest.mark.asyncio
 async def test_local_launcher_spawns_one_detached_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
     popen = Mock()
