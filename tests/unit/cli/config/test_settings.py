@@ -163,21 +163,50 @@ def test_init_hosted_strips_api_key(
     }
 
 
-def test_init_hosted_managed_aws_omits_static_keys(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Managed hosted setup stores deployment resources without static AWS credentials."""
+def test_init_hosted_managed_needs_only_api_key(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Managed hosted setup stores only the environment and API key."""
+    for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        settings.TrackerService,
+        "init_org",
+        lambda _api_key, _base_url: {"org_name": "test-org"},
+    )
+    monkeypatch.setattr(
+        settings.TrackerService,
+        "aws_runtime_metadata",
+        lambda _api_key, _base_url: SimpleNamespace(mode="managed", region="us-east-1", s3_bucket="managed-bucket"),
+    )
+
+    result = CliRunner().invoke(settings.init, input="hosted\nbench\nvals-key\n")
+
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load(config_path.read_text())
+    assert config == {"api_key": "vals-key", "environment": "bench"}
+    assert "Managed AWS execution is enabled" in result.output
+
+
+def test_init_hosted_managed_migrates_obsolete_local_settings(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-running hosted setup discards deployment-derived AWS and provider settings."""
     for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
     config_path.write_text(
         yaml.safe_dump(
             {
+                "api_key": "old-key",
                 "aws": {
-                    "credentials": {
-                        "AWS_ACCESS_KEY_ID": "old-key",
-                        "AWS_SECRET_ACCESS_KEY": "old-secret",
-                        "AWS_SESSION_TOKEN": "old-session",
-                    }
+                    "AWS_DEFAULT_REGION": "us-east-1",
+                    "S3_BUCKET": "managed-bucket",
+                    "LOG_GROUP": "benchmarks",
+                    "LOG_RETENTION_POLICY": 365,
                 },
+                "sandbox_providers": {"daytona": "AgenticHarnessSecrets"},
+                "default_sandbox_provider": "daytona",
+                "benchmark_auth": {"svc": "old-key"},
             }
         )
     )
@@ -192,23 +221,44 @@ def test_init_hosted_managed_aws_omits_static_keys(config_path: Path, monkeypatc
         lambda _api_key, _base_url: SimpleNamespace(mode="managed", region="us-east-1", s3_bucket="managed-bucket"),
     )
 
-    result = CliRunner().invoke(settings.init, input="hosted\nbench\nvals-key\n\n\n")
+    result = CliRunner().invoke(settings.init, input="hosted\nbench\nnew-key\n")
 
     assert result.exit_code == 0, result.output
     config = yaml.safe_load(config_path.read_text())
-    assert config["api_key"] == "vals-key"
-    assert config["aws"]["AWS_DEFAULT_REGION"] == "us-east-1"
-    assert config["aws"]["S3_BUCKET"] == "managed-bucket"
-    assert config["aws"]["LOG_GROUP"] == "benchmarks"
-    assert config["aws"]["LOG_RETENTION_POLICY"] == "365"
-    assert "credentials" not in config["aws"]
-    assert "Local AWS operations will use the AWS SDK credential chain" in result.output
-    assert "Restore them before retrying or resuming an access-key run" in result.output
+    assert "aws" not in config
+    assert "sandbox_providers" not in config
+    assert "default_sandbox_provider" not in config
+    assert config["api_key"] == "new-key"
+    assert config["environment"] == "bench"
+    assert config["benchmark_auth"] == {"svc": "new-key"}
+    assert "Removed local aws, sandbox_providers, default_sandbox_provider settings" in result.output
 
 
-@pytest.mark.usefixtures("config_path")
-def test_init_hosted_names_incomplete_managed_aws_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_init_hosted_managed_preserves_access_key_configuration(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BYO-AWS hosted setup keeps AWS credentials, resources, and provider mappings."""
+    for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "aws": {
+                    "credentials": {
+                        "AWS_ACCESS_KEY_ID": "old-key",
+                        "AWS_SECRET_ACCESS_KEY": "old-secret",
+                    },
+                    "AWS_DEFAULT_REGION": "us-east-1",
+                    "S3_BUCKET": "own-bucket",
+                    "LOG_GROUP": "benchmarks",
+                    "LOG_RETENTION_POLICY": 365,
+                },
+                "sandbox_providers": {"daytona": "OwnSecrets"},
+                "default_sandbox_provider": "daytona",
+            }
+        )
+    )
     monkeypatch.setattr(
         settings.TrackerService,
         "init_org",
@@ -217,13 +267,23 @@ def test_init_hosted_names_incomplete_managed_aws_config(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         settings.TrackerService,
         "aws_runtime_metadata",
-        lambda _api_key, _base_url: SimpleNamespace(mode="managed", region=None, s3_bucket="managed-bucket"),
+        lambda _api_key, _base_url: SimpleNamespace(mode="managed", region="us-east-1", s3_bucket="managed-bucket"),
     )
 
     result = CliRunner().invoke(settings.init, input="hosted\nbench\nvals-key\n")
 
-    assert result.exit_code == 1
-    assert "Managed AWS configuration is missing its Region or S3 bucket" in result.output
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load(config_path.read_text())
+    assert config["aws"] == {
+        "credentials": {"AWS_ACCESS_KEY_ID": "old-key", "AWS_SECRET_ACCESS_KEY": "old-secret"},
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "S3_BUCKET": "own-bucket",
+        "LOG_GROUP": "benchmarks",
+        "LOG_RETENTION_POLICY": 365,
+    }
+    assert config["sandbox_providers"] == {"daytona": "OwnSecrets"}
+    assert config["default_sandbox_provider"] == "daytona"
+    assert "Existing AWS credentials were kept" in result.output
 
 
 @pytest.mark.usefixtures("config_path")

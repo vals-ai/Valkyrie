@@ -69,7 +69,6 @@ def init() -> None:
     )
     environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
     migrate_legacy_config_keys(current_config)
-    aws = current_config.setdefault("aws", {})
 
     if mode == "hosted":
         environment = click.prompt(
@@ -102,46 +101,52 @@ def init() -> None:
             )
 
         if runtime.mode == "managed":
-            if not runtime.region or not runtime.s3_bucket:
-                raise click.ClickException("Managed AWS configuration is missing its Region or S3 bucket.")
-            aws["AWS_DEFAULT_REGION"] = runtime.region
-            aws["S3_BUCKET"] = runtime.s3_bucket
-            removed_static_credentials = aws.pop("credentials", None) is not None
-            environment_variables = {
-                "LOG_GROUP": _REQUIRED_ENVIRONMENT_VARIABLES["LOG_GROUP"],
-                "LOG_RETENTION_POLICY": _REQUIRED_ENVIRONMENT_VARIABLES["LOG_RETENTION_POLICY"],
-            }
+            environment_variables = {}
             click.echo(
-                "Managed AWS execution is enabled. Local AWS operations will use the AWS SDK credential chain.\n"
+                "Managed AWS execution is enabled. Runs resolve AWS resources and the "
+                "sandbox provider from the Vals deployment.\n"
             )
-            if removed_static_credentials:
+            aws = current_config.get("aws") or {}
+            if aws.get("credentials"):
                 click.echo(
-                    "Existing static AWS credentials were removed. Restore them before retrying or resuming "
-                    "an access-key run.\n"
+                    "Existing AWS credentials were kept; runs use access-key AWS execution "
+                    "while they remain configured.\n"
                 )
+            else:
+                removed = [key for key in ("aws", "sandbox_providers", "default_sandbox_provider") if key in current_config]
+                for key in removed:
+                    current_config.pop(key, None)
+                if removed:
+                    click.echo(
+                        f"Removed local {', '.join(removed)} settings; managed runs resolve them from the Vals deployment.\n"
+                    )
 
-    for key, default in environment_variables.items():
-        target = aws.setdefault("credentials", {}) if key in _STATIC_AWS_CREDENTIAL_KEYS else aws
-        sourced = target.get(key) or os.environ.get(key)
-        if sourced:
-            click.echo(f"  {key}: sourced from {'environment' if not target.get(key) else 'existing config'}")
-            target[key] = sourced
-            continue
+    if environment_variables:
+        aws = current_config.setdefault("aws", {})
+        for key, default in environment_variables.items():
+            target = aws.setdefault("credentials", {}) if key in _STATIC_AWS_CREDENTIAL_KEYS else aws
+            sourced = target.get(key) or os.environ.get(key)
+            if sourced:
+                click.echo(
+                    f"  {key}: sourced from {'environment' if not target.get(key) else 'existing config'}"
+                )
+                target[key] = sourced
+                continue
 
-        if not default:
-            value = click.prompt(
-                f"  {key} (required, Enter to cancel)",
-                default="",
-                show_default=False,
-            ).strip()
+            if not default:
+                value = click.prompt(
+                    f"  {key} (required, Enter to cancel)",
+                    default="",
+                    show_default=False,
+                ).strip()
 
-            if not value:
-                click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
-                raise click.Abort()
-        else:
-            value = click.prompt(f"  {key}", default=str(default)).strip()
+                if not value:
+                    click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
+                    raise click.Abort()
+            else:
+                value = click.prompt(f"  {key}", default=str(default)).strip()
 
-        target[key] = value
+            target[key] = value
 
     if mode != "hosted":
         current_config.pop("api_key", None)

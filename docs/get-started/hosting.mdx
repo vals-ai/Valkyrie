@@ -12,9 +12,8 @@ In hosted mode, Vals operates the compute infrastructure and your Vals API key k
 ### Requirements
 
 - A Vals API key provided by Vals. Request one at [contact@vals.ai](mailto:contact@vals.ai)
-- Local AWS SDK credentials for direct agent uploads and artifact downloads, including `AWS_PROFILE` with AWS SSO
-- A [sandbox-provider secret](/get-started/sandbox-providers)
-- For access-key execution, AWS credentials with the [required permissions](/self-hosting/aws-permissions) and an existing S3 bucket
+- Local AWS resources (`AWS_DEFAULT_REGION` and `S3_BUCKET` in the config) plus AWS SDK credentials, including `AWS_PROFILE` with AWS SSO, for commands that read agents or artifacts directly from S3 (`valkyrie agent download`, `valkyrie run analyze`)
+- For access-key execution, AWS credentials with the [required permissions](/self-hosting/aws-permissions), an existing S3 bucket, and a [sandbox-provider secret](/get-started/sandbox-providers)
 
 Run configuration and choose **hosted**:
 
@@ -22,7 +21,7 @@ Run configuration and choose **hosted**:
 valkyrie config init
 ```
 
-Hosted setup also asks for the hosted environment, `bench` (`https://benchmark-tracker.vals.ai`) or `prod` (`https://benchmark-tracker-prod.vals.ai`), and saves that choice for later commands. The CLI validates the Vals API key against that environment and configures the organization. When the organization can use managed AWS, it reads the Region and S3 bucket from the tracker instead of asking for access keys.
+Hosted setup also asks for the hosted environment, `bench` (`https://benchmark-tracker.vals.ai`) or `prod` (`https://benchmark-tracker-prod.vals.ai`), and saves that choice for later commands. The CLI validates the Vals API key against that environment and configures the organization. When the organization can use managed AWS, setup stores no AWS fields at all: the tracker resolves the Region, S3 bucket, and sandbox-provider secret per organization for each managed run.
 
 Set a Vals API key directly when needed:
 
@@ -42,7 +41,9 @@ The AWS credential fields in the selected config decide how new runs execute.
 | `aws.credentials` with both access keys | Access-key AWS. The tracker receives the configured AWS resources and credentials. |
 | Only one access-key field | Invalid. Valkyrie stops before sending the request. |
 
-Managed execution still leaves local AWS operations to you: agent uploads and artifact downloads go through the local AWS SDK credential chain.
+Managed runs resolve the sandbox provider and its secret name from the Vals deployment. Register a provider with `valkyrie config provider set` only for access-key execution or to send a non-default provider secret explicitly.
+
+Managed execution still leaves local AWS operations to you: agent downloads and `run analyze` read from S3 through the local AWS SDK credential chain.
 
 To use access-key AWS in hosted mode, run hosted setup first, then add a complete access-key configuration:
 
