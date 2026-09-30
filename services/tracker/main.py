@@ -15,6 +15,7 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
+from benchmark_service.schemas import DatasetVersion
 from botocore.config import Config
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -31,7 +32,7 @@ from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.api.dependencies import RunAWSDependency
+from tracker.api.dependencies import RunBenchmarkDependency, RunRuntimeDependency
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
@@ -47,7 +48,6 @@ from tracker.auth import (
     get_current_starter,
     resolve_descope_identity,
 )
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.managed_storage import (
     ManagedStorageError,
     load_managed_storage_policy,
@@ -62,13 +62,12 @@ from tracker.aws.resolver import (
     resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
-from tracker.aws.secrets import SecretsManagerStore
+from tracker.aws.services import CloudRuntimeFactory, CloudRuntimeServices
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     S3ObjectCopier,
     S3ObjectStore,
-    create_benchmark_url,
     create_console_url,
     copy_s3_object,
     create_presigned_url,
@@ -82,7 +81,7 @@ from tracker.runtime.artifacts import (
     copy_agent_to_benchmark,
 )
 from tracker.runtime.secrets import resolve_secrets
-from tracker.runtime.storage import ObjectStore, StoredObjectCopy
+from tracker.runtime.storage import ObjectCopier, ObjectStore, StoredObjectCopy
 from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
@@ -118,14 +117,21 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
+from tracker.local import config as local_config
+from tracker.local.resources import LocalResources
+from tracker.local.runtime import LocalRuntimeFactory
 from executor_protocol import EXECUTOR_TASK_NAME, ExecutorTelemetryContext, executor_task_signature
 from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
-from tracker.middleware import RequestContextMiddleware
+from tracker.middleware import LocalTrustedHostMiddleware, RequestContextMiddleware
 from tracker.observability import configure_observability
-from tracker.outbound_security import validate_custom_service_destination, validate_service_url_syntax
+from tracker.outbound_security import (
+    validate_custom_service_destination,
+    validate_service_headers,
+    validate_service_url_syntax,
+)
 from tracker.scheduler.store import queue_pool_id, try_task_evaluation_transaction_lock
 from tracker.types import (
     AnalyzeBenchmarkRequest,
@@ -141,6 +147,7 @@ from tracker.types import (
     ManagedStorageStartBenchmarkRequest,
     Order,
     RetrieveResultsResponse,
+    RunExecutionRequest,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
@@ -211,6 +218,7 @@ app = FastAPI(generate_unique_id_function=_operation_id, redirect_slashes=False,
 logfire.instrument_fastapi(app, excluded_urls="/health$")
 
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(LocalTrustedHostMiddleware)
 
 app.include_router(agents_router)
 app.include_router(benchmark_services_router)
@@ -244,7 +252,7 @@ def _executor_telemetry_context() -> ExecutorTelemetryContext:
 
 def _process_benchmark_kwargs(
     benchmark_row: Benchmark,
-    request: StartBenchmarkRequest,
+    request: RunExecutionRequest,
     verified_task_ids: list[str],
 ) -> dict[str, Any]:
     if benchmark_row.aws_managed:
@@ -511,8 +519,11 @@ def init_org(
 
 
 async def _resolve_contract_from_s3(request: StartBenchmarkRequest, object_store: ObjectStore) -> AgentContractRequest:
-    """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
-    zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
+    """Resolve the published agent contract from the configured object store."""
+    try:
+        zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=f"Agent '{request.contract.name}' not found") from error
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
     if request.contract.secrets:
@@ -545,7 +556,7 @@ def _validate_start_release(bind: Engine | Connection) -> None:
 def _commit_start(
     bind: Engine | Connection,
     benchmark_json: str,
-    request: StartBenchmarkRequest,
+    request: RunExecutionRequest,
     dispatch_id: UUID,
     task_ids: list[str],
     queue_pool_id: str | None,
@@ -631,19 +642,63 @@ async def _start_benchmark(
     """
     if request.custom_benchmark_service is not None:
         _authorize_custom_benchmark_destination(request.custom_benchmark_service, run_starter.org)
+    if request.dataset_version is not None and not config.DATASET_VERSION_PINNING_ENABLED:
+        raise HTTPException(status_code=503, detail="Dataset version selection is not enabled")
+    if request.service_auth_header_name is not None and request.service_auth_header_name.lower() == (
+        "x-benchmark-dataset-version"
+    ):
+        raise HTTPException(status_code=400, detail="Use dataset_version to select a dataset version")
+    try:
+        validate_service_headers(request.service_headers)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     bind = session.get_bind()
     session.close()
-    runtime_resolution = resolve_start_aws_runtime(
-        http_request, request.harness_config, run_starter.org.id, request.properties
-    )
-    library_runtime = runtime_resolution.runtime
-    aws_runtime = library_runtime
-    effective_harness_config = runtime_resolution.access_key_harness_config
-    aws_managed = runtime_resolution.aws_managed
-    managed_s3_bucket = request.managed_s3_bucket
+    aws_runtime: AWSRuntime | None = None
+    library_runtime: AWSRuntime | None = None
+    if local_config.resources is not None:
+        if request.properties is not None:
+            raise HTTPException(status_code=400, detail="Local resources are configured by the server")
+        if request.managed_s3_bucket is not None:
+            raise HTTPException(status_code=400, detail="Local execution does not support managed storage buckets")
+        try:
+            request = StartBenchmarkRequest.model_validate(
+                {
+                    **request.model_dump(),
+                    "environment": "local",
+                    "sandbox_provider": "docker",
+                    "properties": local_config.resources,
+                    # Clients fill these from their cloud configuration; a local Tracker never uses them.
+                    "harness_config": None,
+                    "sandbox_provider_secret_name": None,
+                }
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        runtime = LocalRuntimeFactory.create_runtime(local_config.resources.data_root, run_starter.org.id)
+        aws_managed = False
+        effective_harness_config = None
+        managed_s3_bucket = None
+    else:
+        if request.environment == "local":
+            raise HTTPException(status_code=400, detail="Server has no local configuration")
+        if request.sandbox_provider == "docker":
+            raise HTTPException(status_code=400, detail="AWS execution does not support the Docker sandbox provider")
+        assert not isinstance(request.properties, LocalResources)
+        runtime_resolution = resolve_start_aws_runtime(
+            http_request, request.harness_config, run_starter.org.id, request.properties
+        )
+        library_runtime = runtime_resolution.runtime
+        aws_runtime = library_runtime
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+        effective_harness_config = runtime_resolution.access_key_harness_config
+        aws_managed = runtime_resolution.aws_managed
+        managed_s3_bucket = request.managed_s3_bucket
+    object_store = runtime.objects
 
     if aws_managed:
+        assert aws_runtime is not None
         if not request.sandbox_provider or not request.sandbox_provider_secret_name:
             raise HTTPException(
                 status_code=400,
@@ -685,7 +740,7 @@ async def _start_benchmark(
                 log_group=f"{aws_runtime.resources.log_group}/{managed_s3_bucket}",
             )
             aws_runtime = aws_runtime.with_resources(resources)
-    else:
+    elif request.environment == "aws":
         effective_harness_config = cast(HarnessConfig, effective_harness_config)
         body_provider_secret_name = (
             request.harness_config.sandbox_provider_secret_name if request.harness_config is not None else None
@@ -700,26 +755,31 @@ async def _start_benchmark(
                 update={"sandbox_provider_secret_name": provider_secret_name}
             )
 
-    object_store = S3ObjectStore(aws_runtime)
-    library_store = S3ObjectStore(library_runtime)
-    agent_copier = (
-        S3ObjectCopier(library_runtime, aws_runtime)
-        if library_runtime.resources.s3_bucket != aws_runtime.resources.s3_bucket
-        else None
-    )
+    if request.environment == "aws":
+        assert aws_runtime is not None and library_runtime is not None
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+        object_store = S3ObjectStore(aws_runtime)
+        library_store = S3ObjectStore(library_runtime)
+        agent_copier = (
+            S3ObjectCopier(library_runtime, aws_runtime)
+            if library_runtime.resources.s3_bucket != aws_runtime.resources.s3_bucket
+            else None
+        )
+    else:
+        library_store = object_store
+        agent_copier = None
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
-        resolved = resolve_secrets(
+        resolved = await resolve_secrets(
             {request.service_auth_header_name: request.service_auth_secret_name},
-            SecretsManagerStore(aws_runtime.clients),
+            runtime.secrets,
         )
         service_headers.update(resolved)
 
     request = request.model_copy(
         update={
-            "properties": aws_runtime.resources,
-            "managed_s3_bucket": None,
+            **({"properties": aws_runtime.resources, "managed_s3_bucket": None} if aws_runtime is not None else {}),
             "harness_config": effective_harness_config,
             "service_headers": forward_tracker_api_key(
                 service_headers,
@@ -750,7 +810,7 @@ async def _start_benchmark(
                 status_code=400,
                 detail="Queue priority requires sandbox queue to be enabled",
             )
-    elif request.sandbox_provider == "modal":
+    elif request.sandbox_provider in {"modal", "docker"}:
         if request.priority is not None:
             raise HTTPException(
                 status_code=400,
@@ -763,10 +823,9 @@ async def _start_benchmark(
             else cast(HarnessConfig, request.harness_config).sandbox_provider_secret_name
         )
         assert provider_secret_name is not None
-        provider_config = await asyncio.to_thread(
-            fetch_sandbox_provider_config,
+        provider_config = await fetch_sandbox_provider_config(
             provider_secret_name,
-            SecretsManagerStore(aws_runtime.clients),
+            runtime.secrets,
             request.sandbox_provider,
         )
         provider = provider_config.create_provider()
@@ -802,6 +861,7 @@ async def _start_benchmark(
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
+    execution_request = RunExecutionRequest.model_validate(request.model_dump(mode="python"))
 
     # Validate benchmark service is reachable + tasks resolve BEFORE creating the DB row,
     # so failed auth / unreachable services don't pollute the benchmark list.
@@ -814,9 +874,43 @@ async def _start_benchmark(
                 detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
             ) from exc
 
+        if config.DATASET_VERSION_PINNING_ENABLED:
+            selected_dataset = request.dataset or "default"
+            try:
+                try:
+                    version_metadata = await benchmark_service.version(dataset=selected_dataset)
+                except BenchmarkServiceError as exc:
+                    if exc.status_code not in {404, 405, 501}:
+                        raise
+                    if request.dataset_version is not None:
+                        raise HTTPException(
+                            status_code=400, detail="This benchmark service cannot select a dataset version"
+                        ) from exc
+                    logger.info(
+                        "Benchmark service does not expose version metadata; starting run without a pinned version"
+                    )
+                    version_metadata = None
+
+                if version_metadata is not None and version_metadata.dataset_version_selection:
+                    resolved = await benchmark_service.resolve_dataset(
+                        selected_dataset,
+                        version=request.dataset_version,
+                    )
+                    execution_request.dataset = resolved.dataset
+                    execution_request.resolved_dataset_version = resolved.version
+                    await benchmark_service.close()
+                    benchmark_service = execution_request.benchmark_service
+                elif version_metadata is not None and request.dataset_version is not None:
+                    raise HTTPException(
+                        status_code=400, detail="This benchmark service cannot select a dataset version"
+                    )
+            except (BenchmarkServiceError, httpx.HTTPError, ValueError) as exc:
+                logger.exception("Failed to select dataset version for %s", request.benchmark_name)
+                raise HTTPException(status_code=502, detail="Failed to select dataset version") from exc
+
         try:
             verify_response = await benchmark_service.verify_task_ids(
-                task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
+                task_ids=request.task_ids, slice_str=request.slice_str, dataset=execution_request.dataset
             )
         except BenchmarkServiceUnauthenticatedError as exc:
             logger.warning("Benchmark service authentication failed for %s: %s", request.benchmark_name, exc)
@@ -831,7 +925,7 @@ async def _start_benchmark(
             logger.exception("Failed to close benchmark service client for %s", request.benchmark_name)
 
     benchmark_row = start_benchmark_request_to_benchmark(
-        request,
+        execution_request,
         run_starter,
         aws_managed=aws_managed,
         queue_pool_id=resolved_queue_pool_id,
@@ -850,7 +944,7 @@ async def _start_benchmark(
                 _commit_start,
                 bind,
                 benchmark_row.model_dump_json(),
-                request,
+                execution_request,
                 dispatch_id,
                 verify_response.task_ids,
                 resolved_queue_pool_id,
@@ -925,9 +1019,23 @@ async def _start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=CloudWatchBenchmarkLogLocations(aws_runtime.resources).benchmark_location(str(benchmark_row.id)),
-        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
-        storage_bucket=aws_runtime.resources.s3_bucket,
+        dataset_version=benchmark_row.arguments.dataset_version,
+        dataset_version_warning=(
+            "Unversioned — dataset consistency is not guaranteed."
+            if benchmark_row.arguments.dataset_version is None
+            else None
+        ),
+        cloudwatch_url=(
+            str(http_request.url_for("get_logs", benchmark_id=benchmark_row.id))
+            if request.environment == "local"
+            else runtime.log_locations.benchmark_location(str(benchmark_row.id))
+        ),
+        s3_bucket_url=(
+            str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
+            if request.environment == "local"
+            else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
+        ),
+        storage_bucket=aws_runtime.resources.s3_bucket if aws_runtime is not None else None,
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,
@@ -974,8 +1082,10 @@ async def fetch_benchmark_tasks(
 
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
+    http_request: Request,
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
+    runtime: RunRuntimeDependency,
+    benchmark_row: RunBenchmarkDependency,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -993,9 +1103,12 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    benchmark_row = run_context.benchmark
-    aws_runtime = run_context.aws_runtime
-
+    s3_bucket_url = (
+        str(http_request.url_for("list_run_artifacts", benchmark_id=benchmark_row.id))
+        if benchmark_row.arguments.environment == "local"
+        else runtime.artifacts.prefix_location(benchmark_artifact_prefix(str(benchmark_row.id)))
+    )
+    storage_bucket = runtime.aws_runtime.resources.s3_bucket if isinstance(runtime, CloudRuntimeServices) else None
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
@@ -1003,7 +1116,7 @@ async def fetch_benchmark(
         org_id = org.id
         session.close()
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, bind, aws_runtime, org_id),
+            stream_benchmark_results(benchmark_id, bind, s3_bucket_url, org_id, storage_bucket=storage_bucket),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1018,8 +1131,8 @@ async def fetch_benchmark(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
-        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
-        storage_bucket=aws_runtime.resources.s3_bucket,
+        s3_bucket_url=s3_bucket_url,
+        storage_bucket=storage_bucket,
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
         error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
@@ -1033,7 +1146,8 @@ async def fetch_benchmark(
 @app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
 async def analyze_benchmark(
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
+    benchmark_row: RunBenchmarkDependency,
+    http_request: Request,
     body: AnalyzeBenchmarkRequest,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -1046,8 +1160,16 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    benchmark_row = run_context.benchmark
-    aws_runtime = run_context.aws_runtime
+    if benchmark_row.arguments.environment == "local":
+        raise HTTPException(status_code=400, detail="This operation requires an AWS run")
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+        http_request,
+        org_id=org.id,
+        aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
+    ).runtime
+    if benchmark_row.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
@@ -1159,8 +1281,7 @@ async def _invoke_preview_lambda(benchmark_row: Benchmark, aws_runtime: AWSRunti
             "preview": True,
         }
     )
-    await asyncio.to_thread(
-        invoke_lambda,
+    await invoke_lambda(
         aws_runtime.clients,
         lambda_function,
         lambda_payload,
@@ -1202,15 +1323,6 @@ async def _retrieve_results(
         org,
     )
 
-    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        properties=benchmark_row.arguments.properties,
-        org_id=org.id,
-    ).runtime
-    if benchmark_row.aws_managed:
-        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
-
     final_view = create_final_view(benchmark_row, session, org)
     task_ids_set = set(task_ids) if task_ids else None
 
@@ -1240,6 +1352,19 @@ async def _retrieve_results(
 
     if not s3:
         return final_view
+
+    if benchmark_row.arguments.environment == "local":
+        raise HTTPException(
+            status_code=400, detail="Local results are available directly; S3 export requires an AWS run"
+        )
+    aws_runtime = resolve_run_aws_runtime_and_access_key_config(
+        http_request,
+        aws_managed=benchmark_row.aws_managed,
+        properties=benchmark_row.arguments.properties,
+        org_id=org.id,
+    ).runtime
+    if benchmark_row.aws_managed:
+        await http_validate_saved_managed_storage_runtime(aws_runtime, org_id=org.id)
 
     if preview:
         await _archive_final_view(benchmark_row, aws_runtime)
@@ -1278,9 +1403,8 @@ async def preview_results(
 @app.get("/check-results-exist")
 async def check_results_exist(
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
-    session: Session = Depends(get_session),
-    org: Org = Depends(get_current_org),
+    runtime: RunRuntimeDependency,
+    benchmark_row: RunBenchmarkDependency,
 ) -> dict[str, bool]:
     """
     Check if the benchmark's final view already exists in S3.
@@ -1291,11 +1415,8 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = run_context.benchmark
-    aws_runtime = run_context.aws_runtime
-
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
-    exists = await s3_object_exists(s3_key, aws_runtime)
+    exists = await runtime.objects.exists(s3_key)
     return {"exists": exists}
 
 
@@ -1379,21 +1500,25 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
-    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
-        http_request,
-        aws_managed=benchmark_row.aws_managed,
-        properties=benchmark_row.arguments.properties,
-        org_id=org.id,
-    )
-
-    provider_secret_name = (
-        _resolve_force_stop_provider_secret_name(
-            benchmark_row,
-            runtime_resolution.access_key_harness_config,
+    if benchmark_row.arguments.environment == "local":
+        provider_secret_name = None
+        runtime_resolution = None
+    else:
+        runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+            http_request,
+            aws_managed=benchmark_row.aws_managed,
+            properties=benchmark_row.arguments.properties,
+            org_id=org.id,
         )
-        if force
-        else None
-    )
+
+        provider_secret_name = (
+            _resolve_force_stop_provider_secret_name(
+                benchmark_row,
+                runtime_resolution.access_key_harness_config,
+            )
+            if force
+            else None
+        )
 
     benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
     if benchmark_row.status not in valid_stop_states:
@@ -1404,15 +1529,17 @@ async def stop_benchmark(
 
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
-    if provider_secret_name is not None:
-        await force_stop_sandboxes(
-            benchmark_row,
-            provider_secret_name,
+    if force and benchmark_row.arguments.environment == "local":
+        runtime = LocalRuntimeFactory.create_runtime(benchmark_row.arguments.properties.data_root, org.id)
+        await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=selected_task_ids)
+    elif provider_secret_name is not None:
+        assert runtime_resolution is not None
+        runtime = CloudRuntimeFactory.create_runtime(
             runtime_resolution.runtime,
-            org,
             sandbox_provider=benchmark_row.arguments.sandbox_provider,
-            task_ids=selected_task_ids,
+            sandbox_provider_secret_name=provider_secret_name,
         )
+        await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=selected_task_ids)
 
     return StopBenchmarkResponse(
         status="success",
@@ -1480,8 +1607,10 @@ class RecoveryPreparation:
     benchmark_name: str
     benchmark_url: str
     dataset: str | None
+    dataset_version: DatasetVersion | None
     queued_recovery: bool
-    properties: AWSResources | None = None
+    agent_name: str
+    properties: AWSResources | LocalResources | None = None
     resolved_properties: AWSResources | None = None
 
 
@@ -1499,6 +1628,8 @@ def _prepare_recovery(
         org = session.get(Org, org_id)
         assert org is not None
         benchmark = get_scoped(Benchmark, benchmark_id, session, org)
+        if benchmark.arguments.dataset_version is not None and benchmark_url is not None:
+            raise HTTPException(status_code=400, detail="A pinned run cannot change its benchmark service URL")
         if benchmark.status == BenchmarkStatus.STOPPING:
             raise HTTPException(
                 status_code=400,
@@ -1526,7 +1657,9 @@ def _prepare_recovery(
             benchmark.name,
             effective_url or create_benchmark_service_url(benchmark.name),
             benchmark.arguments.dataset,
+            benchmark.arguments.dataset_version,
             queued,
+            benchmark.arguments.contract.name,
             benchmark.arguments.properties,
         )
 
@@ -1548,6 +1681,7 @@ def _commit_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    update_agent: bool = False,
 ) -> AdmissionResult | None:
     with Session(bind, expire_on_commit=False) as session:
         org = session.get(Org, org_id)
@@ -1568,7 +1702,46 @@ def _commit_recovery(
             access_key_harness_config,
             preparation,
             verified_task_ids,
+            update_agent=update_agent,
         )
+
+
+# Tasks download the bundle when their sandbox starts, so a refresh during a run would mix agents within it.
+_UPDATE_AGENT_IN_PROGRESS = "Updating the agent of an in-progress run requires stopping the run first."
+
+
+async def _refresh_recovered_agent(
+    copier: ObjectCopier,
+    *,
+    benchmark_id: UUID,
+    agent_name: str,
+    session: Session,
+    admission: AdmissionResult,
+) -> None:
+    """Replace the run's agent bundle after recovery admission and before its executor is enqueued."""
+    try:
+        await copier.copy(agent_bundle_key(agent_name), benchmark_agent_bundle_key(str(benchmark_id), agent_name))
+    except Exception as exc:
+        dispatch = ExecutorDispatch.model_validate(json.loads(admission.dispatch_json))
+        logger.exception(
+            "Failed to refresh the agent bundle for an admitted recovery",
+            extra={"executor_dispatch_id": str(dispatch.id)},
+        )
+        _ = await asyncio.to_thread(
+            _resolve_enqueue_failure,
+            session.get_bind(),
+            dispatch.benchmark_id,
+            dispatch.id,
+            list(admission.verified_task_ids),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Agent bundle refresh failed; use Retry to continue",
+                "benchmark_id": str(dispatch.benchmark_id),
+                "executor_dispatch_id": str(dispatch.id),
+            },
+        ) from exc
 
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
@@ -1577,6 +1750,7 @@ async def retry_or_resume_benchmark(
     http_request: Request,
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    update_agent: bool = False,
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
@@ -1596,6 +1770,7 @@ async def retry_or_resume_benchmark(
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
+        update_agent: Refresh the saved agent bundle before recovering the run.
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
@@ -1605,6 +1780,10 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     org_id, bind = org.id, session.get_bind()
+    try:
+        validate_service_headers(service_headers)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # Authentication shares this dependency Session; end its read transaction too.
     session.close()
     if benchmark_url is not None:
@@ -1625,16 +1804,24 @@ async def retry_or_resume_benchmark(
         benchmark_url,
         secrets,
     )
-    runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
-        http_request,
-        properties=preparation.properties,
-        aws_managed=preparation.aws_managed,
-        org_id=org_id,
-    )
-    if preparation.aws_managed:
-        await http_validate_saved_managed_storage_runtime(runtime_resolution.runtime, org_id=org_id)
-        preparation = replace(preparation, resolved_properties=runtime_resolution.runtime.resources)
-
+    runtime_resolution = None
+    if isinstance(preparation.properties, LocalResources):
+        if local_config.resources is None:
+            raise HTTPException(status_code=400, detail="Server has no local configuration")
+        if lambda_function:
+            raise HTTPException(status_code=400, detail="Local execution does not support AWS callbacks")
+        access_key_harness_config = None
+    else:
+        runtime_resolution = resolve_run_aws_runtime_and_access_key_config(
+            http_request,
+            properties=preparation.properties,
+            aws_managed=preparation.aws_managed,
+            org_id=org_id,
+        )
+        access_key_harness_config = runtime_resolution.access_key_harness_config
+        if preparation.aws_managed:
+            await http_validate_saved_managed_storage_runtime(runtime_resolution.runtime, org_id=org_id)
+            preparation = replace(preparation, resolved_properties=runtime_resolution.runtime.resources)
     api_key = http_request.headers.get("x-api-key")
     effective_headers = forward_tracker_api_key(
         service_headers,
@@ -1643,7 +1830,9 @@ async def retry_or_resume_benchmark(
     )
     verified_task_ids = list(preparation.state.task_ids) if preparation.state is not None else []
     if verified_task_ids and not preparation.queued_recovery:
-        service = create_benchmark_service_client(preparation.benchmark_url, effective_headers)
+        service = create_benchmark_service_client(
+            preparation.benchmark_url, effective_headers, preparation.dataset_version
+        )
         try:
             verified = await service.verify_task_ids(
                 task_ids=verified_task_ids, slice_str=None, dataset=preparation.dataset
@@ -1651,6 +1840,33 @@ async def retry_or_resume_benchmark(
             verified_task_ids = verified.task_ids
         finally:
             await service.close()
+    agent_copier: ObjectCopier | None = None
+    if update_agent:
+        library_store: ObjectStore
+        if isinstance(preparation.properties, LocalResources):
+            # A local run's agent aliases and frozen bundle share its data root.
+            library_store = LocalRuntimeFactory.create_runtime(preparation.properties.data_root, org_id).objects
+            agent_copier = library_store
+        else:
+            assert runtime_resolution is not None
+            run_runtime = runtime_resolution.runtime
+            # Managed agent aliases live in the deployment library bucket; caller AWS headers never select it.
+            library_runtime = (
+                resolve_run_aws_runtime_and_access_key_config(http_request, aws_managed=True, org_id=org_id).runtime
+                if preparation.aws_managed
+                else run_runtime
+            )
+            library_store = S3ObjectStore(library_runtime)
+            agent_copier = (
+                S3ObjectCopier(library_runtime, run_runtime)
+                if library_runtime.resources.s3_bucket != run_runtime.resources.s3_bucket
+                else library_store
+            )
+        if not await library_store.exists(agent_bundle_key(preparation.agent_name)):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent {preparation.agent_name!r} was not found. Push the agent before using --update-agent.",
+            )
     commit_task = asyncio.create_task(
         asyncio.to_thread(
             _commit_recovery,
@@ -1666,9 +1882,10 @@ async def retry_or_resume_benchmark(
             secrets=secrets,
             benchmark_url=benchmark_url,
             lambda_function=lambda_function,
-            access_key_harness_config=runtime_resolution.access_key_harness_config,
+            access_key_harness_config=access_key_harness_config,
             preparation=preparation,
             verified_task_ids=verified_task_ids,
+            update_agent=update_agent,
         )
     )
     try:
@@ -1676,6 +1893,21 @@ async def retry_or_resume_benchmark(
     except _TaskFailedAfterCancellation as failure:
         raise failure.cancellation from failure.task_error
     if result is not None:
+        # A rejected recovery never reaches this copy, and the executor cannot read the bundle before enqueue.
+        if agent_copier is not None:
+            refresh_task = asyncio.create_task(
+                _refresh_recovered_agent(
+                    agent_copier,
+                    benchmark_id=benchmark_id,
+                    agent_name=preparation.agent_name,
+                    session=session,
+                    admission=result,
+                )
+            )
+            try:
+                _, cancellation = await _await_before_cancellation(refresh_task, cancellation)
+            except _TaskFailedAfterCancellation as failure:
+                raise failure.cancellation from failure.task_error
         enqueue_task = asyncio.create_task(
             _enqueue_executor_dispatch(
                 ExecutorDispatch.model_validate(json.loads(result.dispatch_json)),
@@ -1709,6 +1941,8 @@ def _apply_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    *,
+    update_agent: bool = False,
 ) -> AdmissionResult | None:
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
@@ -1717,6 +1951,10 @@ def _apply_recovery(
             status_code=400,
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
+
+    # A later status change fails the locked comparison with the prepared state.
+    if update_agent and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(status_code=409, detail=_UPDATE_AGENT_IN_PROGRESS)
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and secrets:
         raise HTTPException(
@@ -1922,7 +2160,9 @@ def _apply_recovery(
         if lambda_function is not None:
             benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": lambda_function})
 
-        if benchmark_row.aws_managed:
+        if benchmark_row.arguments.environment == "local":
+            resume_request = benchmark_row.local_start_benchmark_request(service_headers=effective_service_headers)
+        elif benchmark_row.aws_managed:
             if benchmark_row.arguments.properties is None:
                 if preparation.resolved_properties is None:
                     raise TrackerServiceError("Managed recovery has no resolved AWS resources")
@@ -2042,7 +2282,10 @@ async def fetch_benchmark_metadata(
         FetchBenchmarkMetadataResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    if benchmark_row.arguments.environment == "local":
+        return benchmark_row.benchmark_metadata
 
+    assert not isinstance(benchmark_row.arguments.properties, LocalResources)
     aws_runtime = resolve_run_metadata_aws_runtime(
         request,
         aws_managed=benchmark_row.aws_managed,
@@ -2125,7 +2368,7 @@ async def _tar_output_stream(
 @app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
 async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
-    run_context: RunAWSDependency,
+    runtime: RunRuntimeDependency,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
     task_ids: list[str] | None = Query(default=None),
@@ -2139,7 +2382,7 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    object_store = S3ObjectStore(run_context.aws_runtime)
+    object_store = runtime.objects
 
     benchmark_prefix = benchmark_artifact_prefix(str(benchmark_id))
 

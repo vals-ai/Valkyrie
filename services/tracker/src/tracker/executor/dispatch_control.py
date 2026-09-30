@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, func, or_, update
 from sqlmodel import Session, col, select
 
-from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
+from executor_protocol import DATASET_VERSION_PROTOCOL_VERSION, MANAGED_EXECUTION_PROTOCOL_VERSION
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -42,11 +42,13 @@ class EnqueueFailureResolution(str, Enum):
 
 
 def _require_managed_execution_release(release: ExecutorRelease) -> None:
-    if release.protocol_version != MANAGED_EXECUTION_PROTOCOL_VERSION:
+    if release.protocol_version not in {MANAGED_EXECUTION_PROTOCOL_VERSION, DATASET_VERSION_PROTOCOL_VERSION}:
         raise ReleaseControlError("Activate an executor release that supports managed runs")
 
 
 def _require_compatible_release(benchmark: Benchmark, release: ExecutorRelease) -> None:
+    if benchmark.arguments.dataset_version is not None and release.protocol_version != DATASET_VERSION_PROTOCOL_VERSION:
+        raise ReleaseControlError("Activate an executor release that supports pinned dataset versions")
     if benchmark.aws_managed:
         _require_managed_execution_release(release)
 

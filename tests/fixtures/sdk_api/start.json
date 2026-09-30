@@ -54,7 +54,8 @@
     "service_auth_header_name": null,
     "service_auth_secret_name": null,
     "webhook_secret_name": null,
-    "webhook_intervals": null
+    "webhook_intervals": null,
+    "dataset_version": null
   },
   "response": {
     "benchmark_name": "swebench",
@@ -69,6 +70,8 @@
     "executor_release_id": null,
     "current_execution_release_id": null,
     "executor_artifact_digest": null,
-    "executor_protocol_version": null
+    "executor_protocol_version": null,
+    "dataset_version": null,
+    "dataset_version_warning": null
   }
 }

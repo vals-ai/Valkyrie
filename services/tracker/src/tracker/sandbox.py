@@ -238,6 +238,7 @@ async def _create_sandbox(
             volumes=volumes or [],
             auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
+            network_block_all=False,
         )
     )
     _set_sandbox_span_attributes(sandbox)
@@ -342,7 +343,7 @@ async def upload_agent_artifacts(
     object_store: ObjectStore,
 ) -> None:
     """
-    Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
+    Transfer the frozen agent bundle using a signed URL or local provider file upload.
 
     Reads from benchmarks/<benchmark_id>/<name>.zip so edits to the shared agent don't affect runs in flight.
 
@@ -362,6 +363,11 @@ async def upload_agent_artifacts(
         contract_s3_key,
         expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
     )
+    if presigned_url is None:
+        from tracker.local.artifacts import upload_local_agent_artifacts
+
+        await upload_local_agent_artifacts(sandbox, await object_store.get_bytes(contract_s3_key))
+        return
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
     contract_dir = shlex.quote(str(bundle_path / contract.name))
@@ -857,6 +863,8 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     async def upload_outputs(*, preserve_agent_error: bool = False) -> None:
+        if execution_is_current is not None and not execution_is_current():
+            return
         errors: list[Exception] = []
         if contract.final_output:
             try:

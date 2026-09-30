@@ -37,7 +37,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.executor.release_control import promote_release
-from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
+from tracker.types import FetchBenchmarksRequest, HarnessConfig, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
@@ -51,7 +51,6 @@ from tracker.utils import (
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
-from tracker.utils.resources import fetch_sandbox_provider_config_async
 
 _parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
@@ -88,7 +87,7 @@ class TestRunState:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
+    async def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
         self, harness_config: HarnessConfig
     ) -> None:
         """Sandbox provider config should combine client-selected type with the production secret shape.
@@ -105,36 +104,10 @@ class TestRunState:
         }
 
         class TestSecretStore:
-            def get(self, name: str) -> SecretValue:
+            async def get(self, name: str) -> SecretValue:
                 return cast(SecretValue, secrets[name])
 
-        provider_config = fetch_sandbox_provider_config("provider-secret", TestSecretStore(), "daytona")
-        assert provider_config.model_dump(mode="json") == {
-            "type": "daytona",
-            "DAYTONA_API_KEY": "key",
-            "DAYTONA_API_URL": "url",
-            "DAYTONA_TARGET": "target",
-        }
-
-    async def test_fetch_sandbox_provider_config_async_uses_the_same_mapping(self) -> None:
-        secret = cast(
-            SecretValue,
-            {
-                "DAYTONA_API_KEY": "key",
-                "DAYTONA_API_URL": "url",
-                "DAYTONA_TARGET": "target",
-            },
-        )
-
-        class TestAsyncSecretStore:
-            async def get_async(self, name: str) -> SecretValue:
-                assert name == "provider-secret"
-                return secret
-
-        provider_config = await fetch_sandbox_provider_config_async(
-            "provider-secret", TestAsyncSecretStore(), "daytona"
-        )
-
+        provider_config = await fetch_sandbox_provider_config("provider-secret", TestSecretStore(), "daytona")
         assert provider_config.model_dump(mode="json") == {
             "type": "daytona",
             "DAYTONA_API_KEY": "key",
@@ -417,10 +390,14 @@ class TestRunState:
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
         recreated_start_benchmark_request = benchmark_row.access_key_start_benchmark_request(harness_config)
-        assert recreated_start_benchmark_request == original_start_benchmark_request.model_copy(
-            update={
-                "harness_config": harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
-            }
+        assert recreated_start_benchmark_request == RunExecutionRequest.model_validate(
+            original_start_benchmark_request.model_copy(
+                update={
+                    "harness_config": harness_config.model_copy(
+                        update={"sandbox_provider_secret_name": "ModalSecrets"}
+                    ),
+                }
+            ).model_dump(mode="python")
         )
 
         # Assert we have 5 tasks in the database

@@ -1122,6 +1122,29 @@ class MonitoringStackTest(unittest.TestCase):
             },
         )
 
+    def test_tracker_dataset_version_pinning_is_enabled_only_in_dev(self) -> None:
+        for stage_name, stage_environment, enabled in (
+            (DEV, TEST_DEV_ENV, "true"),
+            (BENCH, TEST_BENCH_ENV, "false"),
+            (PROD, TEST_PROD_ENV, "false"),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, "false"),
+        ):
+            with self.subTest(stage=stage_name):
+                with mock.patch.dict(os.environ, stage_environment, clear=True):
+                    tracker_template, _executor_template, _monitoring_template = service_templates(stage_name)
+
+                expected_env = assertions.Match.array_with(
+                    [{"Name": "DATASET_VERSION_PINNING_ENABLED", "Value": enabled}]
+                )
+                tracker_template.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [assertions.Match.object_like({"Environment": expected_env})]
+                        )
+                    },
+                )
+
     def test_dev_does_not_create_sandbox_cleanup_resources(self) -> None:
         with mock.patch.dict(
             os.environ,

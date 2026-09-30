@@ -10,12 +10,16 @@ import hashlib
 import json
 from json import JSONDecodeError
 import logging
+import subprocess
 import sys
 from functools import partial
+from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from typing import cast
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 import services.executor_host.observability as host_observability
@@ -32,7 +36,12 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     run_executor_dispatch,
     verify_file_digest,
 )
-from executor_protocol import ExecutorTelemetryContext, validate_executor_artifact_uri
+from executor_protocol import (
+    EXECUTOR_ENTRYPOINT_MODULE,
+    ExecutorTelemetryContext,
+    source_executor_artifact_uri,
+    validate_executor_artifact_uri,
+)
 
 
 class FakeDispatchStore:
@@ -254,11 +263,9 @@ async def test_prepare_artifact_downloads_and_verifies_by_digest(tmp_path: Path)
     assert artifact_path.read_bytes() == content
     assert artifact_path.stat().st_mode & 0o111
     assert len(client.calls) == 1
-    bucket, key, temporary_name = client.calls[0]
+    bucket, key, _temporary_name = client.calls[0]
     assert (bucket, key) == ("artifacts", "executors/v2.pex")
-    assert Path(temporary_name).parent == tmp_path
-    assert Path(temporary_name).suffix == ".tmp"
-    assert Path(temporary_name).name != f"{digest}.tmp"
+    assert list(tmp_path.iterdir()) == [artifact_path]
 
 
 def test_validate_artifact_uri_requires_configured_bucket_and_prefix() -> None:
@@ -1131,23 +1138,19 @@ def test_executor_host_uses_one_taskiq_process() -> None:
 async def test_task_protection_uses_a_renewable_two_hour_lease(monkeypatch: pytest.MonkeyPatch) -> None:
     request_bodies: list[dict[str, object]] = []
 
-    class Response:
-        def __enter__(self) -> Response:
-            return self
+    async def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url == "http://ecs-agent/task-protection/v1/state"
+        assert request.method == "PUT"
+        request_bodies.append(json.loads(request.content))
+        return httpx.Response(200)
 
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return b""
-
-    def fake_urlopen(request: object, *, timeout: int) -> Response:
-        assert timeout == 5
-        request_bodies.append(json.loads(cast(bytes, getattr(request, "data"))))
-        return Response()
-
+    client_factory = httpx.AsyncClient
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
-    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        supervisor_module.httpx,
+        "AsyncClient",
+        partial(client_factory, transport=httpx.MockTransport(handle)),
+    )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
     assert await set_task_protection(enabled=True)
@@ -1186,13 +1189,19 @@ async def test_task_protection_waits_for_in_flight_refresh_before_cancelling(
     finish_refresh = asyncio.Event()
     refresh_completed = asyncio.Event()
 
-    async def block_to_thread(*_args: object, **_kwargs: object) -> None:
+    async def handle(_request: httpx.Request) -> httpx.Response:
         refresh_started.set()
         await finish_refresh.wait()
         refresh_completed.set()
+        return httpx.Response(200)
 
     monkeypatch.setattr(supervisor_module, "ECS_AGENT_URI", "http://ecs-agent")
-    monkeypatch.setattr(supervisor_module.asyncio, "to_thread", block_to_thread)
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        supervisor_module.httpx,
+        "AsyncClient",
+        partial(client_factory, transport=httpx.MockTransport(handle)),
+    )
 
     set_task_protection = getattr(supervisor_module, "_set_task_protection")
     refresh_task = asyncio.create_task(set_task_protection(enabled=True))
@@ -1348,20 +1357,45 @@ async def test_cancellation_during_protection_acquisition_releases_before_claim(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_during_claim", [False, True])
 async def test_cancellation_after_claim_terminalizes_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cancel_during_claim: bool,
 ) -> None:
     artifact = b"unused"
     store = FakeDispatchStore()
     supervisor = _supervisor(tmp_path, content=artifact)
     entered_run = asyncio.Event()
+    entered_claim = asyncio.Event()
+    release_claim = Event()
+    entered_terminalize = asyncio.Event()
+    release_terminalize = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    async def block_claim(dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> DispatchAuthority:
+        def claim() -> DispatchAuthority:
+            loop.call_soon_threadsafe(entered_claim.set)
+            assert release_claim.wait(5)
+            store.claimed.append((dispatch_id, benchmark_id, dispatch))
+            store.authority = DispatchAuthority(dispatch_id, benchmark_id)
+            return store.authority
+
+        return await asyncio.to_thread(claim)
+
+    async def block_terminalize(authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        entered_terminalize.set()
+        await release_terminalize.wait()
+        store.terminalized.append(authority)
+        return True
 
     async def block_run(*args: object, **kwargs: object) -> None:
         entered_run.set()
         await asyncio.Event().wait()
 
     monkeypatch.setattr(supervisor, "run", block_run)
+    monkeypatch.setattr(store, "claim", block_claim)
+    monkeypatch.setattr(store, "terminalize", block_terminalize)
     task = asyncio.create_task(
         run_executor_dispatch(
             supervisor,
@@ -1372,11 +1406,29 @@ async def test_cancellation_after_claim_terminalizes_dispatch(
             process_payload=_process_payload(),
         )
     )
-    await entered_run.wait()
-    task.cancel()
+    try:
+        await entered_claim.wait()
+        if not cancel_during_claim:
+            release_claim.set()
+            await entered_run.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        if cancel_during_claim:
+            task.cancel()
+            await asyncio.sleep(0)
+            release_claim.set()
+        await asyncio.wait_for(entered_terminalize.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release_terminalize.set()
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release_claim.set()
+        release_terminalize.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert store.terminalized == [store.authority]
     assert store.finished == []
@@ -1791,3 +1843,119 @@ def test_host_accepts_current_and_pinned_legacy_protocols(protocol_version: str)
     )
     assert dispatch.protocol_version == protocol_version
     assert dispatch.release_id == "immutable-release"
+
+
+def _source_root(tmp_path: Path, entrypoint: str) -> Path:
+    root = tmp_path / "src"
+    package = root / "tracker" / "executor"
+    package.mkdir(parents=True)
+    (root / "tracker" / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "entrypoint.py").write_text(entrypoint)
+    return root
+
+
+def _source_dispatch(root: Path) -> ArtifactDispatch:
+    return replace(_dispatch(digest="0" * 64), artifact_uri=source_executor_artifact_uri(root))
+
+
+async def test_source_release_runs_the_entrypoint_module_from_the_configured_root(tmp_path: Path) -> None:
+    """
+    Verify that a source release runs the checkout's executor module instead of a packaged artifact.
+
+    Test cases:
+    - Preparing a source dispatch resolves to the configured root without creating a cache.
+    - The dispatch runs `tracker.executor.entrypoint` from that root with the dispatch payload.
+    """
+    received_payload = tmp_path / "received.json"
+    root = _source_root(
+        tmp_path,
+        f"import pathlib, sys\npathlib.Path({str(received_payload)!r}).write_text(pathlib.Path(sys.argv[1]).read_text())\n",
+    )
+    supervisor = ExecutorSupervisor(tmp_path / "cache", source_root=root)
+    dispatch = _source_dispatch(root)
+
+    assert await supervisor.prepare_artifact(dispatch) == root
+    store = FakeDispatchStore()
+    await run_executor_dispatch(
+        supervisor,
+        store,
+        keeper=supervisor_module._LeaseKeeper(store),  # pyright: ignore[reportPrivateUsage]
+        executor_dispatch_id="dispatch-1",
+        dispatch=dispatch,
+        process_payload=_process_payload(),
+    )
+
+    assert store.finished == [store.authority]
+    assert json.loads(received_payload.read_text())["executor_dispatch_id"] == "dispatch-1"
+    assert not (tmp_path / "cache").exists()
+
+
+def test_source_release_launch_environment_imports_the_real_entrypoint(tmp_path: Path) -> None:
+    """
+    Verify that the checkout's real executor entrypoint and its imports load through the source launch environment.
+
+    Test cases:
+    - The source command runs the executor entrypoint module.
+    - That module imports from the configured checkout with the command's environment.
+    """
+    root = Path(__file__).resolve().parents[3] / "services" / "tracker" / "src"
+    supervisor = ExecutorSupervisor(tmp_path / "cache", source_root=root)
+    command, environment = supervisor._executor_command(  # pyright: ignore[reportPrivateUsage]
+        root, _source_dispatch(root), tmp_path / "payload.json"
+    )
+
+    assert command[1:3] == ["-m", EXECUTOR_ENTRYPOINT_MODULE]
+    result = subprocess.run(
+        [command[0], "-c", f"import {EXECUTOR_ENTRYPOINT_MODULE} as entrypoint; print(entrypoint.__file__)"],
+        env=environment,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).is_relative_to(root)
+
+
+async def test_source_release_requires_the_host_to_serve_that_root(tmp_path: Path) -> None:
+    """
+    Verify that only a host configured with the same source root runs a source release.
+
+    Test cases:
+    - A host without a source root, such as an AWS host, rejects the dispatch.
+    - A host configured with a different root rejects the dispatch.
+    """
+    dispatch = _source_dispatch(_source_root(tmp_path, ""))
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+
+    with pytest.raises(ValueError, match="EXECUTOR_SOURCE_ROOT"):
+        await _supervisor(tmp_path, content=b"").prepare_artifact(dispatch)
+    with pytest.raises(ValueError, match="configured source root"):
+        await ExecutorSupervisor(tmp_path / "cache", source_root=other_root).prepare_artifact(dispatch)
+
+
+async def test_local_host_still_downloads_saved_s3_releases(tmp_path: Path) -> None:
+    """
+    Verify that configuring a source root keeps dispatches pinned to an S3 release working.
+
+    Test cases:
+    - An `s3://` dispatch downloads and verifies its artifact on a host with a source root.
+    """
+    content = b"pass\n"
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    client = FakeS3Client(content)
+    supervisor = ExecutorSupervisor(
+        tmp_path / "cache",
+        s3_client=client,
+        source_root=source_root,
+        artifact_bucket="artifacts",
+        artifact_prefix="executors",
+    )
+
+    artifact = await supervisor.prepare_artifact(_dispatch(digest=hashlib.sha256(content).hexdigest()))
+
+    assert artifact.read_bytes() == content
+    assert client.calls

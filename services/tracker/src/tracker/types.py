@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import DatasetVersion
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -20,6 +21,7 @@ from pydantic import (
 )
 
 from tracker.aws.runtime import AWSResources
+from tracker.local.resources import LocalResources
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -76,8 +78,8 @@ class HarnessConfig(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
+    environment: Literal["aws", "local"] = "aws"
+    properties: AWSResources | LocalResources | None = None
     managed_s3_bucket: str | None = Field(
         default=None,
         description=(
@@ -94,6 +96,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: str | None = Field(default=None, min_length=1, max_length=1024)
     harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -103,6 +106,20 @@ class StartBenchmarkRequest(BaseModel):
     service_auth_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
+
+    @model_validator(mode="after")
+    def validate_execution_environment(self) -> "StartBenchmarkRequest":
+        if self.environment == "aws":
+            if isinstance(self.properties, LocalResources):
+                raise ValueError("AWS execution cannot include local resources")
+            return self
+        if self.harness_config is not None or isinstance(self.properties, AWSResources):
+            raise ValueError("Local execution cannot include AWS configuration")
+        if self.sandbox_provider != "docker" or self.sandbox_provider_secret_name is not None:
+            raise ValueError("Local execution requires Docker without a provider secret")
+        if self.lambda_function or self.webhook_secret_name or self.service_auth_secret_name:
+            raise ValueError("Local execution does not support cloud callbacks or service secret references")
+        return self
 
     @field_validator("benchmark_name")
     @classmethod
@@ -125,11 +142,27 @@ class StartBenchmarkRequest(BaseModel):
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
 
-        # Prioritize user defined benchmark service over hosted one
         benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
             url=benchmark_service_url,
             service_headers=self.service_headers,
+        )
+
+
+class RunExecutionRequest(StartBenchmarkRequest):
+    """Internal request carrying the exact dataset version saved for a run."""
+
+    resolved_dataset_version: DatasetVersion | None = None
+
+    @property
+    def benchmark_service(self) -> BenchmarkServiceClient:
+        from tracker.utils import create_benchmark_service_client
+
+        benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
+        return create_benchmark_service_client(
+            url=benchmark_service_url,
+            service_headers=self.service_headers,
+            dataset_version=self.resolved_dataset_version,
         )
 
 
@@ -171,6 +204,8 @@ class StartBenchmarkResponse(BaseModel):
     concurrency: int
     started_at: datetime
     task_count: int
+    dataset_version: DatasetVersion | None = None
+    dataset_version_warning: str | None = None
     cloudwatch_url: str
     s3_bucket_url: str
     storage_bucket: str | None = None
@@ -280,7 +315,7 @@ class ManagedExecutionContext(BaseModel):
     version: Literal[2, 3]
     benchmark_id: UUID
     verified_task_ids: list[str]
-    start_benchmark_request: StartBenchmarkRequest
+    start_benchmark_request: RunExecutionRequest
 
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":

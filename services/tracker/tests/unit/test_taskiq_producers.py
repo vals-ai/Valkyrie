@@ -204,12 +204,16 @@ async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
     contract: AgentContractRequest,
 ) -> None:
     """Rebuilding from the bundle is what makes the settings trustworthy."""
+    contract = contract.model_copy(
+        update={"model": "test-model", "kwargs": {"variant": "custom"}, "secrets": {"API_KEY": "override"}}
+    )
     object_store = AsyncMock()
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr(
             "dummy/contract.yaml",
             "name: declared-name\ninstall_cmd: 'true'\nrun_cmd: 'echo {problem_statement_path} {variant}'\n"
+            "secrets:\n  API_KEY: default\n  EXTRA_KEY: extra\n"
             "kwargs:\n  variant:\n    type: str\n    default: max\n    required: false\n",
         )
     object_store.get_bytes.return_value = archive.getvalue()
@@ -218,7 +222,9 @@ async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
 
     assert resolved.inference_settings_attested is True
     assert resolved.name == "dummy"
-    assert resolved.kwargs == {"variant": "max"}
+    assert resolved.model == "test-model"
+    assert resolved.kwargs == {"variant": "custom"}
+    assert resolved.secrets == {"API_KEY": "override", "EXTRA_KEY": "extra"}
     object_store.get_bytes.assert_awaited_once_with("agents/dummy.zip")
 
 

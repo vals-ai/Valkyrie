@@ -112,6 +112,7 @@ class TrackerStack(Stack):
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
             "SANDBOX_QUEUE_ENABLED": os.environ.get("SANDBOX_QUEUE_ENABLED") or "false",
+            "DATASET_VERSION_PINNING_ENABLED": str(stage_config.dataset_version_pinning_enabled).lower(),
             **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
             **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
