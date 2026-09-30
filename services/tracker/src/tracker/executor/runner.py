@@ -584,6 +584,7 @@ class ExecutorSupervisor:
         self.source_root = source_root
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         if urlparse(dispatch.artifact_uri).scheme == "source":
             if self.source_root is None:
                 raise ValueError("Source executor releases require EXECUTOR_SOURCE_ROOT")
@@ -593,7 +594,6 @@ class ExecutorSupervisor:
             self.artifact_bucket or os.environ["EXECUTOR_RELEASE_BUCKET"],
             self.artifact_prefix or os.environ["EXECUTOR_RELEASE_PREFIX"],
         )
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
         try:
             verify_file_digest(artifact_path, dispatch.artifact_digest)

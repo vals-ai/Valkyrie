@@ -421,7 +421,7 @@ def test_runner_failure_is_captured_when_dispatch_telemetry_fails(
 
 
 @pytest.mark.asyncio
-async def test_source_release_runs_checkout_entrypoint_and_rejects_wrong_root(tmp_path: Path) -> None:
+async def test_source_release_creates_cache_runs_checkout_entrypoint_and_rejects_wrong_root(tmp_path: Path) -> None:
     from executor_protocol import source_executor_artifact_uri
 
     root = tmp_path / "source"
@@ -442,7 +442,7 @@ async def test_source_release_runs_checkout_entrypoint_and_rejects_wrong_root(tm
         artifact_digest="a" * 64,
         protocol_version="4",
     )
-    supervisor = runner.ExecutorSupervisor(tmp_path, source_root=root)
+    supervisor = runner.ExecutorSupervisor(tmp_path / "missing-cache", source_root=root)
     artifact = await supervisor.prepare_artifact(dispatch)
     assert artifact == root
     with pytest.raises(ValueError, match="configured source root"):
