@@ -11,6 +11,7 @@
   remove them in the follow-up cleanup PR together with the host-removal
   classifier rule. The one-time cutover uses gated maintenance; later runner
   deployments do not stop active tasks.
+- `tracker.serve` accepts `--port` (default 8000).
 
 ## Valkyrie SDK 0.3.0 (unreleased)
 

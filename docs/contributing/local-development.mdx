@@ -93,10 +93,12 @@ service. Set `DOCKER_HOST` when needed to select it. Start Tracker from `service
 uv run python -m tracker.serve --config /absolute/path/to/local-server.yaml
 ```
 
-Supplying `--config` selects the local launcher, configures the checkout as the runner source root, and registers its source release. Tracker launches one runner subprocess per dispatch with a process-local payload encryption key; no ExecutorHost or executor build is needed. Every dispatch, including a retry or resume, runs the current checkout. The local payload key is regenerated on Tracker restart: already-spawned runners keep their inherited key, while a dispatch never claimed before its deadline expires and must be retried. Omit `--config` to use AWS execution.
+Supplying `--config` selects the local launcher, configures the checkout as the runner source root, and registers its source release. Tracker launches one runner subprocess per dispatch with a process-local payload encryption key; no ExecutorHost or executor build is needed. Every dispatch, including a retry or resume, runs the current checkout. The local payload key is regenerated on Tracker restart: already-spawned runners keep their inherited key, while a dispatch never claimed before its deadline expires and must be retried. Omit `--config` to use AWS execution. Tracker listens on `127.0.0.1:8000`; add `--port <port>` when 8000 is in use and set `tracker_url` to match.
 
-Start your local benchmark service at its configured address with `AUTH_DISABLED=true` and
-`CBS_DOCKER_ENABLED=true`. The Docker opt-in lets that service use its local daemon for
+Start your local benchmark service at its configured address with `AUTH_REQUIRED` unset or
+`false` and `CBS_DOCKER_ENABLED=true`. Build it with the `create-benchmark-service` version
+Tracker pins (`v0.44.0` in `services/tracker/pyproject.toml`); older versions reject Docker
+sandbox requests. The Docker opt-in lets that service use its local daemon for
 request-selected sandboxes; leave it unset on hosted services. For sandbox grading,
 also set `GRADING_SANDBOX_PROVIDER=docker`.
 

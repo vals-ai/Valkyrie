@@ -32,6 +32,7 @@ def _register_source_release() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, help="Local execution resource configuration")
+    parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
     args = parser.parse_args()
     if args.config is not None:
         config.configure(args.config)
@@ -56,7 +57,7 @@ def main() -> None:
     uvicorn.run(
         "main:app",
         host="127.0.0.1" if is_local else "0.0.0.0",
-        port=8000,
+        port=args.port,
         workers=1 if is_local else 2,
         log_config=None,
     )
