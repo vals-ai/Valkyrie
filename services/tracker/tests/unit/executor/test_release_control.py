@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import io
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,6 +19,8 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
+from executor_protocol import validate_source_executor_artifact_uri
+from tracker.local.releases import register_source_release
 from tracker.executor.release_control import (
     ReleaseControlError,
     activate_release,
@@ -707,3 +710,38 @@ def test_active_retry_dispatch_blocks_its_release_across_successive_promotions(
     database_session.commit()
 
     assert retire_drained_releases(database_session) == ["v2"]
+
+
+def test_source_release_restart_reuses_the_checkout_release_across_edits(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    """
+    Verify that registering a checkout at startup keeps one release for it, whatever its files contain.
+
+    Test cases:
+    - The first registration activates a source release that names the checkout.
+    - Restarting after editing a source file reuses the active release.
+    - Registering a different checkout activates a new release and drains the previous one.
+    """
+    root = tmp_path / "src"
+    (root / "tracker").mkdir(parents=True)
+    module = root / "tracker" / "module.py"
+    module.write_text("VALUE = 1\n")
+
+    first = register_source_release(database_session, root)
+    database_session.commit()
+    assert first.status == ExecutorReleaseStatus.ACTIVE
+    assert validate_source_executor_artifact_uri(first.artifact_uri, root.resolve()) == root.resolve()
+
+    module.write_text("VALUE = 2\n")
+    restarted = register_source_release(database_session, root)
+    assert restarted.id == first.id
+
+    other_root = tmp_path / "other" / "src"
+    other_root.mkdir(parents=True)
+    other = register_source_release(database_session, other_root)
+    database_session.commit()
+    assert other.id != first.id
+    assert other.status == ExecutorReleaseStatus.ACTIVE
+    assert first.status == ExecutorReleaseStatus.DRAINING

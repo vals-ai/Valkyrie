@@ -11,7 +11,7 @@ from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     Org,
     Task,
@@ -126,7 +126,7 @@ class TestTrackerSchema:
         benchmark = Benchmark(
             org_id=TEST_ORG_ID,
             name="postgres-status-events",
-            arguments=BenchmarkArguments(
+            arguments=AWSBenchmarkArguments(
                 contract=AgentContractRequest(name="status-agent", install_cmd="true", run_cmd="true"),
                 concurrency=1,
             ),

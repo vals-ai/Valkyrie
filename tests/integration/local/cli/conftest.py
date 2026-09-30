@@ -43,7 +43,7 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
         return {}
 
     async def pages(**_kwargs: Any) -> AsyncIterator[dict[str, object]]:
-        yield {"Contents": [{"Key": key} for key in objects]}
+        yield {"Contents": [{"Key": key, "Size": len(value)} for key, value in objects.items()]}
 
     client.upload_part.side_effect = upload_part
     client.complete_multipart_upload.side_effect = complete

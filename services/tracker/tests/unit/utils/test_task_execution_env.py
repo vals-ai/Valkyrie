@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -184,7 +184,7 @@ class TestProcessTaskEnvironment:
         minted: list[dict[str, Any]] = []
         _install_gateway(monkeypatch, minted)
 
-        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
                 "RUN_ID": "secret-run-id",
                 "TASK_ID": "secret-task-id",
@@ -196,7 +196,7 @@ class TestProcessTaskEnvironment:
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -261,7 +261,7 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", AsyncMock(return_value={}))
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -304,14 +304,14 @@ class TestProcessTaskEnvironment:
         minted: list[dict[str, Any]] = []
         _install_gateway(monkeypatch, minted)
 
-        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
                 "VALKYRIE_AGENT_MODEL": "anthropic/claude-4-opus",
                 "MODEL_GATEWAY_URL": "https://gateway.example.test",
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -340,10 +340,10 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_no_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_no_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -382,7 +382,7 @@ class TestProcessTaskEnvironment:
         captured: dict[str, dict[str, str]] = {}
         resolved_inputs: list[dict[str, str]] = []
 
-        def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
             resolved_inputs.append(secrets)
             return {"LEGACY_API_KEY": "legacy-value"}
 
@@ -397,7 +397,7 @@ class TestProcessTaskEnvironment:
             response.sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
             return response
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 

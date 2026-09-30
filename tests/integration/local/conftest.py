@@ -20,7 +20,7 @@ from tracker.database.models import (
     DEFAULT_ORG_NAME,
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     EvaluationResult,
     ExecutorAdmission,
@@ -122,10 +122,14 @@ def route_cli_to_local_tracker(
     config_path.write_text(
         yaml.safe_dump(
             {
-                "AWS_ACCESS_KEY_ID": "test-key",
-                "AWS_SECRET_ACCESS_KEY": "test-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "test-bucket",
+                "aws": {
+                    "credentials": {
+                        "AWS_ACCESS_KEY_ID": "test-key",
+                        "AWS_SECRET_ACCESS_KEY": "test-secret",
+                    },
+                    "AWS_DEFAULT_REGION": "us-east-1",
+                    "S3_BUCKET": "test-bucket",
+                },
                 "sandbox_providers": {"daytona": "test-provider-secret"},
             }
         )
@@ -153,7 +157,7 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
         label="nightly",
         started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         started_by_email="runner@example.com",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="cli-agent",
                 model="openai/gpt-5",
@@ -174,7 +178,7 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
         started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         finished_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
         started_by_email="reviewer@example.com",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="review-agent",
                 install_cmd="install",
