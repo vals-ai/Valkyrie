@@ -598,12 +598,7 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to update run concurrency: {e}") from e
 
-    def shed_benchmark(
-        self,
-        benchmark_id: UUID,
-        concurrency: int,
-        dry_run: bool,
-    ) -> ShedBenchmarkResponse:
+    def shed_benchmark(self, benchmark_id: UUID, concurrency: int, dry_run: bool) -> ShedBenchmarkResponse:
         """Lower an active run's concurrency and force stop the newest tasks above the new limit."""
         payload = ShedBenchmarkRequest(concurrency=concurrency, dry_run=dry_run)
         try:

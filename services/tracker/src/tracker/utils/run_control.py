@@ -84,11 +84,7 @@ def apply_stop_benchmark(
 
 
 def apply_shed_benchmark(benchmark_row: Benchmark, concurrency: int, session: Session, org: Org) -> list[str]:
-    """Lower the concurrency limit and stop the newest tasks above it, without committing the transaction.
-
-    The caller must hold the benchmark row lock. Evaluating tasks count toward the limit but are never
-    stopped, so their evaluation state survives. Returns the stopped task ids, newest first.
-    """
+    """Lower the limit and stop the newest building/in-progress tasks above it; evaluating tasks count but stay."""
     run_tasks = (col(Task.benchmark) == benchmark_row.id, col(Task.org_id) == org.id)
     active_count = session.exec(
         select(func.count(col(Task.id)))

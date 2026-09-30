@@ -1634,16 +1634,10 @@ async def shed_benchmark(
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> ShedBenchmarkResponse:
-    """Lower an active run's concurrency and force stop the newest tasks above the new limit.
-
-    Selection and the stop transition happen in one locked transaction, so a task that has moved on to
-    evaluating is never stopped. With ``dry_run`` the transaction is rolled back and only the selection is returned.
-    """
+    """Lower an active run's concurrency and force stop the newest tasks above the new limit."""
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
     runtime = None if request.dry_run else _force_stop_runtime(http_request, benchmark_row, org)
-    # Authentication shares this dependency Session; end its read transaction before waiting on the admission lock.
-    session.close()
-
+    session.close()  # End the auth read transaction before waiting on the admission lock.
     task_ids = await asyncio.to_thread(_commit_shed, session.get_bind(), org.id, benchmark_id, request)
     if runtime is not None and task_ids:
         await force_stop_sandboxes(benchmark_row, runtime, org, task_ids=task_ids)
