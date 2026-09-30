@@ -48,15 +48,18 @@ class LocalArtifactStore:
 def register_local_release(session: Session, *, root: Path, bucket: str, prefix: str) -> ExecutorRelease:
     """Publish, smoke-test, and activate the local image's executor."""
     digest = hashlib.sha256(_LAUNCHER).hexdigest()
-    # Reuse the active release for this launcher. A drained or retired one cannot be reactivated, so
-    # switching back to an older protocol version gets a fresh release ID.
+    # Reuse the active release only when its artifact location matches. A drained or retired one cannot
+    # be reactivated, so switching back to an older protocol version gets a fresh release ID.
     active = session.exec(
         select(ExecutorRelease).where(
             col(ExecutorRelease.artifact_digest) == digest,
             col(ExecutorRelease.status) == ExecutorReleaseStatus.ACTIVE,
         )
     ).first()
-    release_id = active.id if active is not None else f"local-{digest[:16]}-{uuid4().hex[:8]}"
+    if active is not None and active.artifact_uri == f"s3://{bucket}/{prefix}/{active.id}/executor.pex":
+        release_id = active.id
+    else:
+        release_id = f"local-{digest[:16]}-{uuid4().hex[:8]}"
     key = f"{prefix}/{release_id}/executor.pex"
     artifact = root / bucket / key
     artifact.parent.mkdir(parents=True, exist_ok=True)

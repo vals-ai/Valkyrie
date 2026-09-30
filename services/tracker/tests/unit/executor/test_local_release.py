@@ -41,6 +41,30 @@ def test_local_release_repeated_registration_is_active_and_downloadable(
     assert hashlib.sha256(downloaded.read_bytes()).hexdigest() == releases[0].artifact_digest
 
 
+def test_local_release_prefix_change_promotes_fresh_downloadable_release(
+    database_session: Session, tmp_path: Path
+) -> None:
+    bucket = "local"
+    first = register_local_release(database_session, root=tmp_path, bucket=bucket, prefix="executor-releases-a")
+    database_session.commit()
+    second = register_local_release(database_session, root=tmp_path, bucket=bucket, prefix="executor-releases-b")
+    database_session.commit()
+    database_session.refresh(first)
+
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert second.id != first.id
+    assert first.status == ExecutorReleaseStatus.DRAINING
+    assert second.status == ExecutorReleaseStatus.ACTIVE
+    assert admission is not None
+    assert admission.release_id == second.id
+
+    uri = urlparse(second.artifact_uri)
+    assert uri.netloc == bucket
+    assert uri.path == f"/executor-releases-b/{second.id}/executor.pex"
+    with LocalArtifactStore(tmp_path).open(uri.netloc, uri.path.lstrip("/")) as artifact:
+        assert hashlib.sha256(artifact.read()).hexdigest() == second.artifact_digest
+
+
 def test_local_release_launcher_changes_promote_fresh_releases(
     database_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

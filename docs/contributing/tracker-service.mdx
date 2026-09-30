@@ -5,7 +5,7 @@ description: Architecture, local commands, and test suites for the tracker backe
 
 The tracker is the FastAPI backend. It serves the CLI and SDK API, tracks run and task state in PostgreSQL, and writes artifacts to S3. Admission stores an encrypted payload row with each queued dispatch. In deployed stages Tracker launches one ECS runner task per dispatch; the runner claims the row, deletes and decrypts its payload transactionally, verifies the pinned executor release artifact, and runs it in a child process.
 
-Local Docker Compose starts Tracker and PostgreSQL with `EXECUTOR_LAUNCHER=local`, registers a local executor release from the image's source at startup, and spawns a runner subprocess per dispatch to execute runs locally. Runs still need the benchmark service and AWS credentials for the agent bucket copy. The local release always runs the code in the current image, so runs resumed after a rebuild use the new code. Its release ID changes only when the executor protocol version changes.
+Local Docker Compose starts Tracker and PostgreSQL with `EXECUTOR_LAUNCHER=local`, registers a local executor release from the image's source at startup, and spawns a runner subprocess per dispatch to execute runs locally. Runs still need the benchmark service and AWS credentials for the agent bucket copy. The local release always runs the code in the current image, so runs resumed after a rebuild use the new code. Its release ID changes only when the executor protocol version or the release bucket or prefix changes. Release files are not kept across container rebuilds, so after a protocol version change, start new local runs instead of resuming older ones.
 
 ## Run configuration
 
