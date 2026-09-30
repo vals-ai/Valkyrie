@@ -9,7 +9,7 @@ from asyncio import Semaphore
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from types import TracebackType
 from typing import Any, cast
@@ -38,11 +38,12 @@ from tracker.aws.cloudwatch_logs import (
 )
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
-from tracker.runtime.model_gateway import controlled_gateway_ttl_seconds, task_scoped_gateway_key
+from tracker.runtime.model_gateway import CONTROLLED_TASK_WALL_SECONDS, task_scoped_gateway_key
 from tracker.runtime.task_logs import TaskLogBuffer
 from tracker.config import (
     ENVIRONMENT,
     EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
+    EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN,
     EXTERNAL_SERVICE_GATEWAY_URL,
 )
 from tracker.database.models import (
@@ -52,7 +53,6 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     ExecutorDispatch,
-    GenerationContainment,
     EvaluationResult,
     Org,
     Task,
@@ -61,6 +61,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.exceptions import (
+    CreditedTaskWallTimeExceeded,
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
     GenerationTerminationUnconfirmedError,
@@ -576,34 +577,31 @@ def commit_task_status_transition(
 
 async def _create_external_service_deadline(
     contract: AgentContractRequest,
-    task_generation_containment: GenerationContainment | None,
+    task_credited_generation: bool,
     agent_timeout: float | None,
 ) -> ExternalServiceDeadlineController | None:
-    if not _controlled_generation_selected(contract, task_generation_containment, agent_timeout):
+    if not _controlled_generation_selected(task_credited_generation, agent_timeout):
         return None
+
+    assert agent_timeout is not None
+    if EXTERNAL_SERVICE_GATEWAY_URL is None:
+        return ExternalServiceDeadlineController(base_allowance_seconds=agent_timeout)
 
     if not contract.inference_settings_attested or not contract.model or not contract.model.strip():
-        raise TrackerServiceError("Controlled generation requires an attested agent model")
-    if EXTERNAL_SERVICE_GATEWAY_URL is None:
-        return None
-
+        raise TrackerServiceError("Gateway credit requires an attested agent model")
+    if not EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN:
+        raise TrackerServiceError("Gateway credit requires EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN")
     assert EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS is not None
-    assert agent_timeout is not None
-    # Reject an unmintable controlled deadline before creating its SSP session.
-    controlled_gateway_ttl_seconds(agent_timeout, EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS)
-    client = ExternalServiceGatewayClient(EXTERNAL_SERVICE_GATEWAY_URL)
-    snapshot = await client.create_session(
-        session_id=str(uuid4()),
-        model=contract.model,
-        config={},
+    client = ExternalServiceGatewayClient(
+        EXTERNAL_SERVICE_GATEWAY_URL, control_token=EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN
     )
+    snapshot = await client.create_session(session_id=str(uuid4()))
     return ExternalServiceDeadlineController(
         client=client,
         snapshot=snapshot,
         base_allowance_seconds=agent_timeout,
         credit_cap_seconds=EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
     )
-
 
 def _persist_external_service_summary(
     summary: ExternalServiceAccountingSummary,
@@ -796,6 +794,44 @@ async def _process_task_attempt(
     evaluation_lock: PostgresAdvisoryLock | None = None
     evaluation_lock_acquired = False
 
+    def wall_seconds_remaining(deadline_at: datetime) -> float:
+        if deadline_at.tzinfo is None:
+            deadline_at = deadline_at.replace(tzinfo=UTC)
+        remaining = (deadline_at - datetime.now(UTC)).total_seconds()
+        if remaining <= 0:
+            raise CreditedTaskWallTimeExceeded("Credited task wall-time limit reached")
+        return remaining
+
+    @asynccontextmanager
+    async def enforce_wall_deadline(deadline_at: datetime | None) -> AsyncGenerator[None]:
+        if deadline_at is None:
+            yield
+            return
+        remaining = wall_seconds_remaining(deadline_at)
+        wall: asyncio.Timeout
+        try:
+            async with asyncio.timeout_at(asyncio.get_running_loop().time() + remaining) as wall:
+                yield
+        except TimeoutError as error:
+            if wall.expired():
+                raise CreditedTaskWallTimeExceeded("Credited task wall-time limit reached") from error
+            raise
+
+    def ensure_wall_deadline() -> datetime:
+        with Session(bind=engine) as wall_session:
+            lock_execution_authority(wall_session, authority)
+            owned = wall_session.exec(
+                select(Task).where(col(Task.id) == task_row.id).where(col(Task.org_id) == org.id).with_for_update()
+            ).one()
+            if owned.started_at != attempt_started_at or owned.status == TaskStatus.STOPPED:
+                raise ExecutionAuthorityRevoked("Task attempt no longer owns the wall deadline")
+            if owned.credited_wall_deadline_at is None:
+                owned.credited_wall_deadline_at = datetime.now(UTC) + timedelta(seconds=CONTROLLED_TASK_WALL_SECONDS)
+                wall_session.add(owned)
+                wall_session.commit()
+            task_row.credited_wall_deadline_at = owned.credited_wall_deadline_at
+            return owned.credited_wall_deadline_at
+
     def open_task_session() -> Session:
         bind = evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else engine
         return Session(bind=bind)
@@ -817,6 +853,22 @@ async def _process_task_attempt(
             authority=authority,
             connection=evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else None,
         )
+
+    async def resume_evaluation_with_wall(state: dict[str, Any]) -> Any:
+        async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+            result = await _run_benchmark_service_websocket(
+                benchmark_service.resume_evaluation(
+                    task_row.task_id,
+                    eval_resume_state=state,
+                    on_message=log_output,
+                    on_eval_resume_state=on_eval_resume_state,
+                    dataset=start_benchmark_request.dataset,
+                    sandbox_provider=sandbox_provider_config,
+                )
+            )
+            if task_row.credited_wall_deadline_at is not None:
+                wall_seconds_remaining(task_row.credited_wall_deadline_at)
+            return result
 
     def execution_is_current() -> bool:
         with open_task_session() as task_session:
@@ -908,16 +960,7 @@ async def _process_task_attempt(
         resume_eval_start_time = time.perf_counter()
         try:
             task_logs.last_log_time = time.monotonic()
-            evaluation_result = await _run_benchmark_service_websocket(
-                benchmark_service.resume_evaluation(
-                    task_row.task_id,
-                    eval_resume_state=evaluation_resume_state,
-                    on_message=log_output,
-                    on_eval_resume_state=on_eval_resume_state,
-                    dataset=start_benchmark_request.dataset,
-                    sandbox_provider=sandbox_provider_config,
-                )
-            )
+            evaluation_result = await resume_evaluation_with_wall(evaluation_resume_state)
         except BenchmarkServiceWebSocketDNSResolutionError as resume_error:
             if task_is_stopped():
                 return {task_id: None}
@@ -932,6 +975,16 @@ async def _process_task_attempt(
                 producer="benchmark_service",
                 operation="websocket_connect",
                 cause_code="websocket_dns_resolution",
+            )
+        except CreditedTaskWallTimeExceeded as wall_error:
+            if task_is_stopped():
+                return {task_id: None}
+            return commit_terminal_error(
+                wall_error,
+                str(wall_error),
+                producer="tracker",
+                operation="task_wall_deadline",
+                cause_code="credited_task_wall_time_exceeded",
             )
         except Exception as resume_error:
             if task_is_stopped():
@@ -979,6 +1032,18 @@ async def _process_task_attempt(
 
         return {task_id: evaluation_result_value}
 
+    if task_row.credited_wall_deadline_at is not None:
+        try:
+            wall_seconds_remaining(task_row.credited_wall_deadline_at)
+        except CreditedTaskWallTimeExceeded as error:
+            return commit_terminal_error(
+                error,
+                str(error),
+                producer="tracker",
+                operation="task_wall_deadline",
+                cause_code="credited_task_wall_time_exceeded",
+            )
+
     try:
         evaluation_resume_state = task_row.eval_resume_state
         if task_row.status == TaskStatus.EVALUATING and evaluation_resume_state is not None:
@@ -1015,16 +1080,7 @@ async def _process_task_attempt(
                 resume_eval_start_time = time.perf_counter()
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
-                evaluation_result = await _run_benchmark_service_websocket(
-                    benchmark_service.resume_evaluation(
-                        task_row.task_id,
-                        eval_resume_state=evaluation_resume_state,
-                        on_message=log_output,
-                        on_eval_resume_state=on_eval_resume_state,
-                        dataset=start_benchmark_request.dataset,
-                        sandbox_provider=sandbox_provider_config,
-                    )
-                )
+                evaluation_result = await resume_evaluation_with_wall(evaluation_resume_state)
                 resume_eval_duration = time.perf_counter() - resume_eval_start_time
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
@@ -1077,16 +1133,20 @@ async def _process_task_attempt(
 
                 raise e from e
 
-        task_data = await recovery_attempt.retrieve_task()
+        async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+            task_data = await recovery_attempt.retrieve_task()
         if sandbox_provider is None:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
-        task_generation_containment = getattr(task_data, "generation_containment", None)
-        external_service_deadline = await _create_external_service_deadline(
-            start_benchmark_request.contract,
-            task_generation_containment,
-            task_data.agent_timeout,
+        task_credited_generation = bool(getattr(task_data, "credited_generation", False)) or (
+            task_row.credited_wall_deadline_at is not None
         )
+        async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+            external_service_deadline = await _create_external_service_deadline(
+                start_benchmark_request.contract,
+                task_credited_generation,
+                task_data.agent_timeout,
+            )
 
         # Labels that show up in the UI we can use to filter sandboxes.
         # Benchmark/Id/Task are read back by sandbox._audit_sandbox_delete.
@@ -1118,8 +1178,11 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
+        async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+            resolved_secrets = await runtime.resolve_secrets(start_benchmark_request.contract.secrets)
+
         env_vars = {
-            **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
+            **resolved_secrets,
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
@@ -1163,6 +1226,13 @@ async def _process_task_attempt(
             )
             # Do not mint while the queued attempt waits for admission.
             contract = start_benchmark_request.contract
+            wall_deadline_at = ensure_wall_deadline() if task_credited_generation else None
+            wall_timeout: asyncio.Timeout | None = None
+
+            def remember_wall_timeout(timeout: asyncio.Timeout) -> None:
+                nonlocal wall_timeout
+                wall_timeout = timeout
+
             async with task_scoped_gateway_key(
                 env_vars,
                 run_id=str(benchmark_id),
@@ -1172,12 +1242,27 @@ async def _process_task_attempt(
                 identity=identity,
                 org_name=org.name,
                 agent_timeout=task_data.agent_timeout,
-                accounting_session_id=external_service_deadline.session_id if external_service_deadline else None,
-                accounting_gateway_url=EXTERNAL_SERVICE_GATEWAY_URL if external_service_deadline else None,
-                credit_cap_seconds=external_service_deadline.credit_cap_seconds if external_service_deadline else None,
+                accounting_session_id=(
+                    external_service_deadline.session_id
+                    if external_service_deadline is not None and external_service_deadline.snapshot is not None
+                    else None
+                ),
+                accounting_gateway_url=(
+                    EXTERNAL_SERVICE_GATEWAY_URL
+                    if external_service_deadline is not None and external_service_deadline.snapshot is not None
+                    else None
+                ),
+                accounting_control_token=(
+                    EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN
+                    if external_service_deadline is not None and external_service_deadline.snapshot is not None
+                    else None
+                ),
+                credited_generation=task_credited_generation,
+                wall_deadline_at=wall_deadline_at,
+                on_wall_timeout_started=remember_wall_timeout,
             ) as scoped_env_vars:
                 sandbox_env_vars = scoped_env_vars
-                if external_service_deadline is not None:
+                if external_service_deadline is not None and external_service_deadline.snapshot is not None:
                     assert EXTERNAL_SERVICE_GATEWAY_URL is not None
                     sandbox_env_vars = {**scoped_env_vars, "MODEL_GATEWAY_URL": EXTERNAL_SERVICE_GATEWAY_URL}
                 async with create_sandbox(
@@ -1192,22 +1277,29 @@ async def _process_task_attempt(
                     creation_semaphore=creation_semaphore,
                     unique_name=queue_context is None,
                 ) as sandbox:
-                    yield sandbox
+                    try:
+                        yield sandbox
+                    finally:
+                        # The two-hour margin is for teardown; a finished result must not be
+                        # overwritten by cancellation while deleting the sandbox/revoking its key.
+                        if wall_timeout is not None and not wall_timeout.expired():
+                            wall_timeout.reschedule(None)
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
                 sandbox = await sandbox_stack.enter_async_context(sandbox_context())
             else:
-                sandbox = await enter_queued_sandbox(
-                    stack=sandbox_stack,
-                    context=queue_context,
-                    task_row_id=task_row.id,
-                    expected_started_at=attempt_started_at,
-                    authority=authority,
-                    source=task_data.source,
-                    resources=task_data.resources,
-                    create=sandbox_context,
-                )
+                async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+                    sandbox = await enter_queued_sandbox(
+                        stack=sandbox_stack,
+                        context=queue_context,
+                        task_row_id=task_row.id,
+                        expected_started_at=attempt_started_at,
+                        authority=authority,
+                        source=task_data.source,
+                        resources=task_data.resources,
+                        create=sandbox_context,
+                    )
                 if sandbox is None:
                     return {task_id: None}
             sandbox_id_for_recovery = sandbox.id
@@ -1307,12 +1399,14 @@ async def _process_task_attempt(
                     object_store=object_store,
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
-                    task_generation_containment=task_generation_containment,
+                    task_credited_generation=task_credited_generation,
                     benchmark_id=str(benchmark_id),
                     execution_is_current=execution_is_current,
                     external_service_deadline=external_service_deadline,
                     on_external_service_sealed=(
-                        persist_external_service_summary if external_service_deadline is not None else None
+                        persist_external_service_summary
+                        if external_service_deadline is not None and external_service_deadline.snapshot is not None
+                        else None
                     ),
                 )
                 logger.info(
@@ -1565,6 +1659,17 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="request",
+        )
+    except CreditedTaskWallTimeExceeded as wall_error:
+        if task_is_stopped():
+            return {task_id: None}
+        log_output(f"\n[ERROR] {wall_error}")
+        return commit_terminal_error(
+            wall_error,
+            str(wall_error),
+            producer="tracker",
+            operation="task_wall_deadline",
+            cause_code="credited_task_wall_time_exceeded",
         )
     except Exception as e:
         if task_is_stopped():

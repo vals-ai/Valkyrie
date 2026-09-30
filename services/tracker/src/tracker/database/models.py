@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 from benchmark_service.schemas import DatasetVersion
-from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, DateTime, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -163,7 +163,6 @@ class GenerationContainment(BaseModel):
 
 class AgentContractRequest(BaseModel):
     name: str
-    generation_containment: GenerationContainment | None = None
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""
@@ -619,6 +618,9 @@ class Task(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    credited_wall_deadline_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 

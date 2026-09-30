@@ -8,7 +8,7 @@ import json
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
@@ -39,7 +39,6 @@ from tracker.external_service_gateway import (
 )
 from tracker.database.models import (
     AgentContractRequest,
-    GenerationContainment,
     ExecutorDispatch,
     ExecutorDispatchStatus,
     Task,
@@ -251,10 +250,7 @@ class TestProcessTaskEnvironment:
         ]
 
     @pytest.mark.usefixtures("process_benchmark_env")
-    @pytest.mark.parametrize(
-        ("credit_cap_seconds", "expected_ttl"),
-        [(5.0, 7215), (7205.25, 14416)],
-    )
+    @pytest.mark.parametrize("credit_cap_seconds", [5.0, 7205.25])
     async def test_controlled_task_routes_model_gateway_through_accounting_session(
         self,
         contract: AgentContractRequest,
@@ -263,7 +259,6 @@ class TestProcessTaskEnvironment:
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         credit_cap_seconds: float,
-        expected_ttl: int,
     ) -> None:
         contract = contract.model_copy(
             update={
@@ -275,7 +270,6 @@ class TestProcessTaskEnvironment:
                     "UNRELATED_SECRET": "unrelated-secret",
                 },
                 "inference_settings_attested": True,
-                "generation_containment": GenerationContainment(type="linux_pid_namespace", version=1),
             }
         )
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
@@ -283,10 +277,15 @@ class TestProcessTaskEnvironment:
             database_session,
             harness_config,
         )
+        # A pending retry carries the original wall deadline into native mint.
+        original_deadline = datetime.now(UTC) + timedelta(seconds=5)
+        task_row.credited_wall_deadline_at = original_deadline
+        database_session.add(task_row)
+        database_session.commit()
         task_response = make_retrieve_task_response().model_copy(
             update={
                 "agent_timeout": 10.0,
-                "generation_containment": GenerationContainment(type="linux_pid_namespace", version=1),
+                "credited_generation": True,
             }
         )
         captured_env_vars: list[dict[str, str]] = []
@@ -334,6 +333,8 @@ class TestProcessTaskEnvironment:
                 cumulative_neutral_overhead_ms=0,
                 revision=0,
                 accounting_epoch=0,
+                generation_active=False,
+                interval_index=0,
             )
         )
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
@@ -350,6 +351,7 @@ class TestProcessTaskEnvironment:
             create_session,
         )
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway")
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", "tracker-control")
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", credit_cap_seconds)
 
         result = await run_process_task(
@@ -369,20 +371,18 @@ class TestProcessTaskEnvironment:
         assert str(mint_requests[0].url) == "http://local-gateway/service-auth"
         assert mint_requests[0].headers["Authorization"] == "Bearer gateway-key"
         assert mint_requests[0].headers["X-SSP-Session-ID"] == "session-1"
+        assert mint_requests[0].headers["X-SSP-Control-Token"] == "tracker-control"
         assert minted[0]["allowed_models"] == ["provider/model"]
-        assert minted[0]["ttl_seconds"] == expected_ttl
+        assert minted[0]["ttl_seconds"] == 7 * 24 * 60 * 60
         assert captured_env_vars[0]["UNRELATED_SECRET"] == "unrelated-value"
         assert captured_env_vars[0]["VALKYRIE_AGENT_VARIANT"] == "xhigh"
         assert captured_deadlines[0].base_allowance_seconds == 10.0
         assert captured_deadlines[0].credit_cap_seconds == credit_cap_seconds
-        create_call = create_session.await_args
-        assert create_call is not None
-        create_kwargs = create_call.kwargs
-        assert create_kwargs["model"] == "provider/model"
-        assert create_kwargs["config"] == {}
         database_session.expire_all()
         persisted_task = database_session.get(Task, task_row.id)
         assert persisted_task is not None
+        assert persisted_task.credited_wall_deadline_at is not None
+        assert persisted_task.credited_wall_deadline_at.replace(tzinfo=UTC) == original_deadline
         assert persisted_task.task_breakdown is not None
         breakdown = database_session.get(TaskBreakdown, persisted_task.task_breakdown)
         assert breakdown is not None
@@ -456,11 +456,9 @@ class TestProcessTaskEnvironment:
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        containment = GenerationContainment(type="linux_pid_namespace", version=1)
         contract = contract.model_copy(
             update={
                 "model": "provider/model",
-                "generation_containment": containment,
                 "inference_settings_attested": True,
                 "secrets": {"MODEL_GATEWAY_URL": "gateway-url", "MODEL_GATEWAY_API_KEY": "gateway-key"},
             }
@@ -471,7 +469,7 @@ class TestProcessTaskEnvironment:
         task_response = make_retrieve_task_response().model_copy(
             update={
                 "agent_timeout": 10.0,
-                "generation_containment": containment,
+                "credited_generation": True,
             }
         )
         persistence_error = RuntimeError("summary persistence failed")
@@ -510,6 +508,7 @@ class TestProcessTaskEnvironment:
         )
         monkeypatch.setattr(utils_module, "run_agent", fail_during_agent)
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway")
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", "tracker-control")
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0)
         monkeypatch.setattr(
             utils_module.ExternalServiceGatewayClient,
@@ -521,6 +520,8 @@ class TestProcessTaskEnvironment:
                     cumulative_neutral_overhead_ms=0,
                     revision=0,
                     accounting_epoch=0,
+                    generation_active=False,
+                    interval_index=0,
                 )
             ),
         )
@@ -540,61 +541,144 @@ class TestProcessTaskEnvironment:
 
         assert result == {"task_0": None}
         evaluate_instance.assert_not_awaited()
-
     @pytest.mark.parametrize(
-        ("gateway_url", "agent_enabled", "task_enabled", "timeout"),
+        ("gateway_url", "task_enabled", "timeout", "base_only"),
         [
-            (None, True, True, 10.0),
-            ("http://local-gateway", False, True, 10.0),
-            ("http://local-gateway", True, False, 10.0),
-            ("http://local-gateway", True, True, None),
+            (None, True, 10.0, True),
+            ("http://local-gateway", False, 10.0, False),
         ],
     )
-    async def test_ineligible_accounting_does_not_create_a_session(
+    async def test_base_only_opt_in_and_ineligible_tasks_never_create_ssp_sessions(
         self,
         contract: AgentContractRequest,
         monkeypatch: pytest.MonkeyPatch,
         gateway_url: str | None,
-        agent_enabled: bool,
         task_enabled: bool,
         timeout: float | None,
+        base_only: bool,
     ) -> None:
-        containment = GenerationContainment(type="linux_pid_namespace", version=1)
-        selected_contract = contract.model_copy(
-            update={
-                "model": "provider/model",
-                "inference_settings_attested": True,
-                "generation_containment": containment if agent_enabled else None,
-            }
-        )
         create_session = AsyncMock()
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", gateway_url)
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0)
-        monkeypatch.setattr(
-            utils_module.ExternalServiceGatewayClient,
-            "create_session",
-            create_session,
-        )
+        monkeypatch.setattr(utils_module.ExternalServiceGatewayClient, "create_session", create_session)
 
         deadline = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
-            selected_contract,
-            containment if task_enabled else None,
-            timeout,
+            contract, task_enabled, timeout
         )
 
-        assert deadline is None
+        if base_only:
+            assert deadline is not None
+            assert deadline.client is None
+            assert deadline.credit_cap_seconds == 0
+        else:
+            assert deadline is None
         create_session.assert_not_awaited()
+
+
+    @pytest.mark.parametrize("persisted_retry", [False, True], ids=["new-attempt", "live-retry"])
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_base_only_task_runs_without_model_or_ssp_session(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+        persisted_retry: bool,
+    ) -> None:
+        contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
+        request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        original_deadline = datetime.now(UTC) + timedelta(seconds=5) if persisted_retry else None
+        if original_deadline is not None:
+            task_row.credited_wall_deadline_at = original_deadline
+            database_session.add(task_row)
+            database_session.commit()
+        task_response = make_retrieve_task_response().model_copy(
+            update={"agent_timeout": 10.0, "credited_generation": True}
+        )
+        create_session = AsyncMock()
+        observed: list[tuple[bool, Any]] = []
+
+        async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return task_response
+
+        async def capture_run_agent(*_args: Any, **kwargs: Any) -> tuple[None, float]:
+            observed.append((kwargs["task_credited_generation"], kwargs["external_service_deadline"]))
+            return None, 1.0
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+        monkeypatch.setattr(utils_module, "run_agent", capture_run_agent)
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", None)
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", None)
+        monkeypatch.setattr(utils_module.ExternalServiceGatewayClient, "create_session", create_session)
+
+        result = await run_process_task(request, task_row, benchmark_id, runtime_services, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert len(observed) == 1
+        opted_in, deadline = observed[0]
+        assert opted_in is True
+        assert deadline is not None
+        assert deadline.base_allowance_seconds == 10.0
+        assert deadline.client is None
+        create_session.assert_not_awaited()
+        database_session.refresh(task_row)
+        assert task_row.credited_wall_deadline_at is not None
+        if original_deadline is not None:
+            assert task_row.credited_wall_deadline_at.replace(tzinfo=UTC) == original_deadline
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_credited_wall_timer_does_not_interrupt_sandbox_teardown(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
+        request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        response = make_retrieve_task_response().model_copy(
+            update={"agent_timeout": 10.0, "credited_generation": True}
+        )
+        teardown_complete = asyncio.Event()
+
+        @asynccontextmanager
+        async def delayed_teardown(*_args: Any, **_kwargs: Any) -> AsyncGenerator[SimpleNamespace, None]:
+            try:
+                yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+            finally:
+                await asyncio.sleep(0.6)
+                teardown_complete.set()
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=response))
+        monkeypatch.setattr(utils_module, "create_sandbox", delayed_teardown)
+        monkeypatch.setattr(utils_module, "run_agent", AsyncMock(return_value=(None, 0.0)))
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", None)
+        monkeypatch.setattr(utils_module, "CONTROLLED_TASK_WALL_SECONDS", 0.5)
+
+        result = await asyncio.wait_for(
+            run_process_task(request, task_row, benchmark_id, runtime_services, authority), timeout=3
+        )
+
+        assert teardown_complete.is_set()
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        database_session.refresh(task_row)
+        assert task_row.credited_wall_deadline_at is not None
+        assert datetime.now(UTC) > task_row.credited_wall_deadline_at.replace(tzinfo=UTC)
 
     async def test_two_eligible_tasks_get_distinct_accounting_sessions(
         self,
         contract: AgentContractRequest,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        containment = GenerationContainment(type="linux_pid_namespace", version=1)
         selected_contract = contract.model_copy(
             update={
                 "model": "provider/model",
-                "generation_containment": containment,
                 "inference_settings_attested": True,
             }
         )
@@ -604,11 +688,7 @@ class TestProcessTaskEnvironment:
             _client: Any,
             *,
             session_id: str,
-            model: str,
-            config: dict[str, str],
         ) -> AccountingSessionSnapshot:
-            assert model == "provider/model"
-            assert config == {}
             requested_session_ids.append(session_id)
             return AccountingSessionSnapshot(
                 session_id=session_id,
@@ -616,9 +696,12 @@ class TestProcessTaskEnvironment:
                 cumulative_neutral_overhead_ms=0,
                 revision=0,
                 accounting_epoch=0,
+                generation_active=False,
+                interval_index=0,
             )
 
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway")
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", "tracker-control")
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0)
         monkeypatch.setattr(
             utils_module.ExternalServiceGatewayClient,
@@ -627,10 +710,10 @@ class TestProcessTaskEnvironment:
         )
 
         first = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
-            selected_contract, containment, 10.0
+            selected_contract, True, 10.0
         )
         second = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
-            selected_contract, containment, 10.0
+            selected_contract, True, 10.0
         )
 
         assert first is not None
@@ -638,27 +721,31 @@ class TestProcessTaskEnvironment:
         assert requested_session_ids[0] != requested_session_ids[1]
 
     @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_controlled_ttl_exceeding_seven_days_rejects_before_session_or_sandbox(
+    @pytest.mark.parametrize(
+        ("attested", "model"),
+        [(False, "provider/model"), (True, None), (True, ""), (True, "   ")],
+    )
+    async def test_ssp_credit_rejects_unattested_or_empty_model_before_session_or_sandbox(
         self,
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
+        attested: bool,
+        model: str | None,
     ) -> None:
-        containment = GenerationContainment(type="linux_pid_namespace", version=1)
         contract = contract.model_copy(
             update={
-                "model": "provider/model",
-                "inference_settings_attested": True,
-                "generation_containment": containment,
+                "model": model,
+                "inference_settings_attested": attested,
             }
         )
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 3600.0, "generation_containment": containment}
+            update={"agent_timeout": 10.0, "credited_generation": True}
         )
         create_session = AsyncMock()
         create_sandbox = Mock()
@@ -670,60 +757,8 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module.ExternalServiceGatewayClient, "create_session", create_session)
         monkeypatch.setattr(utils_module, "create_sandbox", create_sandbox)
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway")
-        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 594000.1)
-
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
-
-        assert result == {"task_0": None}
-        create_session.assert_not_awaited()
-        create_sandbox.assert_not_called()
-        database_session.expire_all()
-        assert database_session.get(Task, task_row.id).status == TaskStatus.ERROR
-        errors = database_session.exec(select(utils_module.ErrorResult)).all()
-        assert len(errors) == 1
-
-    @pytest.mark.usefixtures("process_benchmark_env")
-    @pytest.mark.parametrize(
-        ("attested", "model"),
-        [(False, "provider/model"), (True, None), (True, ""), (True, "   ")],
-    )
-    @pytest.mark.parametrize("ssp_url", [None, "http://local-gateway"], ids=["without-ssp", "with-ssp"])
-    async def test_selected_controlled_task_rejects_unattested_or_empty_model_before_session_or_sandbox(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-        runtime_services: RuntimeServices,
-        attested: bool,
-        model: str | None,
-        ssp_url: str | None,
-    ) -> None:
-        containment = GenerationContainment(type="linux_pid_namespace", version=1)
-        contract = contract.model_copy(
-            update={
-                "model": model,
-                "inference_settings_attested": attested,
-                "generation_containment": containment,
-            }
-        )
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
-        task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "generation_containment": containment}
-        )
-        create_session = AsyncMock()
-        create_sandbox = Mock()
-
-        async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            return task_response
-
-        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
-        monkeypatch.setattr(utils_module.ExternalServiceGatewayClient, "create_session", create_session)
-        monkeypatch.setattr(utils_module, "create_sandbox", create_sandbox)
-        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", ssp_url)
-        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0 if ssp_url else None)
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", "tracker-control")
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0)
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
@@ -744,19 +779,17 @@ class TestProcessTaskEnvironment:
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        containment = GenerationContainment(type="linux_pid_namespace", version=1)
         contract = contract.model_copy(
             update={
                 "model": "provider/model",
                 "inference_settings_attested": True,
-                "generation_containment": containment,
             }
         )
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "generation_containment": containment}
+            update={"agent_timeout": 10.0, "credited_generation": True}
         )
         create_sandbox = Mock()
         create_session = AsyncMock(
@@ -766,6 +799,8 @@ class TestProcessTaskEnvironment:
                 cumulative_neutral_overhead_ms=0,
                 revision=0,
                 accounting_epoch=0,
+                generation_active=False,
+                interval_index=0,
             )
         )
 
@@ -776,6 +811,7 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module.ExternalServiceGatewayClient, "create_session", create_session)
         monkeypatch.setattr(utils_module, "create_sandbox", create_sandbox)
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway")
+        monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", "tracker-control")
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0)
         monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
 
@@ -786,10 +822,6 @@ class TestProcessTaskEnvironment:
         create_sandbox.assert_not_called()
         errors = database_session.exec(select(utils_module.ErrorResult)).all()
         assert len(errors) == 1
-        assert (
-            errors[0].error_message
-            == "Controlled task requires a native Model Gateway URL, API key, and attested model"
-        )
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_withholds_unattested_inference_settings(

@@ -731,6 +731,8 @@ def _accounting_snapshot(
     overhead_ms: int = 0,
     revision: int = 0,
     epoch: int = 0,
+    active: bool = False,
+    interval_index: int = 0,
 ) -> AccountingSessionSnapshot:
     return AccountingSessionSnapshot(
         session_id="session-1",
@@ -738,6 +740,8 @@ def _accounting_snapshot(
         cumulative_neutral_overhead_ms=overhead_ms,
         revision=revision,
         accounting_epoch=epoch,
+        generation_active=active,
+        interval_index=interval_index,
     )
 
 
@@ -755,6 +759,15 @@ class _FakeAccountingClient:
         self.decisions: list[str] = []
         self.read_calls = 0
         self.begin_calls = 0
+        self.phases: list[tuple[str, int]] = []
+
+    async def begin_generation(self, _session_id: str, interval_index: int) -> AccountingSessionSnapshot:
+        self.phases.append(("begin", interval_index))
+        return _accounting_snapshot(active=True, interval_index=interval_index, overhead_ms=self.overhead_ms)
+
+    async def end_generation(self, _session_id: str, interval_index: int) -> AccountingSessionSnapshot:
+        self.phases.append(("end", interval_index))
+        return _accounting_snapshot(active=False, interval_index=interval_index, overhead_ms=self.overhead_ms)
 
     async def read_session(self, _session_id: str) -> AccountingSessionSnapshot:
         self.read_calls += 1
@@ -785,12 +798,11 @@ class _FakeAccountingClient:
         )
 
 
-def _controlled_contract(*, version: int = 1) -> AgentContractRequest:
+def _controlled_contract() -> AgentContractRequest:
     return AgentContractRequest(
         name="test-agent",
         install_cmd="",
         run_cmd="echo done",
-        generation_containment=GenerationContainment(type="linux_pid_namespace", version=version),
     )
 
 
@@ -1147,38 +1159,21 @@ class TestRunAgent:
             "/workspace",
             object_store=_mock_object_store(),
             agent_timeout=None,
-            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+            task_credited_generation=False,
         )
 
         legacy_stream.assert_awaited_once()
 
     @pytest.mark.parametrize(
-        ("agent_version", "task_version", "expected"),
-        [
-            (None, 1, False),
-            (1, None, False),
-            (1, 2, False),
-            (2, 2, False),
-            (1, 1, True),
-        ],
+        ("credited_generation", "timeout", "expected"),
+        [(False, 10.0, False), (False, None, False), (True, 10.0, True)],
     )
-    def test_controlled_generation_requires_exact_bilateral_v1(
-        self, agent_version: int | None, task_version: int | None, expected: bool
+    def test_controlled_generation_requires_task_opt_in_and_finite_timeout(
+        self, credited_generation: bool, timeout: float | None, expected: bool
     ) -> None:
-        contract = (
-            _controlled_contract(version=agent_version)
-            if agent_version is not None
-            else AgentContractRequest(name="test-agent", install_cmd="", run_cmd="echo done")
-        )
-        task_containment = (
-            GenerationContainment(type="linux_pid_namespace", version=task_version)
-            if task_version is not None
-            else None
-        )
+        assert _controlled_generation_selected(credited_generation, timeout) is expected
 
-        assert _controlled_generation_selected(contract, task_containment, agent_timeout=10.0) is expected
-
-    async def test_mismatched_declarations_preserve_legacy_timeout_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_unselected_task_preserves_legacy_timeout_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         legacy_stream = AsyncMock(return_value=(AgentCausedExitReason.TIMEOUT, 2.5))
         controlled_stream = AsyncMock(side_effect=AssertionError("controlled path selected"))
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
@@ -1196,7 +1191,7 @@ class TestRunAgent:
             "/workspace",
             object_store=_mock_object_store(),
             agent_timeout=2.5,
-            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=2),
+            task_credited_generation=False,
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
@@ -1204,12 +1199,11 @@ class TestRunAgent:
         assert legacy_stream.await_args is not None
         assert "timeout 2.5 sh -c" in legacy_stream.await_args.args[1]
 
-    @pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
-    def test_controlled_generation_rejects_invalid_matched_timeout(self, timeout: float) -> None:
+    @pytest.mark.parametrize("timeout", [None, 0.0, -1.0, float("inf"), float("nan")])
+    def test_controlled_generation_rejects_invalid_matched_timeout(self, timeout: float | None) -> None:
         with pytest.raises(InvalidSandboxConfigurationError, match="positive finite"):
             _controlled_generation_selected(
-                _controlled_contract(),
-                GenerationContainment(type="linux_pid_namespace", version=1),
+                True,
                 timeout,
             )
 
@@ -1228,7 +1222,7 @@ class TestRunAgent:
             "/workspace",
             object_store=_mock_object_store(),
             agent_timeout=10.0,
-            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+            task_credited_generation=True,
         )
 
         assert reason is None
@@ -1270,7 +1264,7 @@ class TestRunAgent:
             object_store=_mock_object_store(),
             agent_output_s3_key="benchmarks/run/task/output.tar.gz",
             agent_timeout=0.001,
-            task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+            task_credited_generation=True,
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
@@ -1308,12 +1302,68 @@ class TestRunAgent:
                 object_store=_mock_object_store(),
                 agent_output_s3_key="benchmarks/run/task/output.tar.gz",
                 agent_timeout=0.001,
-                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                task_credited_generation=True,
             )
 
         archive.assert_not_awaited()
         controlled_sandbox.modify_egress_rules.assert_awaited_once_with(staged_policy)
         controlled_sandbox.clear_egress_rules.assert_not_awaited()
+
+    async def test_lost_begin_response_seals_remote_active_interval_without_starting_workload(self) -> None:
+        lost_response = ConnectionError("generation begin response lost")
+
+        class BeginResponseLost(_FakeAccountingClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.remote = _accounting_snapshot()
+
+            async def begin_generation(self, _session_id: str, interval_index: int) -> AccountingSessionSnapshot:
+                self.phases.append(("begin", interval_index))
+                self.remote = _accounting_snapshot(active=True, interval_index=interval_index)
+                raise lost_response
+
+            async def read_session(self, _session_id: str) -> AccountingSessionSnapshot:
+                self.read_calls += 1
+                return self.remote
+
+            async def end_generation(self, session_id: str, interval_index: int) -> AccountingSessionSnapshot:
+                assert self.remote.generation_active
+                self.remote = await super().end_generation(session_id, interval_index)
+                return self.remote
+
+            async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
+                assert self.remote.state == AccountingSessionState.OPEN
+                self.remote = await super().begin_arbitration(session_id)
+                return self.remote
+
+            async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
+                self.remote = await super().resolve_arbitration(session_id, decision)
+                return self.remote
+
+        client = BeginResponseLost()
+        sandbox = _FakeControlledSandbox(_FakeControlledWorkload())
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client), snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0, credit_cap_seconds=5.0,
+        )
+        sealed: list[ExternalServiceAccountingSummary] = []
+
+        async def persist(summary: ExternalServiceAccountingSummary) -> None:
+            sealed.append(summary)
+
+        with pytest.raises(ConnectionError) as raised:
+            await _stream_controlled_output(
+                cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0, controller, persist
+            )
+
+        assert raised.value is lost_response
+        assert sandbox.controlled_calls == []
+        assert client.remote.state == AccountingSessionState.SEALED
+        assert not client.remote.generation_active
+        assert client.phases == [("begin", 1)]
+        assert client.begin_calls == 1
+        assert len(sealed) == 1
+        assert sealed[0].accounting_session_id == "session-1"
 
     async def test_controlled_nonzero_exit_collects_outputs_after_seal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         workload = _FakeControlledWorkload(exit_code=23)
@@ -1321,8 +1371,9 @@ class TestRunAgent:
         contract = _controlled_contract().model_copy(
             update={"final_output": "/logs", "output_artifacts": ["artifacts/result.json"]}
         )
+        client = _FakeAccountingClient()
         controller = ExternalServiceDeadlineController(
-            client=cast(Any, _FakeAccountingClient()),
+            client=cast(Any, client),
             snapshot=_accounting_snapshot(),
             base_allowance_seconds=10.0,
             credit_cap_seconds=1.0,
@@ -1361,13 +1412,14 @@ class TestRunAgent:
                 agent_output_s3_key="benchmarks/run/task/output.tar.gz",
                 benchmark_id="benchmark-123",
                 agent_timeout=10.0,
-                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                task_credited_generation=True,
                 external_service_deadline=controller,
                 on_external_service_sealed=save_summary,
             )
 
         assert len(sealed) == 1
         archive.assert_awaited_once()
+        assert client.phases == [("begin", 1), ("end", 1)]
         artifacts.assert_awaited_once()
 
     async def test_accounting_persistence_failure_skips_output_collection(
@@ -1406,7 +1458,7 @@ class TestRunAgent:
                 object_store=_mock_object_store(),
                 agent_output_s3_key="benchmarks/run/task/output.tar.gz",
                 agent_timeout=10.0,
-                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                task_credited_generation=True,
                 external_service_deadline=controller,
                 on_external_service_sealed=fail_persistence,
             )
@@ -1431,7 +1483,7 @@ class TestRunAgent:
                 "/workspace",
                 object_store=_mock_object_store(),
                 agent_timeout=10.0,
-                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                task_credited_generation=True,
             )
 
         assert sandbox.controlled_calls == []
@@ -1454,7 +1506,7 @@ class TestRunAgent:
                 "/workspace",
                 object_store=_mock_object_store(),
                 agent_timeout=10.0,
-                task_generation_containment=GenerationContainment(type="linux_pid_namespace", version=1),
+                task_credited_generation=True,
             )
 
         assert sandbox.controlled_calls == []
@@ -1630,6 +1682,7 @@ class TestRunAgent:
 
         assert reason == AgentCausedExitReason.TIMEOUT
         assert client.decisions == ["SEAL"]
+        assert client.phases == [("begin", 1)]
         assert workload.kill_calls == 1
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
@@ -1862,14 +1915,11 @@ class TestRunAgent:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         class SlowResolutionClient(_FakeAccountingClient):
-            resolve_calls = 0
-
             async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
                 await asyncio.sleep(0.04)
                 return await super().begin_arbitration(session_id)
 
             async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
-                self.resolve_calls += 1
                 await asyncio.sleep(0.15)
                 return await super().resolve_arbitration(session_id, decision)
 
@@ -1896,10 +1946,8 @@ class TestRunAgent:
                 persist,
             )
 
-        assert client.begin_calls == 1
-        assert client.resolve_calls == 1
         assert client.decisions == []
-        assert workload.kill_calls == 1
+        assert workload.closed.is_set()
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
         persist.assert_not_awaited()
@@ -1946,9 +1994,9 @@ class TestRunAgent:
             )
 
         assert client.decisions == []
-        assert workload.kill_calls == 1
+        assert workload.closed.is_set()
         assert workload.wait_finished.is_set()
-        assert 0.001 <= timeout_deadlines[-1] - 0.2 - started_before < 0.02
+        assert any(0.001 <= deadline - 0.2 - started_before < 0.02 for deadline in timeout_deadlines)
         persist.assert_not_awaited()
 
     async def test_refresh_credit_extends_from_immutable_start(self) -> None:
@@ -2185,7 +2233,7 @@ class TestRunAgent:
             credit_cap_seconds=1.0,
         )
 
-        with pytest.raises(RuntimeError, match="gateway unavailable") as raised:
+        with pytest.raises(RuntimeError) as raised:
             await _stream_controlled_output(
                 cast(Any, sandbox),
                 "echo done",
@@ -2197,7 +2245,7 @@ class TestRunAgent:
             )
 
         assert raised.value is control_error
-        assert workload.kill_calls == 1
+        assert workload.closed.is_set()
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
 

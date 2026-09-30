@@ -116,6 +116,36 @@ class TrackerStack(Stack):
             **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
             **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
+        gateway_secrets: dict[str, aws_ecs.Secret] = {}
+        if stage.is_release_test:
+            external_service_gateway_url = os.environ.get("EXTERNAL_SERVICE_GATEWAY_URL")
+            if external_service_gateway_url:
+                credit_cap_seconds = os.environ.get("EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS")
+                if not credit_cap_seconds:
+                    raise ValueError(
+                        "Release-test Tracker requires EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS "
+                        "when EXTERNAL_SERVICE_GATEWAY_URL is set"
+                    )
+                control_token_secret_name = os.environ.get("EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN_SECRET_NAME")
+                if not control_token_secret_name:
+                    raise ValueError(
+                        "Release-test Tracker requires EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN_SECRET_NAME "
+                        "when EXTERNAL_SERVICE_GATEWAY_URL is set"
+                    )
+                control_token_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                    self,
+                    "ExternalServiceGatewayControlTokenSecret",
+                    control_token_secret_name,
+                )
+                gateway_secrets["EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN"] = aws_ecs.Secret.from_secrets_manager(
+                    control_token_secret,
+                )
+                shared_env.update(
+                    {
+                        "EXTERNAL_SERVICE_GATEWAY_URL": external_service_gateway_url,
+                        "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS": credit_cap_seconds,
+                    }
+                )
 
         # ── RDS ──────────────────────────────────────────────────────────
 
@@ -267,6 +297,7 @@ class TrackerStack(Stack):
                 **db_secrets,
                 **sentry_secrets,
                 **descope_secrets,
+                **gateway_secrets,
             },
             command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(

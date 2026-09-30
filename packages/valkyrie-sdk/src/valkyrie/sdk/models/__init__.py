@@ -5,7 +5,6 @@ from valkyrie.sdk.models.agents import (
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
-    GenerationContainment,
     OutputArtifact,
     OutputArtifactSpec,
 )
@@ -112,7 +111,6 @@ __all__ = [
     "LogEvent",
     "LogPage",
     "Order",
-    "GenerationContainment",
     "OutputArtifact",
     "OutputArtifactSpec",
     "RetrieveResultsResponse",

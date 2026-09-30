@@ -3,15 +3,17 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
 from benchmark_service import ComposeSource, ImageSource, SandboxNotFoundError, SandboxRecoveryPolicy
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamClosedError
 from benchmark_service.schemas import (
     AgentInstallOrder,
     BenchmarkEgressPlan,
@@ -33,7 +35,6 @@ from tracker.scheduler.admission import SandboxQueueContext
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
-    GenerationContainment,
     ErrorResult,
     ExecutorDispatch,
     ExecutorDispatchStatus,
@@ -708,6 +709,141 @@ class TestTaskExecutionRetry:
         database_session.refresh(task_row)
         assert task_row.status == expected_status
 
+    @pytest.mark.parametrize("status", [TaskStatus.PENDING, TaskStatus.EVALUATING])
+    async def test_expired_credited_wall_deadline_stops_before_task_retrieval(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+        status: TaskStatus,
+    ) -> None:
+        request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        if status == TaskStatus.EVALUATING:
+            bind_task_to_dispatch(database_session, task_row, authority)
+            task_row.status = status
+            task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
+        task_row.credited_wall_deadline_at = datetime.now(UTC) - timedelta(seconds=1)
+        database_session.add(task_row)
+        database_session.commit()
+        retrieve_task = AsyncMock()
+        resume_evaluation = AsyncMock()
+        create_sandbox = Mock()
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", resume_evaluation, raising=False)
+        monkeypatch.setattr(task_execution_module, "create_sandbox", create_sandbox)
+
+        result = await run_process_task(request, task_row, benchmark_id, runtime_services, authority)
+
+        assert result == {"task_0": None}
+        retrieve_task.assert_not_awaited()
+        create_sandbox.assert_not_called()
+        resume_evaluation.assert_not_awaited()
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error = database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).one()
+        assert error.cause_code == "credited_task_wall_time_exceeded"
+        assert error.retry_scheduled is False
+
+    async def test_evaluating_resume_cannot_outlive_durable_credited_wall_deadline(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        bind_task_to_dispatch(database_session, task_row, authority)
+        task_row.status = TaskStatus.EVALUATING
+        task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
+        task_row.credited_wall_deadline_at = datetime.now(UTC) + timedelta(seconds=0.5)
+        database_session.add(task_row)
+        database_session.commit()
+        install_sqlite_evaluation_lock(database_session, monkeypatch)
+        started = asyncio.Event()
+
+        async def stalled_resume(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr(task_execution_module.TaskLogBuffer, "buffer_logs", Mock())
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", stalled_resume, raising=False)
+
+        result = await asyncio.wait_for(
+            run_process_task(request, task_row, benchmark_id, runtime_services, authority), timeout=3
+        )
+
+        assert started.is_set()
+        assert result == {"task_0": None}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error = database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).one()
+        assert error.cause_code == "credited_task_wall_time_exceeded"
+        assert error.retry_scheduled is False
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_interrupted_evaluation_stream_recovery_shares_the_task_wall_deadline(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
+        request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+        response = make_retrieve_task_response().model_copy(
+            update={"agent_timeout": 10.0, "credited_generation": True}
+        )
+        saved_state = {"artifact_prefix": "s3://bucket/run"}
+        resume_started = asyncio.Event()
+
+        async def disconnected_stream(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
+            on_eval_resume_state(saved_state)
+            raise BenchmarkServiceStreamClosedError(
+                close_code=1011, close_reason="keepalive timeout", idle_s=30.0
+            )
+
+        async def stalled_resume(*_args: Any, eval_resume_state: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+            assert eval_resume_state == saved_state
+            resume_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=response))
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", disconnected_stream)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", stalled_resume, raising=False)
+        monkeypatch.setattr(task_execution_module, "run_agent", AsyncMock(return_value=(None, 0.0)))
+        monkeypatch.setattr(task_execution_module, "EXTERNAL_SERVICE_GATEWAY_URL", None)
+        monkeypatch.setattr(task_execution_module, "CONTROLLED_TASK_WALL_SECONDS", 0.5)
+
+        result = await asyncio.wait_for(
+            run_process_task(request, task_row, benchmark_id, runtime_services, authority), timeout=3
+        )
+
+        assert resume_started.is_set()
+        assert result == {"task_0": None}
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        assert task_row.credited_wall_deadline_at is not None
+        error = database_session.exec(select(ErrorResult).where(col(ErrorResult.task) == task_row.id)).one()
+        assert error.cause_code == "credited_task_wall_time_exceeded"
+        assert error.retry_scheduled is False
+
     @pytest.mark.parametrize(
         ("failure", "expected_operation", "expected_cause_code"),
         [
@@ -739,7 +875,7 @@ class TestTaskExecutionRetry:
             contract, database_session, harness_config
         )
         sandbox_entries = 0
-        observed_task_containment: list[Any] = []
+        observed_task_opt_in: list[bool] = []
 
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
@@ -751,12 +887,13 @@ class TestTaskExecutionRetry:
             yield sandbox
 
         async def _mock_run_agent(*_args: Any, **kwargs: Any) -> tuple[None, float]:
-            observed_task_containment.append(kwargs["task_generation_containment"])
+            observed_task_opt_in.append(kwargs["task_credited_generation"])
             raise failure
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            response = make_retrieve_task_response(problem_path="/tmp/problem.txt")
-            cast(Any, response).generation_containment = GenerationContainment(type="linux_pid_namespace", version=1)
+            response = make_retrieve_task_response(problem_path="/tmp/problem.txt").model_copy(
+                update={"agent_timeout": 10.0, "credited_generation": True}
+            )
             response.sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=3)
             return response
 
@@ -773,9 +910,7 @@ class TestTaskExecutionRetry:
 
         assert result == {"task_0": None}
         assert sandbox_entries == 1
-        assert [item.model_dump() for item in observed_task_containment] == [
-            {"type": "linux_pid_namespace", "version": 1}
-        ]
+        assert observed_task_opt_in == [True]
         evaluate_instance.assert_not_awaited()
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR

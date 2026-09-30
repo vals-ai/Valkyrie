@@ -214,6 +214,20 @@ dev; these enable managed submissions and Tracker benchmark-service secret
 resolution. Use the approved values for that account, especially when targeting
 production.
 
+For a one-off credited timeout canary, set Tracker's
+`EXTERNAL_SERVICE_GATEWAY_URL` to a temporary reachable tunnel and
+`EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS` to a positive value. Before
+planning release-test with the gateway URL, create an account-local Secrets
+Manager secret holding the control token shared with the local SSP, and set
+`EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN_SECRET_NAME` to its name. CDK injects
+that secret into the Tracker task as `EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN`;
+provide only the secret name to deployment tooling, never the token value.
+The local SSP must be configured with the same token to authenticate Tracker's
+control requests. Keep the tunnel's control routes IP-gated to the final
+Tracker task public IPs; SSP remains local and is not deployed to the cloud.
+Without the gateway URL, Tracker retains its base timeout behavior and no
+control-token secret is required.
+
 ```bash
 make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin

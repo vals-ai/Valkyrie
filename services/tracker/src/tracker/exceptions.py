@@ -8,6 +8,9 @@ class TrackerServiceError(Exception):
 
     pass
 
+class CreditedTaskWallTimeExceeded(TrackerServiceError):
+    """An opted-in task exceeded the total wall lifetime of its scoped credential."""
+
 
 class ExecutionAuthorityRevoked(TrackerServiceError):
     """The executor dispatch no longer owns benchmark execution."""

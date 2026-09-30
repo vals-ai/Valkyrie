@@ -160,16 +160,6 @@
             ],
             "title": "Final Output"
           },
-          "generation_containment": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/GenerationContainment"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "inference_settings_attested": {
             "default": false,
             "title": "Inference Settings Attested",
@@ -276,16 +266,6 @@
               }
             ],
             "title": "Final Output"
-          },
-          "generation_containment": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/GenerationContainment"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "inference_settings_attested": {
             "default": false,
@@ -1523,27 +1503,6 @@
           "task_errors"
         ],
         "title": "FinalViewResponse",
-        "type": "object"
-      },
-      "GenerationContainment": {
-        "additionalProperties": false,
-        "properties": {
-          "type": {
-            "const": "linux_pid_namespace",
-            "title": "Type",
-            "type": "string"
-          },
-          "version": {
-            "minimum": 1.0,
-            "title": "Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "type",
-          "version"
-        ],
-        "title": "GenerationContainment",
         "type": "object"
       },
       "HTTPValidationError": {

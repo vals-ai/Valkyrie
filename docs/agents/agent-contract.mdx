@@ -284,18 +284,26 @@ valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swe
 ```
 
 ### Companion models
-
 Tracker mints a native task-scoped Model Gateway bearer token for the run's model when the Gateway is
-configured and the model is attested. For local controlled accounting, mint and revoke go through SSP
-with Tracker's static Gateway bearer, not the sandbox's scoped bearer. If other agents in the sandbox
-call their own models alongside the main one, such as an auditor or a user simulator, declare a
-`companion_models` kwarg: a comma-separated list of model keys the token also allows. In the local
-controlled-generation accounting path, Tracker routes model requests through SSP by changing only
-`MODEL_GATEWAY_URL` after minting;
-`MODEL_GATEWAY_API_KEY` stays the native scoped token, not the accounting session ID. The token's
-nonrenewable TTL covers the base task timeout, configured cumulative credit cap, and two-hour grace;
-Tracker rejects selected tasks before session creation when this exceeds the seven-day Gateway limit.
-See [controlled-generation timeout accounting](/runs/results-and-outputs#controlled-generation-timeout-accounting-local-mvp)
+configured and the model is attested. A benchmark task (not an agent contract) may opt in to
+`credited_generation: true` with a finite positive `agent_timeout`. The effective sandbox provider
+must support `linux_pid_namespace` version 1 and stop/confirm absence of its workload; without an
+attested model, the task still receives its base cumulative active-generation allowance but no SSP
+credit. Setup, evaluation, and pauses between active generation intervals do not consume it.
+
+For local SSP credit, mint and revoke go through SSP with Tracker's static Gateway bearer, not the
+sandbox's scoped bearer. If other agents in the sandbox call their own models alongside the main one,
+such as an auditor or a user simulator, declare a `companion_models` kwarg: a comma-separated list
+of model keys the token also allows. Tracker routes model requests through SSP by changing only
+`MODEL_GATEWAY_URL` after minting; `MODEL_GATEWAY_API_KEY` stays the native scoped token, not the
+accounting session ID. Tracker controls active intervals internally using `X-SSP-Control-Token`;
+no agent-supplied adapter, model, or configuration metadata is involved. A selected task's
+nonrenewable scoped token lasts seven days from mint. Tracker persists a task wall deadline just
+before the first post-admission mint (or selected-task start without a Gateway credential): seven
+days minus two hours. Setup, generation, evaluation, and pauses count toward this wall bound;
+retries and resumed evaluation do not reset it. Wall expiry is a terminal error distinct from a
+generation timeout. See
+[credited-generation timeout accounting](/runs/results-and-outputs#credited-generation-timeout-accounting-local-mvp)
 for opt-in requirements and local/deployed limits.
 
 ```yaml

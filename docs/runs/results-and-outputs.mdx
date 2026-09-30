@@ -23,51 +23,65 @@ Full syntax is in the [`run results`](/reference/cli/run#results), [`run outputs
 
 The results file holds the scores and the per-task evaluation. Without `--path`, the CLI writes it to `./results-<run-id>.json`.
 
-### Controlled-generation timeout accounting (local MVP)
+### Credited-generation timeout accounting (local MVP)
 
-An agent contract and its benchmark task must both opt in to `generation_containment` with
-`type="linux_pid_namespace"` and `version=1`, with a finite positive task timeout. Mismatched
-declarations retain the legacy timeout path; matched declarations require an effective sandbox that
-supports containment, or Tracker rejects the run. A configured local External Service Gateway session
-additionally supplies neutral-time credit; without one, the controlled timeout uses the base allowance
-only. Every selected controlled task without an attested agent model is rejected before Tracker creates
-an accounting session or sandbox, regardless of SSP configuration; tasks that do not select controlled
-generation keep the legacy path. The SDK types are `valkyrie.sdk.models.agents.GenerationContainment`
-and `valkyrie.sdk.models.benchmarks.TaskBreakdown`. This local MVP does not activate the path in
-production: deployment configuration and production gateway integration are not supplied here.
+The benchmark task alone opts in with `credited_generation: true` (default `false`) and a finite,
+positive `agent_timeout`. Agents do not declare containment in their contract. An unselected task,
+including one with `agent_timeout: null`, keeps the legacy timeout path. A selected task requires
+an effective sandbox provider that supports `linux_pid_namespace` version 1 and can stop its
+generation workload and confirm absence; Tracker rejects it if that provider capability is unavailable.
+The selected task's base allowance is its `agent_timeout`, whether or not SSP credit is configured.
+Setup and evaluation are outside the generation allowance.
 
-For a locally configured accounting session, Tracker resolves and validates the original Model Gateway
-URL and static credential, then sends the privileged `/service-auth` mint request through SSP with
-that static bearer and `X-SSP-Session-ID`. SSP forwards the mint to Model Gateway and binds the
-returned native task-scoped token to the open accounting session. Only after minting does Tracker set
-the sandbox's `MODEL_GATEWAY_URL` to the External Service Gateway (SSP) URL;
-`MODEL_GATEWAY_API_KEY` remains the native scoped token, never the accounting session ID. The
-sandbox sends model requests through SSP with that bearer token; SSP accounts for them and forwards
-them to Model Gateway. On sandbox context exit, Tracker revokes the scoped token through SSP using
-the original static bearer. Local use requires the configured SSP URL and credit cap, an attested
-model, and working native Model Gateway URL and credential. The nonrenewable scoped token's TTL
-covers the base timeout, the full configured cumulative credit cap, and the existing two-hour grace
-(rounded up to whole seconds). If that total exceeds Model Gateway's 604800-second (seven-day) limit,
-Tracker rejects the controlled task before creating an accounting session or sandbox rather than
-minting a token that could expire during its credited runtime. Without SSP configuration, no neutral-time
-credit is applied and the existing Gateway mint TTL and route remain in use.
+Generation time is the cumulative duration of active workload intervals, from each successful start
+to its matching stop. Pauses between intervals do not consume the base allowance; resumed intervals
+continue the same cumulative budget. At an apparent deadline, gateway arbitration has a shared 10
+seconds; any required kill must confirm generation absence by the absolute deadline plus 20 seconds,
+not 20 seconds after arbitration. A sealed accounting summary is recorded only after absence is
+confirmed; unconfirmed termination does not proceed to grading. Stopping a generation workload is
+provider-specific: the local MVP uses direct Daytona `linux_pid_namespace` version 1. This is a
+capability of the effective sandbox, not an agent contract field.
 
-The gateway reports cumulative accepted neutral external-service overhead. Applied credit is capped
-by the configured cumulative cap, so the effective generation allowance is the base task timeout plus
-the capped credit. At an apparent deadline, gateway arbitration has a shared 10 seconds; any required
-kill must confirm absence by the absolute deadline plus 20 seconds, not 20 seconds after arbitration.
-An acknowledged `RESUME` establishes a new credited deadline. A sealed accounting summary is recorded
-only after generation absence is confirmed; unconfirmed termination does not proceed to grading.
+Optional SSP credit requires a locally configured External Service Gateway URL and cumulative credit
+cap, a working native Model Gateway URL and credential, and an attested agent model. Only an attested
+model can receive SSP credit; lack of attestation does not disable the base controlled allowance. This
+local MVP does not activate the path in production: deployment configuration and production gateway
+integration are not supplied here.
 
-Controlled tasks expose seven nullable fields in each per-task `task_breakdown`:
+For a configured accounting session, Tracker resolves and validates the original Model Gateway URL
+and static credential, then sends the privileged `/service-auth` mint through SSP with that bearer
+and `X-SSP-Session-ID`. SSP forwards the mint to Model Gateway and binds the returned native
+task-scoped token to the session. Only after minting does Tracker set the sandbox's
+`MODEL_GATEWAY_URL` to the SSP URL; `MODEL_GATEWAY_API_KEY` remains the native scoped token,
+never the accounting session ID. The sandbox sends model requests through SSP with that bearer;
+SSP accounts for them and forwards them to Model Gateway. Tracker uses an internal begin/end control
+for active generation intervals, authenticated with `X-SSP-Control-Token`; no adapter, model, or
+agent configuration field carries those controls. Tracker revokes the scoped token through SSP using
+the original static bearer on sandbox context exit.
+
+The scoped token is nonrenewable and lasts seven days from mint. Tracker rejects a selected task
+once its previously persisted wall deadline expires: seven days minus a two-hour teardown margin
+from the first post-admission mint (or selected-task start without a native Gateway key). The
+deadline survives retries and resumed evaluation, includes setup, generation, evaluation and
+pauses, and cannot be extended by a new token. Exceeding it records a terminal wall-time error,
+distinct from generation TIMEOUT. A larger configured generation allowance cannot extend this
+task-level wall bound. Without SSP configuration, no neutral-time credit is applied; selected
+tasks still use the native Gateway mint route with a seven-day token lease where available.
+
+SSP reports cumulative accepted neutral external-service overhead for active intervals. Applied
+credit is capped by the configured cumulative cap, so the effective generation allowance is the
+base task timeout plus capped credit. An acknowledged `RESUME` establishes a new generation deadline,
+never a new task wall deadline.
+
+Selected tasks expose seven nullable fields in each per-task `task_breakdown`:
 `accounting_session_id` identifies the accounting session, not a bearer credential;
 `base_generation_allowance_seconds` is the benchmark timeout;
 `cumulative_time_credit_cap_seconds` is the credit limit;
 `external_service_overhead_seconds` is accepted cumulative overhead;
 `external_service_credit_applied_seconds` is the capped credit;
 `effective_generation_allowance_seconds` is base plus applied credit; and
-`external_service_credit_revision` is the gateway revision at sealing. These fields remain null for
-tasks without controlled accounting.
+`external_service_credit_revision` is the gateway revision at sealing. Without SSP accounting,
+these fields remain null even when the task uses the base controlled allowance.
 
 Pass a task subset to recompute `final_score` over only those tasks. The stored full result stays as it was:
 

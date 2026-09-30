@@ -1,6 +1,8 @@
 """Task-scoped Model Gateway credential tests."""
 
+import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -32,6 +34,8 @@ def _scoped(env: dict[str, str], **overrides: Any) -> Any:
         "org_name": "vals.ai",
         "agent_timeout": 600,
     }
+    if overrides.get("credited_generation"):
+        kwargs["wall_deadline_at"] = datetime.now(UTC) + timedelta(seconds=5)
     kwargs.update(overrides)
     return task_scoped_gateway_key(env, **kwargs)
 
@@ -42,6 +46,7 @@ class RecordingGateway:
         self.revoke_status = revoke_status
         self.requests: list[tuple[str, dict[str, Any], str | None]] = []
         self.session_headers: list[str | None] = []
+        self.control_headers: list[str | None] = []
         self.urls: list[str] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,6 +56,7 @@ class RecordingGateway:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.url.path, json.loads(request.content), request.headers.get("Authorization")))
         self.session_headers.append(request.headers.get("X-SSP-Session-ID"))
+        self.control_headers.append(request.headers.get("X-SSP-Control-Token"))
         self.urls.append(str(request.url))
         if request.url.path == "/service-auth":
             return httpx.Response(
@@ -220,7 +226,8 @@ async def test_controlled_mint_routes_through_ssp_and_revoke_uses_same_endpoint_
     env = _env()
 
     async with _scoped(
-        env, accounting_session_id="session-123", accounting_gateway_url="https://ssp.test", credit_cap_seconds=5.0
+        env, accounting_session_id="session-123", accounting_gateway_url="https://ssp.test",
+        accounting_control_token="tracker-control", credited_generation=True,
     ) as scoped:
         assert scoped == {**env, "MODEL_GATEWAY_API_KEY": TOKEN}
         assert "X-SSP-Session-ID" not in scoped
@@ -228,49 +235,54 @@ async def test_controlled_mint_routes_through_ssp_and_revoke_uses_same_endpoint_
 
     assert gateway.urls == ["https://ssp.test/service-auth", "https://ssp.test/service-auth/revoke"]
     assert gateway.session_headers == ["session-123", None]
+    assert gateway.control_headers == ["tracker-control", None]
     assert [authorization for _, _, authorization in gateway.requests] == [f"Bearer {STATIC_KEY}"] * 2
 
 
-@pytest.mark.parametrize(
-    ("agent_timeout", "credit_cap_seconds", "expected_ttl"),
-    [
-        (600.0, 7201.25, 15002),
-        (3600.0, 594000.0, 604800),
-    ],
-)
-async def test_controlled_mint_covers_base_credit_and_grace_without_truncating(
-    monkeypatch: pytest.MonkeyPatch, agent_timeout: float, credit_cap_seconds: float, expected_ttl: int
+@pytest.mark.parametrize("agent_timeout", [600.0, 3600.0])
+async def test_controlled_mint_has_fixed_seven_day_ttl_regardless_of_generation_allowance(
+    monkeypatch: pytest.MonkeyPatch, agent_timeout: float
 ) -> None:
     gateway = RecordingGateway()
     gateway.install(monkeypatch)
 
     async with _scoped(
-        _env(),
-        agent_timeout=agent_timeout,
-        credit_cap_seconds=credit_cap_seconds,
-        accounting_session_id="session-123",
-        accounting_gateway_url="https://ssp.test",
+        _env(), agent_timeout=agent_timeout, accounting_session_id="session-123",
+        accounting_gateway_url="https://ssp.test", accounting_control_token="tracker-control",
+        credited_generation=True,
     ):
         pass
 
-    assert gateway.payload_for("/service-auth")["ttl_seconds"] == expected_ttl
+    assert gateway.payload_for("/service-auth")["ttl_seconds"] == 7 * 24 * 60 * 60
 
 
-async def test_controlled_mint_rejects_ttl_above_gateway_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_credited_mint_requires_a_durable_wall_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     gateway = RecordingGateway()
     gateway.install(monkeypatch)
 
-    with pytest.raises(ValueError, match="604800"):
-        async with _scoped(
-            _env(),
-            agent_timeout=3600.0,
-            credit_cap_seconds=594000.1,
-            accounting_session_id="session-123",
-            accounting_gateway_url="https://ssp.test",
-        ):
-            pytest.fail("controlled sandbox must not receive a truncated token")
+    with pytest.raises(ValueError):
+        async with _scoped(_env(), credited_generation=True, wall_deadline_at=None):
+            pytest.fail("credential cannot start without a durable deadline")
 
     assert gateway.requests == []
+
+
+@pytest.mark.parametrize("native_key", [False, True], ids=["without-token", "with-token"])
+async def test_credited_task_wall_limit_covers_setup_and_evaluation_even_without_token(
+    monkeypatch: pytest.MonkeyPatch, native_key: bool
+) -> None:
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+    env = _env() if native_key else {}
+
+    with pytest.raises(model_gateway.CreditedTaskWallTimeExceeded):
+        async with _scoped(
+            env, credited_generation=True, wall_deadline_at=datetime.now(UTC) + timedelta(milliseconds=1)
+        ) as scoped:
+            assert ("MODEL_GATEWAY_API_KEY" in scoped) is native_key
+            await asyncio.Event().wait()
+
+    assert gateway.paths == (["/service-auth", "/service-auth/revoke"] if native_key else [])
 
 
 @pytest.mark.parametrize(
@@ -289,6 +301,7 @@ async def test_controlled_task_without_native_mint_prerequisites_fails_before_sa
             env,
             attested_model=attested_model,
             accounting_session_id="session-123",
+            accounting_control_token="tracker-control",
             accounting_gateway_url="https://ssp.test",
         ):
             pytest.fail("controlled sandbox must not start with the static key")
@@ -304,7 +317,10 @@ async def test_controlled_task_without_ssp_url_fails_before_mint(
     gateway.install(monkeypatch)
 
     with pytest.raises(RuntimeError, match="Controlled task requires an external service gateway URL"):
-        async with _scoped(_env(), accounting_session_id="session-123", accounting_gateway_url=accounting_gateway_url):
+        async with _scoped(
+            _env(), accounting_session_id="session-123", accounting_gateway_url=accounting_gateway_url,
+            accounting_control_token="tracker-control",
+        ):
             pytest.fail("controlled sandbox must not start without an SSP")
 
     assert gateway.requests == []
@@ -323,6 +339,7 @@ async def test_controlled_task_does_not_send_static_key_to_disallowed_ssp_destin
             org_name="tenant.example",
             accounting_session_id="session-123",
             accounting_gateway_url="http://169.254.169.254",
+            accounting_control_token="tracker-control",
         ):
             pytest.fail("controlled sandbox must not start with an unsafe SSP")
 
