@@ -9,7 +9,7 @@ Valkyrie uses your AWS credentials for artifact storage, logs, sandbox-provider 
 | --- | --- | --- |
 | S3 | `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket` | Benchmark results, agent artifacts, and run outputs |
 | CloudWatch Logs | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | Task execution logs in access-key runs |
-| Secrets Manager | `secretsmanager:GetSecretValue` | Sandbox-provider credentials and webhook URLs in access-key runs |
+| Secrets Manager | `secretsmanager:GetSecretValue` | Sandbox-provider credentials in access-key runs |
 | Lambda (optional) | `lambda:InvokeFunction` | Post-run Lambda invocation in access-key runs |
 
 Scope local permissions to the configured S3 bucket. For access-key execution, also scope permissions to the CloudWatch log groups, Lambda functions, and Secrets Manager secrets that the installation uses.

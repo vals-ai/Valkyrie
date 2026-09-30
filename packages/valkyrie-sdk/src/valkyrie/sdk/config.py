@@ -134,7 +134,20 @@ class ValkyrieConfig(BaseModel):
     default_sandbox_provider: str | None = None
     custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
     benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
-    webhook: str | None = Field(default=None, repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_webhook_key(cls, data: object) -> object:
+        """Slack run notifications were removed; ignore a stale webhook key with a warning."""
+        if isinstance(data, dict) and "webhook" in data:
+            data = {key: value for key, value in cast(dict[Any, Any], data).items() if key != "webhook"}
+            warnings.warn(
+                "The 'webhook' config key is no longer used; Slack run notifications were removed. "
+                "Remove it with `valkyrie config remove webhook`.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return data
 
     @model_validator(mode="before")
     @classmethod

@@ -36,7 +36,6 @@ def config_values() -> ConfigValuesFactory:
             "default_sandbox_provider": "modal",
             "custom_benchmark_services": {"swebench": "https://local.swebench/"},
             "benchmark_auth": {"swebench": "benchmark-token"},
-            "webhook": "SlackWebhook",
         }
         credential_fields = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}
         if credential_fields & overrides.keys():

@@ -421,11 +421,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _managed_request(contract.model_copy(update={"secrets": {"AGENT_TOKEN": "agent-secret"}})).model_copy(
-        update={
-            "webhook_secret_name": "webhook-secret",
-            "webhook_intervals": [10],
-            "lambda_function": "result-handler",
-        }
+        update={"lambda_function": "result-handler"}
     )
     if not aws_managed:
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
@@ -447,17 +443,12 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("agent_secrets")
         return {"AGENT_TOKEN": "resolved"}
 
-    async def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
-        calls.append("webhook_secret")
-        return {"url": "https://example.com"}
-
     async def dry_run(*_args: Any, **_kwargs: Any) -> None:
         calls.append("lambda")
 
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
     monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
-    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
 
     runtime = CloudRuntimeFactory.create_runtime(
@@ -469,7 +460,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
-    expected_preflight = ["agent_secrets", "webhook_secret", "lambda"] if aws_managed else []
+    expected_preflight = ["agent_secrets", "lambda"] if aws_managed else []
     assert calls == ["logs", *expected_preflight, "sandbox_provider_secret"]
 
 

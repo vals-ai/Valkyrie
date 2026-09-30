@@ -266,8 +266,6 @@ class _LegacyTrackerStartBenchmarkRequest(BaseModel):
     sandbox_provider_secret_name: str | None = None
     service_auth_header_name: str | None = None
     service_auth_secret_name: str | None = None
-    webhook_secret_name: str | None = None
-    webhook_intervals: list[int] | None = None
 
 
 @pytest.mark.parametrize(

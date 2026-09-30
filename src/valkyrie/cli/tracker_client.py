@@ -178,24 +178,6 @@ class TrackerService:
         return auth.get(benchmark_name)
 
     @staticmethod
-    def get_webhook_secret() -> str | None:
-        """
-        Get Slack webhook secret name from config if it exists.
-
-        Returns:
-            Webhook secret name if configured, None otherwise
-        """
-        config_path = config_location()
-        if not config_path.exists():
-            return None
-
-        with open(config_path) as f:
-            harness_config = yaml.safe_load(f) or {}
-
-        secret_name = harness_config.get("webhook")
-        return secret_name if secret_name else None
-
-    @staticmethod
     def _resolve_sandbox_provider(sdk_config: ValkyrieConfig, provider: str | None) -> tuple[str, str | None]:
         try:
             name, secret = sdk_config.resolve_sandbox_provider(provider)
@@ -315,8 +297,6 @@ class TrackerService:
         priority: int | None = None,
         service_headers: dict[str, str] | None = None,
         provider: str | None = None,
-        webhook_secret_name: str | None = None,
-        webhook_intervals: list[int] | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -363,8 +343,6 @@ class TrackerService:
                 sandbox_provider_secret_name=(
                     sandbox_provider_secret_name if access_key_harness_config is None else None
                 ),
-                webhook_secret_name=webhook_secret_name,
-                webhook_intervals=webhook_intervals,
             )
 
             body = payload.model_dump(exclude={"environment"})

@@ -329,7 +329,6 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
             agent_kwargs={"temperature": "0"},
             secrets={"ANTHROPIC_API_KEY": "AnthropicSecret"},
             service_headers={"X-Custom": "explicit"},
-            webhook_intervals=[25, 100],
         )
 
     assert response.benchmark_id == run_id
@@ -347,8 +346,6 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert body["service_headers"] == {"Authorization": "benchmark-token", "X-Custom": "explicit"}
     assert body["sandbox_provider"] == "modal"
     assert body["harness_config"]["sandbox_provider_secret_name"] == "ModalSecret"
-    assert body["webhook_secret_name"] == "SlackWebhook"
-    assert body["webhook_intervals"] == [25, 100]
 
 
 async def test_start_without_static_keys_builds_managed_request(make_client, sdk_config) -> None:
@@ -559,14 +556,12 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
             },
         )
 
-    client = make_client(handler, config=sdk_config(webhook=None, benchmark_auth={}))
+    client = make_client(handler, config=sdk_config(benchmark_auth={}))
     async with client:
         await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
 
     assert captured_body["custom_benchmark_service"] is None
     assert captured_body["service_headers"] == {}
-    assert captured_body["webhook_secret_name"] is None
-    assert captured_body["webhook_intervals"] is None
     assert captured_body["concurrency"] == 5
     assert "priority" not in captured_body
     assert "environment" not in captured_body
@@ -987,20 +982,6 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.retry(uuid4(), concurrency=0)
         assert isinstance(exc_info.value, ValkyrieRunError)
-    no_webhook_client = make_client(handler, config=sdk_config(webhook=None))
-    async with no_webhook_client:
-        with pytest.raises(ValkyrieConfigError, match="webhook_intervals require"):
-            await no_webhook_client.runs.start("agent", "swebench", webhook_intervals=[50])
-
-    invalid_interval_client = make_client(handler)
-    async with invalid_interval_client:
-        with pytest.raises(ValkyrieSDKError, match="divisible by 5") as exc_info:
-            await invalid_interval_client.runs.start("agent", "swebench", webhook_intervals=[23])
-        assert isinstance(exc_info.value, ValkyrieRunError)
-        with pytest.raises(ValkyrieSDKError, match="maximum of 3") as exc_info:
-            await invalid_interval_client.runs.start("agent", "swebench", webhook_intervals=[5, 10, 15, 20])
-        assert isinstance(exc_info.value, ValkyrieRunError)
-
     assert request_count == 0
 
 

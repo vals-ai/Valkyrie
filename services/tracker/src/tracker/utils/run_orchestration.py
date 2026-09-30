@@ -37,7 +37,6 @@ from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
-from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import error_span
 from tracker.observability.sentry import capture_exception
 from tracker.observability.tracing import observability_span
@@ -76,7 +75,6 @@ async def _run_queued_tasks(
     sandbox_provider: SandboxProvider,
     creation_semaphore: Semaphore,
     queue_context: SandboxQueueContext,
-    notifier: SlackNotifier | None,
     record_cancellation: Callable[[dict[UUID, datetime]], None],
     authority: ExecutionAuthority,
 ) -> None:
@@ -91,7 +89,6 @@ async def _run_queued_tasks(
         tracked_tasks,
         org,
         limiter=None,
-        notifier=notifier,
         coordinator_done=coordinator_done,
         authority=authority,
     )
@@ -682,7 +679,6 @@ async def _process_benchmark(
     finalization_deferred = False
     post_task_finalization = False
     queued_cancellation_recorded = False
-    notifier: SlackNotifier | None = None
     queue_context: SandboxQueueContext | None = None
     task_rows: Sequence[tuple[str, Task]] = ()
     run_task_rows: Sequence[tuple[str, Task]] = ()
@@ -758,13 +754,6 @@ async def _process_benchmark(
         sandbox_provider = sandbox_provider_config.create_provider()
         runtime_stack.push_async_callback(lambda: finish_cleanup(asyncio.create_task(sandbox_provider.close())))
 
-        if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
-            notifier = SlackNotifier(
-                secret_name=start_benchmark_request.webhook_secret_name,
-                secret_store=runtime.secrets,
-                intervals=start_benchmark_request.webhook_intervals,
-            )
-
         if queued_run:
             with Session(bind=engine) as session:
                 benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
@@ -825,7 +814,6 @@ async def _process_benchmark(
                 sandbox_provider=sandbox_provider,
                 creation_semaphore=creation_semaphore,
                 queue_context=queue_context,
-                notifier=notifier,
                 record_cancellation=record_queued_cancellation,
                 authority=authority,
             )
@@ -857,7 +845,6 @@ async def _process_benchmark(
                 tracked_tasks,
                 org,
                 limiter=limiter,
-                notifier=notifier,
                 authority=authority,
             )
             monitor_task = asyncio.create_task(monitor.track_tasks())
@@ -1024,35 +1011,16 @@ async def _process_benchmark(
                 task_ids=verified_task_ids,
             )
     finally:
-        authority_current = False
         if not finalization_deferred:
             with Session(bind=engine) as session:
                 # Handle any misalignments between the benchmark status and tasks
-                authority_current = catch_errors_during_cleanup(
+                catch_errors_during_cleanup(
                     benchmark_id,
                     session,
                     org,
                     authority=authority,
                     task_ids=verified_task_ids,
                 )
-
-        if notifier and not finalization_deferred and authority_current:
-            try:
-                async with hold_dispatch_authority(authority) as (notification_session, benchmark_row):
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, notification_session, org)
-                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
-                    notification_status = benchmark_row.status
-                    notification_error_message = benchmark_row.error_message
-                    await notifier.send_terminal_notification(
-                        notification_context,
-                        status=notification_status,
-                        final_score=final_score,
-                        error_message=notification_error_message,
-                    )
-            except ExecutionAuthorityRevoked:
-                pass
-            except Exception as notification_error:
-                logger.warning(f"Failed to send terminal notification: {notification_error}")
 
 
 def commit_benchmark_error(

@@ -41,8 +41,6 @@ class CloudRuntimeServices(RuntimeServices):
             return
 
         await resolve_secrets(request.contract.secrets, self.secrets)
-        if request.webhook_secret_name and request.webhook_intervals:
-            await self.secrets.get(request.webhook_secret_name)
         if request.lambda_function:
             await dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
 

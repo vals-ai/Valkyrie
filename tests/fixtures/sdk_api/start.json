@@ -53,8 +53,6 @@
     "sandbox_provider_secret_name": null,
     "service_auth_header_name": null,
     "service_auth_secret_name": null,
-    "webhook_secret_name": null,
-    "webhook_intervals": null,
     "dataset_version": null
   },
   "response": {

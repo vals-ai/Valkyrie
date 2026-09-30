@@ -58,7 +58,6 @@ _EXECUTOR_RELEASE_FILES = {
     "services/tracker/src/tracker/executor/entrypoint.py",
     "services/tracker/src/tracker/executor/execution_authority.py",
     "services/tracker/src/tracker/executor/release_control.py",
-    "services/tracker/src/tracker/notifications.py",
     "services/tracker/src/tracker/outbound_security.py",
     "services/tracker/src/tracker/sandbox.py",
     "services/tracker/src/tracker/types.py",

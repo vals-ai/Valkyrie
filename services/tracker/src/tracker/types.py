@@ -104,8 +104,6 @@ class StartBenchmarkRequest(BaseModel):
     sandbox_provider_secret_name: str | None = None
     service_auth_header_name: str | None = None
     service_auth_secret_name: str | None = None
-    webhook_secret_name: str | None = None
-    webhook_intervals: list[int] | None = None
 
     @model_validator(mode="after")
     def validate_execution_environment(self) -> "StartBenchmarkRequest":
@@ -117,7 +115,7 @@ class StartBenchmarkRequest(BaseModel):
             raise ValueError("Local execution cannot include AWS configuration")
         if self.sandbox_provider != "docker" or self.sandbox_provider_secret_name is not None:
             raise ValueError("Local execution requires Docker without a provider secret")
-        if self.lambda_function or self.webhook_secret_name or self.service_auth_secret_name:
+        if self.lambda_function or self.service_auth_secret_name:
             raise ValueError("Local execution does not support cloud callbacks or service secret references")
         return self
 
