@@ -7,10 +7,16 @@ import hashlib
 import os
 import signal
 import sys
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
+import sentry_sdk
+from sentry_sdk.envelope import Envelope
+from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.transport import Transport
 
 from executor_protocol import ExecutorTelemetryContext
 from tracker.executor import runner
@@ -334,3 +340,62 @@ async def test_older_tick_cannot_rewind_newer_refresh_confirmation(
         release.set()
         await old_tick
         await keeper.unregister()
+
+
+class _RecordingTransport(Transport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[dict[str, object]] = []
+
+    def capture_envelope(self, envelope: Envelope) -> None:
+        self.events.extend(item.payload.json for item in envelope.items if item.type == "event" and item.payload.json)
+
+
+@pytest.fixture
+def sentry_events(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, object]]]:
+    transport = _RecordingTransport()
+    monkeypatch.setattr(
+        runner,
+        "configure_observability",
+        lambda: sentry_sdk.init(
+            dsn="https://public@example.com/1",
+            transport=transport,
+            integrations=[LoggingIntegration(event_level=None)],
+        ),
+    )
+    yield transport.events
+    sentry_sdk.init()
+
+
+def _run_main_with(monkeypatch: pytest.MonkeyPatch, run_main: Callable[[str], Awaitable[None]]) -> str:
+    dispatch_id = str(uuid4())
+    monkeypatch.setattr(runner, "_run_main", run_main)
+    monkeypatch.setattr(sys, "argv", ["runner", "--dispatch-id", dispatch_id])
+    with pytest.raises(SystemExit):
+        runner.main()
+    return dispatch_id
+
+
+def test_runner_failure_before_claim_is_captured_once(
+    monkeypatch: pytest.MonkeyPatch, sentry_events: list[dict[str, object]]
+) -> None:
+    async def fail_claim(_dispatch_id: str) -> None:
+        raise RuntimeError("claim failed")
+
+    dispatch_id = _run_main_with(monkeypatch, fail_claim)
+
+    assert len(sentry_events) == 1
+    assert cast(dict[str, str], sentry_events[0]["tags"])["executor_dispatch_id"] == dispatch_id
+
+
+def test_runner_failure_reported_by_dispatch_is_not_captured_again(
+    monkeypatch: pytest.MonkeyPatch, sentry_events: list[dict[str, object]]
+) -> None:
+    async def fail_dispatch(_dispatch_id: str) -> None:
+        error = RuntimeError("dispatch failed")
+        runner.capture_dispatch_error(error, {"request_id": "request-abc", "trace_headers": {}})
+        raise error
+
+    _run_main_with(monkeypatch, fail_dispatch)
+
+    assert len(sentry_events) == 1

@@ -22,6 +22,7 @@ benchmark_id_var = contextvars.ContextVar("benchmark_id", default="")
 dispatch_id_var = contextvars.ContextVar("executor_dispatch_id", default="")
 release_id_var = contextvars.ContextVar("executor_release_id", default="")
 logger = logging.getLogger(__name__)
+_captured_dispatch_error: BaseException | None = None
 
 
 def _context_fields() -> dict[str, str]:
@@ -228,6 +229,8 @@ def record_dispatch_cancellation(telemetry_context: ExecutorTelemetryContext) ->
 
 def capture_dispatch_error(error: BaseException, telemetry_context: ExecutorTelemetryContext) -> None:
     """Capture a runner dispatch error on a bounded trace segment."""
+    global _captured_dispatch_error
+    _captured_dispatch_error = error
     logger.error(
         "Executor dispatch failed",
         exc_info=(type(error), error, error.__traceback__),
@@ -238,3 +241,12 @@ def capture_dispatch_error(error: BaseException, telemetry_context: ExecutorTele
         status=SPANSTATUS.INTERNAL_ERROR,
         error=error,
     )
+
+
+def capture_runner_failure(error: BaseException, dispatch_id: str) -> None:
+    """Capture a runner failure that the dispatch context has not already reported."""
+    if error is _captured_dispatch_error:
+        return
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("executor_dispatch_id", dispatch_id)
+        sentry_sdk.capture_exception(error)
