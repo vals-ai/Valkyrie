@@ -123,6 +123,7 @@ class DnsControlsTest(unittest.TestCase):
         names = dns_names("internal-test.elb.us-east-1.amazonaws.com")
         self.assertEqual([name for name in names if "*" in name], ["*.s3.us-east-1.amazonaws.com"])
         self.assertIn("7a5f089d15810552.vercel-dns-016.com", names)
+        self.assertIn("s3-r-w.us-east-1.amazonaws.com", names)
         self.assertNotIn("child.valsmith.vals.ai", names)
         self.assertNotIn("prod.benchmarks.vals.ai", names)
 

@@ -57,6 +57,7 @@ def dns_names(load_balancer_name: str) -> tuple[str, ...]:
         f"logs.{REGION}.amazonaws.com",
         f"dynamodb.{REGION}.amazonaws.com",
         f"s3.{REGION}.amazonaws.com",
+        f"s3-r-w.{REGION}.amazonaws.com",
         "agentic-harness.s3.amazonaws.com",
     )
     return (*normalize_dns_names((*application_names, *dependencies)), REGIONAL_S3_SUFFIX)
