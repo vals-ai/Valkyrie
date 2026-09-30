@@ -6,6 +6,7 @@ Exercise release lifecycle locking against disposable PostgreSQL.
 import hashlib
 from collections.abc import Callable
 from io import BytesIO
+from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
 from typing import cast
@@ -15,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from executor_protocol import source_executor_artifact_uri
 from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
 from tracker.database.models import (
     AgentContractRequest,
@@ -42,6 +44,7 @@ from tracker.executor.release_control import (
 )
 from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.run_control import apply_stop_benchmark
+from tracker.local.releases import register_source_release
 
 
 _EXECUTOR_ARTIFACT = b"immutable executor artifact"
@@ -651,3 +654,28 @@ def test_maintenance_commit_rejects_start_waiting_on_admission_lock(
     )
 
     assert sorted(outcomes) == ["first-committed", "second-rejected"]
+
+
+def test_concurrent_source_registration_preserves_one_active_release(
+    postgres_session: Session,
+    postgres_engine: Engine,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+
+    def register(session: Session) -> ExecutorRelease:
+        return register_source_release(session, root)
+
+    outcomes = _run_while_first_transaction_holds_locks(register, register, postgres_engine)
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
+    postgres_session.expire_all()
+    admission = postgres_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    assert admission.release_id is not None
+    release = postgres_session.get(ExecutorRelease, admission.release_id)
+    assert release is not None
+    assert release.status == ExecutorReleaseStatus.ACTIVE
+    assert release.readiness_verified
+    assert release.artifact_uri == source_executor_artifact_uri(root.resolve())
+    assert len(postgres_session.exec(select(ExecutorRelease)).all()) == 1

@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, TypeVar, Unpack, cast
+from urllib.parse import urlparse
 
 import boto3
 import httpx
@@ -28,6 +29,7 @@ from executor_protocol import (
     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
     DEFAULT_STABLE_QUEUE_NAME,
+    EXECUTOR_ENTRYPOINT_MODULE,
     EXECUTOR_TASK_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
     ExecutorPayload,
@@ -36,6 +38,7 @@ from executor_protocol import (
     normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
     validate_executor_digest,
+    validate_source_executor_artifact_uri,
 )
 from services.executor_host.observability import (
     capture_dispatch_error,
@@ -98,13 +101,8 @@ async def _renew_task_protection(delay_seconds: float) -> None:
 
 
 async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            pass
     try:
-        await task
+        await _await_task_completion(task)
     except asyncio.CancelledError:
         pass
 
@@ -555,11 +553,8 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
 
 
 def verify_file_digest(path: Path, expected_digest: str) -> None:
-    digest = hashlib.sha256()
     with path.open("rb") as artifact:
-        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
-            digest.update(chunk)
-    actual_digest = digest.hexdigest()
+        actual_digest = hashlib.file_digest(artifact, "sha256").hexdigest()
     if actual_digest != expected_digest:
         raise ValueError(f"Executor artifact digest mismatch: expected {expected_digest}, got {actual_digest}")
 
@@ -681,6 +676,7 @@ class ExecutorSupervisor:
         cache_dir: Path,
         *,
         s3_client: S3Client | None = None,
+        source_root: Path | None = None,
         python_executable: str = sys.executable,
         artifact_bucket: str | None = None,
         artifact_prefix: str | None = None,
@@ -693,8 +689,13 @@ class ExecutorSupervisor:
             "EXECUTOR_RELEASE_PREFIX",
             DEFAULT_EXECUTOR_RELEASE_PREFIX,
         )
+        if source_root is not None and not source_root.is_absolute():
+            raise ValueError("Executor source root must be absolute")
+        self.source_root = source_root.resolve() if source_root is not None else None
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        if urlparse(dispatch.artifact_uri).scheme == "source":
+            return await asyncio.to_thread(self._prepare_source_artifact, dispatch)
         bucket, key = validate_executor_artifact_uri(
             dispatch.artifact_uri,
             self.artifact_bucket,
@@ -734,6 +735,12 @@ class ExecutorSupervisor:
             raise
         return artifact_path
 
+    def _prepare_source_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        if self.source_root is None:
+            raise ValueError("Source executor releases require EXECUTOR_SOURCE_ROOT on this host")
+        # Source releases always run the current checkout; their digest names the checkout, not its contents.
+        return validate_source_executor_artifact_uri(dispatch.artifact_uri, self.source_root)
+
     async def run(
         self,
         artifact_path: Path,
@@ -748,7 +755,7 @@ class ExecutorSupervisor:
         if lease.revoked.is_set():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} was superseded before spawn")
         payload = {**process_payload.arguments, "executor_dispatch_id": authority.dispatch_id}
-        with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
+        with tempfile.TemporaryDirectory(prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
             logger.info(
@@ -759,13 +766,8 @@ class ExecutorSupervisor:
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
             )
-            process = await asyncio.create_subprocess_exec(
-                self.python_executable,
-                str(artifact_path),
-                str(payload_path),
-                start_new_session=True,
-                env={**os.environ, "SENTRY_RELEASE": dispatch.release_id},
-            )
+            command, environment = self._executor_command(artifact_path, dispatch, payload_path)
+            process = await asyncio.create_subprocess_exec(*command, start_new_session=True, env=environment)
             try:
                 return_code = await self._wait_with_authority(process, lease)
             except BaseException:
@@ -773,6 +775,22 @@ class ExecutorSupervisor:
                 raise
             if return_code != 0:
                 raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
+
+    def _executor_command(
+        self,
+        artifact_path: Path,
+        dispatch: ArtifactDispatch,
+        payload_path: Path,
+    ) -> tuple[list[str], dict[str, str]]:
+        environment = {**os.environ, "SENTRY_RELEASE": dispatch.release_id}
+        if urlparse(dispatch.artifact_uri).scheme != "source":
+            return [self.python_executable, str(artifact_path), str(payload_path)], environment
+
+        existing_path = os.environ.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            f"{artifact_path}{os.pathsep}{existing_path}" if existing_path else str(artifact_path)
+        )
+        return [self.python_executable, "-m", EXECUTOR_ENTRYPOINT_MODULE, str(payload_path)], environment
 
     async def _wait_with_authority(
         self,
@@ -864,7 +882,10 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
     configure_observability()
 
 
-supervisor = ExecutorSupervisor(CACHE_DIR)
+supervisor = ExecutorSupervisor(
+    CACHE_DIR,
+    source_root=Path(os.environ["EXECUTOR_SOURCE_ROOT"]) if os.environ.get("EXECUTOR_SOURCE_ROOT") else None,
+)
 dispatch_store = PostgresExecutorDispatchStore.from_environment()
 
 
