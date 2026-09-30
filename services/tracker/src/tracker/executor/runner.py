@@ -33,6 +33,7 @@ from executor_protocol import (
 from tracker.executor.dispatch_payload import SealedPayload, open_payload
 from tracker.executor.runner_observability import (
     capture_dispatch_error,
+    capture_runner_failure,
     configure_observability,
     dispatch_observability_context,
     record_dispatch_cancellation,
@@ -889,8 +890,9 @@ def main() -> None:
         asyncio.run(_run_main(arguments.dispatch_id))
     except asyncio.CancelledError:
         raise SystemExit(1) from None
-    except Exception:
+    except Exception as error:
         logger.exception("Executor dispatch %s failed", arguments.dispatch_id)
+        capture_runner_failure(error, arguments.dispatch_id)
         raise SystemExit(1) from None
 
 

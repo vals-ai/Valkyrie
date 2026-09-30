@@ -119,6 +119,7 @@ class FakeEcsClient:
     def __init__(self) -> None:
         self.service_updates: list[dict[str, object]] = []
         self.stopped_tasks: list[str] = []
+        self.already_stopping_tasks: list[str] = []
         self.list_calls: list[dict[str, object]] = []
         self.waited_for: list[dict[str, object]] = []
         self.pending_polls = 0
@@ -139,7 +140,9 @@ class FakeEcsClient:
         if kwargs["desiredStatus"] == "PENDING":
             self.pending_polls += 1
             return {"taskArns": ["pending-runner"] if self.pending_polls == 1 else []}
-        if self.stopped_tasks:
+        if kwargs["desiredStatus"] == "STOPPED":
+            return {"taskArns": [*self.stopped_tasks, *self.already_stopping_tasks]}
+        if self.stopped_tasks or self.already_stopping_tasks:
             return {"taskArns": []}
         if kwargs.get("nextToken") == "page-2":
             return {"taskArns": ["task-2"]}
@@ -322,6 +325,53 @@ def test_maintenance_begin_fails_loudly_if_runners_do_not_drain(
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
     assert admission.maintenance_target_sha == "b" * 40
+
+
+def test_maintenance_begin_waits_for_previously_stopping_runner(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("previously-stopping-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    release_entrypoint.main()
+
+    assert ecs.stopped_tasks == []
+    assert ecs.describe_polls == 2
+    assert sum(call["desiredStatus"] == "STOPPED" for call in ecs.list_calls) == 2
+
+
+def test_maintenance_begin_times_out_for_previously_stopping_runner(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("previously-stopping-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(
+        ecs,
+        "describe_tasks",
+        lambda **kwargs: {
+            "tasks": [{"taskArn": arn, "lastStatus": "RUNNING"} for arn in cast(list[str], kwargs["tasks"])]
+        },
+    )
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    with pytest.raises(TimeoutError, match="Maintenance drain timed out"):
+        release_entrypoint.main()
+    assert ecs.stopped_tasks == []
 
 
 def test_release_entrypoint_digest_failure_does_not_commit_release(

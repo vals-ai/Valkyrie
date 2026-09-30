@@ -34,6 +34,19 @@ def _record_task_arn(dispatch_id: UUID, task_arn: str) -> None:
         session.commit()
 
 
+async def _record_task_arn_after_launch(dispatch_id: UUID, task_arn: str) -> None:
+    # ECS already accepted the task, so a failed diagnostic write must not fail the launch.
+    for attempt in range(3):
+        try:
+            await asyncio.to_thread(_record_task_arn, dispatch_id, task_arn)
+            return
+        except Exception:
+            if attempt == 2:
+                logger.exception("Failed to record ECS task %s for executor dispatch %s", task_arn, dispatch_id)
+                return
+            await asyncio.sleep(0.2 * (2**attempt))
+
+
 async def launch_dispatch(dispatch: ExecutorDispatch) -> None:
     launcher = os.environ["EXECUTOR_LAUNCHER"]
     dispatch_id = str(dispatch.id)
@@ -76,8 +89,8 @@ async def launch_dispatch(dispatch: ExecutorDispatch) -> None:
             if len(tasks) != 1:
                 raise RuntimeError(f"Expected one ECS task for executor dispatch {dispatch_id}")
             task_arn = tasks[0]["taskArn"]
-            await asyncio.to_thread(_record_task_arn, dispatch.id, task_arn)
             logger.info("Launched executor dispatch %s as ECS task %s", dispatch_id, task_arn)
+            await _record_task_arn_after_launch(dispatch.id, task_arn)
             return
         except DefinitiveLaunchFailure:
             raise
