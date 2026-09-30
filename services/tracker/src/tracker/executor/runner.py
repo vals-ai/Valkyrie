@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, TypeVar, cast
+from urllib.parse import urlparse
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
@@ -25,10 +26,12 @@ from executor_protocol import (
     DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
     SUPPORTED_PROTOCOL_VERSIONS,
+    EXECUTOR_ENTRYPOINT_MODULE,
     ExecutorTelemetryContext,
     normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
     validate_executor_digest,
+    validate_source_executor_artifact_uri,
 )
 from tracker.executor.dispatch_payload import SealedPayload, open_payload
 from tracker.executor.runner_observability import (
@@ -366,7 +369,7 @@ class PostgresExecutorDispatchStore:
                         UPDATE benchmark
                         SET status = 'ERROR',
                             finished_at = CURRENT_TIMESTAMP,
-                            error_message = 'Executor host failed'
+                            error_message = 'Executor dispatch failed'
                         WHERE id = %s::uuid
                         """,
                         (authority.benchmark_id,),
@@ -568,6 +571,7 @@ class ExecutorSupervisor:
         cache_dir: Path,
         *,
         s3_client: S3Client | None = None,
+        source_root: Path | None = None,
         python_executable: str = sys.executable,
         artifact_bucket: str | None = None,
         artifact_prefix: str | None = None,
@@ -575,14 +579,19 @@ class ExecutorSupervisor:
         self.cache_dir = cache_dir
         self.s3_client = s3_client
         self.python_executable = python_executable
-        self.artifact_bucket = artifact_bucket or os.environ["EXECUTOR_RELEASE_BUCKET"]
-        self.artifact_prefix = artifact_prefix or os.environ["EXECUTOR_RELEASE_PREFIX"]
+        self.artifact_bucket = artifact_bucket
+        self.artifact_prefix = artifact_prefix
+        self.source_root = source_root
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        if urlparse(dispatch.artifact_uri).scheme == "source":
+            if self.source_root is None:
+                raise ValueError("Source executor releases require EXECUTOR_SOURCE_ROOT")
+            return validate_source_executor_artifact_uri(dispatch.artifact_uri, self.source_root)
         bucket, key = validate_executor_artifact_uri(
             dispatch.artifact_uri,
-            self.artifact_bucket,
-            self.artifact_prefix,
+            self.artifact_bucket or os.environ["EXECUTOR_RELEASE_BUCKET"],
+            self.artifact_prefix or os.environ["EXECUTOR_RELEASE_PREFIX"],
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
@@ -643,13 +652,16 @@ class ExecutorSupervisor:
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
             )
-            process = await asyncio.create_subprocess_exec(
-                self.python_executable,
-                str(artifact_path),
-                str(payload_path),
-                start_new_session=True,
-                env={**os.environ, "SENTRY_RELEASE": dispatch.release_id},
-            )
+            environment = {**os.environ, "SENTRY_RELEASE": dispatch.release_id}
+            if urlparse(dispatch.artifact_uri).scheme == "source":
+                existing_path = environment.get("PYTHONPATH")
+                environment["PYTHONPATH"] = (
+                    f"{artifact_path}{os.pathsep}{existing_path}" if existing_path else str(artifact_path)
+                )
+                command = [self.python_executable, "-m", EXECUTOR_ENTRYPOINT_MODULE, str(payload_path)]
+            else:
+                command = [self.python_executable, str(artifact_path), str(payload_path)]
+            process = await asyncio.create_subprocess_exec(*command, start_new_session=True, env=environment)
             try:
                 return_code = await self._wait_with_authority(process, lease)
             except BaseException:
@@ -860,15 +872,11 @@ def _parse_dispatch_id(value: str) -> str:
 async def _run_main(dispatch_id: str) -> None:
     loop = asyncio.get_running_loop()
     store = PostgresExecutorDispatchStore.from_environment()
-    if os.environ["EXECUTOR_LAUNCHER"] == "local":
-        from tracker.executor.local_release import LocalArtifactStore
-
-        supervisor = ExecutorSupervisor(
-            Path(os.environ["EXECUTOR_CACHE_DIR"]),
-            s3_client=LocalArtifactStore(Path(os.environ["EXECUTOR_RELEASE_LOCAL_DIR"])),
-        )
-    else:
-        supervisor = ExecutorSupervisor(Path(os.environ["EXECUTOR_CACHE_DIR"]))
+    source_root = os.environ.get("EXECUTOR_SOURCE_ROOT")
+    supervisor = ExecutorSupervisor(
+        Path(os.environ["EXECUTOR_CACHE_DIR"]),
+        source_root=Path(source_root).resolve() if source_root is not None else None,
+    )
     task = asyncio.create_task(
         run_executor_dispatch(supervisor, store, keeper=_LeaseKeeper(store), executor_dispatch_id=dispatch_id)
     )

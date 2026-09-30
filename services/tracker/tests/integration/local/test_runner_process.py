@@ -1,4 +1,4 @@
-"""Real runner subprocess against disposable PostgreSQL and a local release artifact."""
+"""Real runner subprocess against disposable PostgreSQL and cached artifact."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from tracker.executor.release_control import promote_release, register_release
 from tracker.types import StartBenchmarkRequest
 
 
-def test_runner_fetches_local_artifact_and_delivers_admission_trace(
+def test_runner_claims_cached_artifact_and_delivers_admission_trace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output = tmp_path / "child-observed.json"
@@ -43,9 +43,8 @@ def test_runner_fetches_local_artifact_and_delivers_admission_trace(
     ).encode()
     digest = hashlib.sha256(script).hexdigest()
     cache = tmp_path / "cache"
-    releases = tmp_path / "releases"
-    (releases / "artifacts" / "executors").mkdir(parents=True)
-    (releases / "artifacts" / "executors" / "cached.pex").write_bytes(script)
+    cache.mkdir()
+    (cache / f"{digest}.pex").write_bytes(script)
 
     with PostgresContainer("postgres:16-alpine") as postgres:
         engine: Engine = create_engine(postgres.get_connection_url())
@@ -112,7 +111,6 @@ def test_runner_fetches_local_artifact_and_delivers_admission_trace(
             env = {
                 "PYTHONPATH": os.pathsep.join((str(repo_root / "services/tracker/src"), str(repo_root))),
                 "EXECUTOR_CACHE_DIR": str(cache),
-                "EXECUTOR_RELEASE_LOCAL_DIR": str(releases),
                 "EXECUTOR_RELEASE_BUCKET": "artifacts",
                 "EXECUTOR_RELEASE_PREFIX": "executors",
                 "DB_HOST": url.host,

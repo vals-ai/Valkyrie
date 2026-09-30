@@ -99,7 +99,11 @@ class ArtifactsResource:
                             destination = staging / relative
                             await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
                             size += await _download_file(
-                                download_client, url.download_url, destination, max_bytes - size
+                                download_client,
+                                url.download_url,
+                                destination,
+                                max_bytes - size,
+                                self._sdk.download_headers(url.download_url),
                             )
                         if page.next_cursor is None:
                             break
@@ -117,12 +121,14 @@ class ArtifactsResource:
         return output_dir
 
 
-async def _download_file(client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int) -> int:
+async def _download_file(
+    client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int, headers: dict[str, str]
+) -> int:
     """Stream one artifact to disk and return its downloaded size."""
     size = 0
     output = await asyncio.to_thread(destination.open, "xb")
     try:
-        async with client.stream("GET", url) as response:
+        async with client.stream("GET", url, headers=headers, follow_redirects=not headers) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
                 size += len(chunk)

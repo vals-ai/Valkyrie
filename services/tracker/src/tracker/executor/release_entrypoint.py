@@ -202,14 +202,16 @@ def _wait_for_maintenance_drain(client: EcsClient, task: ReleaseTaskConfig, stop
         pending = _runner_tasks(client, task, "PENDING")
         _stop_runner_tasks(client, task, [*running, *pending], stopped)
         active_stopped_tasks = False
+        # Desired-STOPPED tasks include ones still shutting down, stopped before this call, so wait for them too.
+        # That list also has older finished tasks, which ECS can expire between list and describe. A task missing
+        # from describe keeps the drain polling; an expired one is gone from the next list.
         stopped_arns = sorted(stopped | set(_runner_tasks(client, task, "STOPPED")))
         for start in range(0, len(stopped_arns), 100):
             batch = stopped_arns[start : start + 100]
             response = client.describe_tasks(cluster=task.cluster_arn, tasks=batch)
             tasks = cast(Sequence[Mapping[str, object]], response["tasks"])
-            if {str(item["taskArn"]) for item in tasks} != set(batch):
-                raise RuntimeError("Maintenance drain could not describe every runner task")
-            active_stopped_tasks |= any(item["lastStatus"] != "STOPPED" for item in tasks)
+            described = {str(item["taskArn"]) for item in tasks}
+            active_stopped_tasks |= described != set(batch) or any(item["lastStatus"] != "STOPPED" for item in tasks)
         services = client.describe_services(cluster=task.cluster_arn, services=[task.tracker_service_name])
         tracker = cast(Sequence[Mapping[str, object]], services["services"])[0]
         if not running and not pending and not active_stopped_tasks and tracker["runningCount"] == 0:

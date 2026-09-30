@@ -187,7 +187,7 @@ def _record_terminal_transaction(
     name: str,
     status: str | None = None,
     error: BaseException | None = None,
-) -> None:
+) -> bool:
     try:
         with sentry_sdk.new_scope() as scope:
             scope.set_tags({key: value for key, value in _context_fields().items() if value})
@@ -201,12 +201,14 @@ def _record_terminal_transaction(
                     span.set_status(status)
                 if error is not None:
                     sentry_sdk.capture_exception(error)
+        return True
     except Exception as telemetry_error:
         logger.warning(
             "Failed to record executor dispatch telemetry: %s: %s",
             type(telemetry_error).__name__,
             telemetry_error,
         )
+        return False
 
 
 def record_dispatch_completion(telemetry_context: ExecutorTelemetryContext) -> None:
@@ -230,17 +232,17 @@ def record_dispatch_cancellation(telemetry_context: ExecutorTelemetryContext) ->
 def capture_dispatch_error(error: BaseException, telemetry_context: ExecutorTelemetryContext) -> None:
     """Capture a runner dispatch error on a bounded trace segment."""
     global _captured_dispatch_error
-    _captured_dispatch_error = error
     logger.error(
         "Executor dispatch failed",
         exc_info=(type(error), error, error.__traceback__),
     )
-    _record_terminal_transaction(
+    if _record_terminal_transaction(
         telemetry_context,
         name="executor_runner.dispatch.failed",
         status=SPANSTATUS.INTERNAL_ERROR,
         error=error,
-    )
+    ):
+        _captured_dispatch_error = error
 
 
 def capture_runner_failure(error: BaseException, dispatch_id: str) -> None:

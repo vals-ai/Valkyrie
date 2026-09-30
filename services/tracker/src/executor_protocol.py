@@ -2,13 +2,16 @@
 
 from collections.abc import Mapping
 from enum import Enum
+from pathlib import Path
 from typing import Any, NotRequired, TypedDict, cast
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
-SUPPORTED_PROTOCOL_VERSION = "3"
-SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", SUPPORTED_PROTOCOL_VERSION})
+SUPPORTED_PROTOCOL_VERSION = "4"
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", "3", SUPPORTED_PROTOCOL_VERSION})
 MANAGED_EXECUTION_PROTOCOL_VERSION = "3"
+DATASET_VERSION_PROTOCOL_VERSION = "4"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
+EXECUTOR_ENTRYPOINT_MODULE = "tracker.executor.entrypoint"
 
 # A dispatch owner renews this lease from its runner task. The Tracker
 # reconciler runs every minute, so a dead runner is recovered within roughly six
@@ -95,3 +98,19 @@ def validate_executor_artifact_uri(uri: str, expected_bucket: str, expected_pref
     if parsed.netloc != expected_bucket or not prefix or not key.startswith(f"{prefix}/"):
         raise ValueError("Executor artifact URI is outside the configured S3 bucket and prefix")
     return parsed.netloc, key
+
+
+def source_executor_artifact_uri(root: Path) -> str:
+    """Name a checkout's executor source tree as a release artifact."""
+    return root.as_uri().replace("file://", "source://", 1)
+
+
+def validate_source_executor_artifact_uri(artifact_uri: str, root: Path) -> Path:
+    """Require a source release to name the resolved configured source root."""
+    parsed = urlparse(artifact_uri)
+    if parsed.scheme != "source" or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("Source executor artifact URI must use source:///absolute/path")
+    path = Path(unquote(parsed.path))
+    if not path.is_absolute() or path.resolve() != root:
+        raise ValueError("Source executor artifact URI does not match the configured source root")
+    return root

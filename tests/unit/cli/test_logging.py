@@ -137,20 +137,23 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
         config_dir = home / ".config" / "valkyrie"
         config_dir.mkdir(parents=True)
         (config_dir / "valkyrie.yaml").write_text(
-            "AWS_ACCESS_KEY_ID: test\n"
-            "AWS_SECRET_ACCESS_KEY: test\n"
-            "AWS_DEFAULT_REGION: us-east-1\n"
-            "S3_BUCKET: test\n"
-            "LOG_GROUP: test\n"
-            "LOG_RETENTION_POLICY: 1\n"
-            "DAYTONA_SECRET_NAME: test\n"
+            "aws:\n"
+            "  credentials:\n"
+            "    AWS_ACCESS_KEY_ID: test\n"
+            "    AWS_SECRET_ACCESS_KEY: test\n"
+            "  AWS_DEFAULT_REGION: us-east-1\n"
+            "  S3_BUCKET: test\n"
+            "  LOG_GROUP: test\n"
+            "  LOG_RETENTION_POLICY: 1\n"
+            "sandbox_providers:\n"
+            "  daytona: test\n"
         )
 
         env = os.environ.copy()
         env["HOME"] = str(home)
         env["PYTHONPATH"] = os.pathsep.join([str(site_packages), *filter(None, [env.get("PYTHONPATH")])])
         env["TRACKER_SERVICE_URL"] = f"http://127.0.0.1:{server.server_port}"
-        env.pop("VALKYRIE_CLI_LOGS", None)
+        env["VALKYRIE_CLI_LOGS"] = "false"
 
         result = subprocess.run(
             [

@@ -384,6 +384,10 @@
     "destination": "/reference/sdk/models/benchmarks#benchmark-status-response"
   },
   {
+    "source": "/reference/sdk/models/runs/dataset-version",
+    "destination": "/reference/sdk/models/runs#dataset-version"
+  },
+  {
     "source": "/reference/sdk/models/runs/fetch-benchmark-response",
     "destination": "/reference/sdk/models/runs#fetch-benchmark-response"
   },
@@ -518,5 +522,13 @@
   {
     "source": "/reference/sdk/models/config/valkyrie-config",
     "destination": "/reference/sdk/models/config#valkyrie-config"
+  },
+  {
+    "source": "/reference/sdk/models/config/aws-config",
+    "destination": "/reference/sdk/models/config#aws-config"
+  },
+  {
+    "source": "/reference/sdk/models/config/aws-access-keys",
+    "destination": "/reference/sdk/models/config#aws-access-keys"
   }
 ]
