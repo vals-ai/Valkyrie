@@ -1,6 +1,7 @@
 """Deployment preflight and guarded DNS verification for the dedicated network."""
 
 import argparse
+import ipaddress
 import json
 import subprocess
 from dataclasses import asdict
@@ -151,6 +152,16 @@ def collect_inventory(profile: str, inputs: NetworkInputs, *, reader: AwsReader 
             occupied.update(text_field(item, "Cidr") for item in object_list(reservation, "SubnetIpv4CidrReservations"))
 
     peerings = object_list(reader.read("ec2", "describe-vpc-peering-connections"), "VpcPeeringConnections")
+    for peer_id in owned_peer_ids:
+        peer = _only([item for item in peerings if item.get("VpcPeeringConnectionId") == peer_id], "owned peering")
+        sides = [object_field(peer, side) for side in ("RequesterVpcInfo", "AccepterVpcInfo")]
+        if (
+            object_field(peer, "Status").get("Code") != "active"
+            or {text_field(side, "VpcId") for side in sides} != {owned_vpc_id, inputs.caller_vpc_id}
+            or any(side.get("OwnerId") != ACCOUNT for side in sides)
+        ):
+            raise ValueError("Owned peering no longer connects the reviewed VPCs")
+
     for peering in peerings:
         if object_field(peering, "Status").get("Code") in ("deleted", "rejected", "failed", "expired"):
             continue
@@ -168,12 +179,43 @@ def collect_inventory(profile: str, inputs: NetworkInputs, *, reader: AwsReader 
             else:
                 raise ValueError("Cannot inventory a peer's address ranges")
 
+    owned_subnet_ids = {
+        text_field(item, "PhysicalResourceId") for item in owned if item.get("ResourceType") == "AWS::EC2::Subnet"
+    }
+    application_subnets = [
+        subnet
+        for subnet in subnets
+        if subnet.get("VpcId") == owned_vpc_id
+        and subnet.get("SubnetId") in owned_subnet_ids
+        and ipaddress.ip_network(text_field(subnet, "CidrBlock")).prefixlen == 24
+    ]
+    application_cidrs = {text_field(subnet, "CidrBlock") for subnet in application_subnets}
+    application_ids = {text_field(subnet, "SubnetId") for subnet in application_subnets}
+    if owned_peer_ids and len(application_subnets) != 2:
+        raise ValueError("Owned peering requires both reviewed application subnets")
+
     for route_table in route_tables:
         for route in object_list(route_table, "Routes"):
             if not (route.get("VpcPeeringConnectionId") or route.get("TransitGatewayId")):
                 continue
 
             if route.get("VpcPeeringConnectionId") in owned_peer_ids:
+                destination = route.get("DestinationCidrBlock")
+                caller_route = (
+                    route_table.get("RouteTableId") in inputs.caller_route_table_ids
+                    and destination in application_cidrs
+                )
+                application_route = (
+                    route_table.get("VpcId") == owned_vpc_id
+                    and destination in inputs.caller_subnet_cidrs
+                    and any(
+                        association.get("SubnetId") in application_ids
+                        for association in object_list(route_table, "Associations")
+                    )
+                )
+                if not caller_route and not application_route:
+                    raise ValueError("Unexpected route through the owned peering connection")
+
                 continue
 
             destination = route.get("DestinationCidrBlock")

@@ -126,6 +126,42 @@ class NetworkPreflightTest(unittest.TestCase):
         inventory = collect_inventory("test", read_test_inputs(), reader=FixtureReader(data))
         self.assertEqual(inventory.occupied_cidrs, ("10.0.0.0/16",))
 
+        peer_id = "pcx-00000000000000001"
+        owned = data[("cloudformation", "list-stack-resources")]["StackResourceSummaries"]
+        assert isinstance(owned, list)
+        owned.append({"ResourceType": "AWS::EC2::VPCPeeringConnection", "PhysicalResourceId": peer_id})
+        subnets = data[("ec2", "describe-subnets")]["Subnets"]
+        assert isinstance(subnets, list)
+        for index in (1, 2):
+            subnet_id = f"subnet-0000000000000000{index}"
+            owned.append({"ResourceType": "AWS::EC2::Subnet", "PhysicalResourceId": subnet_id})
+            subnets.append({"SubnetId": subnet_id, "VpcId": own_vpc["VpcId"], "CidrBlock": f"10.64.{index}.0/24"})
+        data[("ec2", "describe-vpc-peering-connections")] = {
+            "VpcPeeringConnections": [
+                {
+                    "VpcPeeringConnectionId": peer_id,
+                    "Status": {"Code": "active"},
+                    "RequesterVpcInfo": {
+                        "VpcId": own_vpc["VpcId"],
+                        "OwnerId": "629807611108",
+                        "CidrBlock": "10.64.0.0/20",
+                    },
+                    "AccepterVpcInfo": {
+                        "VpcId": "vpc-0e1bfdbc090daa61a",
+                        "OwnerId": "629807611108",
+                        "CidrBlock": "10.0.0.0/16",
+                    },
+                }
+            ]
+        }
+        tables = data[("ec2", "describe-route-tables")]["RouteTables"]
+        assert isinstance(tables, list) and isinstance(tables[0], dict)
+        tables[0]["Routes"] = [{"DestinationCidrBlock": "10.64.0.0/16", "VpcPeeringConnectionId": peer_id}]
+        with self.assertRaisesRegex(ValueError, "route"):
+            collect_inventory("test", read_test_inputs(), reader=FixtureReader(data))
+        tables[0]["Routes"] = [{"DestinationCidrBlock": "10.64.1.0/24", "VpcPeeringConnectionId": peer_id}]
+        collect_inventory("test", read_test_inputs(), reader=FixtureReader(data))
+
         own_vpc["CidrBlockAssociationSet"] = [{"CidrBlock": "10.65.0.0/20"}]
         with self.assertRaisesRegex(ValueError, "owned VPC"):
             collect_inventory("test", read_test_inputs(), reader=FixtureReader(data))
