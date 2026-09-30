@@ -40,11 +40,14 @@ _FORBIDDEN_HEADER_PREFIXES = ("forwarded", "proxy-", "sec-websocket-", "x-forwar
 # defaults via environment configuration. This module may load before config's
 # own load_dotenv() call, so it loads .env itself for dotenv-only deployments.
 load_dotenv()
+_IDNA_SEPARATOR_TRANSLATION = str.maketrans({"。": ".", "．": ".", "｡": "."})
 _OPERATOR_TENANT = os.environ.get("OPERATOR_TENANT") or "vals.ai"
-_OPERATOR_DOMAIN = os.environ.get("OPERATOR_DOMAIN") or "vals.ai"
+# Normalized like request hostnames so the reservation holds regardless of config casing/dots.
+_OPERATOR_DOMAIN = (
+    (os.environ.get("OPERATOR_DOMAIN") or "vals.ai").translate(_IDNA_SEPARATOR_TRANSLATION).lower().rstrip(".")
+)
 _RESTRICTED_HOSTNAMES = {"internal", "local", "localhost"}
 _RESTRICTED_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal")
-_IDNA_SEPARATOR_TRANSLATION = str.maketrans({"。": ".", "．": ".", "｡": "."})
 _CUSTOM_DESTINATION_DENIED = "Custom benchmark destination is not allowed"
 
 

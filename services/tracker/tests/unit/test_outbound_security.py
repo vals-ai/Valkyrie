@@ -215,7 +215,7 @@ class TestOperatorDestinationConfiguration:
     def test_dotenv_only_operator_settings_are_loaded(self, tmp_path: Path) -> None:
         """A fresh process with operator settings only in .env sees them at import."""
         src_root = str(Path(__file__).resolve().parents[2] / "src")
-        (tmp_path / ".env").write_text("OPERATOR_TENANT=acme.example\nOPERATOR_DOMAIN=acme.dev\n")
+        (tmp_path / ".env").write_text("OPERATOR_TENANT=acme.example\nOPERATOR_DOMAIN=Acme.Dev.\n")
         env = {key: value for key, value in os.environ.items() if not key.startswith("OPERATOR_")}
         env["PYTHONPATH"] = src_root
         subprocess.run(
