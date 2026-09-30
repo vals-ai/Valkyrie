@@ -13,8 +13,6 @@ import time
 from typing import Any, cast
 
 from cachetools import TLRUCache, cached
-from descope import DescopeClient
-from descope.exceptions import AuthException
 from fastapi import Depends, HTTPException, Request
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import ReadTimeout
@@ -25,10 +23,17 @@ from tracker.config import (
     AUTH_REQUIRED,
     DESCOPE_MANAGEMENT_KEY,
     DESCOPE_PROJECT_ID,
+    IDENTITY_PROVIDER,
     BenchmarkServiceDestination,
 )
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
+from tracker.identity_provider import (
+    CredentialRejectedError,
+    IdentityProvider,
+    build_identity_provider,
+    normalize_optional_string,
+)
 from tracker.logging import get_logger
 from tracker.outbound_security import validate_service_headers
 
@@ -49,8 +54,8 @@ class RequestIdentity:
     """Identity that authenticated the current request.
 
     In hosted mode `access_key_id` is always set. `email` and `name` are populated
-    from Descope claims or the bound user profile when the caller requests it. In
-    self-hosted mode all three are None. The access key id is persisted as
+    from identity-provider claims or the bound user profile when the caller requests
+    it. In self-hosted mode all three are None. The access key id is persisted as
     `Benchmark.started_by_id` to preserve the exact credential used to start the run.
     """
 
@@ -61,13 +66,7 @@ class RequestIdentity:
 
 
 @dataclass(frozen=True)
-class DescopeUserProfile:
-    email: str | None
-    name: str | None
-
-
-@dataclass(frozen=True)
-class DescopeIdentity:
+class AccessKeyIdentity:
     tenant_name: str
     access_key_id: str
     email: str | None
@@ -92,13 +91,11 @@ _access_key_cache: TLRUCache[bytes, CachedAccessKeyClaims, float] = TLRUCache(
     ttu=lambda _key, claims, _now: claims.cache_deadline_monotonic,
     timer=time.monotonic,
 )
-_descope_client: DescopeClient | None = (
-    DescopeClient(
-        project_id=DESCOPE_PROJECT_ID,
-        management_key=DESCOPE_MANAGEMENT_KEY or None,
-    )
-    if AUTH_REQUIRED and DESCOPE_PROJECT_ID
-    else None
+_identity_provider: IdentityProvider | None = build_identity_provider(
+    auth_required=AUTH_REQUIRED,
+    provider_name=IDENTITY_PROVIDER,
+    descope_project_id=DESCOPE_PROJECT_ID,
+    descope_management_key=DESCOPE_MANAGEMENT_KEY,
 )
 
 
@@ -111,21 +108,10 @@ def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> o
     return jwt_response.get(claim_name)
 
 
-def _normalize_optional_string(value: object, *, lowercase: bool = False) -> str | None:
-    if not isinstance(value, str):
-        return None
-
-    normalized = value.strip()
-    if not normalized:
-        return None
-
-    return normalized.lower() if lowercase else normalized
-
-
 def _get_descope_string_claim(
     jwt_response: Mapping[str, object], claim_name: str, *, lowercase: bool = False
 ) -> str | None:
-    return _normalize_optional_string(_get_descope_claim(jwt_response, claim_name), lowercase=lowercase)
+    return normalize_optional_string(_get_descope_claim(jwt_response, claim_name), lowercase=lowercase)
 
 
 def _get_descope_custom_string_claim(
@@ -142,30 +128,9 @@ def _get_descope_custom_string_claim(
 
         custom_claims = claim_source.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
         if isinstance(custom_claims, Mapping) and claim_name in custom_claims:
-            return _normalize_optional_string(custom_claims.get(claim_name), lowercase=lowercase)
+            return normalize_optional_string(custom_claims.get(claim_name), lowercase=lowercase)
 
     return None
-
-
-def _load_descope_user_profile(user_id: str) -> DescopeUserProfile:
-    """Load email/name from the Descope user record bound to an access key."""
-    if not _descope_client:
-        return DescopeUserProfile(email=None, name=None)
-
-    try:
-        user_response = _descope_client.mgmt.user.load_by_user_id(user_id)
-    except Exception:
-        logger.warning("Failed to load Descope user profile")
-        return DescopeUserProfile(email=None, name=None)
-
-    user = user_response.get("user")
-    if not isinstance(user, Mapping):
-        logger.warning("Descope user profile response did not include a user object")
-        return DescopeUserProfile(email=None, name=None)
-
-    email = _normalize_optional_string(user.get("email"), lowercase=True)
-    name = _normalize_optional_string(user.get("name") or user.get("displayName"))
-    return DescopeUserProfile(email=email, name=name)
 
 
 def get_default_org(session: Session) -> Org:
@@ -194,9 +159,9 @@ def extract_api_key(request: Request) -> str:
     wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
     reraise=True,
 )
-def _exchange_access_key(api_key: str, descope_client: DescopeClient) -> dict[str, Any]:
-    """Call Descope with retries on transient network errors."""
-    return cast(dict[str, Any], descope_client.exchange_access_key(api_key))
+def _exchange_access_key(api_key: str, provider: IdentityProvider) -> Mapping[str, Any]:
+    """Call the identity provider with retries on transient network errors."""
+    return provider.exchange_access_key(api_key)
 
 
 def _access_key_digest(api_key: str) -> bytes:
@@ -255,32 +220,35 @@ def _normalize_access_key_claims(jwt_response: Mapping[str, object]) -> CachedAc
 
 @cached(cache=_access_key_cache, key=_access_key_digest, condition=_access_key_cache_condition)
 def _exchange_and_normalize_access_key(api_key: str) -> CachedAccessKeyClaims:
-    if not _descope_client:
-        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
+    if not _identity_provider:
+        raise RuntimeError(
+            "Identity provider not initialized — check AUTH_REQUIRED, IDENTITY_PROVIDER, "
+            "and provider credentials (e.g. DESCOPE_PROJECT_ID)"
+        )
 
     try:
-        jwt_response = _exchange_access_key(api_key, _descope_client)
-    except AuthException as exc:
-        logger.warning("Descope API key validation failed")
+        jwt_response = _exchange_access_key(api_key, _identity_provider)
+    except CredentialRejectedError as exc:
+        logger.warning("API key validation failed")
         raise HTTPException(status_code=401, detail="Invalid API key") from exc
     except Exception as exc:
-        logger.warning("Descope API key validation failed because the provider is unavailable")
+        logger.warning("API key validation failed because the provider is unavailable")
         raise HTTPException(status_code=503, detail="Auth service unavailable") from exc
 
     return _normalize_access_key_claims(jwt_response)
 
 
-def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False) -> DescopeIdentity:
-    """Validate an API key and return its Descope tenant and attribution identity."""
+def resolve_access_key_identity(api_key: str, *, include_user_profile: bool = False) -> AccessKeyIdentity:
+    """Validate an access key and return its tenant and attribution identity."""
     claims = _exchange_and_normalize_access_key(api_key)
     email = claims.email
     name = claims.name
-    if include_user_profile and email is None and claims.user_id is not None:
-        profile = _load_descope_user_profile(claims.user_id)
+    if include_user_profile and email is None and claims.user_id is not None and _identity_provider is not None:
+        profile = _identity_provider.load_user_profile(claims.user_id)
         email = profile.email
         name = name or profile.name
 
-    return DescopeIdentity(
+    return AccessKeyIdentity(
         tenant_name=claims.tenant_name,
         access_key_id=claims.access_key_id,
         email=email,
@@ -289,7 +257,7 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
 
 
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
-    """Look up an org by Descope tenant name. Returns None if not found."""
+    """Look up an org by identity-provider tenant name. Returns None if not found."""
     return session.exec(select(Org).where(Org.name == tenant_name)).first()
 
 
@@ -330,14 +298,17 @@ def _extract_bearer_token(request: Request) -> str | None:
 
 
 def resolve_bearer_session(jwt: str, session: Session) -> Org:
-    """Validate a Descope session JWT and resolve the org."""
-    if not _descope_client:
-        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
+    """Validate a session token and resolve the org."""
+    if not _identity_provider:
+        raise RuntimeError(
+            "Identity provider not initialized — check AUTH_REQUIRED, IDENTITY_PROVIDER, "
+            "and provider credentials (e.g. DESCOPE_PROJECT_ID)"
+        )
 
     try:
-        jwt_response = _descope_client.validate_session(jwt)
-    except AuthException as exc:
-        logger.warning("Descope session validation failed")
+        jwt_response = _identity_provider.validate_session(jwt)
+    except CredentialRejectedError as exc:
+        logger.warning("Session validation failed")
         raise HTTPException(status_code=401, detail="Invalid session") from exc
 
     tenants = list(jwt_response.get("tenants", {}).keys())
@@ -368,7 +339,7 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
     if bearer:
         return resolve_bearer_session(bearer, session)
 
-    identity = resolve_descope_identity(api_key)
+    identity = resolve_access_key_identity(api_key)
     org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(status_code=404, detail=f"Organization '{identity.tenant_name}' not configured")
@@ -380,13 +351,14 @@ def get_current_starter(request: Request, session: Session = Depends(get_session
     """FastAPI dependency that returns the full identity behind the current request.
 
     Self-hosted (AUTH_REQUIRED=False): returns RequestIdentity with default org and Nones.
-    Hosted (AUTH_REQUIRED=True): validates Descope API key and resolves org + identity.
+    Hosted (AUTH_REQUIRED=True): validates the API key against the configured
+    identity provider and resolves org + identity.
     """
     if not AUTH_REQUIRED:
         return RequestIdentity(org=get_default_org(session), access_key_id=None, email=None, name=None)
 
     api_key = extract_api_key(request)
-    identity = resolve_descope_identity(api_key, include_user_profile=True)
+    identity = resolve_access_key_identity(api_key, include_user_profile=True)
     org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(

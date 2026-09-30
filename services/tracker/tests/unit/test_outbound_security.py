@@ -190,6 +190,38 @@ class TestCustomServiceDestinationPolicy:
         )
 
 
+class TestOperatorDestinationConfiguration:
+    """The trusted tenant and protected DNS suffix are deployment-configurable."""
+
+    def test_configured_operator_tenant_is_trusted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("tracker.outbound_security._OPERATOR_TENANT", "acme.example")
+        validate_custom_service_destination(
+            "http://service.internal:8001",
+            org_name="acme.example",
+            auth_required=True,
+        )
+        with pytest.raises(ValueError, match="Custom benchmark destination is not allowed"):
+            validate_custom_service_destination(
+                "http://service.internal:8001",
+                org_name="vals.ai",
+                auth_required=True,
+            )
+
+    def test_configured_operator_domain_is_restricted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("tracker.outbound_security._OPERATOR_DOMAIN", "acme.example")
+        with pytest.raises(ValueError, match="Custom benchmark destination is not allowed"):
+            validate_custom_service_destination(
+                "https://svc.acme.example",
+                org_name="external-tenant",
+                auth_required=True,
+            )
+        validate_custom_service_destination(
+            "https://vals.ai",
+            org_name="external-tenant",
+            auth_required=True,
+        )
+
+
 class TestCustomServiceUrlValidation:
     """Custom benchmark service URL validation."""
 
