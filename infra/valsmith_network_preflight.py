@@ -1,4 +1,4 @@
-"""Read-only deployment preflight for the dedicated ValSmith network."""
+"""Deployment preflight and guarded DNS verification for the dedicated network."""
 
 import argparse
 import json
@@ -24,6 +24,7 @@ from valsmith_network_config import (
     text_field,
     validate_inventory,
 )
+from valsmith_network_dns import DNS_LOG_ARN, DNS_LOG_GROUP
 
 
 class AwsReader:
@@ -34,6 +35,14 @@ class AwsReader:
         self.profile = profile
 
     def read(self, service: str, operation: str, *arguments: str) -> dict[str, JsonValue]:
+        return self._call(service, operation, *arguments)
+
+    def disable_dns_fail_open(self, vpc_id: str) -> None:
+        self._call(
+            "route53resolver", "update-firewall-config", "--resource-id", vpc_id, "--firewall-fail-open", "DISABLED"
+        )
+
+    def _call(self, service: str, operation: str, *arguments: str) -> dict[str, JsonValue]:
         # AWS CLI auto-pagination is required. Never pass --no-paginate or --max-items.
         result = subprocess.run(
             [
@@ -228,13 +237,134 @@ def collect_inventory(profile: str, inputs: NetworkInputs, *, reader: AwsReader 
     return inventory
 
 
+def verify_dns(
+    profile: str, inputs: NetworkInputs, *, disable_fail_open: bool = False, reader: AwsReader | None = None
+) -> dict[str, JsonValue]:
+    reader = reader or AwsReader(profile)
+    inventory = collect_inventory(profile, inputs, reader=reader)
+    owned = object_list(inventory.resources, "owned_resources")
+    response = reader.read("cloudformation", "describe-stacks", "--stack-name", NETWORK_STACK)
+    stack = _only(object_list(response, "Stacks"), NETWORK_STACK)
+    if not text_field(stack, "StackId").startswith(f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{NETWORK_STACK}/"):
+        raise ValueError("DNS stack identity does not match Production")
+
+    outputs = {text_field(item, "OutputKey"): text_field(item, "OutputValue") for item in object_list(stack, "Outputs")}
+    for key, expected in {
+        "NetworkContractVersion": "1",
+        "NetworkAccount": ACCOUNT,
+        "NetworkRegion": REGION,
+        "ResolverLogGroupName": DNS_LOG_GROUP,
+    }.items():
+        if outputs.get(key) != expected:
+            raise ValueError(f"DNS output {key} does not match the network contract")
+
+    for key, resource_type in (
+        ("VpcId", "AWS::EC2::VPC"),
+        ("DnsFirewallRuleGroupId", "AWS::Route53Resolver::FirewallRuleGroup"),
+        ("DnsFirewallAssociationId", "AWS::Route53Resolver::FirewallRuleGroupAssociation"),
+        ("ResolverQueryLogConfigId", "AWS::Route53Resolver::ResolverQueryLoggingConfig"),
+        ("ResolverLogAssociationId", "AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation"),
+    ):
+        resource = _only([item for item in owned if item.get("ResourceType") == resource_type], key)
+        if outputs.get(key) != text_field(resource, "PhysicalResourceId"):
+            raise ValueError(f"DNS output {key} is not owned by the network stack")
+
+    vpc_id = outputs["VpcId"]
+    if vpc_id == inputs.caller_vpc_id:
+        raise ValueError("DNS operator must never modify the shared VPC")
+
+    firewall_associations = object_list(
+        reader.read("route53resolver", "list-firewall-rule-group-associations", "--vpc-id", vpc_id),
+        "FirewallRuleGroupAssociations",
+    )
+    association = _only(firewall_associations, "DNS firewall association")
+    for key, expected in {
+        "Id": outputs["DnsFirewallAssociationId"],
+        "VpcId": vpc_id,
+        "FirewallRuleGroupId": outputs["DnsFirewallRuleGroupId"],
+        "Status": "COMPLETE",
+        "Priority": 101,
+    }.items():
+        if association.get(key) != expected:
+            raise ValueError(f"DNS firewall association {key} does not match")
+
+    log_associations = object_list(
+        reader.read("route53resolver", "list-resolver-query-log-config-associations"),
+        "ResolverQueryLogConfigAssociations",
+    )
+    log_association = _only(
+        [item for item in log_associations if item.get("ResourceId") == vpc_id], "Resolver log association"
+    )
+    for key, expected in {
+        "Id": outputs["ResolverLogAssociationId"],
+        "ResolverQueryLogConfigId": outputs["ResolverQueryLogConfigId"],
+        "Status": "ACTIVE",
+    }.items():
+        if log_association.get(key) != expected:
+            raise ValueError(f"Resolver log association {key} does not match")
+
+    if log_association.get("Error") not in (None, "NONE"):
+        raise ValueError("Resolver log delivery has an error")
+
+    log_config = object_field(
+        reader.read(
+            "route53resolver",
+            "get-resolver-query-log-config",
+            "--resolver-query-log-config-id",
+            outputs["ResolverQueryLogConfigId"],
+        ),
+        "ResolverQueryLogConfig",
+    )
+    if (
+        log_config.get("DestinationArn") != DNS_LOG_ARN
+        or log_config.get("OwnerId") != ACCOUNT
+        or log_config.get("Status") != "CREATED"
+    ):
+        raise ValueError("Resolver logs are not active at the reviewed destination")
+
+    if disable_fail_open:
+        reader.disable_dns_fail_open(vpc_id)
+
+    firewall = object_field(
+        reader.read("route53resolver", "get-firewall-config", "--resource-id", vpc_id), "FirewallConfig"
+    )
+    if (
+        firewall.get("ResourceId") != vpc_id
+        or firewall.get("OwnerId") != ACCOUNT
+        or firewall.get("FirewallFailOpen") != "DISABLED"
+    ):
+        raise ValueError("DNS Firewall must fail closed on the new VPC")
+
+    return {
+        "stack_id": text_field(stack, "StackId"),
+        "vpc_id": vpc_id,
+        "firewall": firewall,
+        "association": association,
+        "log_association": log_association,
+        "verified_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["preflight"])
+    parser.add_argument("command", choices=["preflight", "verify-dns"])
     parser.add_argument("--profile", required=True)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--stack", choices=[NETWORK_STACK], default=NETWORK_STACK)
+    parser.add_argument("--disable-fail-open", action="store_true")
     arguments = parser.parse_args()
+    if arguments.command == "verify-dns":
+        report = verify_dns(
+            arguments.profile, load_inputs(arguments.inputs), disable_fail_open=arguments.disable_fail_open
+        )
+        arguments.output.write_text(json.dumps(report, indent=2) + "\n")
+        print("Verified the dedicated network DNS firewall and log associations")
+        return
+
+    if arguments.disable_fail_open:
+        parser.error("--disable-fail-open requires verify-dns")
+
     inventory = collect_inventory(arguments.profile, load_inputs(arguments.inputs))
     arguments.output.write_text(json.dumps(asdict(inventory), default=str, indent=2) + "\n")
     print(f"Verified {inventory.account_id}/{inventory.region}; input SHA256 {inventory.input_sha256}")
