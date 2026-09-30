@@ -383,14 +383,25 @@ def test_maintenance_begin_treats_expired_historical_stopped_task_as_gone(
     ecs.already_stopping_tasks.append("expired-runner")
     ecs.pending_polls = 1
     ecs.tracker_polls = 1
+    list_tasks = ecs.list_tasks
     describe_tasks = ecs.describe_tasks
-    monkeypatch.setattr(
-        ecs,
-        "describe_tasks",
-        lambda **kwargs: describe_tasks(
+    expired = False
+
+    def list_after_expiry(**kwargs: object) -> dict[str, object]:
+        response = list_tasks(**kwargs)
+        if kwargs["desiredStatus"] == "STOPPED" and expired:
+            return {"taskArns": [arn for arn in cast(list[str], response["taskArns"]) if arn != "expired-runner"]}
+        return response
+
+    def describe_after_expiry(**kwargs: object) -> dict[str, object]:
+        nonlocal expired
+        expired = True
+        return describe_tasks(
             **{**kwargs, "tasks": [arn for arn in cast(list[str], kwargs["tasks"]) if arn != "expired-runner"]}
-        ),
-    )
+        )
+
+    monkeypatch.setattr(ecs, "list_tasks", list_after_expiry)
+    monkeypatch.setattr(ecs, "describe_tasks", describe_after_expiry)
     monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
     monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
@@ -399,21 +410,50 @@ def test_maintenance_begin_treats_expired_historical_stopped_task_as_gone(
     release_entrypoint.main()
 
     assert ecs.stopped_tasks == []
+    assert sum(call["desiredStatus"] == "STOPPED" for call in ecs.list_calls) == 2
 
 
-def test_maintenance_begin_fails_when_a_task_it_stopped_cannot_be_described(
+def test_maintenance_begin_waits_for_listed_runner_missing_from_describe(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("previously-stopping-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    statuses = [None, "RUNNING", "STOPPED"]
+
+    def describe_tasks(**kwargs: object) -> dict[str, object]:
+        status = statuses.pop(0)
+        tasks = cast(list[str], kwargs["tasks"])
+        return {"tasks": [] if status is None else [{"taskArn": arn, "lastStatus": status} for arn in tasks]}
+
+    monkeypatch.setattr(ecs, "describe_tasks", describe_tasks)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    release_entrypoint.main()
+
+    assert statuses == []
+    assert ecs.stopped_tasks == []
+
+
+def test_maintenance_begin_times_out_when_a_task_it_stopped_cannot_be_described(
     monkeypatch: MonkeyPatch, database_session: Session
 ) -> None:
     _release_arguments(monkeypatch)
     sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
     ecs = FakeEcsClient()
     monkeypatch.setattr(ecs, "describe_tasks", lambda **_kwargs: {"tasks": []})
+    monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
     monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
-    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
 
-    with pytest.raises(RuntimeError, match="could not describe every runner task it stopped"):
+    with pytest.raises(TimeoutError, match="Maintenance drain timed out"):
         release_entrypoint.main()
     assert ecs.stopped_tasks
 
