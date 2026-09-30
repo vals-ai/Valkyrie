@@ -107,15 +107,22 @@ class TestIdentityResolution:
         assert org is not None
         assert org.id == test_org.id
 
-    def test_resolve_access_key_identity_invalid_api_key_raises_401(self, mock_descope: MagicMock) -> None:
-        mock_descope.exchange_access_key.side_effect = CredentialRejectedError("Invalid key")
+    def test_resolve_access_key_identity_invalid_api_key_raises_401(
+        self, mock_descope: MagicMock, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "rejected-access-key-secret"
+        mock_descope.exchange_access_key.side_effect = CredentialRejectedError(f"Rejected {secret}")
+        monkeypatch.setattr(auth_module.logger, "handlers", [caplog.handler])
 
         with pytest.raises(HTTPException) as exc_info:
-            resolve_access_key_identity("bad-key")
+            resolve_access_key_identity(secret)
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Invalid API key"
-        assert "Invalid key" not in str(exc_info.value.detail)
+        assert secret not in str(exc_info.value.detail)
+
+        assert "API key validation failed" in caplog.text
+        assert secret not in caplog.text
 
     def test_org_not_in_db_returns_none(self, empty_database_session: Session) -> None:
         org = find_org_by_tenant("nonexistent-org", empty_database_session)
@@ -180,15 +187,19 @@ class TestIdentityResolution:
         identity = resolve_access_key_identity("valid-key")
         assert identity.email is None
 
-    def test_resolve_access_key_identity_multiple_tenants_raises_400(self, mock_descope: MagicMock) -> None:
+    @pytest.mark.parametrize("tenants", [{}, {"a": {}, "b": {}}])
+    def test_resolve_access_key_identity_requires_one_tenant(
+        self, mock_descope: MagicMock, tenants: dict[str, dict[str, object]]
+    ) -> None:
         mock_descope.exchange_access_key.return_value = {
-            "tenants": {"a": {}, "b": {}},
+            "tenants": tenants,
             "keyId": "K2abc",
             "sessionToken": {"sub": "K2abc", "email": "alice@vals.ai"},
         }
 
         with pytest.raises(HTTPException) as exc_info:
-            resolve_access_key_identity("multi-tenant-key")
+            resolve_access_key_identity("invalid-tenant-key")
+
         assert exc_info.value.status_code == 400
 
     def test_resolve_access_key_identity_retries_read_timeout(
@@ -394,17 +405,3 @@ class TestCurrentStarterResolution:
 
         assert org.id == test_org.id
         mock_descope.load_user_profile.assert_not_called()
-
-    def test_get_current_org_rejects_bearer_only(
-        self, monkeypatch: pytest.MonkeyPatch, empty_database_session: Session
-    ) -> None:
-        """The retired session-token login path gets no fallback."""
-        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
-        mock_request = MagicMock()
-        mock_request.headers = {"Authorization": "Bearer stale-session-token"}
-
-        with pytest.raises(HTTPException) as exc_info:
-            get_current_org(mock_request, empty_database_session)
-
-        assert exc_info.value.status_code == 401
-        assert exc_info.value.detail == "Missing x-api-key header"

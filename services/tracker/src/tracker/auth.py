@@ -103,7 +103,7 @@ def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> o
     """Read a claim from the exchange response or its nested session token."""
     session_token = jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)
     if isinstance(session_token, Mapping) and claim_name in session_token:
-        return session_token.get(claim_name)
+        return cast(Mapping[str, object], session_token).get(claim_name)
 
     return jwt_response.get(claim_name)
 
@@ -126,9 +126,11 @@ def _get_descope_custom_string_claim(
         if not isinstance(claim_source, Mapping):
             continue
 
-        custom_claims = claim_source.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
+        custom_claims = cast(Mapping[str, object], claim_source).get(DESCOPE_CUSTOM_CLAIMS_FIELD)
         if isinstance(custom_claims, Mapping) and claim_name in custom_claims:
-            return normalize_optional_string(custom_claims.get(claim_name), lowercase=lowercase)
+            return normalize_optional_string(
+                cast(Mapping[str, object], custom_claims).get(claim_name), lowercase=lowercase
+            )
 
     return None
 
@@ -292,10 +294,7 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
     if not AUTH_REQUIRED:
         return get_default_org(session)
 
-    api_key = request.headers.get("x-api-key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing x-api-key header")
-
+    api_key = extract_api_key(request)
     identity = resolve_access_key_identity(api_key)
     org = find_org_by_tenant(identity.tenant_name, session)
     if not org:

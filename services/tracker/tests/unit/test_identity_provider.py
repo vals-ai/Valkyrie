@@ -45,7 +45,6 @@ class TestBuildIdentityProvider:
             )
 
     def test_descope_without_project_id_returns_none(self) -> None:
-        """AUTH_REQUIRED without project credentials stays lazily failing, matching previous behavior."""
         assert (
             build_identity_provider(
                 auth_required=True, provider_name="descope", descope_project_id="", descope_management_key=""
@@ -69,7 +68,7 @@ class TestDescopeIdentityProvider:
 
     def test_exchange_access_key_returns_claims(self) -> None:
         provider, mock_client = self._provider_with_mock_client()
-        claims = {"tenants": {"t": {}}, "keyId": "K2abc"}
+        claims: dict[str, object] = {"tenants": {"t": {}}, "keyId": "K2abc"}
         mock_client.exchange_access_key.return_value = claims
 
         assert provider.exchange_access_key("key") is claims

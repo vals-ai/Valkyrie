@@ -14,7 +14,7 @@ consumers of :class:`IdentityProvider` interpret that shape.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -72,15 +72,17 @@ class DescopeIdentityProvider:
         self._client = DescopeClient(project_id=project_id, management_key=management_key)
 
     def exchange_access_key(self, api_key: str) -> Mapping[str, Any]:
+        exchange = cast(Callable[[str], Mapping[str, Any]], self._client.exchange_access_key)
         try:
-            return cast(Mapping[str, Any], self._client.exchange_access_key(api_key))
+            return exchange(api_key)
         except AuthException as exc:
             raise CredentialRejectedError("Descope rejected the access key") from exc
 
     def load_user_profile(self, user_id: str) -> UserProfile:
         """Load email/name from the Descope user record bound to an access key."""
+        load_user = cast(Callable[[str], Mapping[str, object]], self._client.mgmt.user.load_by_user_id)
         try:
-            user_response = self._client.mgmt.user.load_by_user_id(user_id)
+            user_response = load_user(user_id)
         except Exception:
             logger.warning("Failed to load Descope user profile")
             return UserProfile(email=None, name=None)
@@ -90,8 +92,9 @@ class DescopeIdentityProvider:
             logger.warning("Descope user profile response did not include a user object")
             return UserProfile(email=None, name=None)
 
-        email = normalize_optional_string(user.get("email"), lowercase=True)
-        name = normalize_optional_string(user.get("name") or user.get("displayName"))
+        profile = cast(Mapping[str, object], user)
+        email = normalize_optional_string(profile.get("email"), lowercase=True)
+        name = normalize_optional_string(profile.get("name") or profile.get("displayName"))
         return UserProfile(email=email, name=name)
 
 
@@ -102,9 +105,10 @@ def build_identity_provider(
     descope_project_id: str,
     descope_management_key: str,
 ) -> IdentityProvider | None:
-    """Build the configured identity provider, or None when auth is disabled or
-    the provider's project credentials are not set (lazy failure on use, matching
-    previous behavior so self-hosted deployments boot without provider config).
+    """Build the configured provider when authentication and project credentials are set.
+
+    Self-hosted deployments do not require provider configuration. Hosted
+    deployments without project credentials fail when authentication is requested.
     """
     if not auth_required:
         return None

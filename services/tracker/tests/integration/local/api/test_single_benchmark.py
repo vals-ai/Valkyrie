@@ -41,6 +41,29 @@ from tracker.database.session import get_session
 class TestSingleBenchmark:
     """Single benchmark responses and missing runs."""
 
+    @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer session-token"}])
+    def test_read_requires_api_key(self, client: TestClient, headers: dict[str, str]) -> None:
+        response = client.get(f"/benchmarks/{uuid4()}", headers=headers)
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Missing API key"
+
+    def test_read_is_scoped_to_api_key_tenant(self, client: TestClient, database_session: Session) -> None:
+        other_org = Org(id=uuid4(), name="other-tenant")
+        database_session.add(other_org)
+        database_session.commit()
+        own_benchmark = make_benchmark(name="own-run", session=database_session)
+        other_benchmark = make_benchmark(name="other-run", org_id=other_org.id, session=database_session)
+        headers = {"X-Api-Key": "fake", "Authorization": "Bearer unrelated-session"}
+
+        own_response = client.get(f"/benchmarks/{own_benchmark.id}", headers=headers)
+        other_response = client.get(f"/benchmarks/{other_benchmark.id}", headers=headers)
+
+        assert own_response.status_code == 200
+        assert own_response.json()["id"] == str(own_benchmark.id)
+        assert other_response.status_code == 404
+        assert "other-run" not in other_response.text
+
     def test_get_single_benchmark_returns_payload(self, client: TestClient, database_session: Session) -> None:
         """Run detail must combine persisted benchmark metadata and task progress.
 
