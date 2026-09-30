@@ -1,25 +1,18 @@
-"""Admission transaction regressions with deterministic external-work barriers.
-
-Run: uv run pytest tests/unit/test_admission_transactions.py
-"""
+"""Admission HTTP regressions with bounded, deterministic external-work barriers."""
 
 import asyncio
 import threading
 from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack
-from datetime import datetime, timedelta
-from typing import Any, cast
+from datetime import timedelta
+from typing import Any
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
 
 import httpx
 import pytest
-from benchmark_service import ImageSource, Resources, SandboxProvider
-from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Depends, HTTPException
-from sqlmodel import Session, create_engine, select
+from sqlmodel import Session, select
 
 import main as main_module
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
@@ -37,9 +30,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.executor import release_control
-from tracker.executor.execution_authority import ExecutionAuthority
-from tracker.sandbox import create_sandbox
-from tracker.scheduler.admission import SandboxQueueContext, _finish_reserved_build  # pyright: ignore[reportPrivateUsage]
 from tracker.executor.release_control import promote_release
 from tracker.logging import benchmark_id_var
 from tracker.types import HarnessConfig, StartBenchmarkRequest
@@ -478,37 +468,3 @@ async def test_recovery_rechecks_verified_state_before_mutating_or_dispatching(
                     row.model_dump(mode="json") for row in checked.exec(select(ExecutorDispatch)).all()
                 ] == expected_dispatches
                 assert mock_kicker.queued_calls == []
-
-
-@pytest.mark.parametrize("creation_error", [ProviderSandboxError("response lost"), asyncio.CancelledError()])
-async def test_reserved_creation_preserves_failure_when_database_finalization_fails(
-    creation_error: BaseException,
-) -> None:
-    provider = Mock(spec=SandboxProvider)
-    provider.create_sandbox = AsyncMock(side_effect=creation_error)
-    provider.delete_sandbox = AsyncMock()
-    # This empty database makes the real finalization query fail, not creation.
-    engine = create_engine("sqlite://")
-    context = SandboxQueueContext(provider=cast(SandboxProvider, provider), pool_id="pool_test", engine=engine)
-    try:
-        async with AsyncExitStack() as stack:
-            with pytest.raises(type(creation_error)) as error:
-                await _finish_reserved_build(
-                    stack=stack,
-                    context=context,
-                    task_row_id=uuid4(),
-                    expected_started_at=datetime(2026, 9, 29, 12),
-                    authority=ExecutionAuthority(benchmark_id=uuid4(), dispatch_id=uuid4()),
-                    create=lambda on_cleanup: create_sandbox(
-                        provider,
-                        "unknown-sandbox",
-                        ImageSource(image="image"),
-                        Resources(vcpu=1, memory=2, disk=3),
-                        asyncio.Semaphore(1),
-                        on_cleanup=on_cleanup,
-                    ),
-                )
-        assert error.value is creation_error
-        provider.delete_sandbox.assert_not_awaited()
-    finally:
-        engine.dispose()

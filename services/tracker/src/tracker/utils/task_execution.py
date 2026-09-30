@@ -6,7 +6,7 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1048,7 +1048,7 @@ async def _process_task_attempt(
         object_store = runtime.objects
 
         @asynccontextmanager
-        async def sandbox_context(on_cleanup: Callable[[], None] | None) -> AsyncGenerator[Sandbox]:
+        async def sandbox_context() -> AsyncGenerator[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
@@ -1058,25 +1058,16 @@ async def _process_task_attempt(
             )
             # Do not mint while the queued attempt waits for admission.
             contract = start_benchmark_request.contract
-            async with AsyncExitStack() as gateway_stack:
-                try:
-                    scoped_env_vars = await gateway_stack.enter_async_context(
-                        task_scoped_gateway_key(
-                            env_vars,
-                            run_id=str(benchmark_id),
-                            task_id=task_row.task_id,
-                            attested_model=contract.model if contract.inference_settings_attested else None,
-                            companion_models=contract.kwargs.get("companion_models"),
-                            identity=identity,
-                            org_name=org.name,
-                            agent_timeout=task_data.agent_timeout,
-                        )
-                    )
-                except BaseException:
-                    # No provider creation was attempted; the capacity hold is empty.
-                    if on_cleanup is not None:
-                        on_cleanup()
-                    raise
+            async with task_scoped_gateway_key(
+                env_vars,
+                run_id=str(benchmark_id),
+                task_id=task_row.task_id,
+                attested_model=contract.model if contract.inference_settings_attested else None,
+                companion_models=contract.kwargs.get("companion_models"),
+                identity=identity,
+                org_name=org.name,
+                agent_timeout=task_data.agent_timeout,
+            ) as scoped_env_vars:
                 async with create_sandbox(
                     provider=sandbox_provider,
                     sandbox_name=sandbox_name,
@@ -1088,13 +1079,12 @@ async def _process_task_attempt(
                     volumes=task_data.volumes,
                     creation_semaphore=creation_semaphore,
                     unique_name=queue_context is None,
-                    on_cleanup=on_cleanup,
                 ) as sandbox:
                     yield sandbox
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
-                sandbox = await sandbox_stack.enter_async_context(sandbox_context(None))
+                sandbox = await sandbox_stack.enter_async_context(sandbox_context())
             else:
                 sandbox = await enter_queued_sandbox(
                     stack=sandbox_stack,

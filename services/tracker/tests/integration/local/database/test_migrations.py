@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Generator
-from typing import Protocol, cast
+from typing import Protocol
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -179,7 +179,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        _assert_canonical_task_listing_index(cast(_TaskListingIndexRow, index))
+        _assert_canonical_task_listing_index(index)
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
@@ -196,7 +196,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        assert _assert_canonical_task_listing_index(cast(_TaskListingIndexRow, index)) == matching_index_oid
+        assert _assert_canonical_task_listing_index(index) == matching_index_oid
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
     assert downgrade.returncode == 0, downgrade.stderr
@@ -221,7 +221,7 @@ def test_task_listing_index_migration_is_retry_safe(migration_database_url: str)
     assert upgrade.returncode == 0, upgrade.stderr
     with engine.connect() as connection:
         index = connection.execute(index_query, index_params).one()
-        _assert_canonical_task_listing_index(cast(_TaskListingIndexRow, index))
+        _assert_canonical_task_listing_index(index)
         assert connection.execute(revision_query).scalar_one() == _TASK_LISTING_REVISION
 
     downgrade = _run_alembic(migration_database_url, "downgrade", _TASK_LISTING_PREDECESSOR)
@@ -599,7 +599,7 @@ def test_current_execution_ownership_migration_rejects_downgrade(
             contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         )
-        session.connection().execute(
+        session.execute(
             text(
                 "INSERT INTO benchmark"
                 " (id, org_id, name, started_at, status, arguments, docent_reading_status,"

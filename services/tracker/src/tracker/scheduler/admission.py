@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
@@ -21,30 +20,32 @@ from benchmark_service import (
     SandboxSource,
 )
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, col, select, update
 
 from tracker.config import SANDBOX_QUEUE_BUILDING_CAP
-from tracker.database.models import Benchmark, BenchmarkStatus, SandboxBuildReservation, Task, TaskStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger
 from tracker.scheduler.store import (
-    ReservationResourceTotals,
-    active_reservation_resources,
-    building_task_count,
+    ActiveReservations,
+    PostgresAdvisoryLock,
+    active_reservations,
     claim_eligible_task,
     claim_eligible_task_with_reservation,
     eligible_task_is,
+    is_reserved_queue_pool_id,
     promote_reserved_task,
     queue_pool_id,
     queue_pool_lock,
+    queue_pool_lock_id,
     reset_abandoned_builds,
+    task_build_lock,
 )
 
 logger = get_logger(__name__)
 
-SandboxFactory = Callable[[Callable[[], None] | None], AbstractAsyncContextManager[Sandbox]]
+SandboxFactory = Callable[[], AbstractAsyncContextManager[Sandbox]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,20 @@ class SandboxQueueContext:
     pool_id: str
     engine: Engine = field(repr=False)
     poll_interval_seconds: float = 1.0
+
+    @property
+    def reserves_capacity(self) -> bool:
+        return is_reserved_queue_pool_id(self.pool_id)
+
+    def serves_queue(self, pool_id: str) -> bool:
+        """Return whether a run's persisted queue id belongs to this provider pool."""
+        return queue_pool_lock_id(pool_id) == queue_pool_lock_id(self.pool_id)
+
+    def for_queue(self, pool_id: str) -> SandboxQueueContext:
+        """Adopt a run's persisted queue id, which selects its admission protocol."""
+        if not self.serves_queue(pool_id):
+            raise ValueError("Queue id belongs to another provider pool")
+        return replace(self, pool_id=pool_id)
 
 
 def create_queue_context(
@@ -142,44 +157,27 @@ async def _close_stack_before_cancellation(stack: AsyncExitStack) -> None:
         raise
 
 
-def _supports_reserved_admission(source: SandboxSource) -> bool:
-    return isinstance(source, ImageSource) or (
-        isinstance(source, ComposeSource) and isinstance(source.outer, ImageSource)
+def _has_exact_demand(source: SandboxSource, resources: Resources) -> bool:
+    """Image sandboxes without GPUs are the only sources whose provider usage is known up front."""
+    return resources.gpu == 0 and (
+        isinstance(source, ImageSource) or (isinstance(source, ComposeSource) and isinstance(source.outer, ImageSource))
     )
 
 
-def _has_reserved_capacity(
+def _fits_unreserved_capacity(
     capacity: SandboxCapacity,
     resources: Resources,
-    reserved: ReservationResourceTotals,
+    reserved: ActiveReservations,
 ) -> bool:
-    if resources.gpu > 0:
-        if capacity.gpu is None:
-            return False
-        if capacity.allowed_gpu_types is not None and (
-            not capacity.allowed_gpu_types
-            or (resources.gpu_type is not None and resources.gpu_type not in capacity.allowed_gpu_types)
-        ):
-            return False
-        gpu_available = capacity.gpu.available - reserved.gpu
-    else:
-        gpu_available = 0
-
     return (
         resources.vcpu <= capacity.cpu.available - reserved.vcpu
         and resources.memory <= capacity.memory.available - reserved.memory
         and resources.disk <= capacity.disk.available - reserved.disk
-        and resources.gpu <= gpu_available
     )
 
 
-async def _capacity_for_reserved_admission(
-    context: SandboxQueueContext,
-    source: SandboxSource,
-) -> SandboxCapacity | None:
-    if not _supports_reserved_admission(source):
-        return None
-
+async def _reservable_capacity(context: SandboxQueueContext) -> SandboxCapacity | None:
+    """Read provider capacity; None keeps the task on the full-lock path."""
     try:
         return await context.provider.get_capacity()
     except Exception:
@@ -191,6 +189,45 @@ async def _capacity_for_reserved_admission(
         return None
 
 
+async def _claim_reserved_build(
+    *,
+    session: Session,
+    context: SandboxQueueContext,
+    task_row_id: UUID,
+    expected_started_at: datetime,
+    capacity: SandboxCapacity,
+    resources: Resources,
+) -> PostgresAdvisoryLock | None:
+    """Claim the head with a reservation and return the build lock proving its creator is alive."""
+    reserved = active_reservations(session, context.pool_id)
+    if reserved.count >= SANDBOX_QUEUE_BUILDING_CAP or not _fits_unreserved_capacity(capacity, resources, reserved):
+        return None
+
+    build_lock = task_build_lock(context.engine, task_row_id)
+    if not await build_lock.acquire():
+        return None
+    try:
+        claimed = claim_eligible_task_with_reservation(
+            session,
+            context.pool_id,
+            task_row_id=task_row_id,
+            expected_started_at=expected_started_at,
+            requested_vcpu=resources.vcpu,
+            requested_memory=resources.memory,
+            requested_disk=resources.disk,
+            requested_gpu=resources.gpu,
+        )
+        if claimed:
+            session.commit()
+            return build_lock
+    except BaseException:
+        await build_lock.release()
+        raise
+
+    await build_lock.release()
+    return None
+
+
 async def _finish_reserved_build(
     *,
     stack: AsyncExitStack,
@@ -199,93 +236,43 @@ async def _finish_reserved_build(
     expected_started_at: datetime,
     authority: ExecutionAuthority,
     create: SandboxFactory,
+    build_lock: PostgresAdvisoryLock,
 ) -> Sandbox | None:
-    cleanup_confirmed = False
-    promoted = False
+    """Create outside the pool lock, then promote the exact reserved attempt.
 
-    def confirm_cleanup() -> None:
-        nonlocal cleanup_confirmed
-        cleanup_confirmed = True
-
+    Promotion needs no pool lock: the build lock keeps recovery away from this
+    attempt, and the reservation is released in the same transaction that moves
+    the task to IN_PROGRESS. The build lock is released last so recovery only
+    requeues this attempt, and only drops its reservation, once creation and any
+    cleanup have finished.
+    """
     try:
-        sandbox = await stack.enter_async_context(create(confirm_cleanup))
-        while True:
-            lock = queue_pool_lock(context.engine, context.pool_id)
-            async with lock as acquired:
-                if acquired:
-                    # Keep the hold visible until an in-flight capacity read and
-                    # claim completes. Otherwise its snapshot could miss this build.
-                    with Session(lock.connection) as session:
-                        try:
-                            lock_execution_authority(session, authority)
-                        except ExecutionAuthorityRevoked:
-                            session.rollback()
-                        else:
-                            promoted = promote_reserved_task(
-                                session,
-                                task_row_id=task_row_id,
-                                expected_started_at=expected_started_at,
-                            )
-                            if promoted:
-                                session.commit()
-                            else:
-                                session.rollback()
-                    break
-            await asyncio.sleep(context.poll_interval_seconds)
-
-        return sandbox if promoted else None
-    finally:
-        if not promoted:
+        sandbox = await stack.enter_async_context(create())
+        with Session(bind=context.engine) as session:
             try:
-                await _close_stack_before_cancellation(stack)
-            finally:
-                # A failed/unknown create or delete needs manual reconciliation.
-                # Task state and dispatch revocation do not prove capacity is free.
-                active_error = sys.exception()
-                try:
-                    with Session(context.engine) as session:
-                        benchmark = session.exec(
-                            select(Benchmark)
-                            .join(Task, col(Task.benchmark) == col(Benchmark.id))
-                            .where(col(Task.id) == task_row_id)
-                            .with_for_update(of=Benchmark)
-                        ).one()
-                        task = session.exec(select(Task).where(col(Task.id) == task_row_id).with_for_update()).one()
-                        reservation = session.exec(
-                            select(SandboxBuildReservation)
-                            .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
-                            .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
-                        ).one_or_none()
-                        if reservation is not None:
-                            if cleanup_confirmed:
-                                session.delete(reservation)
-                                session.flush()
-                            if task.started_at == expected_started_at and task.status == TaskStatus.BUILDING:
-                                if benchmark.status == BenchmarkStatus.IN_PROGRESS:
-                                    if cleanup_confirmed and active_error is None:
-                                        task.status = TaskStatus.PENDING
-                                        task.started_at = datetime.now(UTC)
-                                elif benchmark.status in (BenchmarkStatus.STOPPING, BenchmarkStatus.STOPPED):
-                                    task.status = TaskStatus.STOPPED
-                                else:
-                                    task.status = TaskStatus.ERROR
-                                session.add(task)
-                            session.commit()
-                        else:
-                            session.rollback()
-                except SQLAlchemyError:
-                    logger.warning(
-                        "sandbox.admission.finalization_failed",
-                        extra={"pool_id": context.pool_id, "task_row_id": str(task_row_id)},
-                        exc_info=True,
-                    )
-                    if active_error is None:
-                        raise
-                if not cleanup_confirmed:
-                    logger.warning(
-                        "sandbox.admission.cleanup_unconfirmed",
-                        extra={"pool_id": context.pool_id, "task_row_id": str(task_row_id)},
-                    )
+                lock_execution_authority(session, authority)
+            except ExecutionAuthorityRevoked:
+                session.rollback()
+                promoted = False
+            else:
+                promoted = promote_reserved_task(
+                    session,
+                    task_row_id=task_row_id,
+                    expected_started_at=expected_started_at,
+                )
+                if promoted:
+                    session.commit()
+                else:
+                    session.rollback()
+
+        if not promoted:
+            await _close_stack_before_cancellation(stack)
+
+            return None
+
+        return sandbox
+    finally:
+        await build_lock.release()
 
 
 async def enter_queued_sandbox(
@@ -299,9 +286,15 @@ async def enter_queued_sandbox(
     resources: Resources,
     create: SandboxFactory,
 ) -> Sandbox | None:
-    """Wait for this exact attempt's global turn and enter its sandbox context."""
+    """Wait for this exact attempt's global turn and enter its sandbox context.
+
+    Reserved queues let image builds with known demand hold a capacity reservation
+    instead of the pool lock while their sandbox is created. Every other build, and
+    every build whose capacity read fails, keeps the lock for the whole creation.
+    """
+    reserves = context.reserves_capacity and _has_exact_demand(source, resources)
     while True:
-        reserved_build = False
+        build_lock: PostgresAdvisoryLock | None = None
         lock = queue_pool_lock(context.engine, context.pool_id)
         async with lock as acquired:
             if acquired:
@@ -323,61 +316,42 @@ async def enter_queued_sandbox(
                         task_row_id,
                         expected_started_at,
                     ) == (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS)
+                    below_cap = (
+                        not reserves or active_reservations(session, context.pool_id).count < SANDBOX_QUEUE_BUILDING_CAP
+                    )
                     session.rollback()
 
                 if not waiting:
                     return None
 
-                if eligible and await context.provider.check_admission(source, resources):
-                    capacity = await _capacity_for_reserved_admission(context, source)
+                if eligible and below_cap and await context.provider.check_admission(source, resources):
+                    capacity = await _reservable_capacity(context) if reserves else None
                     with Session(lock.connection) as session:
                         try:
                             lock_execution_authority(session, authority)
                         except ExecutionAuthorityRevoked:
                             session.rollback()
                             return None
-
-                        under_building_cap = building_task_count(session, context.pool_id) < SANDBOX_QUEUE_BUILDING_CAP
-                        if capacity is None:
-                            has_reservations = (
-                                session.exec(
-                                    select(SandboxBuildReservation.task_row_id)
-                                    .where(SandboxBuildReservation.pool_id == context.pool_id)
-                                    .limit(1)
-                                ).first()
-                                is not None
+                        if capacity is not None:
+                            build_lock = await _claim_reserved_build(
+                                session=session,
+                                context=context,
+                                task_row_id=task_row_id,
+                                expected_started_at=expected_started_at,
+                                capacity=capacity,
+                                resources=resources,
                             )
-                            claimed = (
-                                under_building_cap
-                                and not has_reservations
-                                and claim_eligible_task(
-                                    session,
-                                    context.pool_id,
-                                    task_row_id=task_row_id,
-                                    expected_started_at=expected_started_at,
-                                )
-                            )
+                            claimed = build_lock is not None
                         else:
-                            reserved = active_reservation_resources(session, context.pool_id)
-                            claimed = (
-                                under_building_cap
-                                and _has_reserved_capacity(capacity, resources, reserved)
-                                and claim_eligible_task_with_reservation(
-                                    session,
-                                    context.pool_id,
-                                    task_row_id=task_row_id,
-                                    expected_started_at=expected_started_at,
-                                    requested_vcpu=resources.vcpu,
-                                    requested_memory=resources.memory,
-                                    requested_disk=resources.disk,
-                                    requested_gpu=resources.gpu,
-                                )
+                            claimed = claim_eligible_task(
+                                session,
+                                context.pool_id,
+                                task_row_id=task_row_id,
+                                expected_started_at=expected_started_at,
                             )
-
-                        if claimed:
-                            session.commit()
-                            reserved_build = capacity is not None
-                        else:
+                            if claimed:
+                                session.commit()
+                        if not claimed:
                             waiting = _queued_task_state(
                                 session,
                                 task_row_id,
@@ -387,8 +361,8 @@ async def enter_queued_sandbox(
                             if not waiting:
                                 return None
 
-                    if claimed and capacity is None:
-                        sandbox = await stack.enter_async_context(create(None))
+                    if claimed and build_lock is None:
+                        sandbox = await stack.enter_async_context(create())
                         with Session(lock.connection) as session:
                             try:
                                 lock_execution_authority(session, authority)
@@ -407,11 +381,12 @@ async def enter_queued_sandbox(
                                     session.rollback()
                         if not started:
                             await _close_stack_before_cancellation(stack)
+
                             return None
 
                         return sandbox
 
-        if reserved_build:
+        if build_lock is not None:
             return await _finish_reserved_build(
                 stack=stack,
                 context=context,
@@ -419,6 +394,7 @@ async def enter_queued_sandbox(
                 expected_started_at=expected_started_at,
                 authority=authority,
                 create=create,
+                build_lock=build_lock,
             )
 
         await asyncio.sleep(context.poll_interval_seconds)

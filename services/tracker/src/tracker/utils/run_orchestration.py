@@ -784,8 +784,9 @@ async def _process_benchmark(
             except Exception as error:
                 logger.warning("Sandbox provider setup failed (%s)", type(error).__name__)
                 raise TrackerServiceError("Sandbox provider configuration is unavailable") from error
-            if queue_context.pool_id != queued_pool_id:
+            if not queue_context.serves_queue(queued_pool_id):
                 raise TrackerServiceError("Configured sandbox provider does not match the run's queued provider pool")
+            queue_context = queue_context.for_queue(queued_pool_id)
 
         if not queued_run:
             with Session(bind=engine) as session:
@@ -1114,7 +1115,7 @@ def _commit_queued_cancellation(
             .with_for_update()
         ).all()
         for task_row in current_rows:
-            irrecoverable = task_row.status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS) or (
+            irrecoverable = task_row.status == TaskStatus.IN_PROGRESS or (
                 task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None
             )
             if task_row.started_at != owned_attempts[task_row.id] or not irrecoverable:

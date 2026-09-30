@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -34,11 +34,10 @@ from tracker.database.models import (
     AgentContractRequest,
     ExecutorDispatch,
     ExecutorDispatchStatus,
-    SandboxBuildReservation,
     Task,
     TaskStatus,
 )
-from tracker.scheduler.admission import SandboxQueueContext, _finish_reserved_build  # pyright: ignore[reportPrivateUsage]
+from tracker.scheduler.admission import SandboxQueueContext
 import tracker.runtime.model_gateway as model_gateway_module
 from tracker.types import HarnessConfig
 
@@ -108,11 +107,11 @@ class TestQueuedTaskSource:
             stack: Any,
             task_row_id: Any,
             source: SandboxSource,
-            create: Callable[[Any], Any],
+            create: Callable[[], Any],
             **_kwargs: Any,
         ) -> Any:
             admission_sources.append(source)
-            sandbox = await stack.enter_async_context(create(None))
+            sandbox = await stack.enter_async_context(create())
             with Session(task_engine) as task_session:
                 queued_task = task_session.get(Task, task_row_id)
                 assert queued_task is not None
@@ -141,66 +140,6 @@ class TestQueuedTaskSource:
         assert admission_sources == [source]
         assert creation_sources == [source]
         assert admission_sources[0] is creation_sources[0] is source
-
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_gateway_failure_releases_hold_without_retrying_or_creating(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-        runtime_services: RuntimeServices,
-    ) -> None:
-        request, task, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
-        database_session.refresh(task)
-        engine = database_session.get_bind()
-        assert isinstance(engine, Engine)
-        context = SandboxQueueContext(provider=Mock(), pool_id="pool_test", engine=engine)
-        created: list[dict[str, str]] = []
-
-        gateway = AsyncMock()
-        gateway.__aenter__.side_effect = RuntimeError("gateway key unavailable")
-
-        async def enter_queue(*, stack: Any, create: Any, expected_started_at: Any, **_kwargs: Any) -> Any:
-            with Session(engine) as session:
-                queued_task = session.get(Task, task.id)
-                assert queued_task is not None
-                queued_task.status = TaskStatus.BUILDING
-                session.add(queued_task)
-                session.add(
-                    SandboxBuildReservation(
-                        task_row_id=task.id,
-                        attempt_started_at=expected_started_at,
-                        pool_id=context.pool_id,
-                        requested_vcpu=1,
-                        requested_memory=2,
-                        requested_disk=3,
-                    )
-                )
-                session.commit()
-            return await _finish_reserved_build(
-                stack=stack,
-                context=context,
-                task_row_id=task.id,
-                expected_started_at=expected_started_at,
-                authority=authority,
-                create=create,
-            )
-
-        monkeypatch.setattr(utils_module, "task_scoped_gateway_key", Mock(return_value=gateway))
-        monkeypatch.setattr(utils_module, "create_sandbox", partial(_capture_sandbox_environment, created))
-        monkeypatch.setattr(utils_module, "enter_queued_sandbox", enter_queue)
-        result = await run_process_task(request, task, benchmark_id, runtime_services, authority, queue_context=context)
-
-        assert result == {"task_0": None}
-        gateway.__aenter__.assert_awaited_once()
-        assert created == []
-        with Session(engine) as session:
-            assert session.get(SandboxBuildReservation, task.id) is None
-            current = session.get(Task, task.id)
-            assert current is not None
-            assert current.status == TaskStatus.ERROR
-            assert current.started_at == task.started_at
 
 
 class TestProcessTaskEnvironment:

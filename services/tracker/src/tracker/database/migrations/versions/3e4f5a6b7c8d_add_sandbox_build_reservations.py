@@ -23,7 +23,7 @@ def upgrade() -> None:
         sa.Column("requested_vcpu", sa.Integer(), nullable=False),
         sa.Column("requested_memory", sa.Integer(), nullable=False),
         sa.Column("requested_disk", sa.Integer(), nullable=False),
-        sa.Column("requested_gpu", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("requested_gpu", sa.Integer(), nullable=False),
         sa.CheckConstraint(
             "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0 AND requested_gpu >= 0",
             name="sandbox_build_reservation_resources_nonnegative",

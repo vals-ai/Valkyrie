@@ -384,9 +384,7 @@ async def test_direct_provider_setup_failure_closes_client(
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
-@pytest.mark.parametrize("active_status", [TaskStatus.BUILDING, TaskStatus.IN_PROGRESS])
 async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
-    active_status: TaskStatus,
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
@@ -403,7 +401,7 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
         with Session(bind=database_session.bind) as session:
             task = session.get(Task, task_row.id)
             assert task is not None
-            task.status = active_status
+            task.status = TaskStatus.IN_PROGRESS
             session.commit()
         started_task_id = task_row.task_id
         task_started.set()

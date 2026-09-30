@@ -15,18 +15,18 @@ from pydantic import (
     model_validator,
 )
 from benchmark_service.schemas import DatasetVersion
-from sqlalchemy import Boolean, Connection, Dialect, Index, Integer, event, text
+from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
     CheckConstraint,
-    UniqueConstraint,
     Column,
     Field,
     Relationship,
     Session,
     SQLModel,
     TypeDecorator,
+    UniqueConstraint,
     col,
     func,
     select,
@@ -342,10 +342,7 @@ class SandboxBuildReservation(SQLModel, table=True):
     requested_vcpu: int
     requested_memory: int
     requested_disk: int
-    requested_gpu: int = Field(
-        default=0,
-        sa_column=Column(Integer, nullable=False, server_default=text("0")),
-    )
+    requested_gpu: int
 
 
 class Benchmark(SQLModel, table=True):

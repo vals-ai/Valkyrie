@@ -8,7 +8,11 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, func, or_, update
 from sqlmodel import Session, col, select
 
-from executor_protocol import DATASET_VERSION_PROTOCOL_VERSION, MANAGED_EXECUTION_PROTOCOL_VERSION
+from executor_protocol import (
+    DATASET_VERSION_PROTOCOL_VERSION,
+    MANAGED_EXECUTION_PROTOCOL_VERSION,
+    RESERVED_QUEUE_PROTOCOL_VERSION,
+)
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -28,6 +32,7 @@ from tracker.executor.release_control import (
     resolve_current_execution_release,
     select_active_release,
 )
+from tracker.scheduler.store import is_reserved_queue_pool_id, reserved_queue_pool_id
 
 _ACTIVE_DISPATCH_STATUSES = (
     ExecutorDispatchStatus.QUEUED,
@@ -41,16 +46,41 @@ class EnqueueFailureResolution(str, Enum):
     SUPERSEDED = "SUPERSEDED"
 
 
+_MANAGED_EXECUTION_PROTOCOL_VERSIONS = frozenset(
+    {MANAGED_EXECUTION_PROTOCOL_VERSION, DATASET_VERSION_PROTOCOL_VERSION, RESERVED_QUEUE_PROTOCOL_VERSION}
+)
+_DATASET_VERSION_PROTOCOL_VERSIONS = frozenset({DATASET_VERSION_PROTOCOL_VERSION, RESERVED_QUEUE_PROTOCOL_VERSION})
+
+
 def _require_managed_execution_release(release: ExecutorRelease) -> None:
-    if release.protocol_version not in {MANAGED_EXECUTION_PROTOCOL_VERSION, DATASET_VERSION_PROTOCOL_VERSION}:
+    if release.protocol_version not in _MANAGED_EXECUTION_PROTOCOL_VERSIONS:
         raise ReleaseControlError("Activate an executor release that supports managed runs")
 
 
 def _require_compatible_release(benchmark: Benchmark, release: ExecutorRelease) -> None:
-    if benchmark.arguments.dataset_version is not None and release.protocol_version != DATASET_VERSION_PROTOCOL_VERSION:
+    if (
+        benchmark.arguments.dataset_version is not None
+        and release.protocol_version not in _DATASET_VERSION_PROTOCOL_VERSIONS
+    ):
         raise ReleaseControlError("Activate an executor release that supports pinned dataset versions")
+    queue_pool_id = benchmark.arguments.queue_pool_id
+    if (
+        queue_pool_id is not None
+        and is_reserved_queue_pool_id(queue_pool_id)
+        and release.protocol_version != RESERVED_QUEUE_PROTOCOL_VERSION
+    ):
+        raise ReleaseControlError("Activate an executor release that supports reserved sandbox builds")
     if benchmark.aws_managed:
         _require_managed_execution_release(release)
+
+
+def _select_queue_protocol(benchmark: Benchmark, release: ExecutorRelease) -> None:
+    """Start new queued runs on the reserved protocol once the active executor speaks it."""
+    queue_pool_id = benchmark.arguments.queue_pool_id
+    if queue_pool_id is not None and release.protocol_version == RESERVED_QUEUE_PROTOCOL_VERSION:
+        benchmark.arguments = benchmark.arguments.model_copy(
+            update={"queue_pool_id": reserved_queue_pool_id(queue_pool_id)}
+        )
 
 
 def validate_managed_execution_release(session: Session) -> None:
@@ -68,6 +98,7 @@ def admit_start_dispatch(
     """Select the active release and persist one start dispatch."""
     with session.no_autoflush:
         release = select_active_release(session, for_update=True)
+    _select_queue_protocol(benchmark, release)
     _require_compatible_release(benchmark, release)
     session.add(benchmark)
     pin_benchmark_to_release(benchmark, release)

@@ -22,7 +22,7 @@ from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.logging import get_logger
-from tracker.scheduler.store import queue_pool_id
+from tracker.scheduler.store import queue_pool_id, queue_pool_lock_id
 from tracker.types import (
     SchedulerActiveEntryResponse,
     SchedulerActiveStatus,
@@ -345,7 +345,7 @@ async def _read_provider_capacity(
                 created_provider = provider_config.create_provider()
                 provider = created_provider
                 provider_pool_id = created_provider.admission_pool_id
-                if provider_pool_id is None or queue_pool_id(provider_pool_id) != pool_id:
+                if provider_pool_id is None or queue_pool_id(provider_pool_id) != queue_pool_lock_id(pool_id):
                     raise ValueError("Sandbox capacity provider does not match the queued pool")
                 domains = await created_provider.get_capacity_domains()
                 if domains is None:
