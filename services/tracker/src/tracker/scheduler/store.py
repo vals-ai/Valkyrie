@@ -23,11 +23,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.sandbox import SANDBOX_CREATE_TIMEOUT
 
-# A reservation whose creator vanished may still be landing on the provider until
-# the create deadline; after it, live provider usage counts the sandbox or never will.
-RESERVATION_HOLD = timedelta(seconds=SANDBOX_CREATE_TIMEOUT)
 _ACTIVE_TASK_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
 _TASK_EVALUATION_LOCK_SCOPE = "task-evaluation"
 _TASK_BUILD_LOCK_SCOPE = "task-build"
@@ -328,13 +324,13 @@ def _try_task_build_transaction_lock(session: Session, task_row_id: UUID) -> boo
 
 
 def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> None:
-    """Requeue builds whose creator is gone and drop the reservations they left behind.
+    """Requeue builds whose creator is gone.
 
     A creator holds its task build lock from the claim until the sandbox is started
-    or deleted. A free lock only proves the creator is gone, so its reservation is
-    held for the create deadline before the task is requeued; until then the task
-    stays ineligible. Legacy builds hold the pool lock instead, and this only runs
-    under it.
+    or deleted. A free lock only proves the creator is gone, not that its provider
+    sandbox is, so the reservation is left in place and keeps the task ineligible
+    until it is reconciled. Legacy builds hold the pool lock instead, and this only
+    runs under it.
     """
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     queued_benchmarks = select(col(Benchmark.id)).where(
@@ -346,13 +342,9 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> Non
         .where(col(Task.status) == TaskStatus.BUILDING)
         .where(col(Task.benchmark).in_(queued_benchmarks))
     )
-    reserved = select(col(SandboxBuildReservation.task_row_id)).where(
-        col(SandboxBuildReservation.pool_id) == queue_pool_lock_id(pool_id)
-    )
-    held = set(session.exec(reserved.where(col(SandboxBuildReservation.reserved_at) > now - RESERVATION_HOLD)).all())
     abandoned = [
         task_row_id
-        for task_row_id in {*session.exec(building).all(), *session.exec(reserved).all()} - held
+        for task_row_id in session.exec(building).all()
         if _try_task_build_transaction_lock(session, task_row_id)
     ]
     if not abandoned:
@@ -361,8 +353,6 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> Non
     session.exec(
         update(Task)
         .where(col(Task.id).in_(abandoned))
-        .where(col(Task.status) == TaskStatus.BUILDING)
-        .where(col(Task.benchmark).in_(queued_benchmarks))
         .values(
             status=TaskStatus.PENDING,
             started_at=case(
@@ -371,4 +361,3 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> Non
             ),
         )
     )
-    session.exec(delete(SandboxBuildReservation).where(col(SandboxBuildReservation.task_row_id).in_(abandoned)))

@@ -54,7 +54,6 @@ from tracker.database.models import (
     ExecutorDispatchStatus,
     Org,
     RetryMode,
-    SandboxBuildReservation,
     Task,
     TaskStatus,
 )
@@ -1184,10 +1183,9 @@ def _reserve(session: Session, pool_id: str, task: Task) -> None:
     session.commit()
 
 
-def _expire_reservations(engine: Engine) -> None:
+def _release_reservation(engine: Engine, task: Task) -> None:
     with Session(engine) as session:
-        for reservation in session.exec(select(SandboxBuildReservation)).all():
-            reservation.reserved_at -= store.RESERVATION_HOLD
+        store.release_reservation(session, task.id, task.started_at)
         session.commit()
 
 
@@ -1315,7 +1313,7 @@ async def test_reservations_and_building_cap_bound_parallel_builds(
     assert provider_events == ["read_capacity", "capacity"] * admission_rounds
 
 
-async def test_failed_reserved_create_holds_its_reservation_until_the_create_deadline(
+async def test_failed_reserved_create_holds_its_reservation_until_it_is_released(
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -1341,17 +1339,17 @@ async def test_failed_reserved_create_holds_its_reservation_until_the_create_dea
 
     await admission.recover_queued_pool(context)
 
-    assert _task(postgres_engine, task).status == TaskStatus.BUILDING
+    assert _task(postgres_engine, task).status == TaskStatus.PENDING
     assert _reservation_count(postgres_engine, context.pool_id) == 1
 
     _update_task(postgres_engine, task, TaskStatus.PENDING, task.started_at)
     polled: list[int] = []
 
-    async def expire_hold(_seconds: float) -> None:
+    async def release_hold(_seconds: float) -> None:
         polled.append(_reservation_count(postgres_engine, context.pool_id))
-        _expire_reservations(postgres_engine)
+        _release_reservation(postgres_engine, task)
 
-    monkeypatch.setattr("tracker.scheduler.admission.asyncio.sleep", AsyncMock(side_effect=expire_hold))
+    monkeypatch.setattr("tracker.scheduler.admission.asyncio.sleep", AsyncMock(side_effect=release_hold))
 
     async with AsyncExitStack() as stack:
         assert await _enter(stack, context, task, events, authority) is not None
@@ -1395,11 +1393,11 @@ async def test_cancellation_while_leaving_the_pool_lock_releases_the_build_lock(
     assert await _build_lock_is_free(postgres_engine, task)
     assert await _pool_lock_is_free(postgres_engine, context.pool_id)
 
-    _expire_reservations(postgres_engine)
+    monkeypatch.setattr(admission, "queue_pool_lock", store.queue_pool_lock)
     await admission.recover_queued_pool(context)
 
     assert _task(postgres_engine, task).status == TaskStatus.PENDING
-    assert _reservation_count(postgres_engine, context.pool_id) == 0
+    assert _reservation_count(postgres_engine, context.pool_id) == 1
 
 
 @pytest.mark.parametrize("interruption", ["superseded", "stopped", "revoked"])
@@ -1435,14 +1433,9 @@ async def test_reserved_promotion_requires_exact_attempt_live_run_and_authority(
 
     await admission.recover_queued_pool(context)
 
-    assert _reservation_count(postgres_engine, context.pool_id) == 1
-
-    _expire_reservations(postgres_engine)
-    await admission.recover_queued_pool(context)
-
     recovered_status = TaskStatus.BUILDING if interruption == "stopped" else TaskStatus.PENDING
     assert _task(postgres_engine, task).status == recovered_status
-    assert _reservation_count(postgres_engine, context.pool_id) == 0
+    assert _reservation_count(postgres_engine, context.pool_id) == 1
 
 
 async def test_reserved_and_legacy_queues_share_the_capacity_lock_but_not_recovery(
@@ -1466,16 +1459,16 @@ async def test_reserved_and_legacy_queues_share_the_capacity_lock_but_not_recove
     _, _, (reserved_task,) = _run(postgres_session, reserved.pool_id, [("reserved", TaskStatus.PENDING, _ATTEMPT)])
     _reserve(postgres_session, reserved.pool_id, reserved_task)
 
-    _expire_reservations(postgres_engine)
     await admission.recover_queued_pool(legacy)
 
     assert _task(postgres_engine, legacy_task).status == TaskStatus.PENDING
     assert _task(postgres_engine, reserved_task).status == TaskStatus.BUILDING
-    assert _reservation_count(postgres_engine, reserved.pool_id) == 0
+    assert _reservation_count(postgres_engine, reserved.pool_id) == 1
 
     await admission.recover_queued_pool(reserved)
 
     assert _task(postgres_engine, reserved_task).status == TaskStatus.PENDING
+    assert _reservation_count(postgres_engine, reserved.pool_id) == 1
 
 
 @pytest.mark.parametrize(
