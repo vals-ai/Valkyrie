@@ -20,7 +20,7 @@ def test_authenticated_concurrency_update_persists_full_arguments(
 
     response = client.patch(
         f"/benchmarks/{benchmark.id}/concurrency",
-        headers={"Authorization": "Bearer fake"},
+        headers={"X-Api-Key": "fake"},
         json={"concurrency": 4},
     )
 

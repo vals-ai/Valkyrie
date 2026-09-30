@@ -287,57 +287,14 @@ def forward_tracker_api_key(
     return forwarded_headers
 
 
-def _extract_bearer_token(request: Request) -> str | None:
-    auth = request.headers.get("authorization")
-    if not auth:
-        return None
-    parts = auth.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return parts[1]
-
-
-def resolve_bearer_session(jwt: str, session: Session) -> Org:
-    """Validate a session token and resolve the org."""
-    if not _identity_provider:
-        raise RuntimeError(
-            "Identity provider not initialized — check AUTH_REQUIRED, IDENTITY_PROVIDER, "
-            "and provider credentials (e.g. DESCOPE_PROJECT_ID)"
-        )
-
-    try:
-        jwt_response = _identity_provider.validate_session(jwt)
-    except CredentialRejectedError as exc:
-        logger.warning("Session validation failed")
-        raise HTTPException(status_code=401, detail="Invalid session") from exc
-
-    tenants = list(jwt_response.get("tenants", {}).keys())
-    if not tenants:
-        raise HTTPException(status_code=400, detail="Session token has no tenant")
-    tenant_name = tenants[0]
-
-    org = find_org_by_tenant(tenant_name, session)
-    if not org:
-        raise HTTPException(status_code=404, detail=f"Organization '{tenant_name}' not configured")
-
-    return org
-
-
 def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
-    """Resolve the current org from either an Authorization: Bearer or x-api-key header."""
+    """Resolve the current org from the x-api-key access key."""
     if not AUTH_REQUIRED:
         return get_default_org(session)
 
-    bearer = _extract_bearer_token(request)
-    api_key = request.headers.get("x-api-key") or ""
-
-    if bearer and api_key:
-        raise HTTPException(status_code=401, detail="Send Authorization OR x-api-key, not both")
-    if not bearer and not api_key:
-        raise HTTPException(status_code=401, detail="Missing Authorization or x-api-key header")
-
-    if bearer:
-        return resolve_bearer_session(bearer, session)
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing x-api-key header")
 
     identity = resolve_access_key_identity(api_key)
     org = find_org_by_tenant(identity.tenant_name, session)

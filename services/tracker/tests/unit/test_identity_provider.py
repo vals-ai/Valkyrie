@@ -90,20 +90,6 @@ class TestDescopeIdentityProvider:
         with pytest.raises(TimeoutError):
             provider.exchange_access_key("key")
 
-    def test_validate_session_returns_claims(self) -> None:
-        provider, mock_client = self._provider_with_mock_client()
-        claims = {"tenants": {"t": {}}}
-        mock_client.validate_session.return_value = claims
-
-        assert provider.validate_session("jwt") is claims
-
-    def test_validate_session_maps_auth_exception(self) -> None:
-        provider, mock_client = self._provider_with_mock_client()
-        mock_client.validate_session.side_effect = AuthException(status_code=401, error_message="bad session")
-
-        with pytest.raises(CredentialRejectedError):
-            provider.validate_session("jwt")
-
     def test_load_user_profile_normalizes_fields(self) -> None:
         provider, mock_client = self._provider_with_mock_client()
         mock_client.mgmt.user.load_by_user_id.return_value = {

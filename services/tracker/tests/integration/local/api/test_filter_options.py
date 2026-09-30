@@ -39,7 +39,7 @@ class TestFilterOptions:
 
         response = client.get(
             "/benchmarks/filter-options",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         assert response.status_code == 200, response.text

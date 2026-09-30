@@ -18,18 +18,13 @@ def test_openapi_declares_authentication() -> None:
     schema = build_openapi()
 
     assert schema["components"]["securitySchemes"] == {
-        "BearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-        },
         "ApiKeyAuth": {
             "type": "apiKey",
             "in": "header",
             "name": "x-api-key",
         },
     }
-    assert schema["security"] == [{"BearerAuth": []}, {"ApiKeyAuth": []}]
+    assert schema["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/health"]["get"]["security"] == []
     assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]

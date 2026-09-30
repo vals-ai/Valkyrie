@@ -35,7 +35,7 @@ class TestBenchmarksStatus:
 
         response = client.get(
             f"/benchmarks/status?ids={running_benchmark.id},{finished_benchmark.id}",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         assert response.status_code == 200, response.text
@@ -58,7 +58,7 @@ class TestBenchmarksStatus:
 
         response = client.get(
             f"/benchmarks/status?ids={benchmark.id},{foreign_benchmark_id}",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         response_body = response.json()
@@ -71,7 +71,7 @@ class TestBenchmarksStatus:
         Test cases:
         - Omitting benchmark IDs returns an empty entries list.
         """
-        response = client.get("/benchmarks/status", headers={"Authorization": "Bearer fake"})
+        response = client.get("/benchmarks/status", headers={"X-Api-Key": "fake"})
 
         assert response.status_code == 200
         assert response.json() == {"entries": []}

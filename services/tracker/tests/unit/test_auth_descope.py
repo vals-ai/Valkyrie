@@ -25,7 +25,6 @@ from tracker.auth import (
     get_current_org,
     get_current_starter,
     resolve_access_key_identity,
-    resolve_bearer_session,
 )
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.identity_provider import CredentialRejectedError, UserProfile
@@ -89,7 +88,7 @@ def disable_auth_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestIdentityResolution:
-    """Hosted identity, bearer session, and organization resolution."""
+    """Hosted identity and organization resolution."""
 
     def test_valid_api_key_resolves_identity(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
@@ -117,18 +116,6 @@ class TestIdentityResolution:
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Invalid API key"
         assert "Invalid key" not in str(exc_info.value.detail)
-
-    def test_resolve_bearer_session_invalid_token_raises_safe_401(
-        self, mock_descope: MagicMock, empty_database_session: Session
-    ) -> None:
-        mock_descope.validate_session.side_effect = CredentialRejectedError("Sensitive provider detail")
-
-        with pytest.raises(HTTPException) as exc_info:
-            resolve_bearer_session("bad-session", empty_database_session)
-
-        assert exc_info.value.status_code == 401
-        assert exc_info.value.detail == "Invalid session"
-        assert "Sensitive provider detail" not in str(exc_info.value.detail)
 
     def test_org_not_in_db_returns_none(self, empty_database_session: Session) -> None:
         org = find_org_by_tenant("nonexistent-org", empty_database_session)
@@ -407,3 +394,17 @@ class TestCurrentStarterResolution:
 
         assert org.id == test_org.id
         mock_descope.load_user_profile.assert_not_called()
+
+    def test_get_current_org_rejects_bearer_only(
+        self, monkeypatch: pytest.MonkeyPatch, empty_database_session: Session
+    ) -> None:
+        """The retired session-token login path gets no fallback."""
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer stale-session-token"}
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_org(mock_request, empty_database_session)
+
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Missing x-api-key header"

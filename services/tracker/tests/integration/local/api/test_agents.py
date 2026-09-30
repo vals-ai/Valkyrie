@@ -16,7 +16,7 @@ def test_agents_empty_when_bucket_empty(client: TestClient, monkeypatch: MonkeyP
     response = client.get(
         "/agents",
         headers={
-            "Authorization": "Bearer fake",
+            "X-Api-Key": "fake",
             "X-Harness-AWS-Access-Key-Id": "test-access-key",
             "X-Harness-AWS-Secret-Access-Key": "test-secret-key",
             "X-Harness-AWS-Default-Region": "us-east-1",

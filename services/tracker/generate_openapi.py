@@ -8,7 +8,6 @@ from typing import Any
 from main import app
 
 OPENAPI_PATH = Path(__file__).with_name("openapi.json")
-BEARER_OR_API_KEY: list[dict[str, list[str]]] = [{"BearerAuth": []}, {"ApiKeyAuth": []}]
 API_KEY_ONLY: list[dict[str, list[str]]] = [{"ApiKeyAuth": []}]
 HARNESS_HEADERS = (
     ("HarnessAwsAccessKeyId", "X-Harness-AWS-Access-Key-Id"),
@@ -38,11 +37,6 @@ HARNESS_OPERATIONS = (
 def build_openapi() -> dict[str, Any]:
     schema = deepcopy(app.openapi())
     schema["components"]["securitySchemes"] = {
-        "BearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-        },
         "ApiKeyAuth": {
             "type": "apiKey",
             "in": "header",
@@ -65,7 +59,7 @@ def build_openapi() -> dict[str, Any]:
             *({"$ref": f"#/components/parameters/{component}"} for component, _ in HARNESS_HEADERS),
         ]
 
-    schema["security"] = BEARER_OR_API_KEY
+    schema["security"] = API_KEY_ONLY
     schema["paths"]["/health"]["get"]["security"] = []
     schema["paths"]["/init"]["post"]["security"] = API_KEY_ONLY
     schema["paths"]["/start-benchmark"]["post"]["security"] = API_KEY_ONLY

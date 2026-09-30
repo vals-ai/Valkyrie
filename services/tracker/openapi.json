@@ -3420,11 +3420,6 @@
         "in": "header",
         "name": "x-api-key",
         "type": "apiKey"
-      },
-      "BearerAuth": {
-        "bearerFormat": "JWT",
-        "scheme": "bearer",
-        "type": "http"
       }
     }
   },
@@ -5671,9 +5666,6 @@
     }
   },
   "security": [
-    {
-      "BearerAuth": []
-    },
     {
       "ApiKeyAuth": []
     }

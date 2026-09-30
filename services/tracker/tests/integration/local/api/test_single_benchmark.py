@@ -70,7 +70,7 @@ class TestSingleBenchmark:
         database_session.add(benchmark)
         database_session.commit()
 
-        response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"X-Api-Key": "fake"})
 
         assert response.status_code == 200, response.text
         response_body = response.json()
@@ -92,7 +92,7 @@ class TestSingleBenchmark:
         database_session.add(FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=0.42))
         database_session.commit()
 
-        response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"X-Api-Key": "fake"})
 
         assert response.json()["final_score"] == 0.42
 
@@ -104,7 +104,7 @@ class TestSingleBenchmark:
         """
         unknown_benchmark_id = uuid4()
 
-        response = client.get(f"/benchmarks/{unknown_benchmark_id}", headers={"Authorization": "Bearer fake"})
+        response = client.get(f"/benchmarks/{unknown_benchmark_id}", headers={"X-Api-Key": "fake"})
 
         assert response.status_code == 404
 
@@ -112,7 +112,7 @@ class TestSingleBenchmark:
 class TestBenchmarkStatusStreamPostgres:
     """Live status streams on PostgreSQL."""
 
-    @pytest.mark.usefixtures("bearer_auth")
+    @pytest.mark.usefixtures("access_key_auth")
     def test_open_stream_releases_postgres_request_and_poll_transactions(self, local_app: FastAPI) -> None:
         """An open status stream must not hold benchmark locks between events."""
         with PostgresContainer("postgres:16-alpine") as postgres:
@@ -314,7 +314,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers={**_HARNESS_HEADERS, "Authorization": "Bearer fake"},
+            headers={**_HARNESS_HEADERS, "X-Api-Key": "fake"},
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 
@@ -366,7 +366,7 @@ class TestBenchmarkTaskListing:
         try:
             response = client.get(
                 f"/benchmarks/{benchmark.id}/tasks?limit=2&offset=1",
-                headers={"Authorization": "Bearer fake"},
+                headers={"X-Api-Key": "fake"},
             )
         finally:
             event.remove(bind, "before_cursor_execute", record_statement)
@@ -447,13 +447,13 @@ class TestBenchmarkTaskListing:
 
         error_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?status=ERROR",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
         error_response_body = error_response.json()
 
         finished_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?status=FINISHED",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
         finished_response_body = finished_response.json()
 
@@ -490,7 +490,7 @@ class TestBenchmarkTaskListing:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?sort=status",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         statuses = [task["status"] for task in response.json()["tasks"]]
@@ -513,14 +513,14 @@ class TestBenchmarkTaskListing:
 
         response_body = client.get(
             f"/benchmarks/{benchmark.id}/tasks?sort=task_id&sort_dir=asc",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         ).json()
 
         assert [task["task_id"] for task in response_body["tasks"]] == ["t-a", "t-b", "t-c"]
 
 
 _HARNESS_HEADERS: dict[str, str] = {
-    "Authorization": "Bearer fake",
+    "X-Api-Key": "fake",
     "X-Harness-AWS-Access-Key-Id": "AKIA",
     "X-Harness-AWS-Secret-Access-Key": "secret",
     "X-Harness-AWS-Default-Region": "us-east-1",
@@ -566,7 +566,7 @@ class TestBenchmarkConsoleUrls:
 
         response_body = client.get(
             f"/benchmarks/{benchmark.id}",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         ).json()
 
         assert response_body["cloudwatch_url"] is None
@@ -624,7 +624,7 @@ class TestBenchmarkTaskSearch:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=astropy",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         assert response.status_code == 200, response.text
@@ -655,12 +655,12 @@ class TestBenchmarkTaskSearch:
 
         underscore_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=task_1",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         percent_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=task%251",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         assert underscore_response.status_code == 200, underscore_response.text
@@ -687,7 +687,7 @@ class TestBenchmarkTaskSearch:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=django",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         response_body = response.json()
@@ -714,7 +714,7 @@ class TestBenchmarkTaskSearch:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=astropy&status=ERROR",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         response_body = response.json()

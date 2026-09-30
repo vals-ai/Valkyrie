@@ -1,15 +1,15 @@
 """Identity-provider seam for tracker authentication.
 
 Core Valkyrie defines the surface the tracker uses to resolve request credentials
-into a tenant identity: access-key exchange, session-token validation, and bound
-user-profile lookup. The concrete provider is selected by configuration
+into a tenant identity: access-key exchange and bound user-profile lookup. The
+concrete provider is selected by configuration
 (``IDENTITY_PROVIDER``, default ``descope``); provider-specific project and
 management credentials are deployment configuration owned by the deploying
 organization.
 
 Provider methods return the provider's own claims mapping. Today the only
-provider is Descope, so the claims follow Descope's access-key exchange and
-session-JWT shapes; consumers of :class:`IdentityProvider` interpret that shape.
+provider is Descope, so the claims follow Descope's access-key exchange shape;
+consumers of :class:`IdentityProvider` interpret that shape.
 """
 
 from __future__ import annotations
@@ -54,15 +54,13 @@ def normalize_optional_string(value: object, *, lowercase: bool = False) -> str 
 class IdentityProvider(Protocol):
     """Credential-validation surface the tracker uses for hosted authentication.
 
-    ``exchange_access_key`` and ``validate_session`` return the provider's
-    claims mapping and raise :class:`CredentialRejectedError` when the
-    credential is rejected; transient provider errors propagate unchanged so
-    callers can apply their own retry and availability policy.
+    ``exchange_access_key`` returns the provider's claims mapping and raises
+    :class:`CredentialRejectedError` when the credential is rejected; transient
+    provider errors propagate unchanged so callers can apply their own retry and
+    availability policy.
     """
 
     def exchange_access_key(self, api_key: str) -> Mapping[str, Any]: ...
-
-    def validate_session(self, session_token: str) -> Mapping[str, Any]: ...
 
     def load_user_profile(self, user_id: str) -> UserProfile: ...
 
@@ -78,12 +76,6 @@ class DescopeIdentityProvider:
             return cast(Mapping[str, Any], self._client.exchange_access_key(api_key))
         except AuthException as exc:
             raise CredentialRejectedError("Descope rejected the access key") from exc
-
-    def validate_session(self, session_token: str) -> Mapping[str, Any]:
-        try:
-            return cast(Mapping[str, Any], self._client.validate_session(session_token))
-        except AuthException as exc:
-            raise CredentialRejectedError("Descope rejected the session token") from exc
 
     def load_user_profile(self, user_id: str) -> UserProfile:
         """Load email/name from the Descope user record bound to an access key."""
