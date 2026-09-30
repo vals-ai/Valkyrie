@@ -137,20 +137,6 @@ class ValkyrieConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def drop_webhook_key(cls, data: object) -> object:
-        """Slack run notifications were removed; ignore a stale webhook key with a warning."""
-        if isinstance(data, dict) and "webhook" in data:
-            data = {key: value for key, value in cast(dict[Any, Any], data).items() if key != "webhook"}
-            warnings.warn(
-                "The 'webhook' config key is no longer used; Slack run notifications were removed. "
-                "Remove it with `valkyrie config remove webhook`.",
-                UserWarning,
-                stacklevel=2,
-            )
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
     def accept_flat_aws_keys(cls, data: object) -> object:
         """Nest the flat AWS keys, by alias or field name, that SDK callers passed before the `aws` layout."""
         if not isinstance(data, dict):

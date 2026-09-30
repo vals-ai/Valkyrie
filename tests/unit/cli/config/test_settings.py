@@ -258,14 +258,14 @@ def test_init_whitespace_only_required_value_aborts(monkeypatch: pytest.MonkeyPa
     assert "AWS_ACCESS_KEY_ID is required" in result.output
 
 
-def test_set_webhook_reports_removal(config_path: Path) -> None:
-    saved = {"api_key": "test-key", "webhook": "SlackWebhookSecret"}
+def test_set_unknown_key_preserves_config(config_path: Path) -> None:
+    saved = {"api_key": "test-key"}
     config_path.write_text(yaml.safe_dump(saved))
 
-    result = CliRunner().invoke(settings.set, ["webhook", "new-value"])
+    result = CliRunner().invoke(settings.set, ["unknown-key", "new-value"])
 
     assert result.exit_code != 0
-    assert "webhook setting was removed" in result.output
+    assert "not a valid config key" in result.output
     assert yaml.safe_load(config_path.read_text()) == saved
 
 

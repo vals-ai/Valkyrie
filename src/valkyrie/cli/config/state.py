@@ -11,7 +11,6 @@ from valkyrie.cli.runtime_config import config_location
 
 class ConfigValue(str, Enum):
     API_KEY = "api_key"
-    SLACK_WEBHOOK_SECRET = "webhook"
     AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
     AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
     AWS_SESSION_TOKEN = "AWS_SESSION_TOKEN"

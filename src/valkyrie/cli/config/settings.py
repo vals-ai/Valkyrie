@@ -171,12 +171,6 @@ def set(key: str, value: str) -> None:
             f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
         )
 
-    if config_value is ConfigValue.SLACK_WEBHOOK_SECRET:
-        raise click.ClickException(
-            "The webhook setting was removed; runs no longer send Slack notifications. "
-            "Remove a stale value with `valkyrie config remove webhook`."
-        )
-
     rotated_benchmark_auth = 0
     if config_value is ConfigValue.API_KEY:
         rotated_benchmark_auth = _rotate_matching_benchmark_auth(current, value)
