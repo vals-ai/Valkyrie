@@ -1472,6 +1472,56 @@ async def test_reserved_and_legacy_queues_share_the_capacity_lock_but_not_recove
 
 
 @pytest.mark.parametrize(
+    ("interruption", "expected_status", "expected_reservations"),
+    [
+        ("promoted", TaskStatus.IN_PROGRESS, 0),
+        ("stopped", TaskStatus.BUILDING, 1),
+    ],
+)
+async def test_recovery_preserves_builds_changed_after_candidate_selection(
+    interruption: str,
+    expected_status: TaskStatus,
+    expected_reservations: int,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    context = _context(postgres_engine, provider_pool_id, [], reserved=True)
+    _, benchmark, (task,) = _run(postgres_session, context.pool_id, [("racing", TaskStatus.PENDING, _ATTEMPT)])
+    _reserve(postgres_session, context.pool_id, task)
+    original_try_lock = store._try_task_build_transaction_lock
+    interleaved = False
+
+    def interleave_before_lock(session: Session, task_row_id: UUID) -> bool:
+        nonlocal interleaved
+        # Recovery has already materialized the BUILDING candidate before this hook.
+        if not interleaved:
+            interleaved = True
+            with Session(postgres_engine) as concurrent_session:
+                if interruption == "promoted":
+                    assert admission._start_claimed_task(
+                        concurrent_session, task_row_id=task_row_id, expected_started_at=_ATTEMPT
+                    )
+                else:
+                    row = concurrent_session.get(Benchmark, benchmark.id)
+                    assert row
+                    row.status = BenchmarkStatus.STOPPED
+                concurrent_session.commit()
+        return original_try_lock(session, task_row_id)
+
+    monkeypatch.setattr(store, "_try_task_build_transaction_lock", interleave_before_lock)
+
+    await admission.recover_queued_pool(context)
+
+    recovered = _task(postgres_engine, task)
+    assert interleaved
+    assert recovered.status == expected_status
+    assert recovered.started_at == _ATTEMPT
+    assert _reservation_count(postgres_engine, context.pool_id) == expected_reservations
+
+
+@pytest.mark.parametrize(
     ("source", "resources", "snapshot"),
     [
         (SnapshotSource(snapshot="snapshot"), _RESOURCES, _CAPACITY),

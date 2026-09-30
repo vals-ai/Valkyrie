@@ -353,6 +353,8 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> Non
     session.exec(
         update(Task)
         .where(col(Task.id).in_(abandoned))
+        .where(col(Task.status) == TaskStatus.BUILDING)
+        .where(col(Task.benchmark).in_(queued_benchmarks))
         .values(
             status=TaskStatus.PENDING,
             started_at=case(
