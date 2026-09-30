@@ -41,6 +41,8 @@ def _agent_key(name: str) -> str:
 def _storage_errors() -> Generator[None, None, None]:
     try:
         yield
+    except FileExistsError as error:
+        raise HTTPException(status_code=409, detail="Agent already exists") from error
     except S3Error as error:
         cause = error.__cause__
         if isinstance(cause, ClientError) and (
@@ -107,6 +109,7 @@ async def get_agent_download_url(
     responses={
         400: {"description": "Invalid agent archive"},
         403: {"description": "Storage permission denied"},
+        409: {"description": "Agent already exists"},
         413: {"description": "Configured archive limit exceeded"},
     },
 )
@@ -114,8 +117,9 @@ async def push_agent_endpoint(
     name: str,
     request: Request,
     runtime: AgentLibraryRuntimeDependency,
+    overwrite: bool = True,
 ) -> AgentEntry:
-    """Validate and upload a ZIP, replacing agents/<name>.zip if it exists."""
+    """Validate and publish an agent ZIP, optionally refusing to replace an existing alias."""
     key = _agent_key(name)
     if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/zip":
         raise HTTPException(status_code=415, detail="Expected application/zip")
@@ -151,7 +155,7 @@ async def push_agent_endpoint(
         ) as error:
             raise HTTPException(status_code=400, detail="Invalid agent archive or contract") from error
         with _storage_errors():
-            await runtime.objects.put_stream(key, _file_chunks(stream))
+            await runtime.objects.put_stream(key, _file_chunks(stream), overwrite=overwrite)
 
     return AgentEntry(name=name)
 

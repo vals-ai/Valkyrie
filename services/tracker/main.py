@@ -83,7 +83,7 @@ from tracker.runtime.artifacts import (
     copy_agent_to_benchmark,
 )
 from tracker.runtime.secrets import resolve_secrets
-from tracker.runtime.storage import ObjectStore, StoredObjectCopy
+from tracker.runtime.storage import ObjectCopier, ObjectStore, StoredObjectCopy
 from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
@@ -1537,6 +1537,7 @@ class RecoveryPreparation:
     dataset: str | None
     dataset_version: DatasetVersion | None
     queued_recovery: bool
+    agent_name: str
     properties: AWSResources | None = None
     resolved_properties: AWSResources | None = None
 
@@ -1586,6 +1587,7 @@ def _prepare_recovery(
             benchmark.arguments.dataset,
             benchmark.arguments.dataset_version,
             queued,
+            benchmark.arguments.contract.name,
             benchmark.arguments.properties,
         )
 
@@ -1607,6 +1609,7 @@ def _commit_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    update_agent: bool = False,
 ) -> AdmissionResult | None:
     with Session(bind, expire_on_commit=False) as session:
         org = session.get(Org, org_id)
@@ -1627,7 +1630,46 @@ def _commit_recovery(
             access_key_harness_config,
             preparation,
             verified_task_ids,
+            update_agent=update_agent,
         )
+
+
+# Tasks download the bundle when their sandbox starts, so a refresh during a run would mix agents within it.
+_UPDATE_AGENT_IN_PROGRESS = "Updating the agent of an in-progress run requires stopping the run first."
+
+
+async def _refresh_recovered_agent(
+    copier: ObjectCopier,
+    *,
+    benchmark_id: UUID,
+    agent_name: str,
+    session: Session,
+    admission: AdmissionResult,
+) -> None:
+    """Replace the run's agent bundle after recovery admission and before its executor is enqueued."""
+    try:
+        await copier.copy(agent_bundle_key(agent_name), benchmark_agent_bundle_key(str(benchmark_id), agent_name))
+    except Exception as exc:
+        dispatch = ExecutorDispatch.model_validate(json.loads(admission.dispatch_json))
+        logger.exception(
+            "Failed to refresh the agent bundle for an admitted recovery",
+            extra={"executor_dispatch_id": str(dispatch.id)},
+        )
+        _ = await asyncio.to_thread(
+            _resolve_enqueue_failure,
+            session.get_bind(),
+            dispatch.benchmark_id,
+            dispatch.id,
+            list(admission.verified_task_ids),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Agent bundle refresh failed; use Retry to continue",
+                "benchmark_id": str(dispatch.benchmark_id),
+                "executor_dispatch_id": str(dispatch.id),
+            },
+        ) from exc
 
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
@@ -1636,6 +1678,7 @@ async def retry_or_resume_benchmark(
     http_request: Request,
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    update_agent: bool = False,
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
@@ -1655,6 +1698,7 @@ async def retry_or_resume_benchmark(
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
+        update_agent: Refresh the saved agent bundle before recovering the run.
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
@@ -1716,6 +1760,27 @@ async def retry_or_resume_benchmark(
             verified_task_ids = verified.task_ids
         finally:
             await service.close()
+    agent_copier: ObjectCopier | None = None
+    if update_agent:
+        run_runtime = runtime_resolution.runtime
+        # Managed agent aliases live in the deployment library bucket; caller AWS headers never select it.
+        library_runtime = (
+            resolve_run_aws_runtime_and_access_key_config(http_request, aws_managed=True, org_id=org_id).runtime
+            if preparation.aws_managed
+            else run_runtime
+        )
+        library_store = S3ObjectStore(library_runtime)
+        source_key = agent_bundle_key(preparation.agent_name)
+        if not await library_store.exists(source_key):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent {preparation.agent_name!r} was not found. Push the agent before using --update-agent.",
+            )
+        agent_copier = (
+            S3ObjectCopier(library_runtime, run_runtime)
+            if library_runtime.resources.s3_bucket != run_runtime.resources.s3_bucket
+            else library_store
+        )
     commit_task = asyncio.create_task(
         asyncio.to_thread(
             _commit_recovery,
@@ -1734,6 +1799,7 @@ async def retry_or_resume_benchmark(
             access_key_harness_config=runtime_resolution.access_key_harness_config,
             preparation=preparation,
             verified_task_ids=verified_task_ids,
+            update_agent=update_agent,
         )
     )
     try:
@@ -1741,6 +1807,21 @@ async def retry_or_resume_benchmark(
     except _TaskFailedAfterCancellation as failure:
         raise failure.cancellation from failure.task_error
     if result is not None:
+        # A rejected recovery never reaches this copy, and the executor cannot read the bundle before enqueue.
+        if agent_copier is not None:
+            refresh_task = asyncio.create_task(
+                _refresh_recovered_agent(
+                    agent_copier,
+                    benchmark_id=benchmark_id,
+                    agent_name=preparation.agent_name,
+                    session=session,
+                    admission=result,
+                )
+            )
+            try:
+                _, cancellation = await _await_before_cancellation(refresh_task, cancellation)
+            except _TaskFailedAfterCancellation as failure:
+                raise failure.cancellation from failure.task_error
         enqueue_task = asyncio.create_task(
             _enqueue_executor_dispatch(
                 ExecutorDispatch.model_validate(json.loads(result.dispatch_json)),
@@ -1774,6 +1855,8 @@ def _apply_recovery(
     access_key_harness_config: HarnessConfig | None,
     preparation: RecoveryPreparation,
     verified_task_ids: list[str],
+    *,
+    update_agent: bool = False,
 ) -> AdmissionResult | None:
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
@@ -1782,6 +1865,10 @@ def _apply_recovery(
             status_code=400,
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
+
+    # A later status change fails the locked comparison with the prepared state.
+    if update_agent and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(status_code=409, detail=_UPDATE_AGENT_IN_PROGRESS)
 
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and secrets:
         raise HTTPException(

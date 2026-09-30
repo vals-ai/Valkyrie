@@ -664,6 +664,58 @@ def mock_s3_client(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> 
 class TestUploadStreamToS3:
     """Multipart streaming upload behavior."""
 
+    @pytest.mark.parametrize(
+        ("status", "concurrent_winner", "expected_error"),
+        [
+            (None, False, None),
+            (412, False, FileExistsError),
+            (409, True, FileExistsError),
+            (409, False, S3Error),
+        ],
+    )
+    async def test_conditional_publication(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_s3_client: MockS3Client,
+        aws_runtime: AWSRuntime,
+        status: int | None,
+        concurrent_winner: bool,
+        expected_error: type[Exception] | None,
+    ) -> None:
+        """
+        Verify that a refused conditional publication reports an existing alias only when one exists.
+
+        Test cases:
+        - An unconditional success publishes the whole stream.
+        - A 412 precondition failure means the alias already exists.
+        - A 409 conflict means the alias exists when a concurrent publication won.
+        - A 409 conflict with no object left behind is a storage failure.
+        """
+        complete = AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "PreconditionFailed"}, "ResponseMetadata": {"HTTPStatusCode": status}},
+                "CompleteMultipartUpload",
+            )
+            if status
+            else None
+        )
+        head_object = AsyncMock(
+            side_effect=None if concurrent_winner else ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        )
+        monkeypatch.setattr(mock_s3_client, "complete_multipart_upload", complete)
+        monkeypatch.setattr(mock_s3_client, "head_object", head_object, raising=False)
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"agent"
+
+        if expected_error is not None:
+            with pytest.raises(expected_error):
+                await S3ObjectStore(aws_runtime).put_stream("agents/demo.zip", chunks(), overwrite=False)
+            assert mock_s3_client.aborted
+        else:
+            assert await S3ObjectStore(aws_runtime).put_stream("agents/demo.zip", chunks(), overwrite=False) == 5
+        assert complete.call_args.kwargs["IfNoneMatch"] == "*"
+
     async def test_splits_stream_into_parts_and_completes(
         self, mock_s3_client: MockS3Client, aws_runtime: AWSRuntime
     ) -> None:
