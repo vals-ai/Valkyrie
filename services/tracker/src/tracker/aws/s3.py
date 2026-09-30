@@ -13,7 +13,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
-from tracker.runtime.storage import ArtifactLocations, ObjectReadSession, StoredObject, StoredObjectCopy
+from tracker.runtime.storage import ArtifactLocations, StoredObject, StoredObjectCopy
 
 logger = get_logger(__name__)
 
@@ -543,7 +543,7 @@ class S3ObjectStore:
         self._runtime = runtime
 
     @asynccontextmanager
-    async def read_session(self) -> AsyncGenerator[ObjectReadSession, None]:
+    async def read_session(self) -> AsyncGenerator[_S3ObjectReadSession, None]:
         async with self._runtime.clients.s3_client() as client:
             yield _S3ObjectReadSession(
                 client,
