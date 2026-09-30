@@ -19,13 +19,13 @@ def upgrade() -> None:
         _TABLE_NAME,
         sa.Column("task_row_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("attempt_started_at", sa.DateTime(), nullable=False),
+        sa.Column("reserved_at", sa.DateTime(), nullable=False),
         sa.Column("pool_id", sa.String(), nullable=False),
         sa.Column("requested_vcpu", sa.Integer(), nullable=False),
         sa.Column("requested_memory", sa.Integer(), nullable=False),
         sa.Column("requested_disk", sa.Integer(), nullable=False),
-        sa.Column("requested_gpu", sa.Integer(), nullable=False),
         sa.CheckConstraint(
-            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0 AND requested_gpu >= 0",
+            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0",
             name="sandbox_build_reservation_resources_nonnegative",
         ),
         sa.ForeignKeyConstraint(

@@ -54,6 +54,7 @@ from tracker.database.models import (
     ExecutorDispatchStatus,
     Org,
     RetryMode,
+    SandboxBuildReservation,
     Task,
     TaskStatus,
 )
@@ -1183,6 +1184,13 @@ def _reserve(session: Session, pool_id: str, task: Task) -> None:
     session.commit()
 
 
+def _expire_reservations(engine: Engine) -> None:
+    with Session(engine) as session:
+        for reservation in session.exec(select(SandboxBuildReservation)).all():
+            reservation.reserved_at -= store.RESERVATION_HOLD
+        session.commit()
+
+
 async def test_reserved_image_builds_provision_concurrently_outside_the_pool_lock(
     postgres_engine: Engine,
     postgres_session: Session,
@@ -1304,12 +1312,13 @@ async def test_reservations_and_building_cap_bound_parallel_builds(
     assert _reservation_count(postgres_engine, context.pool_id) == 0
     assert first_events == second_events == ["create", "cleanup"]
     admission_rounds = 3 if limit == "capacity" else 2
-    assert provider_events == ["capacity", "read_capacity"] * admission_rounds
+    assert provider_events == ["read_capacity", "capacity"] * admission_rounds
 
 
-async def test_failed_reserved_create_frees_the_build_lock_so_recovery_requeues_it(
+async def test_failed_reserved_create_holds_its_reservation_until_the_create_deadline(
     postgres_engine: Engine,
     postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
     executor_authority: Any,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
@@ -1325,22 +1334,30 @@ async def test_failed_reserved_create_frees_the_build_lock_so_recovery_requeues_
         with pytest.raises(SandboxSetupError):
             await _enter(stack, context, task, events, authority, on_create=fail_create)
 
-    assert events == ["capacity", "read_capacity", "create"]
+    assert events == ["read_capacity", "capacity", "create"]
     assert _task(postgres_engine, task).status == TaskStatus.BUILDING
     assert _reservation_count(postgres_engine, context.pool_id) == 1
     assert await _build_lock_is_free(postgres_engine, task)
 
     await admission.recover_queued_pool(context)
 
-    requeued = _task(postgres_engine, task)
-    assert requeued.status == TaskStatus.PENDING
-    assert requeued.started_at > task.started_at
-    assert _reservation_count(postgres_engine, context.pool_id) == 0
+    assert _task(postgres_engine, task).status == TaskStatus.BUILDING
+    assert _reservation_count(postgres_engine, context.pool_id) == 1
+
+    _update_task(postgres_engine, task, TaskStatus.PENDING, task.started_at)
+    polled: list[int] = []
+
+    async def expire_hold(_seconds: float) -> None:
+        polled.append(_reservation_count(postgres_engine, context.pool_id))
+        _expire_reservations(postgres_engine)
+
+    monkeypatch.setattr("tracker.scheduler.admission.asyncio.sleep", AsyncMock(side_effect=expire_hold))
 
     async with AsyncExitStack() as stack:
-        assert await _enter(stack, context, requeued, events, authority) is not None
+        assert await _enter(stack, context, task, events, authority) is not None
         assert _task(postgres_engine, task).status == TaskStatus.IN_PROGRESS
 
+    assert polled == [1]
     assert _reservation_count(postgres_engine, context.pool_id) == 0
 
 
@@ -1372,12 +1389,13 @@ async def test_cancellation_while_leaving_the_pool_lock_releases_the_build_lock(
         with pytest.raises(asyncio.CancelledError):
             await _enter(stack, context, task, events, authority)
 
-    assert events == ["capacity", "read_capacity"]
+    assert events == ["read_capacity", "capacity"]
     assert _task(postgres_engine, task).status == TaskStatus.BUILDING
     assert _reservation_count(postgres_engine, context.pool_id) == 1
     assert await _build_lock_is_free(postgres_engine, task)
     assert await _pool_lock_is_free(postgres_engine, context.pool_id)
 
+    _expire_reservations(postgres_engine)
     await admission.recover_queued_pool(context)
 
     assert _task(postgres_engine, task).status == TaskStatus.PENDING
@@ -1409,12 +1427,17 @@ async def test_reserved_promotion_requires_exact_attempt_live_run_and_authority(
         sandbox = await _enter(stack, context, task, events, authority, on_create=interrupt)
 
     assert sandbox is None
-    assert events == ["capacity", "read_capacity", "create", "cleanup"]
+    assert events == ["read_capacity", "capacity", "create", "cleanup"]
     assert await _build_lock_is_free(postgres_engine, task)
     expected_status = TaskStatus.PENDING if interruption == "superseded" else TaskStatus.BUILDING
     assert _task(postgres_engine, task).status == expected_status
     assert _reservation_count(postgres_engine, context.pool_id) == 1
 
+    await admission.recover_queued_pool(context)
+
+    assert _reservation_count(postgres_engine, context.pool_id) == 1
+
+    _expire_reservations(postgres_engine)
     await admission.recover_queued_pool(context)
 
     recovered_status = TaskStatus.BUILDING if interruption == "stopped" else TaskStatus.PENDING
@@ -1443,6 +1466,7 @@ async def test_reserved_and_legacy_queues_share_the_capacity_lock_but_not_recove
     _, _, (reserved_task,) = _run(postgres_session, reserved.pool_id, [("reserved", TaskStatus.PENDING, _ATTEMPT)])
     _reserve(postgres_session, reserved.pool_id, reserved_task)
 
+    _expire_reservations(postgres_engine)
     await admission.recover_queued_pool(legacy)
 
     assert _task(postgres_engine, legacy_task).status == TaskStatus.PENDING
@@ -1497,8 +1521,55 @@ async def test_reserved_queue_keeps_the_full_lock_for_inexact_or_unreadable_dema
         assert _task(postgres_engine, task).status == TaskStatus.IN_PROGRESS
 
     assert observed == [(False, 0, True)]
-    expected_events = ["capacity", "read_capacity"] if isinstance(snapshot, Exception) else ["capacity"]
+    expected_events = ["read_capacity", "capacity"] if isinstance(snapshot, Exception) else ["capacity"]
     assert events == [*expected_events, "create", "cleanup"]
+
+
+async def test_full_lock_build_waits_for_reserved_builds_to_drain(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_authority: Any,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    events: list[str] = []
+    context = _context(postgres_engine, provider_pool_id, events, reserved=True)
+    _, benchmark, (reserved_task, snapshot_task) = _run(
+        postgres_session,
+        context.pool_id,
+        [
+            ("reserved", TaskStatus.PENDING, _ATTEMPT),
+            ("snapshot", TaskStatus.PENDING, _ATTEMPT + timedelta(microseconds=1)),
+        ],
+        concurrency=2,
+    )
+    authority = executor_authority(benchmark, session=postgres_session)
+    _reserve(postgres_session, context.pool_id, reserved_task)
+    creator = store.task_build_lock(postgres_engine, reserved_task.id)
+    assert await creator.acquire()
+    polled: list[tuple[TaskStatus, int]] = []
+
+    async def promote_reserved_build(_seconds: float) -> None:
+        polled.append(
+            (_task(postgres_engine, snapshot_task).status, _reservation_count(postgres_engine, context.pool_id))
+        )
+        with Session(postgres_engine) as session:
+            store.release_reservation(session, reserved_task.id, reserved_task.started_at)
+            session.commit()
+        await creator.release()
+
+    monkeypatch.setattr("tracker.scheduler.admission.asyncio.sleep", AsyncMock(side_effect=promote_reserved_build))
+
+    async with AsyncExitStack() as stack:
+        sandbox = await _enter(
+            stack, context, snapshot_task, events, authority, source=SnapshotSource(snapshot="snapshot")
+        )
+
+        assert sandbox is not None
+        assert _task(postgres_engine, snapshot_task).status == TaskStatus.IN_PROGRESS
+
+    assert polled == [(TaskStatus.PENDING, 1)]
+    assert events == ["capacity", "create", "cleanup"]
 
 
 @pytest.fixture

@@ -285,9 +285,14 @@ async def enter_queued_sandbox(
                     if not waiting:
                         return None
 
-                    admissible = eligible and (not reserves or reserved.count < SANDBOX_QUEUE_BUILDING_CAP)
+                    capacity = (
+                        await _reservable_capacity(context)
+                        if eligible and reserves and reserved.count < SANDBOX_QUEUE_BUILDING_CAP
+                        else None
+                    )
+                    # Live provider usage misses reserved builds still being created.
+                    admissible = eligible and (capacity is not None or reserved.count == 0)
                     if admissible and await context.provider.check_admission(source, resources):
-                        capacity = await _reservable_capacity(context) if reserves else None
                         with Session(lock.connection) as session:
                             try:
                                 lock_execution_authority(session, authority)

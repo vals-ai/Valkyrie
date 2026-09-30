@@ -688,7 +688,6 @@ def test_sandbox_build_reservation_upgrade_and_downgrade(
                 requested_vcpu=1,
                 requested_memory=2,
                 requested_disk=3,
-                requested_gpu=0,
             )
         )
         session.commit()

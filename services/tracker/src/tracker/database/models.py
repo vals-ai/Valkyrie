@@ -351,7 +351,7 @@ class SandboxBuildReservation(SQLModel, table=True):
 
     __table_args__ = (
         CheckConstraint(
-            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0 AND requested_gpu >= 0",
+            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0",
             name="sandbox_build_reservation_resources_nonnegative",
         ),
         Index("ix_sandboxbuildreservation_pool", "pool_id"),
@@ -359,11 +359,11 @@ class SandboxBuildReservation(SQLModel, table=True):
 
     task_row_id: UUID = Field(primary_key=True, foreign_key="task.id")
     attempt_started_at: datetime
+    reserved_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     pool_id: str
     requested_vcpu: int
     requested_memory: int
     requested_disk: int
-    requested_gpu: int
 
 
 class Benchmark(SQLModel, table=True):
