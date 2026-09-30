@@ -202,13 +202,13 @@ def _wait_for_maintenance_drain(client: EcsClient, task: ReleaseTaskConfig, stop
         pending = _runner_tasks(client, task, "PENDING")
         _stop_runner_tasks(client, task, [*running, *pending], stopped)
         active_stopped_tasks = False
-        stopped_arns = sorted(stopped)
+        stopped_arns = sorted(stopped | set(_runner_tasks(client, task, "STOPPED")))
         for start in range(0, len(stopped_arns), 100):
             batch = stopped_arns[start : start + 100]
             response = client.describe_tasks(cluster=task.cluster_arn, tasks=batch)
             tasks = cast(Sequence[Mapping[str, object]], response["tasks"])
             if {str(item["taskArn"]) for item in tasks} != set(batch):
-                raise RuntimeError("Maintenance drain could not describe every stopped runner task")
+                raise RuntimeError("Maintenance drain could not describe every runner task")
             active_stopped_tasks |= any(item["lastStatus"] != "STOPPED" for item in tasks)
         services = client.describe_services(cluster=task.cluster_arn, services=[task.tracker_service_name])
         tracker = cast(Sequence[Mapping[str, object]], services["services"])[0]
