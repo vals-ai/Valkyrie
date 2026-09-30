@@ -113,7 +113,9 @@ def init() -> None:
                     "while they remain configured.\n"
                 )
             else:
-                removed = [key for key in ("aws", "sandbox_providers", "default_sandbox_provider") if key in current_config]
+                removed = [
+                    key for key in ("aws", "sandbox_providers", "default_sandbox_provider") if key in current_config
+                ]
                 for key in removed:
                     current_config.pop(key, None)
                 if removed:
@@ -127,9 +129,7 @@ def init() -> None:
             target = aws.setdefault("credentials", {}) if key in _STATIC_AWS_CREDENTIAL_KEYS else aws
             sourced = target.get(key) or os.environ.get(key)
             if sourced:
-                click.echo(
-                    f"  {key}: sourced from {'environment' if not target.get(key) else 'existing config'}"
-                )
+                click.echo(f"  {key}: sourced from {'environment' if not target.get(key) else 'existing config'}")
                 target[key] = sourced
                 continue
 
