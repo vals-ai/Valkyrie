@@ -3,6 +3,11 @@
 Run: uv run pytest tests/unit/test_outbound_security.py
 """
 
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 import pytest
 from pydantic import ValidationError
 
@@ -206,6 +211,27 @@ class TestOperatorDestinationConfiguration:
                 org_name="vals.ai",
                 auth_required=True,
             )
+
+    def test_dotenv_only_operator_settings_are_loaded(self, tmp_path: Path) -> None:
+        """A fresh process with operator settings only in .env sees them at import."""
+        src_root = str(Path(__file__).resolve().parents[2] / "src")
+        (tmp_path / ".env").write_text("OPERATOR_TENANT=acme.example\nOPERATOR_DOMAIN=acme.dev\n")
+        env = {key: value for key, value in os.environ.items() if not key.startswith("OPERATOR_")}
+        env["PYTHONPATH"] = src_root
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import tracker.outbound_security as m; "
+                "assert m._OPERATOR_TENANT == 'acme.example'; "
+                "assert m._OPERATOR_DOMAIN == 'acme.dev'",
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
     def test_configured_operator_domain_is_restricted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("tracker.outbound_security._OPERATOR_DOMAIN", "acme.example")

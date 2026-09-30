@@ -14,6 +14,8 @@ import re
 from socket import inet_aton
 from urllib.parse import urlsplit
 
+from dotenv import load_dotenv
+
 _BENCHMARK_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _HEADER_NAME_RE = re.compile(r"[-!#$%&'*+.^_`|~0-9A-Za-z]+")
 _HEADER_VALUE_RE = re.compile(r"(?:[\x21-\x7e]+(?:[ \t]+[\x21-\x7e]+)*)?")
@@ -35,7 +37,9 @@ _FORBIDDEN_HEADER_NAMES = {
 _FORBIDDEN_HEADER_PREFIXES = ("forwarded", "proxy-", "sec-websocket-", "x-forwarded-")
 # Tenant implicitly trusted to use private/custom destinations, and the DNS suffix
 # reserved to it. Both are deployment-owned; internal deployments keep the Vals
-# defaults via environment configuration.
+# defaults via environment configuration. This module may load before config's
+# own load_dotenv() call, so it loads .env itself for dotenv-only deployments.
+load_dotenv()
 _OPERATOR_TENANT = os.environ.get("OPERATOR_TENANT") or "vals.ai"
 _OPERATOR_DOMAIN = os.environ.get("OPERATOR_DOMAIN") or "vals.ai"
 _RESTRICTED_HOSTNAMES = {"internal", "local", "localhost"}
