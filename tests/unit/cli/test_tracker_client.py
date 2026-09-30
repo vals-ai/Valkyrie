@@ -458,6 +458,49 @@ def test_update_benchmark_concurrency_surfaces_tracker_error(monkeypatch: pytest
         tracker.update_benchmark_concurrency(uuid4(), 9)
 
 
+def test_shed_benchmark_posts_target_and_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send shed requests to the tracker shed endpoint and surface its rejections.
+
+    Test cases:
+    - Concurrency and dry_run are sent in the request body and the stopped task IDs are returned.
+    - A tracker rejection is raised as a TrackerServiceError with the tracker's detail.
+    """
+    requests: list[httpx.Request] = []
+    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if json.loads(request.content)["concurrency"] >= 4:
+            return httpx.Response(400, json={"detail": "shed can only lower it."})
+        return httpx.Response(
+            200,
+            json={"benchmark_id": str(run_id), "concurrency": 2, "task_ids": ["task-newest"]},
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+    tracker = TrackerService(base_url="http://tracker")
+
+    response = tracker.shed_benchmark(run_id, 2, dry_run=True)
+
+    assert requests[0].method == "POST"
+    assert str(requests[0].url) == f"http://tracker/benchmarks/{run_id}/shed"
+    assert json.loads(requests[0].content) == {"concurrency": 2, "dry_run": True}
+    assert response.task_ids == ["task-newest"]
+
+    with pytest.raises(TrackerServiceError, match="Failed to shed run: shed can only lower it."):
+        tracker.shed_benchmark(run_id, 4, dry_run=False)
+
+
 def test_tracker_client_checks_health_on_context_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Commands should fail before making tracker requests when the tracker is unhealthy.
 
