@@ -13,6 +13,7 @@ from valsmith_network_config import (
     NetworkInventory,
     input_hash,
     load_inputs,
+    object_field,
     validate_cidr,
     validate_inventory,
     validate_proxy_image,
@@ -90,6 +91,7 @@ def resource_fixture() -> dict[str, JsonValue]:
             "GroupId": "sg-036040bcf58e2d364",
             "VpcId": "vpc-0e1bfdbc090daa61a",
             "OwnerId": "629807611108",
+            "IpPermissionsEgress": [{"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}],
         },
         "cluster": {
             "clusterArn": "arn:aws:ecs:us-east-1:629807611108:cluster/AgenticHarnessCluster-prod",
@@ -184,4 +186,34 @@ class NetworkInputsTest(unittest.TestCase):
                 inputs.account_id, inputs.region, datetime.now(UTC), input_hash(inputs), (), resources
             )
             with self.subTest(resource=resource), self.assertRaises(ValueError):
+                validate_inventory(inputs, inventory)
+
+    def test_caller_egress_must_already_cover_the_new_service_port(self) -> None:
+        inputs = read_test_inputs()
+        resources = resource_fixture()
+        group = object_field(resources, "security_group")
+        inventory = NetworkInventory(
+            inputs.account_id, inputs.region, datetime.now(UTC), input_hash(inputs), (), resources
+        )
+        validate_inventory(inputs, inventory)
+        group["IpPermissionsEgress"] = [
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 8001,
+                "ToPort": 8001,
+                "IpRanges": [{"CidrIp": "10.64.0.0/20"}],
+            }
+        ]
+        validate_inventory(inputs, inventory)
+
+        invalid_rules: tuple[list[JsonValue], ...] = (
+            [],
+            [{"IpProtocol": "udp", "FromPort": 8001, "ToPort": 8001, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}],
+            [{"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}],
+            [{"IpProtocol": "-1", "IpRanges": [{"CidrIp": "10.0.0.0/16"}]}],
+            [{"IpProtocol": "-1", "IpRanges": [{"CidrIp": "10.64.0.0/24"}]}],
+        )
+        for rules in invalid_rules:
+            group["IpPermissionsEgress"] = rules
+            with self.subTest(rules=rules), self.assertRaisesRegex(ValueError, "Caller egress"):
                 validate_inventory(inputs, inventory)

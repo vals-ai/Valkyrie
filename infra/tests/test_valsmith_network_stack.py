@@ -81,12 +81,7 @@ class NetworkStackTest(unittest.TestCase):
             self.assertEqual(rule["ToPort"], 8001)
 
         for rule in resources(self.template, "AWS::EC2::SecurityGroupEgress").values():
-            if isinstance(rule["GroupId"], str):
-                self.assertEqual(rule["GroupId"], inputs.caller_security_group_id)
-                self.assertEqual(rule["FromPort"], 8001)
-                self.assertEqual(rule["ToPort"], 8001)
-                self.assertIn("DestinationSecurityGroupId", rule)
-                self.assertNotIn("CidrIp", rule)
+            self.assertNotEqual(rule["GroupId"], inputs.caller_security_group_id)
 
     def test_proxy_listeners_remain_separate_and_policy_lambda_has_no_proxy(self) -> None:
         stack = self.stack

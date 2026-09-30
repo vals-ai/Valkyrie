@@ -206,6 +206,27 @@ def _match(document: dict[str, JsonValue], expected: dict[str, str]) -> None:
             raise ValueError(f"Resource drift: {name} must be {value}")
 
 
+def _validate_caller_egress(group: dict[str, JsonValue], destination: str) -> None:
+    network = ipaddress.IPv4Network(destination)
+    for rule in object_list(group, "IpPermissionsEgress"):
+        protocol = rule.get("IpProtocol")
+        first_port, last_port = rule.get("FromPort"), rule.get("ToPort")
+        covers_port = protocol == "-1" or (
+            protocol in ("tcp", "6")
+            and isinstance(first_port, int)
+            and isinstance(last_port, int)
+            and first_port <= 8001 <= last_port
+        )
+        if not covers_port:
+            continue
+
+        for address in object_list(rule, "IpRanges"):
+            if network.subnet_of(ipaddress.IPv4Network(text_field(address, "CidrIp"))):
+                return
+
+    raise ValueError("Caller egress must already cover TCP 8001 to the new VPC; review the caller stack")
+
+
 def validate_inventory(inputs: NetworkInputs, inventory: NetworkInventory) -> None:
     validate_caller_identity(
         DeploymentTarget("prod", inputs.account_id, inputs.region), {"Account": inventory.account_id}
@@ -264,10 +285,12 @@ def validate_inventory(inputs: NetworkInputs, inventory: NetworkInventory) -> No
         ):
             raise ValueError("Caller route table association changed")
 
+    caller_group = object_field(resources, "security_group")
     _match(
-        object_field(resources, "security_group"),
+        caller_group,
         {"GroupId": inputs.caller_security_group_id, "VpcId": inputs.caller_vpc_id, "OwnerId": inputs.account_id},
     )
+    _validate_caller_egress(caller_group, inputs.vpc_cidr)
     _match(object_field(resources, "cluster"), {"clusterArn": inputs.cluster_arn, "status": "ACTIVE"})
     namespace = object_field(resources, "namespace")
     _match(

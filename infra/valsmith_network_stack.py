@@ -112,17 +112,9 @@ class ValSmithNetworkStack(Stack):
                 source_security_group_id=inputs.caller_security_group_id,
                 source_security_group_owner_id=inputs.account_id,
             )
-            egress = ec2.CfnSecurityGroupEgress(
-                self,
-                f"TrackerTo{name}Egress",
-                group_id=inputs.caller_security_group_id,
-                ip_protocol="tcp",
-                from_port=8001,
-                to_port=8001,
-                destination_security_group_id=group.security_group_id,
-            )
+            # Standalone caller egress rules remove its existing default rule.
+            # Preflight verifies access; the caller's own stack retains its rules.
             ingress.add_dependency(self.peering)
-            egress.add_dependency(self.peering)
 
         for name, value in {
             "NetworkContractVersion": "1",
