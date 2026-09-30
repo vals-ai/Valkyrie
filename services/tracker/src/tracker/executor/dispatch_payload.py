@@ -13,7 +13,7 @@ import boto3
 from botocore.config import Config
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-_KMS_CONFIG = Config(connect_timeout=2, read_timeout=5, retries={"mode": "standard", "max_attempts": 3})
+_KMS_CONFIG = Config(connect_timeout=2, read_timeout=5, retries={"mode": "standard", "total_max_attempts": 3})
 
 
 @dataclass(frozen=True)
