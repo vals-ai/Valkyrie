@@ -51,8 +51,10 @@ environments hold their own values:
 - `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
   prefixes the Tracker may resolve for benchmark-service authentication
 
-The ExecutorHost task roles can read every Secrets Manager secret in their own
-account and Region. Release-test does not receive this access.
+The ExecutorHost task roles for dev, release-test, and production can read every
+Secrets Manager secret in their own account and Region. This also applies when
+release-test is deployed to a production account: its ExecutorHost can read
+that account's secrets, not just release-test-specific secrets.
 
 Dev and production require `SENTRY_DSN_SECRET_NAME` to name an account-local
 Secrets Manager secret containing the DSN. Production also requires
@@ -203,6 +205,14 @@ or certificate. Its benchmark-service base is
 `benchmarks.vals.ai`; no separate benchmark-service stack is created. Unlike
 `dev`, the target guard permits `release-test` to be explicitly deployed in the
 bench or production account when coexistence validation requires it.
+Release-test keeps its own Tracker and ExecutorHost image repositories
+(`valkyrie/release-test/tracker` and `valkyrie/release-test/executor-host`) and
+internal Tracker endpoint regardless of the selected account. For manual CDK
+synthesis or deployment, provide the target account's
+`AWS_DEPLOYMENT_ROLE_ORG_IDS` and `AWS_TRACKER_SECRET_NAME_PREFIXES`, as for
+dev; these enable managed submissions and Tracker benchmark-service secret
+resolution. Use the approved values for that account, especially when targeting
+production.
 
 ```bash
 make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \

@@ -371,12 +371,17 @@ then synthesize and deploy the dependent stacks with that tag. Dev, bench, and
 prod keep the existing CDK asset path.
 
 Review all stacks and the driver separately before deployment. Release-test
-forces authentication on, so synthesis also needs the Descope project ID and
-the account-local management-key secret name:
+forces authentication on, so synthesis needs the Descope project ID and
+account-local management-key secret name. Both plans also require the selected
+account's approved managed-submission organization UUIDs and Tracker
+benchmark-service Secrets Manager name prefixes. Set those values before
+running either plan; do not substitute another account's inventory:
 
 ```bash
 export DESCOPE_PROJECT_ID="release-test-descope-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="release-test-descope-management-key-secret"
+export AWS_DEPLOYMENT_ROLE_ORG_IDS="${AWS_DEPLOYMENT_ROLE_ORG_IDS:?Set approved organization UUIDs for the selected account}"
+export AWS_TRACKER_SECRET_NAME_PREFIXES="${AWS_TRACKER_SECRET_NAME_PREFIXES:?Set approved Tracker secret-name prefixes for the selected account}"
 
 make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$BENCH_ACCOUNT_ID" PROFILE=admin

@@ -72,6 +72,8 @@ TEST_PROD_ENV = {
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
 TEST_RELEASE_TEST_ENV = {
+    "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
+    "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
     "DESCOPE_PROJECT_ID": "release-test",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
 }
@@ -307,6 +309,7 @@ class MonitoringStackTest(unittest.TestCase):
             (DEV, TEST_DEV_ENV),
             (BENCH, TEST_BENCH_ENV),
             (PROD, TEST_PROD_ENV),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
             with self.subTest(stage=stage_name):
                 environment = {**stage_environment, "AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED": "true"}
@@ -319,6 +322,7 @@ class MonitoringStackTest(unittest.TestCase):
             (DEV, TEST_DEV_ENV),
             (BENCH, TEST_BENCH_ENV),
             (PROD, TEST_PROD_ENV),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
             for variable in (
                 "AWS_DEPLOYMENT_ROLE_ORG_IDS",
@@ -841,6 +845,62 @@ class MonitoringStackTest(unittest.TestCase):
             )
         )
 
+    def test_release_test_managed_submissions_and_secret_access_match_dev(self) -> None:
+        with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
+            tracker_template, executor_template, _ = service_templates(RELEASE_TEST)
+
+        expected_environment = assertions.Match.array_with(
+            [
+                {"Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS", "Value": TEST_MANAGED_ORG_ID},
+                {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"},
+            ]
+        )
+        for template in (tracker_template, executor_template):
+            template.has_resource_properties(
+                "AWS::ECS::TaskDefinition",
+                {
+                    "ContainerDefinitions": assertions.Match.array_with(
+                        [assertions.Match.object_like({"Environment": expected_environment})]
+                    )
+                },
+            )
+
+        tracker_role_id = next(
+            logical_id
+            for logical_id, role in tracker_template.find_resources("AWS::IAM::Role").items()
+            if role["Properties"].get("RoleName") == "ValkyrieTrackerTaskRole-release-test"
+        )
+        tracker_secret_resources = [
+            statement["Resource"]
+            for policy in tracker_template.find_resources("AWS::IAM::Policy").values()
+            if {"Ref": tracker_role_id} in policy["Properties"].get("Roles", [])
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            if statement.get("Action") == "secretsmanager:GetSecretValue"
+        ]
+        self.assertTrue(
+            any(f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*" in json.dumps(resource) for resource in tracker_secret_resources)
+        )
+        self.assertFalse(any("secret:*" in json.dumps(resource) for resource in tracker_secret_resources))
+
+        executor_role_id = next(
+            logical_id
+            for logical_id, role in executor_template.find_resources("AWS::IAM::Role").items()
+            if role["Properties"].get("RoleName") == "ValkyrieExecutorTaskRole-release-test"
+        )
+        executor_secret_resources = [
+            statement["Resource"]
+            for policy in executor_template.find_resources("AWS::IAM::Policy").values()
+            if {"Ref": executor_role_id} in policy["Properties"].get("Roles", [])
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            if statement.get("Action") == "secretsmanager:GetSecretValue"
+        ]
+        self.assertTrue(
+            any(
+                f":{TEST_AWS_REGION}:{TEST_AWS_ACCOUNT}:secret:*" in json.dumps(resource)
+                for resource in executor_secret_resources
+            )
+        )
+
     def test_executor_stack_owns_the_host_and_release_control(self) -> None:
         with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=False):
             _, executor_template, monitoring_template = service_templates(BENCH)
@@ -1122,12 +1182,12 @@ class MonitoringStackTest(unittest.TestCase):
             },
         )
 
-    def test_tracker_dataset_version_pinning_is_enabled_only_in_dev(self) -> None:
+    def test_tracker_dataset_version_pinning_is_enabled_in_dev_and_release_test(self) -> None:
         for stage_name, stage_environment, enabled in (
             (DEV, TEST_DEV_ENV, "true"),
             (BENCH, TEST_BENCH_ENV, "false"),
             (PROD, TEST_PROD_ENV, "false"),
-            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, "false"),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, "true"),
         ):
             with self.subTest(stage=stage_name):
                 with mock.patch.dict(os.environ, stage_environment, clear=True):

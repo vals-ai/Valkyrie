@@ -18,7 +18,6 @@ from test_monitoring_stack import (
     TEST_BENCH_ENV,
     TEST_DEV_ENV,
     TEST_MANAGED_ORG_ID,
-    TEST_RELEASE_TEST_ENV,
     TEST_TRACKER_SECRET_NAME_PREFIX,
     JsonObject,
     service_templates,
@@ -95,8 +94,8 @@ def _owner_bucket_resource(environment: str, *, objects: bool = False) -> JsonOb
 
 
 class RuntimeIamTest(unittest.TestCase):
-    def test_agent_upload_permissions_are_limited_to_dev_tracker(self) -> None:
-        """Only dev Tracker can upload agents or abort their multipart uploads."""
+    def test_agent_upload_permissions_are_limited_to_dev_and_release_test_tracker(self) -> None:
+        """Only dev and release-test Tracker can upload agents or abort their multipart uploads."""
         for stage_name in (DEV, BENCH, PROD, RELEASE_TEST):
             with self.subTest(stage=stage_name):
                 stage = Stage(stage_name)
@@ -115,7 +114,7 @@ class RuntimeIamTest(unittest.TestCase):
                     ]
                     actions = set[str]().union(*(_statement_actions(statement) for statement in agent_statements))
                     expected_actions = {"s3:GetObject"}
-                    if stage_name == DEV and role_name == "ValkyrieTrackerTaskRole":
+                    if stage_name in (DEV, RELEASE_TEST) and role_name == "ValkyrieTrackerTaskRole":
                         expected_actions |= {"s3:PutObject", "s3:AbortMultipartUpload"}
                         upload_statement = next(
                             statement
@@ -636,34 +635,6 @@ class RuntimeIamTest(unittest.TestCase):
                             for pattern in BENCH_CONFIG.managed_aws.tracker_lambda_function_name_patterns
                         ],
                     )
-
-    def test_release_test_managed_runtime_remains_closed(self) -> None:
-        with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(RELEASE_TEST)
-
-        expected_environment = assertions.Match.array_with(
-            [
-                {"Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS", "Value": ""},
-                {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "false"},
-            ]
-        )
-        for template, role_name in (
-            (tracker_template, "ValkyrieTrackerTaskRole-release-test"),
-            (executor_template, "ValkyrieExecutorTaskRole-release-test"),
-        ):
-            template.has_resource_properties(
-                "AWS::ECS::TaskDefinition",
-                {
-                    "ContainerDefinitions": assertions.Match.array_with(
-                        [assertions.Match.object_like({"Environment": expected_environment})]
-                    )
-                },
-            )
-            role_logical_id, _ = _named_role(template, role_name)
-            actions = set[str]().union(
-                *(_statement_actions(statement) for statement in _role_policy_statements(template, role_logical_id))
-            )
-            self.assertNotIn("secretsmanager:GetSecretValue", actions)
 
     def test_managed_runtime_optional_grants_are_limited_to_configured_resources(self) -> None:
         app = cdk.App()

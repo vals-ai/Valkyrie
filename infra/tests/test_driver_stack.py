@@ -190,6 +190,8 @@ class DriverStackTest(unittest.TestCase):
             **DRIVER_ENV,
             "DESCOPE_PROJECT_ID": "release-test-project",
             "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": "example/descope-management-key",
+            "AWS_DEPLOYMENT_ROLE_ORG_IDS": "00000000-0000-0000-0000-000000000001",
+            "AWS_TRACKER_SECRET_NAME_PREFIXES": "example/release-test/",
         }
         with mock.patch.dict(os.environ, auth_env, clear=True):
             app = cdk.App(context=context)

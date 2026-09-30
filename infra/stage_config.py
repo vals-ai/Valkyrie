@@ -216,11 +216,8 @@ RELEASE_TEST_CONFIG = StageConfig(
     worker=DEV_CONFIG.worker,
     database=DEV_CONFIG.database,
     service_log_retention=DEV_CONFIG.service_log_retention,
-    managed_aws=ManagedAWSRuntimeConfig(
-        benchmark_log_group_prefix="/valkyrie/benchmarks",
-        benchmark_log_retention_days=7,
-    ),
-    dataset_version_pinning_enabled=False,
+    managed_aws=replace(DEV_CONFIG.managed_aws, benchmark_log_retention_days=7),
+    dataset_version_pinning_enabled=DEV_CONFIG.dataset_version_pinning_enabled,
 )
 
 RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL = "benchmarks.vals.ai"
@@ -241,9 +238,6 @@ def config_for(stage: Stage) -> StageConfig:
         raise ValueError(
             f"unknown stage {stage.name!r}; expected {BENCH!r}, {PROD!r}, {DEV!r}, or 'release-test'"
         ) from None
-
-    if stage.name not in {BENCH, DEV, PROD}:
-        return config
 
     deployment_role_org_ids = _csv_environment("AWS_DEPLOYMENT_ROLE_ORG_IDS")
     tracker_secret_name_prefixes = _csv_environment("AWS_TRACKER_SECRET_NAME_PREFIXES")
