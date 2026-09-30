@@ -1114,7 +1114,7 @@ def _commit_queued_cancellation(
             .with_for_update()
         ).all()
         for task_row in current_rows:
-            irrecoverable = task_row.status == TaskStatus.IN_PROGRESS or (
+            irrecoverable = task_row.status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS) or (
                 task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None
             )
             if task_row.started_at != owned_attempts[task_row.id] or not irrecoverable:

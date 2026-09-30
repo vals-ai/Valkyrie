@@ -65,26 +65,16 @@ def upgrade() -> None:
             LANGUAGE plpgsql
             AS $$
             BEGIN
-                IF OLD.status = 'BUILDING' AND NEW.status <> 'BUILDING' THEN
-                    IF NEW.status = 'PENDING' AND EXISTS (
-                        SELECT 1
-                        FROM {_TABLE_NAME} AS reservation
-                        JOIN executordispatch AS dispatch
-                          ON dispatch.id = reservation.executor_dispatch_id
-                        WHERE reservation.task_row_id = OLD.id
-                          AND reservation.attempt_started_at = OLD.started_at
-                          AND dispatch.status = 'RUNNING'
-                    )
-                    THEN
-                        RETURN OLD;
-                    END IF;
-
-                    IF NEW.status <> 'IN_PROGRESS' THEN
-                        DELETE FROM {_TABLE_NAME}
-                        WHERE task_row_id = OLD.id
-                          AND attempt_started_at = OLD.started_at;
-                    END IF;
+                IF OLD.status = 'BUILDING' AND NEW.status = 'PENDING' AND EXISTS (
+                    SELECT 1
+                    FROM {_TABLE_NAME} AS reservation
+                    WHERE reservation.task_row_id = OLD.id
+                )
+                THEN
+                    RETURN OLD;
                 END IF;
+                -- Task state cannot confirm provider cleanup. Only the build
+                -- owner releases its reservation after promotion or deletion.
                 RETURN NEW;
             END;
             $$

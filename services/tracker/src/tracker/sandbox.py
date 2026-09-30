@@ -121,13 +121,14 @@ async def delete_sandbox(
     *,
     initiated_by: SandboxDeleteInitiator,
     org_id: str | None = None,
-) -> None:
-    """Delete sandbox through its provider."""
+) -> bool:
+    """Delete sandbox through its provider and report confirmed absence."""
     try:
         await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "already_gone")
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
+        return True
     except ProviderSandboxError as e:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         raise
@@ -138,8 +139,10 @@ async def delete_sandbox(
     except Exception as e:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+        return False
     else:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "deleted")
+        return True
 
 
 def _source_name(source: SandboxSource) -> str:
@@ -257,6 +260,7 @@ async def create_sandbox(
     sandbox_secrets: dict[str, str] | None = None,
     *,
     unique_name: bool = True,
+    on_cleanup: Callable[[], None] | None = None,
 ) -> AsyncGenerator[Sandbox, Any]:
     """
     Yeild a sandbox to be used within a context manager.
@@ -272,6 +276,7 @@ async def create_sandbox(
         sandbox_secrets: Provider-managed secret references keyed by environment variable name
         creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
         unique_name: Whether to append a random suffix to the supplied name.
+        on_cleanup: Notify once cleanup is confirmed or creation was never initiated.
 
     Returns:
         A context manager that yields the sandbox
@@ -283,6 +288,7 @@ async def create_sandbox(
 
     # If we run too many at once it can cause hanging issues
     # NOTE does not block how many context managers we can have open, just how many sandboxes we can create at once
+    creation_task: asyncio.Task[Sandbox] | None = None
     try:
         async with creation_semaphore:
             start = time.monotonic()
@@ -301,9 +307,26 @@ async def create_sandbox(
             try:
                 sandbox = await asyncio.shield(creation_task)
             except asyncio.CancelledError:
-                sandbox = await creation_task
-                await delete_sandbox(sandbox, provider, initiated_by="create_cancelled")
+
+                async def cleanup_cancelled_creation() -> None:
+                    sandbox = await creation_task
+                    if await delete_sandbox(sandbox, provider, initiated_by="create_cancelled"):
+                        if on_cleanup is not None:
+                            on_cleanup()
+
+                cleanup_task = asyncio.create_task(cleanup_cancelled_creation())
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        # Further cancellation must not interrupt an in-flight provider cleanup.
+                        pass
+                cleanup_task.result()
                 raise
+    except asyncio.CancelledError:
+        if creation_task is None and on_cleanup is not None:
+            on_cleanup()
+        raise
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
         raise
@@ -322,10 +345,13 @@ async def create_sandbox(
         raise
     finally:
         try:
-            await delete_sandbox(sandbox, provider, initiated_by="task_teardown")
+            cleanup_confirmed = await delete_sandbox(sandbox, provider, initiated_by="task_teardown")
         except ProviderSandboxError:
             # The failed delete is audited by delete_sandbox and must not replace the task outcome.
             pass
+        else:
+            if cleanup_confirmed and on_cleanup is not None:
+                on_cleanup()
 
 
 @retry(

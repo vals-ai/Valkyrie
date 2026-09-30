@@ -8,7 +8,7 @@ import threading
 from asyncio import Semaphore
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -27,6 +27,7 @@ from benchmark_service import (
     SnapshotSource,
     TargetedSnapshotSource,
 )
+from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi import HTTPException, Request
@@ -57,6 +58,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import SandboxSetupError
+from tracker.sandbox import create_sandbox as provider_sandbox_context
 import tracker.executor.dispatch_control as dispatch_control
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
@@ -206,6 +208,7 @@ def _sandbox(
     name: str = "sandbox",
     on_create: Callable[[], Awaitable[None]] | None = None,
     on_cleanup: Callable[[], Awaitable[None]] | None = None,
+    confirm_cleanup: Callable[[], None] | None = None,
 ) -> Callable[[], AbstractAsyncContextManager[Sandbox]]:
     @asynccontextmanager
     async def context() -> AsyncGenerator[Sandbox]:
@@ -219,6 +222,8 @@ def _sandbox(
             if on_cleanup:
                 await on_cleanup()
             events.append("cleanup")
+            if confirm_cleanup is not None:
+                confirm_cleanup()
 
     return context
 
@@ -389,7 +394,7 @@ async def test_targeted_snapshot_reaches_admission_and_creation_unchanged(
             authority=authority,
             source=source,
             resources=_RESOURCES,
-            create=lambda _build_id: _sandbox(events)(),
+            create=lambda _build_id, _on_cleanup: _sandbox(events)(),
         )
 
         assert sandbox is not None
@@ -419,7 +424,9 @@ async def _enter(
         authority=authority,
         source=source,
         resources=resources,
-        create=lambda _build_id: _sandbox(events, on_create=on_create, on_cleanup=on_cleanup)(),
+        create=lambda _build_id, confirm_cleanup: _sandbox(
+            events, on_create=on_create, on_cleanup=on_cleanup, confirm_cleanup=confirm_cleanup
+        )(),
     )
 
 
@@ -770,6 +777,85 @@ async def test_reserved_builds_claim_fifo_then_create_concurrently(
         assert _task(postgres_engine, first).status == TaskStatus.IN_PROGRESS
 
 
+async def test_promotion_keeps_reservation_visible_during_a_capacity_read(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    executor_authority: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    pool_id = store.queue_pool_id(provider_pool_id)
+    _, benchmark, (first, second) = _run(
+        postgres_session,
+        pool_id,
+        [("first", TaskStatus.PENDING, _ATTEMPT), ("second", TaskStatus.PENDING, _ATTEMPT + timedelta(microseconds=1))],
+        concurrency=2,
+    )
+    authority = executor_authority(benchmark, session=postgres_session)
+    creating = asyncio.Event()
+    finish_creation = asyncio.Event()
+    reading_capacity = asyncio.Event()
+    finish_capacity_read = asyncio.Event()
+    waiting_to_promote = asyncio.Event()
+    capacity = _capacity(vcpu=1, memory=2, disk=3)
+    first_context = _context(postgres_engine, provider_pool_id, [], resource_capacity=capacity)
+    second_context = _context(postgres_engine, provider_pool_id, [], resource_capacity=capacity)
+
+    async def block_creation() -> None:
+        creating.set()
+        await finish_creation.wait()
+
+    async def capacity_snapshot() -> SandboxCapacity:
+        reading_capacity.set()
+        await finish_capacity_read.wait()
+        return capacity
+
+    monkeypatch.setattr(second_context.provider, "get_capacity", capacity_snapshot)
+    original_sleep = asyncio.sleep
+    second_enter: asyncio.Task[Sandbox | None] | None = None
+
+    async def observe_wait(seconds: float) -> None:
+        if asyncio.current_task() is second_enter:
+            raise RuntimeError("capacity still reserved")
+        waiting_to_promote.set()
+        await original_sleep(seconds)
+
+    monkeypatch.setattr(admission.asyncio, "sleep", observe_wait)
+    events: list[str] = []
+    async with AsyncExitStack() as first_stack, AsyncExitStack() as second_stack:
+        first_enter = asyncio.create_task(
+            _enter(first_stack, first_context, first, [], authority, on_create=block_creation)
+        )
+        promotion_wait: asyncio.Task[bool] | None = None
+        try:
+            await asyncio.wait_for(creating.wait(), timeout=5)
+            second_enter = asyncio.create_task(_enter(second_stack, second_context, second, events, authority))
+            await asyncio.wait_for(reading_capacity.wait(), timeout=5)
+            finish_creation.set()
+            promotion_wait = asyncio.create_task(waiting_to_promote.wait())
+            done, _ = await asyncio.wait((first_enter, promotion_wait), timeout=5, return_when=asyncio.FIRST_COMPLETED)
+            assert promotion_wait in done and not first_enter.done()
+            with Session(postgres_engine) as session:
+                assert store.active_reservation_resources(session, pool_id).vcpu == 1
+
+            finish_capacity_read.set()
+            with pytest.raises(RuntimeError, match="capacity still reserved"):
+                await asyncio.wait_for(second_enter, timeout=5)
+            assert await asyncio.wait_for(first_enter, timeout=5) is not None
+            assert _task(postgres_engine, first).status == TaskStatus.IN_PROGRESS
+            assert _task(postgres_engine, second).status == TaskStatus.PENDING
+            assert events == ["capacity"]
+        finally:
+            finish_creation.set()
+            finish_capacity_read.set()
+            pending = [task for task in (first_enter, second_enter, promotion_wait) if task is not None]
+            for pending_task in pending:
+                if not pending_task.done():
+                    pending_task.cancel()
+            awaitables: list[Awaitable[object]] = [task for task in pending]
+            await asyncio.gather(*awaitables, return_exceptions=True)
+
+
 @pytest.mark.parametrize(
     ("building_count", "resources", "capacity"),
     [
@@ -922,6 +1008,214 @@ async def test_revocation_after_reserved_create_cleans_sandbox_without_promotion
             ).one_or_none()
             is None
         )
+
+
+@pytest.mark.parametrize("delete_fails", [False, True])
+async def test_revoked_build_releases_capacity_only_after_confirmed_provider_cleanup(
+    delete_fails: bool,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    executor_authority: Any,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    pool_id = store.queue_pool_id(provider_pool_id)
+    _, benchmark, (task,) = _run(postgres_session, pool_id, [("revoked-cleanup", TaskStatus.PENDING, _ATTEMPT)])
+    authority = executor_authority(benchmark, session=postgres_session)
+    provider = Mock(spec=SandboxProvider)
+    sandbox = Mock(spec=Sandbox, id="cleanup-sandbox", name="cleanup-sandbox", state="started", labels={})
+
+    async def create(_request: object) -> Sandbox:
+        _revoke_dispatch(postgres_engine, authority)
+        with Session(postgres_engine) as session:
+            store.reset_abandoned_builds(session, pool_id, datetime.now(UTC))
+            session.commit()
+            current_task = session.get(Task, task.id)
+            assert current_task is not None and current_task.status == TaskStatus.BUILDING
+        return cast(Sandbox, sandbox)
+
+    provider.create_sandbox = AsyncMock(side_effect=create)
+    provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("delete rejected") if delete_fails else None)
+    context = _context(postgres_engine, provider_pool_id, [], resource_capacity=_capacity())
+    async with AsyncExitStack() as stack:
+        assert (
+            await admission.enter_queued_sandbox(
+                stack=stack,
+                context=context,
+                task_row_id=task.id,
+                expected_started_at=task.started_at,
+                authority=authority,
+                source=_SOURCE,
+                resources=_RESOURCES,
+                create=lambda _build_id, on_cleanup: provider_sandbox_context(
+                    provider,
+                    "cleanup-sandbox",
+                    _SOURCE,
+                    _RESOURCES,
+                    Semaphore(1),
+                    unique_name=False,
+                    on_cleanup=on_cleanup,
+                ),
+            )
+            is None
+        )
+
+    provider.delete_sandbox.assert_awaited_once_with(sandbox.id)
+    assert _task(postgres_engine, task).status == (TaskStatus.BUILDING if delete_fails else TaskStatus.PENDING)
+    with Session(postgres_engine) as session:
+        assert store.active_reservation_resources(session, pool_id).vcpu == (1 if delete_fails else 0)
+
+
+@pytest.mark.parametrize("delete_fails", [False, True])
+async def test_cancelled_creation_terminalizes_task_and_releases_only_confirmed_capacity(
+    delete_fails: bool,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    executor_authority: Any,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    pool_id = store.queue_pool_id(provider_pool_id)
+    _, benchmark, (task,) = _run(postgres_session, pool_id, [("cancelled-create", TaskStatus.PENDING, _ATTEMPT)])
+    authority = executor_authority(benchmark, session=postgres_session)
+    creating = asyncio.Event()
+    finish_creation = asyncio.Event()
+    provider = Mock(spec=SandboxProvider)
+    sandbox = Mock(spec=Sandbox, id="cancelled-sandbox", name="cancelled-sandbox", state="started", labels={})
+
+    async def create(_request: object) -> Sandbox:
+        creating.set()
+        await finish_creation.wait()
+        return cast(Sandbox, sandbox)
+
+    provider.create_sandbox = AsyncMock(side_effect=create)
+    provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("delete rejected") if delete_fails else None)
+    context = _context(postgres_engine, provider_pool_id, [], resource_capacity=_capacity())
+    async with AsyncExitStack() as stack:
+        entering = asyncio.create_task(
+            admission.enter_queued_sandbox(
+                stack=stack,
+                context=context,
+                task_row_id=task.id,
+                expected_started_at=task.started_at,
+                authority=authority,
+                source=_SOURCE,
+                resources=_RESOURCES,
+                create=lambda _build_id, on_cleanup: provider_sandbox_context(
+                    provider,
+                    "cancelled-sandbox",
+                    _SOURCE,
+                    _RESOURCES,
+                    Semaphore(1),
+                    unique_name=False,
+                    on_cleanup=on_cleanup,
+                ),
+            )
+        )
+        await asyncio.wait_for(creating.wait(), timeout=5)
+        with Session(postgres_engine) as session:
+            run = session.get(Benchmark, benchmark.id)
+            assert run is not None
+            run.status = BenchmarkStatus.ERROR
+            session.add(run)
+            session.commit()
+        entering.cancel()
+        finish_creation.set()
+        with pytest.raises(ProviderSandboxError if delete_fails else asyncio.CancelledError):
+            await asyncio.wait_for(entering, timeout=5)
+
+    provider.delete_sandbox.assert_awaited_once_with(sandbox.id)
+    assert _task(postgres_engine, task).status == TaskStatus.ERROR
+    with Session(postgres_engine) as session:
+        assert store.active_reservation_resources(session, pool_id).vcpu == (1 if delete_fails else 0)
+
+
+async def test_unknown_provider_creation_outcome_retains_capacity(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    executor_authority: Any,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    pool_id = store.queue_pool_id(provider_pool_id)
+    _, benchmark, (task,) = _run(postgres_session, pool_id, [("unknown-create", TaskStatus.PENDING, _ATTEMPT)])
+    authority = executor_authority(benchmark, session=postgres_session)
+    provider = Mock(spec=SandboxProvider)
+    provider.create_sandbox = AsyncMock(side_effect=ProviderSandboxError("response lost"))
+    provider.delete_sandbox = AsyncMock()
+    context = _context(postgres_engine, provider_pool_id, [], resource_capacity=_capacity())
+    async with AsyncExitStack() as stack:
+        with pytest.raises(ProviderSandboxError, match="response lost"):
+            await admission.enter_queued_sandbox(
+                stack=stack,
+                context=context,
+                task_row_id=task.id,
+                expected_started_at=task.started_at,
+                authority=authority,
+                source=_SOURCE,
+                resources=_RESOURCES,
+                create=lambda _build_id, on_cleanup: provider_sandbox_context(
+                    provider,
+                    "unknown-sandbox",
+                    _SOURCE,
+                    _RESOURCES,
+                    Semaphore(1),
+                    unique_name=False,
+                    on_cleanup=on_cleanup,
+                ),
+            )
+
+    provider.delete_sandbox.assert_not_awaited()
+    assert _task(postgres_engine, task).status == TaskStatus.BUILDING
+    with Session(postgres_engine) as session:
+        assert store.active_reservation_resources(session, pool_id).vcpu == 1
+
+
+@pytest.mark.parametrize("resource_capacity", [None, RuntimeError("capacity unavailable")])
+async def test_capacity_fallback_waits_while_reserved_creation_holds_capacity(
+    resource_capacity: SandboxCapacity | BaseException | None,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    executor_authority: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_pool_id = f"daytona:{uuid4()}"
+    pool_id = store.queue_pool_id(provider_pool_id)
+    _, benchmark, (reserved, waiting) = _run(
+        postgres_session,
+        pool_id,
+        [
+            ("reserved", TaskStatus.PENDING, _ATTEMPT),
+            ("fallback", TaskStatus.PENDING, _ATTEMPT + timedelta(microseconds=1)),
+        ],
+        concurrency=2,
+    )
+    authority = executor_authority(benchmark, session=postgres_session)
+    assert store.claim_eligible_task_with_reservation(
+        postgres_session,
+        pool_id,
+        reserved.id,
+        reserved.started_at,
+        build_id=uuid4(),
+        executor_dispatch_id=authority.dispatch_id,
+        requested_vcpu=1,
+        requested_memory=2,
+        requested_disk=3,
+        requested_gpu=0,
+    )
+    postgres_session.commit()
+
+    async def stop_waiting(_seconds: float) -> None:
+        raise RuntimeError("still waiting")
+
+    monkeypatch.setattr(admission.asyncio, "sleep", stop_waiting)
+    events: list[str] = []
+    context = _context(postgres_engine, provider_pool_id, events, resource_capacity=resource_capacity)
+    async with AsyncExitStack() as stack:
+        with pytest.raises(RuntimeError, match="still waiting"):
+            await _enter(stack, context, waiting, events, authority)
+
+    assert events == ["capacity"]
+    assert _task(postgres_engine, waiting).status == TaskStatus.PENDING
+    with Session(postgres_engine) as session:
+        assert store.active_reservation_resources(session, pool_id).vcpu == 1
 
 
 async def test_cancellation_releases_pool_lock(
@@ -1333,7 +1627,9 @@ async def test_setup_retry_reenters_fifo_before_competitor(
         AsyncMock(side_effect=[SandboxSetupError("retry"), None]),
     )
     monkeypatch.setattr(task_execution, "run_agent", AsyncMock(return_value=(None, 0.0)))
-    context = _context(postgres_engine, provider_pool_id, events, on_check=observe_admission)
+    context = _context(
+        postgres_engine, provider_pool_id, events, on_check=observe_admission, resource_capacity=_capacity()
+    )
     authority = executor_authority(benchmark, session=postgres_session)
 
     await task_execution.process_task(

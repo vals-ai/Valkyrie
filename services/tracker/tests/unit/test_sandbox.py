@@ -18,7 +18,10 @@ from benchmark_service import (
     ExecResult,
     ImageSource,
     Resources,
+    Sandbox,
+    SandboxCreateRequest,
     SandboxNotFoundError,
+    SandboxProvider,
     SandboxSource,
     SnapshotSource,
     TargetedSnapshotSource,
@@ -1463,6 +1466,142 @@ class TestSandboxLifecycle:
         assert active_sandbox_ids == set()
         assert deletion_initiators == ["create_cancelled"]
 
+    @pytest.mark.parametrize(
+        ("delete_error", "cleanup_confirmed"),
+        [
+            (None, True),
+            (SandboxNotFoundError("gone"), True),
+            (ProviderSandboxError("cleanup failed"), False),
+            (RuntimeError("unknown deletion outcome"), False),
+            (asyncio.CancelledError(), False),
+        ],
+        ids=["deleted", "already-gone", "provider-error", "unexpected-error", "cancelled"],
+    )
+    async def test_cleanup_notification_requires_confirmed_absence(
+        self,
+        delete_error: BaseException | None,
+        cleanup_confirmed: bool,
+    ) -> None:
+        sandbox = Mock(spec=Sandbox, id="sandbox-123", state="started", labels={})
+        sandbox.name = "task-alias"
+        provider = Mock(spec=SandboxProvider)
+        provider.create_sandbox = AsyncMock(return_value=sandbox)
+        provider.delete_sandbox = AsyncMock(side_effect=delete_error)
+        confirmations: list[bool] = []
+
+        with suppress(asyncio.CancelledError):
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="image"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+                on_cleanup=lambda: confirmations.append(True),
+            ) as created:
+                assert created is sandbox
+                assert confirmations == []
+
+        assert confirmations == ([True] if cleanup_confirmed else [])
+
+    async def test_unknown_creation_failure_does_not_confirm_cleanup(self) -> None:
+        create_error = ProviderSandboxError("unknown creation outcome")
+        provider = Mock(spec=SandboxProvider)
+        provider.create_sandbox = AsyncMock(side_effect=create_error)
+        confirmations: list[bool] = []
+
+        with pytest.raises(ProviderSandboxError) as error:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="image"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+                on_cleanup=lambda: confirmations.append(True),
+            ):
+                pytest.fail("Creation must fail before yielding")
+
+        assert error.value is create_error
+        assert confirmations == []
+        provider.delete_sandbox.assert_not_awaited()
+
+    async def test_cancelled_semaphore_wait_confirms_no_creation(self) -> None:
+        provider = Mock(spec=SandboxProvider)
+        semaphore = asyncio.Semaphore(0)
+        confirmations: list[bool] = []
+        waiting = asyncio.Event()
+
+        async def enter() -> None:
+            waiting.set()
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="image"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=semaphore,
+                on_cleanup=lambda: confirmations.append(True),
+            ):
+                pytest.fail("No creation slot is available")
+
+        entering = asyncio.create_task(enter())
+        await waiting.wait()
+        entering.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await entering
+
+        assert confirmations == [True]
+        provider.create_sandbox.assert_not_awaited()
+        provider.delete_sandbox.assert_not_awaited()
+
+    async def test_repeated_cancellation_waits_for_confirmed_cleanup(self) -> None:
+        sandbox = Mock(spec=Sandbox, id="sandbox-123", state="started", labels={})
+        sandbox.name = "task-alias"
+        creation_started = asyncio.Event()
+        release_creation = asyncio.Event()
+        deletion_started = asyncio.Event()
+        release_deletion = asyncio.Event()
+        confirmations: list[bool] = []
+        allocated: set[str] = set()
+
+        async def create(_request: SandboxCreateRequest) -> Sandbox:
+            creation_started.set()
+            await release_creation.wait()
+            allocated.add(sandbox.id)
+
+            return cast(Sandbox, sandbox)
+
+        async def delete(sandbox_id: str) -> None:
+            deletion_started.set()
+            await release_deletion.wait()
+            allocated.remove(sandbox_id)
+
+        provider = Mock(spec=SandboxProvider)
+        provider.create_sandbox = AsyncMock(side_effect=create)
+        provider.delete_sandbox = AsyncMock(side_effect=delete)
+
+        async def enter() -> None:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="image"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+                on_cleanup=lambda: confirmations.append(True),
+            ):
+                pytest.fail("Cancelled creation must not yield")
+
+        entering = asyncio.create_task(enter())
+        await creation_started.wait()
+        entering.cancel()
+        release_creation.set()
+        await deletion_started.wait()
+        entering.cancel()
+        release_deletion.set()
+        with pytest.raises(asyncio.CancelledError):
+            await entering
+
+        assert allocated == set()
+        assert confirmations == [True]
+
     async def test_create_sandbox_teardown_names_initiator(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Normal context-manager exit attributes the deletion to task_teardown in the audit trail."""
         mock_sandbox = Mock()
@@ -1681,7 +1820,8 @@ class TestDeleteSandboxAudit:
 
         # Of these outcomes only ProviderSandboxError propagates; test_delete_sandbox_raises_provider_errors pins that.
         with suppress(ProviderSandboxError):
-            await _delete_sandbox(self._sandbox(), provider, initiated_by="force_stop", org_id="org-1")
+            confirmed = await _delete_sandbox(self._sandbox(), provider, initiated_by="force_stop", org_id="org-1")
+            assert confirmed is (outcome in {"deleted", "already_gone"})
 
         logger_mock.info.assert_called_once_with(
             "sandbox.delete",

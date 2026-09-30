@@ -17,8 +17,6 @@ from sqlmodel import Session, col, delete, select, update
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
-    ExecutorDispatch,
-    ExecutorDispatchStatus,
     SandboxBuildReservation,
     Task,
     TaskStatus,
@@ -170,11 +168,17 @@ def _eligible_task_id(pool_id: str):
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     priority = arguments["priority"].as_integer()
     concurrency = arguments["concurrency"].as_integer()
+    reserved_task = (
+        select(col(SandboxBuildReservation.build_id))
+        .where(col(SandboxBuildReservation.task_row_id) == col(Task.id))
+        .exists()
+    )
 
     return (
         select(col(Task.id))
         .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
         .where(col(Task.status) == TaskStatus.PENDING)
+        .where(~reserved_task)
         .where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
         .where(arguments["queue_pool_id"].as_string() == pool_id)
         .where(active_count < concurrency)
@@ -351,10 +355,7 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> Non
     )
     active_reservation = (
         select(col(SandboxBuildReservation.build_id))
-        .join(ExecutorDispatch, col(ExecutorDispatch.id) == col(SandboxBuildReservation.executor_dispatch_id))
         .where(col(SandboxBuildReservation.task_row_id) == col(Task.id))
-        .where(col(SandboxBuildReservation.attempt_started_at) == col(Task.started_at))
-        .where(col(ExecutorDispatch.status) == ExecutorDispatchStatus.RUNNING)
         .exists()
     )
     session.exec(

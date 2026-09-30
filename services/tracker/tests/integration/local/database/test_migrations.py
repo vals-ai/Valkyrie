@@ -740,8 +740,20 @@ def test_sandbox_build_reservation_guard_upgrade_and_downgrade(
         remaining = connection.execute(
             text("SELECT count(*) FROM sandboxbuildreservation WHERE build_id = :id"), {"id": build_id}
         ).scalar_one()
+        assert status == TaskStatus.BUILDING.value
+        assert remaining == 1
+
+        connection.execute(text("UPDATE task SET status = 'ERROR' WHERE id = :id"), {"id": task.id})
+        remaining = connection.execute(
+            text("SELECT count(*) FROM sandboxbuildreservation WHERE build_id = :id"), {"id": build_id}
+        ).scalar_one()
+        assert remaining == 1
+
+        connection.execute(text("UPDATE task SET status = 'BUILDING' WHERE id = :id"), {"id": task.id})
+        connection.execute(text("DELETE FROM sandboxbuildreservation WHERE build_id = :id"), {"id": build_id})
+        connection.execute(text("UPDATE task SET status = 'PENDING' WHERE id = :id"), {"id": task.id})
+        status = connection.execute(text("SELECT status FROM task WHERE id = :id"), {"id": task.id}).scalar_one()
         assert status == TaskStatus.PENDING.value
-        assert remaining == 0
 
     migrate("downgrade", _SANDBOX_BUILD_RESERVATION_PREDECESSOR)
     assert "sandboxbuildreservation" not in inspect(engine).get_table_names()

@@ -12,6 +12,8 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     Org,
+    ExecutorDispatch,
+    ExecutorDispatchStatus,
     SandboxBuildReservation,
     Task,
     TaskStatus,
@@ -136,3 +138,32 @@ def test_reservation_protects_reset_then_promotion_allows_a_later_attempt(
 
     assert second_build != first_build
     assert postgres_session.get(SandboxBuildReservation, second_build) is not None
+
+
+def test_revoked_build_retains_capacity_and_blocks_a_new_attempt(
+    postgres_session: Session,
+    executor_authority: Callable[..., ExecutionAuthority],
+) -> None:
+    pool_id = store.queue_pool_id(f"provider:{uuid4()}")
+    benchmark, task = _task(postgres_session, pool_id)
+    authority = executor_authority(benchmark, session=postgres_session)
+    build_id = _claim(postgres_session, pool_id, task, authority, (1, 2, 3, 0))
+    dispatch = postgres_session.get(ExecutorDispatch, authority.dispatch_id)
+    assert dispatch is not None
+    dispatch.status = ExecutorDispatchStatus.FAILED
+    postgres_session.add(dispatch)
+    postgres_session.commit()
+
+    store.reset_abandoned_builds(postgres_session, pool_id, _LATER_ATTEMPT)
+    postgres_session.commit()
+    assert task.status == TaskStatus.BUILDING
+    assert postgres_session.get(SandboxBuildReservation, build_id) is not None
+
+    # Retrying the terminal task must not allocate while the old outcome is unknown.
+    task.status = TaskStatus.PENDING
+    task.started_at = _LATER_ATTEMPT
+    postgres_session.add(task)
+    postgres_session.commit()
+    assert not store.eligible_task_is(postgres_session, pool_id, task.id, _LATER_ATTEMPT)
+    assert not store.claim_eligible_task(postgres_session, pool_id, task.id, _LATER_ATTEMPT)
+    assert store.active_reservation_resources(postgres_session, pool_id).vcpu == 1

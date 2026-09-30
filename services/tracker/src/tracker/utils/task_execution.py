@@ -6,7 +6,7 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1050,7 +1050,9 @@ async def _process_task_attempt(
         object_store = runtime.objects
 
         @asynccontextmanager
-        async def sandbox_context(build_id: UUID | None) -> AsyncGenerator[Sandbox]:
+        async def sandbox_context(
+            build_id: UUID | None, on_cleanup: Callable[[], None] | None
+        ) -> AsyncGenerator[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
@@ -1082,12 +1084,13 @@ async def _process_task_attempt(
                     volumes=task_data.volumes,
                     creation_semaphore=creation_semaphore,
                     unique_name=queue_context is None,
+                    on_cleanup=on_cleanup,
                 ) as sandbox:
                     yield sandbox
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
-                sandbox = await sandbox_stack.enter_async_context(sandbox_context(None))
+                sandbox = await sandbox_stack.enter_async_context(sandbox_context(None, None))
             else:
                 sandbox = await enter_queued_sandbox(
                     stack=sandbox_stack,
