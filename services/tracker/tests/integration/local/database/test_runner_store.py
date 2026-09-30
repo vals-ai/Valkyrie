@@ -16,7 +16,7 @@ from tracker.executor.runner import (
     RenewalResult,
 )
 from tests.factories import make_benchmark, make_task
-from tracker.executor.dispatch_payload import seal_payload
+from tracker.executor.dispatch_payload import generate_payload_key, seal_payload
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
@@ -111,7 +111,7 @@ async def test_postgres_store_fences_claim_finish_and_terminalize_with_sibling(
             "verified_task_ids": dispatch.assigned_task_ids or [],
             "telemetry_context_json": {"request_id": "store-request", "trace_headers": {}},
         }
-        sealed = seal_payload(dispatch.id, payload)
+        sealed = seal_payload(dispatch.id, payload, generate_payload_key(dispatch.id))
         postgres_session.add(
             ExecutorDispatchPayload(
                 dispatch_id=dispatch.id,
@@ -453,6 +453,7 @@ def _sealed_case(
                 "trace_headers": {"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"},
             },
         },
+        generate_payload_key(dispatch.id),
     )
     session.add(
         ExecutorDispatchPayload(

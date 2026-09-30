@@ -17,7 +17,7 @@ from tracker.database.models import (
     ExecutorDispatchStatus,
     ExecutorRelease,
 )
-from tracker.executor.dispatch_payload import seal_payload
+from tracker.executor.dispatch_payload import generate_payload_key, seal_payload
 
 from tracker.executor import dispatch_recovery
 
@@ -94,7 +94,7 @@ def test_recovery_sweeps_only_nonqueued_payloads(
         for status in (ExecutorDispatchStatus.QUEUED, terminal_status)
     ]
     for dispatch in dispatches:
-        sealed = seal_payload(dispatch.id, {"sensitive": "secret-marker"})
+        sealed = seal_payload(dispatch.id, {"sensitive": "secret-marker"}, generate_payload_key(dispatch.id))
         database_session.add(dispatch)
         database_session.add(
             ExecutorDispatchPayload(

@@ -8,7 +8,7 @@ import pytest
 from cryptography.exceptions import InvalidTag
 
 import tracker.executor.dispatch_payload as dispatch_payload
-from tracker.executor.dispatch_payload import open_payload, seal_payload
+from tracker.executor.dispatch_payload import generate_payload_key, open_payload, seal_payload
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def local_payload_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_sealed_payload_roundtrip_without_plaintext(local_payload_key: None) -> None:
     dispatch_id = uuid4()
     payload = {"secret": "unique-sensitive-marker", "telemetry_context_json": {"request_id": "request-1"}}
-    sealed = seal_payload(dispatch_id, payload)
+    sealed = seal_payload(dispatch_id, payload, generate_payload_key(dispatch_id))
 
     assert open_payload(dispatch_id, sealed) == payload
     assert b"unique-sensitive-marker" not in sealed.ciphertext
@@ -29,14 +29,15 @@ def test_sealed_payload_roundtrip_without_plaintext(local_payload_key: None) -> 
 
 
 def test_sealed_payload_rejects_another_dispatch(local_payload_key: None) -> None:
-    sealed = seal_payload(uuid4(), {"secret": "sensitive"})
+    dispatch_id = uuid4()
+    sealed = seal_payload(dispatch_id, {"secret": "sensitive"}, generate_payload_key(dispatch_id))
     with pytest.raises(InvalidTag):
         open_payload(uuid4(), sealed)
 
 
 def test_sealed_payload_rejects_ciphertext_tampering(local_payload_key: None) -> None:
     dispatch_id = uuid4()
-    sealed = seal_payload(dispatch_id, {"secret": "sensitive"})
+    sealed = seal_payload(dispatch_id, {"secret": "sensitive"}, generate_payload_key(dispatch_id))
     altered = replace(sealed, ciphertext=sealed.ciphertext[:-1] + bytes([sealed.ciphertext[-1] ^ 1]))
     with pytest.raises(InvalidTag):
         open_payload(dispatch_id, altered)
@@ -45,7 +46,7 @@ def test_sealed_payload_rejects_ciphertext_tampering(local_payload_key: None) ->
 def test_local_payload_key_refused_for_ecs_launcher(local_payload_key: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "ecs")
     with pytest.raises(ValueError, match="Local payload key requires"):
-        seal_payload(uuid4(), {})
+        generate_payload_key(uuid4())
 
 
 def test_kms_payload_context_and_integrity(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,11 +75,13 @@ def test_kms_payload_context_and_integrity(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("EXECUTOR_PAYLOAD_KMS_KEY_ID", "arn:aws:kms:us-east-1:123456789012:key/test")
     monkeypatch.delenv("EXECUTOR_PAYLOAD_LOCAL_KEY", raising=False)
     monkeypatch.setattr(
-        dispatch_payload.boto3, "client", lambda service: kms if service == "kms" else pytest.fail(service)
+        dispatch_payload.boto3,
+        "client",
+        lambda service, config: kms if service == "kms" else pytest.fail(service),
     )
     dispatch_id = uuid4()
     payload = {"service_headers": {"authorization": "unique-kms-sensitive-marker"}}
-    sealed = seal_payload(dispatch_id, payload)
+    sealed = seal_payload(dispatch_id, payload, generate_payload_key(dispatch_id))
     assert open_payload(dispatch_id, sealed) == payload
     assert kms.generated == [
         {

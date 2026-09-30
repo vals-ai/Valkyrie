@@ -331,6 +331,89 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
     assert len(enqueued) == 1
 
 
+@pytest.mark.parametrize("operation", ["retry", "start"])
+async def test_http_admission_generates_payload_key_without_holding_admission_lock(
+    operation: str,
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+    executor_authority: Any,
+) -> None:
+    org, benchmark, _ = _run(
+        postgres_session,
+        store.queue_pool_id(f"daytona:{uuid4()}"),
+        [("payload-key", TaskStatus.STOPPED, _ATTEMPT)],
+    )
+    executor_authority(benchmark, session=postgres_session)
+    assert benchmark.current_execution_release_id is not None
+    benchmark.status = BenchmarkStatus.STOPPED
+    postgres_session.add(benchmark)
+    promote_release(postgres_session, benchmark.current_execution_release_id)
+    postgres_session.commit()
+    identity = RequestIdentity(org=org, access_key_id=None, email=None, name=None)
+
+    def request_session() -> Generator[Session, None, None]:
+        with Session(postgres_engine) as session:
+            yield session
+
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_session, request_session)
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_current_org, lambda: org)
+    monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_current_starter, lambda: identity)
+    monkeypatch.setattr(tracker_main, "check_database_connection", lambda: True)
+    monkeypatch.setattr(tracker_main, "SANDBOX_QUEUE_ENABLED", False)
+    _use_access_key_runtime(monkeypatch, harness_config)
+
+    async def health_check(*_args: Any, **_kwargs: Any) -> object:
+        return object()
+
+    async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=["new-task"])
+
+    async def close(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def copy_agent(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def enqueue(_dispatch: ExecutorDispatch, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(BenchmarkServiceClient, "health_check", health_check)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+    monkeypatch.setattr(BenchmarkServiceClient, "close", close)
+    monkeypatch.setattr(tracker_main, "copy_agent_to_benchmark", copy_agent)
+    monkeypatch.setattr(tracker_main, "_launch_executor_dispatch", enqueue)
+    original_generate_payload_key = tracker_main.generate_payload_key
+    admission_lockable_during_key_generation: list[bool] = []
+
+    def generate_payload_key(dispatch_id: UUID) -> Any:
+        # Another replica must be able to admit work while this request waits on KMS.
+        with Session(postgres_engine) as other_replica:
+            other_replica.exec(select(ExecutorAdmission).with_for_update(nowait=True)).one()
+            admission_lockable_during_key_generation.append(True)
+        return original_generate_payload_key(dispatch_id)
+
+    monkeypatch.setattr(tracker_main, "generate_payload_key", generate_payload_key)
+    if operation == "retry":
+        url = f"/retry-or-resume-benchmark/{benchmark.id}"
+        body: dict[str, Any] = {}
+    else:
+        url = "/start-benchmark"
+        body = StartBenchmarkRequest(
+            benchmark_name=f"payload-key-{uuid4()}",
+            contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
+            task_ids=["new-task"],
+            harness_config=harness_config,
+        ).model_dump(mode="json")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=tracker_main.app), base_url="http://test") as client:
+        response = await asyncio.wait_for(client.post(url, json=body), timeout=10)
+
+    assert response.status_code == 200, response.text
+    assert admission_lockable_during_key_generation == [True]
+
+
 async def test_targeted_snapshot_reaches_admission_and_creation_unchanged(
     postgres_engine: Engine,
     postgres_session: Session,

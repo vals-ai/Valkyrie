@@ -113,7 +113,7 @@ from tracker.executor.dispatch_control import (
     resolve_enqueue_failure,
     validate_managed_execution_release,
 )
-from tracker.executor.dispatch_payload import seal_payload
+from tracker.executor.dispatch_payload import PayloadKey, generate_payload_key, seal_payload
 from tracker.executor.launcher import launch_dispatch
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
@@ -269,8 +269,9 @@ def _persist_dispatch_payload(
     dispatch: ExecutorDispatch,
     payload: dict[str, Any],
     telemetry_context: ExecutorTelemetryContext,
+    payload_key: PayloadKey,
 ) -> None:
-    sealed = seal_payload(dispatch.id, {**payload, "telemetry_context_json": telemetry_context})
+    sealed = seal_payload(dispatch.id, {**payload, "telemetry_context_json": telemetry_context}, payload_key)
     session.add(
         ExecutorDispatchPayload(
             dispatch_id=dispatch.id,
@@ -548,6 +549,7 @@ def _commit_start(
     queue_pool_id: str | None,
     telemetry_context: ExecutorTelemetryContext,
 ) -> tuple[str, "AdmissionResult"]:
+    payload_key = generate_payload_key(dispatch_id)
     with Session(bind, expire_on_commit=False) as session:
         benchmark = Benchmark.model_validate(json.loads(benchmark_json))
         # API serialization deliberately excludes internal scheduler admission fields.
@@ -559,7 +561,7 @@ def _commit_start(
                 session.add(Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id=task_id))
             dispatch = admit_start_dispatch(session, benchmark=benchmark, dispatch_id=dispatch_id, task_ids=task_ids)
             payload = _process_benchmark_kwargs(benchmark, request, task_ids)
-            _persist_dispatch_payload(session, dispatch, payload, telemetry_context)
+            _persist_dispatch_payload(session, dispatch, payload, telemetry_context, payload_key)
             session.commit()
             return benchmark.model_dump_json(), _admission_result(dispatch, task_ids)
         except Exception as exc:
@@ -1781,6 +1783,7 @@ def _apply_recovery(
         return None
 
     dispatch_id = uuid4()
+    payload_key = generate_payload_key(dispatch_id)
     pre_action_status: BenchmarkStatus | None = None
     try:
         with session.no_autoflush:
@@ -1956,7 +1959,7 @@ def _apply_recovery(
             if transferred.rowcount != len(resumable_evaluations):
                 raise TrackerServiceError("Recovery evaluation ownership changed before dispatch admission")
         executor_payload = _process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids)
-        _persist_dispatch_payload(session, executor_dispatch, executor_payload, telemetry_context)
+        _persist_dispatch_payload(session, executor_dispatch, executor_payload, telemetry_context, payload_key)
         session.commit()
     except ReleaseControlError as exc:
         session.rollback()

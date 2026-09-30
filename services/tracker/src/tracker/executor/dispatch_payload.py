@@ -10,7 +10,10 @@ from typing import Any
 from uuid import UUID
 
 import boto3
+from botocore.config import Config
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+_KMS_CONFIG = Config(connect_timeout=2, read_timeout=5, retries={"mode": "standard", "max_attempts": 3})
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,12 @@ class SealedPayload:
     ciphertext: bytes
     encrypted_data_key: bytes
     nonce: bytes
+
+
+@dataclass(frozen=True)
+class PayloadKey:
+    data_key: bytes
+    encrypted_data_key: bytes
 
 
 def _key_configuration() -> tuple[str, bytes | str]:
@@ -38,29 +47,31 @@ def _key_configuration() -> tuple[str, bytes | str]:
     return "kms", kms_key_id
 
 
-def seal_payload(dispatch_id: UUID, payload: dict[str, Any]) -> SealedPayload:
+def generate_payload_key(dispatch_id: UUID) -> PayloadKey:
+    """Create the data key for one dispatch; call it before taking admission locks."""
     provider, key = _key_configuration()
-    aad = str(dispatch_id).encode()
     if provider == "kms":
-        response = boto3.client("kms").generate_data_key(
+        response = boto3.client("kms", config=_KMS_CONFIG).generate_data_key(
             KeyId=key, KeySpec="AES_256", EncryptionContext={"dispatch_id": str(dispatch_id)}
         )
-        data_key = response["Plaintext"]
-        encrypted_data_key = response["CiphertextBlob"]
-    else:
-        data_key = os.urandom(32)
-        wrap_nonce = os.urandom(12)
-        encrypted_data_key = wrap_nonce + AESGCM(key).encrypt(wrap_nonce, data_key, aad)
+        return PayloadKey(data_key=response["Plaintext"], encrypted_data_key=response["CiphertextBlob"])
+    data_key = os.urandom(32)
+    wrap_nonce = os.urandom(12)
+    encrypted_data_key = wrap_nonce + AESGCM(key).encrypt(wrap_nonce, data_key, str(dispatch_id).encode())
+    return PayloadKey(data_key=data_key, encrypted_data_key=encrypted_data_key)
+
+
+def seal_payload(dispatch_id: UUID, payload: dict[str, Any], key: PayloadKey) -> SealedPayload:
     nonce = os.urandom(12)
-    ciphertext = AESGCM(data_key).encrypt(nonce, json.dumps(payload).encode(), aad)
-    return SealedPayload(ciphertext=ciphertext, encrypted_data_key=encrypted_data_key, nonce=nonce)
+    ciphertext = AESGCM(key.data_key).encrypt(nonce, json.dumps(payload).encode(), str(dispatch_id).encode())
+    return SealedPayload(ciphertext=ciphertext, encrypted_data_key=key.encrypted_data_key, nonce=nonce)
 
 
 def open_payload(dispatch_id: UUID, sealed: SealedPayload) -> dict[str, Any]:
     provider, key = _key_configuration()
     aad = str(dispatch_id).encode()
     if provider == "kms":
-        data_key = boto3.client("kms").decrypt(
+        data_key = boto3.client("kms", config=_KMS_CONFIG).decrypt(
             CiphertextBlob=sealed.encrypted_data_key,
             EncryptionContext={"dispatch_id": str(dispatch_id)},
         )["Plaintext"]
