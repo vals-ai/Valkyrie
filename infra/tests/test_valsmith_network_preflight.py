@@ -197,3 +197,32 @@ class NetworkPreflightTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "forwarding"):
             collect_inventory("test", read_test_inputs(), reader=FixtureReader(data))
+
+        rule_id = "rslvr-autodefined-rr-internet-resolver"
+        data[("route53resolver", "list-resolver-rule-associations")] = {
+            "ResolverRuleAssociations": [
+                {"VPCId": "vpc-00000000000000001", "Status": "COMPLETE", "ResolverRuleId": rule_id}
+            ]
+        }
+        default_rule: dict[str, JsonValue] = {
+            "Id": rule_id,
+            "Arn": f"arn:aws:route53resolver:us-east-1::autodefined-rule/{rule_id}",
+            "OwnerId": "Route 53 Resolver",
+            "DomainName": ".",
+            "Status": "COMPLETE",
+            "RuleType": "RECURSIVE",
+        }
+        data[("route53resolver", "get-resolver-rule")] = {"ResolverRule": default_rule}
+        collect_inventory("test", read_test_inputs(), reader=FixtureReader(data))
+
+        variants: tuple[tuple[str, JsonValue], ...] = (
+            ("RuleType", "FORWARD"),
+            ("OwnerId", "629807611108"),
+            ("DomainName", "example.com."),
+            ("ResolverEndpointId", "rslvr-outbound"),
+            ("TargetIps", [{"Ip": "1.1.1.1"}]),
+        )
+        for key, value in variants:
+            data[("route53resolver", "get-resolver-rule")] = {"ResolverRule": {**default_rule, key: value}}
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "forwarding"):
+                collect_inventory("test", read_test_inputs(), reader=FixtureReader(data))

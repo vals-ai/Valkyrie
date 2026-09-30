@@ -238,8 +238,34 @@ def collect_inventory(profile: str, inputs: NetworkInputs, *, reader: AwsReader 
     resolver_associations = object_list(
         reader.read("route53resolver", "list-resolver-rule-associations"), "ResolverRuleAssociations"
     )
-    if owned_vpc_id and any(item.get("VPCId") == owned_vpc_id for item in resolver_associations):
-        raise ValueError("New VPC has an unreviewed Resolver forwarding association")
+    resolver_rules: list[JsonValue] = []
+    for association in resolver_associations:
+        if not owned_vpc_id or association.get("VPCId") != owned_vpc_id:
+            continue
+
+        rule_id = "rslvr-autodefined-rr-internet-resolver"
+        if association.get("ResolverRuleId") != rule_id or association.get("Status") != "COMPLETE":
+            raise ValueError("New VPC has an unreviewed Resolver forwarding association")
+
+        rule = object_field(
+            reader.read("route53resolver", "get-resolver-rule", "--resolver-rule-id", rule_id), "ResolverRule"
+        )
+        expected = {
+            "Id": rule_id,
+            "Arn": f"arn:aws:route53resolver:{REGION}::autodefined-rule/{rule_id}",
+            "OwnerId": "Route 53 Resolver",
+            "DomainName": ".",
+            "Status": "COMPLETE",
+            "RuleType": "RECURSIVE",
+        }
+        if (
+            any(rule.get(key) != value for key, value in expected.items())
+            or rule.get("ResolverEndpointId")
+            or rule.get("TargetIps")
+        ):
+            raise ValueError("New VPC has an unreviewed Resolver forwarding rule")
+
+        resolver_rules.append(rule)
 
     groups = reader.read("ec2", "describe-security-groups", "--group-ids", inputs.caller_security_group_id)
     clusters = reader.read("ecs", "describe-clusters", "--clusters", inputs.cluster_arn)
@@ -273,6 +299,7 @@ def collect_inventory(profile: str, inputs: NetworkInputs, *, reader: AwsReader 
         "reservations": reservations,
         "ipam_ranges": pool_ranges,
         "resolver_associations": list(resolver_associations),
+        "resolver_rules": resolver_rules,
     }
     inventory = NetworkInventory(ACCOUNT, REGION, observed_at, input_hash(inputs), tuple(sorted(occupied)), resources)
     validate_inventory(inputs, inventory)
