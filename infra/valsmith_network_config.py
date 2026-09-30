@@ -217,7 +217,7 @@ def _validate_caller_egress(group: dict[str, JsonValue], destination: str) -> No
             and isinstance(last_port, int)
             and first_port <= 8001 <= last_port
         )
-        if not covers_port:
+        if not covers_port or "IpRanges" not in rule:
             continue
 
         for address in object_list(rule, "IpRanges"):

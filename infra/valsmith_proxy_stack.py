@@ -82,12 +82,7 @@ def add_proxy_services(stack: "ValSmithNetworkStack", image_uri: str) -> None:
         linux_parameters=linux,
         logging=ecs.LogDrivers.aws_logs(log_group=log_group, stream_prefix="proxy"),
         health_check=ecs.HealthCheck(
-            command=[
-                "CMD",
-                "python3",
-                "-c",
-                "import socket; [socket.create_connection(('127.0.0.1', port), 2).close() for port in (3128, 3129)]",
-            ],
+            command=["CMD", "python3", "/opt/proxy/healthcheck.py"],
             interval=Duration.seconds(30),
             timeout=Duration.seconds(5),
             retries=3,

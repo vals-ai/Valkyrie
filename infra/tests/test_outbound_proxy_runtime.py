@@ -1,6 +1,7 @@
 """Opt-in real TLS/CONNECT tests; no customer credentials or public requests."""
 
 import os
+import json
 import socket
 import ssl
 import subprocess
@@ -11,6 +12,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 from uuid import uuid4
+
+from aws_cdk import App, assertions
+from tests.test_valsmith_network_config import read_test_inputs
+from tests.test_valsmith_network_stack import PROXY_IMAGE
+from valsmith_network_app import build_stack
+from valsmith_network_config import json_document, object_field, object_list
 
 IMAGE = os.getenv("VALSMITH_PROXY_TEST_IMAGE")
 SERVICE_HOSTS = (
@@ -55,9 +62,17 @@ class ProxyRuntimeTest(unittest.TestCase):
     scratch_volume: str
     fixture_directory: Path
     ports: dict[int, int]
+    health_command: list[str]
 
     @classmethod
     def setUpClass(cls) -> None:
+        template = assertions.Template.from_stack(build_stack(App(), "network", read_test_inputs(), PROXY_IMAGE))
+        definitions = json_document(json.dumps(template.find_resources("AWS::ECS::TaskDefinition")))
+        task = object_field(object_field(definitions, next(iter(definitions))), "Properties")
+        container = object_list(task, "ContainerDefinitions")[0]
+        command = object_field(container, "HealthCheck")["Command"]
+        assert isinstance(command, list) and command[0] == "CMD" and all(isinstance(part, str) for part in command)
+        cls.health_command = [part for part in command[1:] if isinstance(part, str)]
         identifier = uuid4().hex[:10]
         cls.network = f"valsmith-proxy-test-{identifier}"
         cls.control_network = f"{cls.network}-client"
@@ -390,7 +405,27 @@ class ProxyRuntimeTest(unittest.TestCase):
         self.assertIn("valsmith.vals.ai", logs)
         self.assertNotIn("secret-canary", logs)
 
+    def health_check(self) -> int:
+        return subprocess.run(
+            ["docker", "exec", self.proxy, *self.health_command],
+            capture_output=True,
+            timeout=10,
+        ).returncode
+
+    def test_local_health_does_not_depend_on_external_origin(self) -> None:
+        docker("pause", self.origin)
+        try:
+            with self.assertRaises(OSError):
+                self.request("valsmith.vals.ai")
+
+            self.assertEqual(self.health_check(), 0, "An upstream outage must not restart the proxy")
+        finally:
+            docker("unpause", self.origin)
+
+        self.assertIn(b"origin-success", self.request("valsmith.vals.ai"))
+
     def test_y_helper_timeout_does_not_open_a_tunnel(self) -> None:
+        self.assertEqual(self.health_check(), 0)
         helper_processes = docker(
             "exec",
             self.proxy,
@@ -411,6 +446,7 @@ class ProxyRuntimeTest(unittest.TestCase):
                 "import os, signal, sys; [os.kill(int(pid), signal.SIGSTOP) for pid in sys.argv[1:]]",
                 *helper_processes,
             )
+            self.assertNotEqual(self.health_check(), 0, "A stalled helper must fail the deployed health check")
             connections = [self.connect("valsmith.vals.ai:443") for _ in range(64)]
             context = ssl.create_default_context(cafile=str(self.fixture_directory / "origin.pem"))
             incoming = ssl.MemoryBIO()
@@ -442,6 +478,7 @@ class ProxyRuntimeTest(unittest.TestCase):
         for connection in connections:
             self.assertEqual(connection.recv(1), b"", "Resuming the helper must not reopen the old tunnel")
         self.assertIn(b"origin-success", self.request("valsmith.vals.ai"))
+        self.assertEqual(self.health_check(), 0)
 
     def test_z_private_dns_is_denied(self) -> None:
         # Only DNS changes. The image keeps its fixed production policy.

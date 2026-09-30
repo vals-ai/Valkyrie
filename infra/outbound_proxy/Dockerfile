@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && mkdir -p /run/squid && chown proxy:proxy /run/squid
 COPY squid.conf service-hosts.txt view-hosts.txt /etc/squid/
 COPY sni_acl.py /opt/proxy/sni_acl.py
+COPY healthcheck.py /opt/proxy/healthcheck.py
 VOLUME ["/tmp"]
 USER proxy
 EXPOSE 3128 3129

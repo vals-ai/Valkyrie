@@ -206,6 +206,14 @@ class NetworkInputsTest(unittest.TestCase):
         ]
         validate_inventory(inputs, inventory)
 
+        group["IpPermissionsEgress"] = [
+            {"IpProtocol": "-1", "UserIdGroupPairs": [{"GroupId": "sg-other"}]},
+            {"IpProtocol": "-1", "PrefixListIds": [{"PrefixListId": "pl-other"}]},
+            {"IpProtocol": "-1", "Ipv6Ranges": [{"CidrIpv6": "::/0"}]},
+            {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
+        ]
+        validate_inventory(inputs, inventory)
+
         invalid_rules: tuple[list[JsonValue], ...] = (
             [],
             [{"IpProtocol": "udp", "FromPort": 8001, "ToPort": 8001, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}],

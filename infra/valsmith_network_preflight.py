@@ -25,7 +25,7 @@ from valsmith_network_config import (
     text_field,
     validate_inventory,
 )
-from valsmith_network_dns import DNS_LOG_ARN, DNS_LOG_GROUP
+from valsmith_network_dns import DNS_LOG_ARN, DNS_LOG_GROUP, dns_names
 
 
 class AwsReader:
@@ -279,6 +279,101 @@ def collect_inventory(profile: str, inputs: NetworkInputs, *, reader: AwsReader 
     return inventory
 
 
+def _verify_dns_rules(
+    reader: AwsReader, owned: list[dict[str, JsonValue]], vpc_id: str, rule_group_id: str
+) -> dict[str, JsonValue]:
+    domain_lists = {
+        name: text_field(
+            _only(
+                [
+                    item
+                    for item in owned
+                    if item.get("ResourceType") == "AWS::Route53Resolver::FirewallDomainList"
+                    and item.get("LogicalResourceId") == name
+                ],
+                f"DNS domain list {name}",
+            ),
+            "PhysicalResourceId",
+        )
+        for name in ("DnsApprovedDomains", "DnsAllDomains")
+    }
+    load_balancer_arn = text_field(
+        _only(
+            [item for item in owned if item.get("ResourceType") == "AWS::ElasticLoadBalancingV2::LoadBalancer"],
+            "DNS proxy load balancer",
+        ),
+        "PhysicalResourceId",
+    )
+    load_balancer = _only(
+        object_list(
+            reader.read("elbv2", "describe-load-balancers", "--load-balancer-arns", load_balancer_arn), "LoadBalancers"
+        ),
+        "DNS proxy load balancer",
+    )
+    for key, value in {
+        "LoadBalancerArn": load_balancer_arn,
+        "VpcId": vpc_id,
+        "Scheme": "internal",
+        "Type": "network",
+    }.items():
+        if load_balancer.get(key) != value:
+            raise ValueError("DNS proxy load balancer does not match the network")
+
+    domains: dict[str, JsonValue] = {}
+    for name, expected in {
+        "DnsApprovedDomains": set(dns_names(text_field(load_balancer, "DNSName"))),
+        "DnsAllDomains": {"*"},
+    }.items():
+        response = reader.read(
+            "route53resolver", "list-firewall-domains", "--firewall-domain-list-id", domain_lists[name]
+        )
+        values = response.get("Domains")
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError("DNS domain list is incomplete")
+
+        actual = {value.lower().removesuffix(".") for value in values if isinstance(value, str)}
+        if actual != expected:
+            raise ValueError(f"DNS domain list {name} differs from the reviewed destinations")
+
+        domains[name] = values
+
+    rules = object_list(
+        reader.read("route53resolver", "list-firewall-rules", "--firewall-rule-group-id", rule_group_id),
+        "FirewallRules",
+    )
+    expected_rules: list[dict[str, JsonValue]] = [
+        {
+            "Priority": priority,
+            "Action": "ALLOW",
+            "Qtype": query_type,
+            "FirewallDomainListId": domain_lists["DnsApprovedDomains"],
+            "BlockResponse": None,
+        }
+        for priority, query_type in ((100, "A"), (200, "AAAA"))
+    ]
+    expected_rules.append(
+        {
+            "Priority": 9900,
+            "Action": "BLOCK",
+            "Qtype": None,
+            "FirewallDomainListId": domain_lists["DnsAllDomains"],
+            "BlockResponse": "NODATA",
+        }
+    )
+    if len(rules) != len(expected_rules):
+        raise ValueError("DNS rules must include exactly the two allows and catch-all block")
+
+    for expected in expected_rules:
+        rule = _only([rule for rule in rules if rule.get("Priority") == expected["Priority"]], "DNS rule priority")
+        expected.update(
+            {"FirewallRuleGroupId": rule_group_id, "FirewallDomainRedirectionAction": "INSPECT_REDIRECTION_DOMAIN"}
+        )
+        if any(rule.get(key) != value for key, value in expected.items()):
+            raise ValueError("DNS rules differ from the reviewed query and alias boundary")
+
+    return {"rules": list(rules), "domains": domains}
+
+
 def verify_dns(
     profile: str, inputs: NetworkInputs, *, disable_fail_open: bool = False, reader: AwsReader | None = None
 ) -> dict[str, JsonValue]:
@@ -329,6 +424,8 @@ def verify_dns(
     }.items():
         if association.get(key) != expected:
             raise ValueError(f"DNS firewall association {key} does not match")
+
+    boundary = _verify_dns_rules(reader, owned, vpc_id, outputs["DnsFirewallRuleGroupId"])
 
     log_associations = object_list(
         reader.read("route53resolver", "list-resolver-query-log-config-associations"),
@@ -382,6 +479,7 @@ def verify_dns(
         "vpc_id": vpc_id,
         "firewall": firewall,
         "association": association,
+        "boundary": boundary,
         "log_association": log_association,
         "verified_at": datetime.now(UTC).isoformat(),
     }
