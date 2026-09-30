@@ -36,6 +36,7 @@ _EXPECTED_CLI_PATHS = (
     "run results",
     "run resume",
     "run retry",
+    "run shed",
     "run start",
     "run status",
     "run stop",

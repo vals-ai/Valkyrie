@@ -9,6 +9,7 @@ from valkyrie.cli.run.logs import logs
 from valkyrie.cli.run.outputs import artifacts, output_path, outputs
 from valkyrie.cli.run.results import results
 from valkyrie.cli.run.resume import resume, retry_command
+from valkyrie.cli.run.shed import shed
 from valkyrie.cli.run.start import start
 from valkyrie.cli.run.status import status_runs
 from valkyrie.cli.run.stop import stop
@@ -34,6 +35,7 @@ run.add_command(outputs)
 run.add_command(results)
 run.add_command(resume)
 run.add_command(retry_command)
+run.add_command(shed)
 run.add_command(start)
 run.add_command(status_runs)
 run.add_command(stop)

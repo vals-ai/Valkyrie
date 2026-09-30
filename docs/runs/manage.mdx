@@ -17,7 +17,7 @@ await client.runs.resume(run_id, concurrency=20)
 
 </CodeGroup>
 
-Full syntax for each command below is in the [`run update`](/reference/cli/run#update), [`run stop`](/reference/cli/run#stop), [`run resume`](/reference/cli/run#resume), and [`run retry`](/reference/cli/run#retry) reference, and in [`client.runs.resume`](/reference/sdk/runs#resume) and [`client.runs.retry`](/reference/sdk/runs#retry) for Python.
+Full syntax for each command below is in the [`run update`](/reference/cli/run#update), [`run stop`](/reference/cli/run#stop), [`run shed`](/reference/cli/run#shed), [`run resume`](/reference/cli/run#resume), and [`run retry`](/reference/cli/run#retry) reference, and in [`client.runs.resume`](/reference/sdk/runs#resume) and [`client.runs.retry`](/reference/sdk/runs#retry) for Python.
 
 ## Update concurrency
 
@@ -47,6 +47,17 @@ valkyrie run stop <run-id> --force
 <Warning>
   Force-stopping deletes running sandboxes and cannot be undone. The CLI asks for confirmation first.
 </Warning>
+
+## Shed load from a running run
+
+When a model starts hitting rate limits, lowering concurrency alone waits for running tasks to finish. `run shed` lowers the limit and then force-stops the newest building or in-progress tasks until the run is back at the new limit. The most recently admitted tasks have done the least work, so less is lost:
+
+```bash
+valkyrie run shed <run-id> --concurrency 10 --dry-run
+valkyrie run shed <run-id> --concurrency 10
+```
+
+Tasks are admitted oldest `started_at` first, so the ones with the latest `started_at` are the newest. Evaluating tasks are never stopped and still count toward the limit. The command lists the tasks again after lowering the limit, so it also catches any admitted since the preview. Stopped tasks can be rerun with `run retry` once the rate limits clear, and they restart from the beginning.
 
 ## Choose resume or retry
 

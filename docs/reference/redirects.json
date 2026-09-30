@@ -52,6 +52,10 @@
     "destination": "/reference/cli/run#retry"
   },
   {
+    "source": "/reference/cli/run/shed",
+    "destination": "/reference/cli/run#shed"
+  },
+  {
     "source": "/reference/cli/run/start",
     "destination": "/reference/cli/run#start"
   },
