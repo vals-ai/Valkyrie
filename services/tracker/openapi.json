@@ -4406,7 +4406,7 @@
     },
     "/benchmarks/{benchmark_id}/shed": {
       "post": {
-        "description": "Lower an active run's concurrency and force stop the newest tasks above the new limit.\n\nSelection and the stop transition happen in one locked transaction, so a task that has moved on to\nevaluating is never stopped. With ``dry_run`` the transaction is rolled back and only the selection is returned.",
+        "description": "Lower an active run's concurrency and force stop the newest tasks above the new limit.",
         "operationId": "shed_benchmark",
         "parameters": [
           {
