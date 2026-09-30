@@ -32,9 +32,7 @@ def shed(run_id: UUID, concurrency: int, dry_run: bool) -> None:
             _print_tasks(planned, "Would force stop")
             if dry_run:
                 return
-            if not click.confirm(
-                f"Lower run {run_id} concurrency to {concurrency} and force stop the {len(planned)} newest task(s)?"
-            ):
+            if not click.confirm(f"Lower run {run_id} concurrency to {concurrency} and force stop the tasks above it?"):
                 click.echo("Cancelled.")
                 return
 

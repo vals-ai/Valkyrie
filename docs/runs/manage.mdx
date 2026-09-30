@@ -57,7 +57,7 @@ valkyrie run shed <run-id> --concurrency 10 --dry-run
 valkyrie run shed <run-id> --concurrency 10
 ```
 
-The new limit must be below the current one; the tracker rejects a shed that would keep or raise it. Tasks are admitted oldest `started_at` first, so the ones with the latest `started_at` are the newest. Evaluating tasks still count toward the limit but are never stopped: the tracker lowers the limit, picks the tasks, and stops them in one locked transaction, so a task that has moved on to evaluating since the preview is left alone. Stopped tasks can be rerun with `run retry` once the rate limits clear; they restart from the beginning.
+The new limit must be below the current one; the tracker rejects a shed that would keep or raise it. "Newest" means the latest `started_at`, which is when a task was queued or last retried, not when its sandbox came up; tasks are admitted in that order, so it is a close approximation rather than an exact record of how much work each task has done. Evaluating tasks still count toward the limit but are never stopped: the tracker lowers the limit, picks the tasks, and stops them in one locked transaction, so a task that has moved on to evaluating since the preview is left alone. Stopped tasks can be rerun with `run retry` once the rate limits clear; they restart from the beginning.
 
 ## Choose resume or retry
 
