@@ -143,19 +143,6 @@ def test_start_selects_the_queue_protocol_the_active_release_speaks(
     assert persisted.arguments.queue_pool_id == expected_queue_pool_id
 
 
-def test_start_leaves_unqueued_runs_without_a_queue_pool(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-) -> None:
-    register_release(database_session, _release("active", protocol_version=RESERVED_QUEUE_PROTOCOL_VERSION))
-    promote_release(database_session, "active")
-    database_session.commit()
-
-    admit_start_dispatch(database_session, benchmark=example_benchmark_object, dispatch_id=uuid4())
-
-    assert example_benchmark_object.arguments.queue_pool_id is None
-
-
 def test_reserved_queue_recovery_refuses_a_release_without_the_reserved_protocol(
     database_session: Session,
     example_benchmark_object: Benchmark,

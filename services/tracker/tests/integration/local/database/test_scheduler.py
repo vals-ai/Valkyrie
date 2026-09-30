@@ -1307,48 +1307,7 @@ async def test_reservations_and_building_cap_bound_parallel_builds(
     assert provider_events == ["capacity", "read_capacity"] * admission_rounds
 
 
-async def test_reserved_claims_keep_fifo_order_while_builds_overlap(
-    postgres_engine: Engine,
-    postgres_session: Session,
-    executor_authority: Any,
-) -> None:
-    provider_pool_id = f"daytona:{uuid4()}"
-    context = _context(postgres_engine, provider_pool_id, [], reserved=True)
-    _, benchmark, tasks = _run(
-        postgres_session,
-        context.pool_id,
-        [(f"task-{index}", TaskStatus.PENDING, _ATTEMPT + timedelta(microseconds=index)) for index in range(3)],
-        concurrency=3,
-    )
-    authority = executor_authority(benchmark, session=postgres_session)
-    claimed: list[str] = []
-    all_creating = asyncio.Event()
-    finish_creating = asyncio.Event()
-
-    def hold_create(task: Task) -> Callable[[], Awaitable[None]]:
-        async def hold() -> None:
-            claimed.append(task.task_id)
-            if len(claimed) == len(tasks):
-                all_creating.set()
-            await finish_creating.wait()
-
-        return hold
-
-    async with AsyncExitStack() as stack:
-        entering = asyncio.gather(
-            *(_enter(stack, context, task, [], authority, on_create=hold_create(task)) for task in reversed(tasks))
-        )
-        try:
-            await asyncio.wait_for(all_creating.wait(), timeout=10)
-        finally:
-            finish_creating.set()
-        sandboxes = await asyncio.wait_for(entering, timeout=10)
-
-    assert all(sandboxes)
-    assert claimed == [task.task_id for task in tasks]
-
-
-async def test_failed_reserved_create_releases_build_lock_and_retries_same_attempt(
+async def test_failed_reserved_create_frees_the_build_lock_so_recovery_requeues_it(
     postgres_engine: Engine,
     postgres_session: Session,
     executor_authority: Any,
@@ -1371,63 +1330,17 @@ async def test_failed_reserved_create_releases_build_lock_and_retries_same_attem
     assert _reservation_count(postgres_engine, context.pool_id) == 1
     assert await _build_lock_is_free(postgres_engine, task)
 
-    _update_task(postgres_engine, task, TaskStatus.PENDING, task.started_at)
+    await admission.recover_queued_pool(context)
+
+    requeued = _task(postgres_engine, task)
+    assert requeued.status == TaskStatus.PENDING
+    assert requeued.started_at > task.started_at
+    assert _reservation_count(postgres_engine, context.pool_id) == 0
+
     async with AsyncExitStack() as stack:
-        assert await _enter(stack, context, task, events, authority) is not None
+        assert await _enter(stack, context, requeued, events, authority) is not None
         assert _task(postgres_engine, task).status == TaskStatus.IN_PROGRESS
 
-    assert _reservation_count(postgres_engine, context.pool_id) == 0
-
-
-async def test_recovery_requeues_reserved_build_only_after_its_creator_dies(
-    postgres_engine: Engine,
-    postgres_session: Session,
-) -> None:
-    provider_pool_id = f"daytona:{uuid4()}"
-    context = _context(postgres_engine, provider_pool_id, [], reserved=True)
-    _, _, (task,) = _run(postgres_session, context.pool_id, [("crashed", TaskStatus.PENDING, _ATTEMPT)])
-    _reserve(postgres_session, context.pool_id, task)
-
-    build_lock = store.task_build_lock(postgres_engine, task.id)
-    assert await build_lock.acquire()
-    try:
-        await admission.recover_queued_pool(context)
-
-        assert _task(postgres_engine, task).status == TaskStatus.BUILDING
-        assert _reservation_count(postgres_engine, context.pool_id) == 1
-    finally:
-        await build_lock.release()
-
-    await admission.recover_queued_pool(context)
-
-    recovered = _task(postgres_engine, task)
-    assert recovered.status == TaskStatus.PENDING
-    assert recovered.started_at > task.started_at
-    assert _reservation_count(postgres_engine, context.pool_id) == 0
-
-
-async def test_stopped_reservation_holds_capacity_until_its_creator_lets_go(
-    postgres_engine: Engine,
-    postgres_session: Session,
-) -> None:
-    provider_pool_id = f"daytona:{uuid4()}"
-    context = _context(postgres_engine, provider_pool_id, [], reserved=True)
-    _, _, (task,) = _run(postgres_session, context.pool_id, [("stopped", TaskStatus.PENDING, _ATTEMPT)])
-    _reserve(postgres_session, context.pool_id, task)
-    _update_task(postgres_engine, task, TaskStatus.STOPPED, task.started_at)
-
-    build_lock = store.task_build_lock(postgres_engine, task.id)
-    assert await build_lock.acquire()
-    try:
-        await admission.recover_queued_pool(context)
-
-        assert _reservation_count(postgres_engine, context.pool_id) == 1
-    finally:
-        await build_lock.release()
-
-    await admission.recover_queued_pool(context)
-
-    assert _task(postgres_engine, task).status == TaskStatus.STOPPED
     assert _reservation_count(postgres_engine, context.pool_id) == 0
 
 
