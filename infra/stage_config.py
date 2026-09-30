@@ -25,9 +25,7 @@ _MANAGED_STORAGE_ENVIRONMENTS = frozenset({"dev", "prod"})
 _TRACKER_ANALYZER_LAMBDA_PATTERNS = ("analysis-*",)
 _EXECUTOR_OUTPUT_LAMBDA_PATTERNS = (
     "vals-format-lambda",
-    "harvey-legal-agent-final-view-lambda",
     "programbench-final-view-lambda",
-    "snap-final-view-lambda",
     "swebench-final-view-lambda",
     "terminalbench-final-view-lambda",
 )
