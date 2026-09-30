@@ -16,6 +16,7 @@ from benchmark_service import (
     Resources,
     Sandbox,
     SandboxCapacity,
+    SandboxError,
     SandboxProvider,
     SandboxSource,
 )
@@ -35,10 +36,10 @@ from tracker.scheduler.store import (
     claim_eligible_task_with_reservation,
     eligible_task_is,
     is_reserved_queue_pool_id,
-    promote_reserved_task,
     queue_pool_id,
     queue_pool_lock,
     queue_pool_lock_id,
+    release_reservation,
     reset_abandoned_builds,
     task_build_lock,
 )
@@ -55,18 +56,12 @@ class SandboxQueueContext:
     engine: Engine = field(repr=False)
     poll_interval_seconds: float = 1.0
 
-    @property
-    def reserves_capacity(self) -> bool:
-        return is_reserved_queue_pool_id(self.pool_id)
-
     def serves_queue(self, pool_id: str) -> bool:
         """Return whether a run's persisted queue id belongs to this provider pool."""
         return queue_pool_lock_id(pool_id) == queue_pool_lock_id(self.pool_id)
 
     def for_queue(self, pool_id: str) -> SandboxQueueContext:
         """Adopt a run's persisted queue id, which selects its admission protocol."""
-        if not self.serves_queue(pool_id):
-            raise ValueError("Queue id belongs to another provider pool")
         return replace(self, pool_id=pool_id)
 
 
@@ -125,8 +120,11 @@ def _start_claimed_task(
         .where(col(Task.benchmark).in_(active_benchmarks))
         .values(status=TaskStatus.IN_PROGRESS)
     )
+    if result.rowcount != 1:
+        return False
 
-    return result.rowcount == 1
+    release_reservation(session, task_row_id, expected_started_at)
+    return True
 
 
 def _reset_abandoned_pool_builds(connection: Connection, pool_id: str) -> None:
@@ -164,119 +162,78 @@ def _has_exact_demand(source: SandboxSource, resources: Resources) -> bool:
     )
 
 
-def _fits_unreserved_capacity(
-    capacity: SandboxCapacity,
-    resources: Resources,
-    reserved: ActiveReservations,
-) -> bool:
-    return (
-        resources.vcpu <= capacity.cpu.available - reserved.vcpu
-        and resources.memory <= capacity.memory.available - reserved.memory
-        and resources.disk <= capacity.disk.available - reserved.disk
-    )
-
-
 async def _reservable_capacity(context: SandboxQueueContext) -> SandboxCapacity | None:
     """Read provider capacity; None keeps the task on the full-lock path."""
     try:
         return await context.provider.get_capacity()
-    except Exception:
-        logger.warning(
-            "sandbox.admission.capacity_failed",
-            extra={"pool_id": context.pool_id},
-            exc_info=True,
-        )
+    except SandboxError:
+        logger.warning("sandbox.admission.capacity_failed", extra={"pool_id": context.pool_id}, exc_info=True)
         return None
 
 
-async def _claim_reserved_build(
-    *,
+async def _reserve(
     session: Session,
     context: SandboxQueueContext,
+    build_lock: PostgresAdvisoryLock,
+    *,
     task_row_id: UUID,
     expected_started_at: datetime,
+    resources: Resources,
     capacity: SandboxCapacity,
     reserved: ActiveReservations,
-    resources: Resources,
-) -> PostgresAdvisoryLock | None:
-    """Claim the head with a reservation and return the build lock proving its creator is alive.
+) -> bool:
+    """Claim the head with a reservation, holding its build lock on success.
 
     ``reserved`` must be read before ``capacity``: a build promoted in between then
     counts in both, never in neither.
     """
-    if not _fits_unreserved_capacity(capacity, resources, reserved):
-        return None
-
-    build_lock = task_build_lock(context.engine, task_row_id)
-    if not await build_lock.acquire():
-        return None
-    try:
-        claimed = claim_eligible_task_with_reservation(
-            session,
-            context.pool_id,
-            task_row_id=task_row_id,
-            expected_started_at=expected_started_at,
-            requested_vcpu=resources.vcpu,
-            requested_memory=resources.memory,
-            requested_disk=resources.disk,
-            requested_gpu=resources.gpu,
-        )
-        if claimed:
-            session.commit()
-            return build_lock
-    except BaseException:
-        await build_lock.release()
-        raise
+    fits = (
+        resources.vcpu <= capacity.cpu.available - reserved.vcpu
+        and resources.memory <= capacity.memory.available - reserved.memory
+        and resources.disk <= capacity.disk.available - reserved.disk
+    )
+    if not fits or not await build_lock.acquire():
+        return False
+    if claim_eligible_task_with_reservation(session, context.pool_id, task_row_id, expected_started_at, resources):
+        return True
 
     await build_lock.release()
-    return None
+    return False
 
 
-async def _finish_reserved_build(
+async def _start_sandbox(
     *,
     stack: AsyncExitStack,
-    context: SandboxQueueContext,
+    bind: Connection,
     task_row_id: UUID,
     expected_started_at: datetime,
     authority: ExecutionAuthority,
     create: SandboxFactory,
-    build_lock: PostgresAdvisoryLock,
 ) -> Sandbox | None:
-    """Create outside the pool lock, then promote the exact reserved attempt.
-
-    Promotion needs no pool lock: the build lock keeps recovery away from this
-    attempt, and the reservation is released in the same transaction that moves
-    the task to IN_PROGRESS. The build lock is released last so recovery only
-    requeues this attempt, and only drops its reservation, once creation and any
-    cleanup have finished.
-    """
-    try:
-        sandbox = await stack.enter_async_context(create())
-        with Session(bind=context.engine) as session:
-            try:
-                lock_execution_authority(session, authority)
-            except ExecutionAuthorityRevoked:
-                session.rollback()
-                promoted = False
+    """Create the claimed sandbox, then move the exact attempt to IN_PROGRESS."""
+    sandbox = await stack.enter_async_context(create())
+    with Session(bind) as session:
+        try:
+            lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            session.rollback()
+            started = False
+        else:
+            started = _start_claimed_task(
+                session,
+                task_row_id=task_row_id,
+                expected_started_at=expected_started_at,
+            )
+            if started:
+                session.commit()
             else:
-                promoted = promote_reserved_task(
-                    session,
-                    task_row_id=task_row_id,
-                    expected_started_at=expected_started_at,
-                )
-                if promoted:
-                    session.commit()
-                else:
-                    session.rollback()
+                session.rollback()
+    if not started:
+        await _close_stack_before_cancellation(stack)
 
-        if not promoted:
-            await _close_stack_before_cancellation(stack)
+        return None
 
-            return None
-
-        return sandbox
-    finally:
-        await build_lock.release()
+    return sandbox
 
 
 async def enter_queued_sandbox(
@@ -292,15 +249,16 @@ async def enter_queued_sandbox(
 ) -> Sandbox | None:
     """Wait for this exact attempt's global turn and enter its sandbox context.
 
-    Reserved queues let image builds with known demand hold a capacity reservation
-    instead of the pool lock while their sandbox is created. Every other build, and
-    every build whose capacity read fails, keeps the lock for the whole creation.
+    On a reserved queue, image builds with known demand hold a capacity reservation
+    and their task build lock instead of the pool lock while the sandbox is created;
+    the build lock keeps recovery away from the attempt until it is started or torn
+    down. Every other build keeps the pool lock for the whole creation.
     """
-    reserves = context.reserves_capacity and _has_exact_demand(source, resources)
-    while True:
-        build_lock: PostgresAdvisoryLock | None = None
-        lock = queue_pool_lock(context.engine, context.pool_id)
-        try:
+    reserves = is_reserved_queue_pool_id(context.pool_id) and _has_exact_demand(source, resources)
+    build_lock = task_build_lock(context.engine, task_row_id)
+    try:
+        while True:
+            lock = queue_pool_lock(context.engine, context.pool_id)
             async with lock as acquired:
                 if acquired:
                     _reset_abandoned_pool_builds(lock.connection, context.pool_id)
@@ -327,8 +285,8 @@ async def enter_queued_sandbox(
                     if not waiting:
                         return None
 
-                    below_cap = not reserves or reserved.count < SANDBOX_QUEUE_BUILDING_CAP
-                    if eligible and below_cap and await context.provider.check_admission(source, resources):
+                    admissible = eligible and (not reserves or reserved.count < SANDBOX_QUEUE_BUILDING_CAP)
+                    if admissible and await context.provider.check_admission(source, resources):
                         capacity = await _reservable_capacity(context) if reserves else None
                         with Session(lock.connection) as session:
                             try:
@@ -336,27 +294,27 @@ async def enter_queued_sandbox(
                             except ExecutionAuthorityRevoked:
                                 session.rollback()
                                 return None
-                            if capacity is not None:
-                                build_lock = await _claim_reserved_build(
-                                    session=session,
-                                    context=context,
-                                    task_row_id=task_row_id,
-                                    expected_started_at=expected_started_at,
-                                    capacity=capacity,
-                                    reserved=reserved,
-                                    resources=resources,
-                                )
-                                claimed = build_lock is not None
-                            else:
+                            if capacity is None:
                                 claimed = claim_eligible_task(
                                     session,
                                     context.pool_id,
                                     task_row_id=task_row_id,
                                     expected_started_at=expected_started_at,
                                 )
-                                if claimed:
-                                    session.commit()
-                            if not claimed:
+                            else:
+                                claimed = await _reserve(
+                                    session,
+                                    context,
+                                    build_lock,
+                                    task_row_id=task_row_id,
+                                    expected_started_at=expected_started_at,
+                                    resources=resources,
+                                    capacity=capacity,
+                                    reserved=reserved,
+                                )
+                            if claimed:
+                                session.commit()
+                            else:
                                 waiting = _queued_task_state(
                                     session,
                                     task_row_id,
@@ -366,44 +324,26 @@ async def enter_queued_sandbox(
                                 if not waiting:
                                     return None
 
-                        if claimed and build_lock is None:
-                            sandbox = await stack.enter_async_context(create())
-                            with Session(lock.connection) as session:
-                                try:
-                                    lock_execution_authority(session, authority)
-                                except ExecutionAuthorityRevoked:
-                                    session.rollback()
-                                    started = False
-                                else:
-                                    started = _start_claimed_task(
-                                        session,
-                                        task_row_id=task_row_id,
-                                        expected_started_at=expected_started_at,
-                                    )
-                                    if started:
-                                        session.commit()
-                                    else:
-                                        session.rollback()
-                            if not started:
-                                await _close_stack_before_cancellation(stack)
+                        if claimed and capacity is None:
+                            return await _start_sandbox(
+                                stack=stack,
+                                bind=lock.connection,
+                                task_row_id=task_row_id,
+                                expected_started_at=expected_started_at,
+                                authority=authority,
+                                create=create,
+                            )
 
-                                return None
+            if build_lock.held:
+                return await _start_sandbox(
+                    stack=stack,
+                    bind=build_lock.connection,
+                    task_row_id=task_row_id,
+                    expected_started_at=expected_started_at,
+                    authority=authority,
+                    create=create,
+                )
 
-                            return sandbox
-        except BaseException:
-            if build_lock is not None:
-                await build_lock.release()
-            raise
-
-        if build_lock is not None:
-            return await _finish_reserved_build(
-                stack=stack,
-                context=context,
-                task_row_id=task_row_id,
-                expected_started_at=expected_started_at,
-                authority=authority,
-                create=create,
-                build_lock=build_lock,
-            )
-
-        await asyncio.sleep(context.poll_interval_seconds)
+            await asyncio.sleep(context.poll_interval_seconds)
+    finally:
+        await build_lock.release()

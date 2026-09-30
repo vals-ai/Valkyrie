@@ -9,6 +9,7 @@ from hashlib import sha256
 from types import TracebackType
 from uuid import UUID
 
+from benchmark_service import Resources
 from sqlalchemy import JSON, case, func, text, type_coerce
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import Connection, Engine
@@ -26,7 +27,7 @@ from tracker.database.models import (
 _ACTIVE_TASK_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
 _TASK_EVALUATION_LOCK_SCOPE = "task-evaluation"
 _TASK_BUILD_LOCK_SCOPE = "task-build"
-RESERVED_QUEUE_POOL_SUFFIX = ".reserved"
+_RESERVED_QUEUE_POOL_SUFFIX = ".reserved"
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,6 @@ class ActiveReservations:
     vcpu: int
     memory: int
     disk: int
-    gpu: int
 
 
 def _advisory_lock_key(resource_id: str) -> int:
@@ -63,6 +63,10 @@ class PostgresAdvisoryLock:
         self._engine = engine
         self._lock_key = _advisory_lock_key(resource_id)
         self._connection: Connection | None = None
+
+    @property
+    def held(self) -> bool:
+        return self._connection is not None
 
     @property
     def connection(self) -> Connection:
@@ -177,16 +181,16 @@ def queue_pool_id(provider_pool_id: str) -> str:
 
 def reserved_queue_pool_id(pool_id: str) -> str:
     """Return the queue id whose builds hold reservations instead of the pool lock."""
-    return f"{queue_pool_lock_id(pool_id)}{RESERVED_QUEUE_POOL_SUFFIX}"
+    return f"{queue_pool_lock_id(pool_id)}{_RESERVED_QUEUE_POOL_SUFFIX}"
 
 
 def queue_pool_lock_id(pool_id: str) -> str:
     """Return the provider capacity pool shared by a legacy or reserved queue id."""
-    return pool_id.removesuffix(RESERVED_QUEUE_POOL_SUFFIX)
+    return pool_id.removesuffix(_RESERVED_QUEUE_POOL_SUFFIX)
 
 
 def is_reserved_queue_pool_id(pool_id: str) -> bool:
-    return pool_id.endswith(RESERVED_QUEUE_POOL_SUFFIX)
+    return pool_id.endswith(_RESERVED_QUEUE_POOL_SUFFIX)
 
 
 def _active_task_count():
@@ -259,7 +263,7 @@ def claim_eligible_task(
 
 def active_reservations(session: Session, pool_id: str) -> ActiveReservations:
     """Count and sum every reservation held in one provider capacity pool."""
-    count, vcpu, memory, disk, gpu = (
+    count, vcpu, memory, disk = (
         session.connection()
         .execute(
             sa_select(
@@ -267,12 +271,11 @@ def active_reservations(session: Session, pool_id: str) -> ActiveReservations:
                 func.coalesce(func.sum(col(SandboxBuildReservation.requested_vcpu)), 0),
                 func.coalesce(func.sum(col(SandboxBuildReservation.requested_memory)), 0),
                 func.coalesce(func.sum(col(SandboxBuildReservation.requested_disk)), 0),
-                func.coalesce(func.sum(col(SandboxBuildReservation.requested_gpu)), 0),
             ).where(col(SandboxBuildReservation.pool_id) == queue_pool_lock_id(pool_id))
         )
         .one()
     )
-    return ActiveReservations(count=count, vcpu=vcpu, memory=memory, disk=disk, gpu=gpu)
+    return ActiveReservations(count=count, vcpu=vcpu, memory=memory, disk=disk)
 
 
 def claim_eligible_task_with_reservation(
@@ -280,11 +283,7 @@ def claim_eligible_task_with_reservation(
     pool_id: str,
     task_row_id: UUID,
     expected_started_at: datetime,
-    *,
-    requested_vcpu: int,
-    requested_memory: int,
-    requested_disk: int,
-    requested_gpu: int,
+    resources: Resources,
 ) -> bool:
     """Claim the exact FIFO head and insert its reservation in the caller transaction."""
     if not claim_eligible_task(session, pool_id, task_row_id, expected_started_at):
@@ -295,50 +294,22 @@ def claim_eligible_task_with_reservation(
             task_row_id=task_row_id,
             attempt_started_at=expected_started_at,
             pool_id=queue_pool_lock_id(pool_id),
-            requested_vcpu=requested_vcpu,
-            requested_memory=requested_memory,
-            requested_disk=requested_disk,
-            requested_gpu=requested_gpu,
+            requested_vcpu=resources.vcpu,
+            requested_memory=resources.memory,
+            requested_disk=resources.disk,
+            requested_gpu=resources.gpu,
         )
     )
     session.flush()
     return True
 
 
-def promote_reserved_task(
-    session: Session,
-    *,
-    task_row_id: UUID,
-    expected_started_at: datetime,
-) -> bool:
-    """Promote one exact reserved build and release its capacity."""
-    active_benchmarks = select(col(Benchmark.id)).where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
-    exact_reservation = (
-        select(col(SandboxBuildReservation.task_row_id))
-        .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
-        .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
-        .exists()
-    )
-    promoted = session.exec(
-        update(Task)
-        .where(col(Task.id) == task_row_id)
-        .where(col(Task.started_at) == expected_started_at)
-        .where(col(Task.status) == TaskStatus.BUILDING)
-        .where(col(Task.benchmark).in_(active_benchmarks))
-        .where(exact_reservation)
-        .values(status=TaskStatus.IN_PROGRESS)
-    ).rowcount
-    if promoted != 1:
-        return False
-
-    released = session.exec(
+def release_reservation(session: Session, task_row_id: UUID, expected_started_at: datetime) -> None:
+    session.exec(
         delete(SandboxBuildReservation)
         .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
         .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
-    ).rowcount
-    if released != 1:
-        raise RuntimeError("Reserved build disappeared during promotion")
-    return True
+    )
 
 
 def _try_task_build_transaction_lock(session: Session, task_row_id: UUID) -> bool:
@@ -353,63 +324,44 @@ def _try_task_build_transaction_lock(session: Session, task_row_id: UUID) -> boo
 
 
 def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> None:
-    """Return sandbox builds whose creator is gone to the queue and drop their reservations.
+    """Requeue builds whose creator is gone and drop the reservations they left behind.
 
-    A build is abandoned when nobody holds its build lock. Builds that hold the pool
-    lock while creating never need one because this only runs under that lock.
+    A creator holds its task build lock from the claim until the sandbox is started
+    or deleted, so a free lock means nothing is building on the provider for that
+    task. Legacy builds hold the pool lock instead, and this only runs under it.
     """
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     queued_benchmarks = select(col(Benchmark.id)).where(
         col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS,
         arguments["queue_pool_id"].as_string() == pool_id,
     )
-    building_task_ids = session.exec(
+    building = (
         select(col(Task.id))
         .where(col(Task.status) == TaskStatus.BUILDING)
         .where(col(Task.benchmark).in_(queued_benchmarks))
-    ).all()
-    abandoned_task_ids = [
-        task_row_id for task_row_id in building_task_ids if _try_task_build_transaction_lock(session, task_row_id)
-    ]
-    if abandoned_task_ids:
-        session.exec(
-            update(Task)
-            .where(col(Task.id).in_(abandoned_task_ids))
-            .where(col(Task.status) == TaskStatus.BUILDING)
-            .values(
-                status=TaskStatus.PENDING,
-                started_at=case(
-                    (col(Task.started_at) >= now, col(Task.started_at) + timedelta(microseconds=1)),
-                    else_=now,
-                ),
-            )
-        )
-    release_stale_reservations(session, pool_id)
-
-
-def release_stale_reservations(session: Session, pool_id: str) -> int:
-    """Drop reservations whose attempt is no longer building once its creator has let go.
-
-    A stopped attempt keeps its capacity while the creator still holds the build
-    lock, because the sandbox it is creating or deleting still occupies the provider.
-    """
-    live_attempt = (
-        select(col(Task.id))
-        .where(col(Task.id) == col(SandboxBuildReservation.task_row_id))
-        .where(col(Task.started_at) == col(SandboxBuildReservation.attempt_started_at))
-        .where(col(Task.status) == TaskStatus.BUILDING)
-        .exists()
     )
-    stale_task_ids = session.exec(
-        select(col(SandboxBuildReservation.task_row_id))
-        .where(col(SandboxBuildReservation.pool_id) == queue_pool_lock_id(pool_id))
-        .where(~live_attempt)
-    ).all()
-    released_task_ids = [
-        task_row_id for task_row_id in stale_task_ids if _try_task_build_transaction_lock(session, task_row_id)
+    reserved = select(col(SandboxBuildReservation.task_row_id)).where(
+        col(SandboxBuildReservation.pool_id) == queue_pool_lock_id(pool_id)
+    )
+    abandoned = [
+        task_row_id
+        for task_row_id in {*session.exec(building).all(), *session.exec(reserved).all()}
+        if _try_task_build_transaction_lock(session, task_row_id)
     ]
-    if not released_task_ids:
-        return 0
-    return session.exec(
-        delete(SandboxBuildReservation).where(col(SandboxBuildReservation.task_row_id).in_(released_task_ids))
-    ).rowcount
+    if not abandoned:
+        return
+
+    session.exec(
+        update(Task)
+        .where(col(Task.id).in_(abandoned))
+        .where(col(Task.status) == TaskStatus.BUILDING)
+        .where(col(Task.benchmark).in_(queued_benchmarks))
+        .values(
+            status=TaskStatus.PENDING,
+            started_at=case(
+                (col(Task.started_at) >= now, col(Task.started_at) + timedelta(microseconds=1)),
+                else_=now,
+            ),
+        )
+    )
+    session.exec(delete(SandboxBuildReservation).where(col(SandboxBuildReservation.task_row_id).in_(abandoned)))

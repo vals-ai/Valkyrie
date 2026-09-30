@@ -22,6 +22,7 @@ from benchmark_service import (
     Resources,
     Sandbox,
     SandboxCapacity,
+    SandboxError,
     SandboxProvider,
     SandboxProviderConfig,
     SandboxSource,
@@ -1178,16 +1179,7 @@ def _stop_run(engine: Engine, benchmark: Benchmark) -> None:
 
 
 def _reserve(session: Session, pool_id: str, task: Task) -> None:
-    assert store.claim_eligible_task_with_reservation(
-        session,
-        pool_id,
-        task_row_id=task.id,
-        expected_started_at=task.started_at,
-        requested_vcpu=_RESOURCES.vcpu,
-        requested_memory=_RESOURCES.memory,
-        requested_disk=_RESOURCES.disk,
-        requested_gpu=_RESOURCES.gpu,
-    )
+    assert store.claim_eligible_task_with_reservation(session, pool_id, task.id, task.started_at, _RESOURCES)
     session.commit()
 
 
@@ -1512,13 +1504,8 @@ async def test_reserved_promotion_requires_exact_attempt_live_run_and_authority(
 
     await admission.recover_queued_pool(context)
 
-    if interruption == "stopped":
-        assert _task(postgres_engine, task).status == TaskStatus.BUILDING
-        assert _reservation_count(postgres_engine, context.pool_id) == 1
-        _update_task(postgres_engine, task, TaskStatus.STOPPED, task.started_at)
-        await admission.recover_queued_pool(context)
-    else:
-        assert _task(postgres_engine, task).status == TaskStatus.PENDING
+    recovered_status = TaskStatus.BUILDING if interruption == "stopped" else TaskStatus.PENDING
+    assert _task(postgres_engine, task).status == recovered_status
     assert _reservation_count(postgres_engine, context.pool_id) == 0
 
 
@@ -1533,8 +1520,7 @@ async def test_reserved_and_legacy_queues_share_the_capacity_lock_but_not_recove
     assert store.queue_pool_lock_id(reserved.pool_id) == legacy.pool_id
     assert store.reserved_queue_pool_id(reserved.pool_id) == reserved.pool_id
     assert legacy.serves_queue(reserved.pool_id) and reserved.serves_queue(legacy.pool_id)
-    with pytest.raises(ValueError, match="another provider pool"):
-        legacy.for_queue(store.queue_pool_id(f"daytona:{uuid4()}"))
+    assert not legacy.serves_queue(store.queue_pool_id(f"daytona:{uuid4()}"))
 
     async with store.queue_pool_lock(postgres_engine, legacy.pool_id) as legacy_held:
         assert legacy_held
@@ -1548,7 +1534,11 @@ async def test_reserved_and_legacy_queues_share_the_capacity_lock_but_not_recove
 
     assert _task(postgres_engine, legacy_task).status == TaskStatus.PENDING
     assert _task(postgres_engine, reserved_task).status == TaskStatus.BUILDING
-    assert _reservation_count(postgres_engine, reserved.pool_id) == 1
+    assert _reservation_count(postgres_engine, reserved.pool_id) == 0
+
+    await admission.recover_queued_pool(reserved)
+
+    assert _task(postgres_engine, reserved_task).status == TaskStatus.PENDING
 
 
 @pytest.mark.parametrize(
@@ -1557,7 +1547,7 @@ async def test_reserved_and_legacy_queues_share_the_capacity_lock_but_not_recove
         (SnapshotSource(snapshot="snapshot"), _RESOURCES, _CAPACITY),
         (TargetedSnapshotSource(snapshot="snapshot", target="us-west-3"), _RESOURCES, _CAPACITY),
         (_SOURCE, Resources(vcpu=1, memory=2, disk=3, gpu=1), _CAPACITY),
-        (_SOURCE, _RESOURCES, httpx.ReadTimeout("capacity unavailable")),
+        (_SOURCE, _RESOURCES, SandboxError("capacity unavailable")),
     ],
     ids=["snapshot", "targeted_snapshot", "gpu_image", "capacity_read_failed"],
 )
