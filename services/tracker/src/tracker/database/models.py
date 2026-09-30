@@ -333,14 +333,11 @@ class SandboxBuildReservation(SQLModel, table=True):
             "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0 AND requested_gpu >= 0",
             name="sandbox_build_reservation_resources_nonnegative",
         ),
-        Index("uq_sandboxbuildreservation_task", "task_row_id", unique=True),
         Index("ix_sandboxbuildreservation_pool", "pool_id"),
     )
 
-    build_id: UUID = Field(primary_key=True)
-    task_row_id: UUID = Field(foreign_key="task.id")
+    task_row_id: UUID = Field(primary_key=True, foreign_key="task.id")
     attempt_started_at: datetime
-    executor_dispatch_id: UUID = Field(foreign_key="executordispatch.id")
     pool_id: str
     requested_vcpu: int
     requested_memory: int

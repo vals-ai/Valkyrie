@@ -169,7 +169,7 @@ def _eligible_task_id(pool_id: str):
     priority = arguments["priority"].as_integer()
     concurrency = arguments["concurrency"].as_integer()
     reserved_task = (
-        select(col(SandboxBuildReservation.build_id))
+        select(col(SandboxBuildReservation.task_row_id))
         .where(col(SandboxBuildReservation.task_row_id) == col(Task.id))
         .exists()
     )
@@ -263,8 +263,6 @@ def claim_eligible_task_with_reservation(
     task_row_id: UUID,
     expected_started_at: datetime,
     *,
-    build_id: UUID,
-    executor_dispatch_id: UUID,
     requested_vcpu: int,
     requested_memory: int,
     requested_disk: int,
@@ -276,10 +274,8 @@ def claim_eligible_task_with_reservation(
 
     session.add(
         SandboxBuildReservation(
-            build_id=build_id,
             task_row_id=task_row_id,
             attempt_started_at=expected_started_at,
-            executor_dispatch_id=executor_dispatch_id,
             pool_id=pool_id,
             requested_vcpu=requested_vcpu,
             requested_memory=requested_memory,
@@ -294,14 +290,12 @@ def claim_eligible_task_with_reservation(
 def delete_build_reservation(
     session: Session,
     *,
-    build_id: UUID,
     task_row_id: UUID,
     expected_started_at: datetime,
 ) -> bool:
     """Delete one exact reservation after its sandbox cleanup is confirmed."""
     result = session.exec(
         delete(SandboxBuildReservation)
-        .where(col(SandboxBuildReservation.build_id) == build_id)
         .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
         .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
     )
@@ -313,13 +307,11 @@ def promote_reserved_task(
     *,
     task_row_id: UUID,
     expected_started_at: datetime,
-    build_id: UUID,
 ) -> bool:
     """Promote one exact reserved build and release its capacity."""
     active_benchmarks = select(col(Benchmark.id)).where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
     exact_reservation = (
-        select(col(SandboxBuildReservation.build_id))
-        .where(col(SandboxBuildReservation.build_id) == build_id)
+        select(col(SandboxBuildReservation.task_row_id))
         .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
         .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
         .exists()
@@ -338,7 +330,6 @@ def promote_reserved_task(
 
     if not delete_build_reservation(
         session,
-        build_id=build_id,
         task_row_id=task_row_id,
         expected_started_at=expected_started_at,
     ):
@@ -354,7 +345,7 @@ def reset_abandoned_builds(session: Session, pool_id: str, now: datetime) -> Non
         arguments["queue_pool_id"].as_string() == pool_id,
     )
     active_reservation = (
-        select(col(SandboxBuildReservation.build_id))
+        select(col(SandboxBuildReservation.task_row_id))
         .where(col(SandboxBuildReservation.task_row_id) == col(Task.id))
         .exists()
     )

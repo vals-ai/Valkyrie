@@ -394,7 +394,7 @@ async def test_targeted_snapshot_reaches_admission_and_creation_unchanged(
             authority=authority,
             source=source,
             resources=_RESOURCES,
-            create=lambda _build_id, _on_cleanup: _sandbox(events)(),
+            create=lambda _on_cleanup: _sandbox(events)(),
         )
 
         assert sandbox is not None
@@ -424,7 +424,7 @@ async def _enter(
         authority=authority,
         source=source,
         resources=resources,
-        create=lambda _build_id, confirm_cleanup: _sandbox(
+        create=lambda confirm_cleanup: _sandbox(
             events, on_create=on_create, on_cleanup=on_cleanup, confirm_cleanup=confirm_cleanup
         )(),
     )
@@ -844,7 +844,6 @@ async def test_promotion_keeps_reservation_visible_during_a_capacity_read(
             assert await asyncio.wait_for(first_enter, timeout=5) is not None
             assert _task(postgres_engine, first).status == TaskStatus.IN_PROGRESS
             assert _task(postgres_engine, second).status == TaskStatus.PENDING
-            assert events == ["capacity"]
         finally:
             finish_creation.set()
             finish_capacity_read.set()
@@ -894,10 +893,8 @@ async def test_building_cap_and_reservations_prevent_overclaim(
     for task in tasks[:-1]:
         postgres_session.add(
             SandboxBuildReservation(
-                build_id=uuid4(),
                 task_row_id=task.id,
                 attempt_started_at=task.started_at,
-                executor_dispatch_id=authority.dispatch_id,
                 pool_id=pool_id,
                 requested_vcpu=resources.vcpu,
                 requested_memory=resources.memory,
@@ -974,42 +971,6 @@ async def test_capacity_fallback_keeps_creation_under_pool_lock(
     assert events == ["capacity", "create", "cleanup"]
 
 
-async def test_revocation_after_reserved_create_cleans_sandbox_without_promotion(
-    postgres_engine: Engine,
-    postgres_session: Session,
-    executor_authority: Any,
-) -> None:
-    provider_pool_id = f"daytona:{uuid4()}"
-    pool_id = store.queue_pool_id(provider_pool_id)
-    _, benchmark, (task,) = _run(postgres_session, pool_id, [("revoked", TaskStatus.PENDING, _ATTEMPT)])
-    authority = executor_authority(benchmark, session=postgres_session)
-    events: list[str] = []
-
-    async def revoke() -> None:
-        _revoke_dispatch(postgres_engine, authority)
-
-    async with AsyncExitStack() as stack:
-        sandbox = await _enter(
-            stack,
-            _context(postgres_engine, provider_pool_id, events, resource_capacity=_capacity()),
-            task,
-            events,
-            authority,
-            on_create=revoke,
-        )
-
-    assert sandbox is None
-    assert events == ["capacity", "create", "cleanup"]
-    assert _task(postgres_engine, task).status == TaskStatus.PENDING
-    with Session(postgres_engine) as session:
-        assert (
-            session.exec(
-                select(SandboxBuildReservation).where(SandboxBuildReservation.task_row_id == task.id)
-            ).one_or_none()
-            is None
-        )
-
-
 @pytest.mark.parametrize("delete_fails", [False, True])
 async def test_revoked_build_releases_capacity_only_after_confirmed_provider_cleanup(
     delete_fails: bool,
@@ -1046,7 +1007,7 @@ async def test_revoked_build_releases_capacity_only_after_confirmed_provider_cle
                 authority=authority,
                 source=_SOURCE,
                 resources=_RESOURCES,
-                create=lambda _build_id, on_cleanup: provider_sandbox_context(
+                create=lambda on_cleanup: provider_sandbox_context(
                     provider,
                     "cleanup-sandbox",
                     _SOURCE,
@@ -1099,7 +1060,7 @@ async def test_cancelled_creation_terminalizes_task_and_releases_only_confirmed_
                 authority=authority,
                 source=_SOURCE,
                 resources=_RESOURCES,
-                create=lambda _build_id, on_cleanup: provider_sandbox_context(
+                create=lambda on_cleanup: provider_sandbox_context(
                     provider,
                     "cancelled-sandbox",
                     _SOURCE,
@@ -1151,7 +1112,7 @@ async def test_unknown_provider_creation_outcome_retains_capacity(
                 authority=authority,
                 source=_SOURCE,
                 resources=_RESOURCES,
-                create=lambda _build_id, on_cleanup: provider_sandbox_context(
+                create=lambda on_cleanup: provider_sandbox_context(
                     provider,
                     "unknown-sandbox",
                     _SOURCE,
@@ -1193,8 +1154,6 @@ async def test_capacity_fallback_waits_while_reserved_creation_holds_capacity(
         pool_id,
         reserved.id,
         reserved.started_at,
-        build_id=uuid4(),
-        executor_dispatch_id=authority.dispatch_id,
         requested_vcpu=1,
         requested_memory=2,
         requested_disk=3,

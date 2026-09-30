@@ -5,7 +5,7 @@ import subprocess
 import sys
 from collections.abc import Generator
 from typing import Protocol, cast
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -16,8 +16,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.schema import DefaultClause
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import Session, create_engine
 from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
@@ -25,9 +24,6 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
-    ExecutorDispatch,
-    ExecutorDispatchKind,
-    ExecutorDispatchStatus,
     ExecutorRelease,
     ExecutorReleaseStatus,
     Org,
@@ -647,7 +643,7 @@ def test_current_execution_ownership_migration_rejects_downgrade(
     engine.dispose()
 
 
-def test_sandbox_build_reservation_guard_upgrade_and_downgrade(
+def test_sandbox_build_reservation_upgrade_and_downgrade(
     migration_database_url: str,
 ) -> None:
     def migrate(direction: str, revision: str) -> None:
@@ -672,25 +668,6 @@ def test_sandbox_build_reservation_guard_upgrade_and_downgrade(
         )
         session.add(benchmark)
         session.flush()
-        release = ExecutorRelease(
-            id="migration-reservation-release",
-            artifact_uri="s3://artifacts/migration-reservation.pex",
-            artifact_digest="b" * 64,
-            protocol_version="1",
-        )
-        session.add(release)
-        session.flush()
-        dispatch = ExecutorDispatch(
-            benchmark_id=benchmark.id,
-            kind=ExecutorDispatchKind.START,
-            status=ExecutorDispatchStatus.RUNNING,
-            executor_release_id=release.id,
-            executor_artifact_uri=release.artifact_uri,
-            executor_artifact_digest=release.artifact_digest,
-            executor_protocol_version=release.protocol_version,
-        )
-        session.add(dispatch)
-        session.flush()
         task = Task(
             org_id=org.id,
             task_id="reserved-task",
@@ -702,21 +679,11 @@ def test_sandbox_build_reservation_guard_upgrade_and_downgrade(
         session.commit()
 
     migrate("upgrade", _SANDBOX_BUILD_RESERVATION_REVISION)
-    gpu_column = next(
-        column for column in inspect(engine).get_columns("sandboxbuildreservation") if column["name"] == "requested_gpu"
-    )
-    assert str(gpu_column["default"]) in {"0", "0::integer"}
-    model_default = SQLModel.metadata.tables["sandboxbuildreservation"].c["requested_gpu"].server_default
-    assert isinstance(model_default, DefaultClause) and str(model_default.arg) == "0"
-
-    build_id = uuid4()
     with Session(engine) as session:
         session.add(
             SandboxBuildReservation(
-                build_id=build_id,
                 task_row_id=task.id,
                 attempt_started_at=attempt_started_at,
-                executor_dispatch_id=dispatch.id,
                 pool_id="pool_migration",
                 requested_vcpu=1,
                 requested_memory=2,
@@ -727,42 +694,15 @@ def test_sandbox_build_reservation_guard_upgrade_and_downgrade(
         session.commit()
 
     with engine.begin() as connection:
-        connection.execute(text("UPDATE task SET status = 'PENDING' WHERE id = :id"), {"id": task.id})
-        status = connection.execute(text("SELECT status FROM task WHERE id = :id"), {"id": task.id}).scalar_one()
-        assert status == TaskStatus.BUILDING.value
-
         connection.execute(
-            text("UPDATE executordispatch SET status = 'FAILED' WHERE id = :id"),
-            {"id": dispatch.id},
+            text("UPDATE task SET status = 'ERROR', finished_at = :finished_at WHERE id = :id"),
+            {"id": task.id, "finished_at": attempt_started_at + timedelta(seconds=1)},
         )
-        connection.execute(text("UPDATE task SET status = 'PENDING' WHERE id = :id"), {"id": task.id})
-        status = connection.execute(text("SELECT status FROM task WHERE id = :id"), {"id": task.id}).scalar_one()
         remaining = connection.execute(
-            text("SELECT count(*) FROM sandboxbuildreservation WHERE build_id = :id"), {"id": build_id}
-        ).scalar_one()
-        assert status == TaskStatus.BUILDING.value
-        assert remaining == 1
-
-        connection.execute(text("UPDATE task SET status = 'ERROR' WHERE id = :id"), {"id": task.id})
-        remaining = connection.execute(
-            text("SELECT count(*) FROM sandboxbuildreservation WHERE build_id = :id"), {"id": build_id}
+            text("SELECT count(*) FROM sandboxbuildreservation WHERE task_row_id = :id"), {"id": task.id}
         ).scalar_one()
         assert remaining == 1
-
-        connection.execute(text("UPDATE task SET status = 'BUILDING' WHERE id = :id"), {"id": task.id})
-        connection.execute(text("DELETE FROM sandboxbuildreservation WHERE build_id = :id"), {"id": build_id})
-        connection.execute(text("UPDATE task SET status = 'PENDING' WHERE id = :id"), {"id": task.id})
-        status = connection.execute(text("SELECT status FROM task WHERE id = :id"), {"id": task.id}).scalar_one()
-        assert status == TaskStatus.PENDING.value
 
     migrate("downgrade", _SANDBOX_BUILD_RESERVATION_PREDECESSOR)
     assert "sandboxbuildreservation" not in inspect(engine).get_table_names()
-    with engine.connect() as connection:
-        function_exists = connection.execute(
-            text("SELECT count(*) FROM pg_proc WHERE proname = 'guard_sandbox_build_reservation'")
-        ).scalar_one()
-        trigger_exists = connection.execute(
-            text("SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_guard_sandbox_build_reservation'")
-        ).scalar_one()
-        assert function_exists == trigger_exists == 0
     engine.dispose()

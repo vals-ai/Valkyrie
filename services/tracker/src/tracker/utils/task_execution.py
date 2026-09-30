@@ -90,8 +90,6 @@ logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
-# Internal provider label used to identify one durable reservation-backed build.
-_SANDBOX_BUILD_ID_LABEL = "valkyrie-build-id"
 
 
 class BenchmarkServiceWebSocketDNSResolutionError(BenchmarkServiceError):
@@ -1050,9 +1048,7 @@ async def _process_task_attempt(
         object_store = runtime.objects
 
         @asynccontextmanager
-        async def sandbox_context(
-            build_id: UUID | None, on_cleanup: Callable[[], None] | None
-        ) -> AsyncGenerator[Sandbox]:
+        async def sandbox_context(on_cleanup: Callable[[], None] | None) -> AsyncGenerator[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
@@ -1060,24 +1056,32 @@ async def _process_task_attempt(
                 if queue_context is None
                 else f"queued-{task_row.id.hex}-{int(_normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC).timestamp() * 1_000_000):x}"
             )
-            create_labels = labels if build_id is None else {**labels, _SANDBOX_BUILD_ID_LABEL: str(build_id)}
             # Do not mint while the queued attempt waits for admission.
             contract = start_benchmark_request.contract
-            async with task_scoped_gateway_key(
-                env_vars,
-                run_id=str(benchmark_id),
-                task_id=task_row.task_id,
-                attested_model=contract.model if contract.inference_settings_attested else None,
-                companion_models=contract.kwargs.get("companion_models"),
-                identity=identity,
-                org_name=org.name,
-                agent_timeout=task_data.agent_timeout,
-            ) as scoped_env_vars:
+            async with AsyncExitStack() as gateway_stack:
+                try:
+                    scoped_env_vars = await gateway_stack.enter_async_context(
+                        task_scoped_gateway_key(
+                            env_vars,
+                            run_id=str(benchmark_id),
+                            task_id=task_row.task_id,
+                            attested_model=contract.model if contract.inference_settings_attested else None,
+                            companion_models=contract.kwargs.get("companion_models"),
+                            identity=identity,
+                            org_name=org.name,
+                            agent_timeout=task_data.agent_timeout,
+                        )
+                    )
+                except BaseException:
+                    # No provider creation was attempted; the capacity hold is empty.
+                    if on_cleanup is not None:
+                        on_cleanup()
+                    raise
                 async with create_sandbox(
                     provider=sandbox_provider,
                     sandbox_name=sandbox_name,
                     source=task_data.source,
-                    labels=create_labels,
+                    labels=labels,
                     env_vars=scoped_env_vars,
                     sandbox_secrets=task_data.sandbox_secrets,
                     resources=task_data.resources,
@@ -1090,7 +1094,7 @@ async def _process_task_attempt(
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
-                sandbox = await sandbox_stack.enter_async_context(sandbox_context(None, None))
+                sandbox = await sandbox_stack.enter_async_context(sandbox_context(None))
             else:
                 sandbox = await enter_queued_sandbox(
                     stack=sandbox_stack,

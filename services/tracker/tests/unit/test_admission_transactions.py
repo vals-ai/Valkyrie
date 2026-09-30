@@ -499,8 +499,7 @@ async def test_reserved_creation_preserves_failure_when_database_finalization_fa
                     task_row_id=uuid4(),
                     expected_started_at=datetime(2026, 9, 29, 12),
                     authority=ExecutionAuthority(benchmark_id=uuid4(), dispatch_id=uuid4()),
-                    build_id=uuid4(),
-                    create=lambda _build_id, on_cleanup: create_sandbox(
+                    create=lambda on_cleanup: create_sandbox(
                         provider,
                         "unknown-sandbox",
                         ImageSource(image="image"),

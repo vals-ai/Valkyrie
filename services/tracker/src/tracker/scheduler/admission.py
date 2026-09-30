@@ -9,7 +9,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import cast
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from benchmark_service import (
     ComposeSource,
@@ -44,7 +44,7 @@ from tracker.scheduler.store import (
 
 logger = get_logger(__name__)
 
-SandboxFactory = Callable[[UUID | None, Callable[[], None] | None], AbstractAsyncContextManager[Sandbox]]
+SandboxFactory = Callable[[Callable[[], None] | None], AbstractAsyncContextManager[Sandbox]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +198,6 @@ async def _finish_reserved_build(
     task_row_id: UUID,
     expected_started_at: datetime,
     authority: ExecutionAuthority,
-    build_id: UUID,
     create: SandboxFactory,
 ) -> Sandbox | None:
     cleanup_confirmed = False
@@ -209,7 +208,7 @@ async def _finish_reserved_build(
         cleanup_confirmed = True
 
     try:
-        sandbox = await stack.enter_async_context(create(build_id, confirm_cleanup))
+        sandbox = await stack.enter_async_context(create(confirm_cleanup))
         while True:
             lock = queue_pool_lock(context.engine, context.pool_id)
             async with lock as acquired:
@@ -226,7 +225,6 @@ async def _finish_reserved_build(
                                 session,
                                 task_row_id=task_row_id,
                                 expected_started_at=expected_started_at,
-                                build_id=build_id,
                             )
                             if promoted:
                                 session.commit()
@@ -255,7 +253,6 @@ async def _finish_reserved_build(
                         task = session.exec(select(Task).where(col(Task.id) == task_row_id).with_for_update()).one()
                         reservation = session.exec(
                             select(SandboxBuildReservation)
-                            .where(col(SandboxBuildReservation.build_id) == build_id)
                             .where(col(SandboxBuildReservation.task_row_id) == task_row_id)
                             .where(col(SandboxBuildReservation.attempt_started_at) == expected_started_at)
                         ).one_or_none()
@@ -265,7 +262,7 @@ async def _finish_reserved_build(
                                 session.flush()
                             if task.started_at == expected_started_at and task.status == TaskStatus.BUILDING:
                                 if benchmark.status == BenchmarkStatus.IN_PROGRESS:
-                                    if cleanup_confirmed:
+                                    if cleanup_confirmed and active_error is None:
                                         task.status = TaskStatus.PENDING
                                         task.started_at = datetime.now(UTC)
                                 elif benchmark.status in (BenchmarkStatus.STOPPING, BenchmarkStatus.STOPPED):
@@ -279,7 +276,7 @@ async def _finish_reserved_build(
                 except SQLAlchemyError:
                     logger.warning(
                         "sandbox.admission.finalization_failed",
-                        extra={"pool_id": context.pool_id, "build_id": str(build_id)},
+                        extra={"pool_id": context.pool_id, "task_row_id": str(task_row_id)},
                         exc_info=True,
                     )
                     if active_error is None:
@@ -287,7 +284,7 @@ async def _finish_reserved_build(
                 if not cleanup_confirmed:
                     logger.warning(
                         "sandbox.admission.cleanup_unconfirmed",
-                        extra={"pool_id": context.pool_id, "build_id": str(build_id), "task_row_id": str(task_row_id)},
+                        extra={"pool_id": context.pool_id, "task_row_id": str(task_row_id)},
                     )
 
 
@@ -304,7 +301,7 @@ async def enter_queued_sandbox(
 ) -> Sandbox | None:
     """Wait for this exact attempt's global turn and enter its sandbox context."""
     while True:
-        reserved_build_id: UUID | None = None
+        reserved_build = False
         lock = queue_pool_lock(context.engine, context.pool_id)
         async with lock as acquired:
             if acquired:
@@ -344,7 +341,7 @@ async def enter_queued_sandbox(
                         if capacity is None:
                             has_reservations = (
                                 session.exec(
-                                    select(SandboxBuildReservation.build_id)
+                                    select(SandboxBuildReservation.task_row_id)
                                     .where(SandboxBuildReservation.pool_id == context.pool_id)
                                     .limit(1)
                                 ).first()
@@ -362,7 +359,6 @@ async def enter_queued_sandbox(
                             )
                         else:
                             reserved = active_reservation_resources(session, context.pool_id)
-                            reserved_build_id = uuid4()
                             claimed = (
                                 under_building_cap
                                 and _has_reserved_capacity(capacity, resources, reserved)
@@ -371,8 +367,6 @@ async def enter_queued_sandbox(
                                     context.pool_id,
                                     task_row_id=task_row_id,
                                     expected_started_at=expected_started_at,
-                                    build_id=reserved_build_id,
-                                    executor_dispatch_id=authority.dispatch_id,
                                     requested_vcpu=resources.vcpu,
                                     requested_memory=resources.memory,
                                     requested_disk=resources.disk,
@@ -382,8 +376,8 @@ async def enter_queued_sandbox(
 
                         if claimed:
                             session.commit()
+                            reserved_build = capacity is not None
                         else:
-                            reserved_build_id = None
                             waiting = _queued_task_state(
                                 session,
                                 task_row_id,
@@ -394,7 +388,7 @@ async def enter_queued_sandbox(
                                 return None
 
                     if claimed and capacity is None:
-                        sandbox = await stack.enter_async_context(create(None, None))
+                        sandbox = await stack.enter_async_context(create(None))
                         with Session(lock.connection) as session:
                             try:
                                 lock_execution_authority(session, authority)
@@ -417,14 +411,13 @@ async def enter_queued_sandbox(
 
                         return sandbox
 
-        if reserved_build_id is not None:
+        if reserved_build:
             return await _finish_reserved_build(
                 stack=stack,
                 context=context,
                 task_row_id=task_row_id,
                 expected_started_at=expected_started_at,
                 authority=authority,
-                build_id=reserved_build_id,
                 create=create,
             )
 
