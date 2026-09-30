@@ -3739,6 +3739,30 @@ async def test_local_start_rejects_managed_storage_before_admission(
     assert not mock_kicker.queued_calls
 
 
+@pytest.mark.parametrize(
+    "field",
+    [{"lambda_function": "callback-fn"}, {"service_auth_secret_name": "ServiceSecret"}],
+    ids=["lambda-function", "service-auth-secret"],
+)
+async def test_local_start_rejects_cloud_callbacks_and_service_secrets(
+    contract: AgentContractRequest,
+    field: dict[str, str],
+) -> None:
+    response = local_client.post(
+        "/start-benchmark",
+        json={
+            "benchmark_name": "swebench",
+            "contract": contract.model_dump(mode="json"),
+            "environment": "local",
+            "sandbox_provider": "docker",
+            **field,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "Local execution does not support cloud callbacks or service secret references" in response.text
+
+
 async def test_local_run_metadata_ignores_client_aws_headers(
     tmp_path: Path,
     contract: AgentContractRequest,
