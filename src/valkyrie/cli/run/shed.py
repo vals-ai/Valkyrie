@@ -5,7 +5,7 @@ from uuid import UUID
 
 import click
 from valkyrie.sdk import ValkyrieClient, ValkyrieSDKError
-from valkyrie.sdk.models import FetchTasksRequest, TaskStatus, TaskSummary
+from valkyrie.sdk.models import FetchTasksRequest, Order, TaskStatus, TaskSummary
 
 from valkyrie.cli.display import format_table, terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -28,23 +28,29 @@ _STOPPABLE_STATUSES = [TaskStatus.BUILDING, TaskStatus.IN_PROGRESS]
     "--concurrency",
     type=click.IntRange(min=1),
     required=True,
-    help="New maximum number of concurrent tasks",
+    help="New maximum number of concurrent tasks; must be below the run's current limit",
 )
 @click.option("--dry-run", is_flag=True, help="Show the tasks that would be stopped without changing the run")
 def shed(run_id: UUID, concurrency: int, dry_run: bool) -> None:
     """Lower concurrency, then force stop the newest tasks above the new limit."""
     try:
-        planned = _newest_over_limit(asyncio.run(_active_tasks(run_id)), concurrency)
-        if dry_run:
-            _print_tasks(planned, "Would force stop")
-            return
-        if not click.confirm(
-            f"Set concurrency to {concurrency} and force stop the {len(planned)} newest task(s) in run {run_id}?"
-        ):
-            click.echo("Cancelled.")
-            return
-
         with TrackerService() as tracker:
+            current = tracker.fetch_benchmark_metadata(run_id).benchmark_arguments.concurrency
+            if concurrency >= current:
+                raise click.ClickException(
+                    f"Run {run_id} concurrency is {current}; --concurrency must be lower to shed load."
+                )
+            planned = _newest_over_limit(asyncio.run(_active_tasks(run_id)), concurrency)
+            if dry_run:
+                _print_tasks(planned, "Would force stop")
+                return
+            if not click.confirm(
+                f"Lower concurrency from {current} to {concurrency} and force stop the {len(planned)} newest task(s) "
+                f"in run {run_id}?"
+            ):
+                click.echo("Cancelled.")
+                return
+
             response = tracker.update_benchmark_concurrency(run_id, concurrency)
             click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
             victims = _newest_over_limit(asyncio.run(_active_tasks(run_id)), response.concurrency)
@@ -69,11 +75,10 @@ def _newest_over_limit(active: list[TaskSummary], concurrency: int) -> list[Task
 
 
 async def _active_tasks(run_id: UUID) -> list[TaskSummary]:
-    """List active tasks, keyed by task id because status changes can move tasks between offset pages."""
-    request = FetchTasksRequest(status=_ACTIVE_STATUSES, limit=500)
+    """List active tasks by paging over the whole run in task-id order, which status changes cannot reorder."""
+    request = FetchTasksRequest(sort="task_id", sort_dir=Order.ASC, limit=500)
     async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
-        tasks = {task.task_id: task async for task in client.benchmarks.iter_tasks(run_id, request)}
-    return list(tasks.values())
+        return [task async for task in client.benchmarks.iter_tasks(run_id, request) if task.status in _ACTIVE_STATUSES]
 
 
 def _print_tasks(tasks: list[TaskSummary], action: str) -> None:

@@ -11,8 +11,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import BenchmarkStatus
-from tracker.types import StopBenchmarkResponse, UpdateBenchmarkConcurrencyResponse
+from tracker.database.models import AgentContractRequest, AWSBenchmarkArguments, BenchmarkStatus
+from tracker.types import FetchBenchmarkMetadataResponse, StopBenchmarkResponse, UpdateBenchmarkConcurrencyResponse
 from valkyrie.sdk.models import TaskStatus, TaskSummary
 
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -36,7 +36,8 @@ def summary(task_id: str, status: TaskStatus, minute: int) -> TaskSummary:
 class MockShedTracker:
     """Record tracker calls in order; optionally reject the concurrency update like a run that is not in progress."""
 
-    def __init__(self, update_error: str | None = None) -> None:
+    def __init__(self, current_concurrency: int = 8, update_error: str | None = None) -> None:
+        self.current_concurrency = current_concurrency
         self.update_error = update_error
         self.calls: list[tuple[str, object]] = []
 
@@ -45,6 +46,18 @@ class MockShedTracker:
 
     def __exit__(self, *_exc_info: object) -> None:
         return None
+
+    def fetch_benchmark_metadata(self, run_id: UUID) -> FetchBenchmarkMetadataResponse:
+        assert run_id == RUN_ID
+        self.calls.append(("metadata", None))
+        return FetchBenchmarkMetadataResponse(
+            benchmark_id=run_id,
+            benchmark_name="swebench",
+            benchmark_arguments=AWSBenchmarkArguments(
+                contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
+                concurrency=self.current_concurrency,
+            ),
+        )
 
     def update_benchmark_concurrency(self, run_id: UUID, concurrency: int) -> UpdateBenchmarkConcurrencyResponse:
         self.calls.append(("update", concurrency))
@@ -121,7 +134,13 @@ def test_shed_lowers_concurrency_before_stopping_relisted_tasks(
     result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "1"], input="y\n")
 
     assert result.exit_code == 0, result.output
-    assert tracker.calls == [("list", None), ("update", 1), ("list", None), ("stop", (True, ["late", "b"]))]
+    assert tracker.calls == [
+        ("metadata", None),
+        ("list", None),
+        ("update", 1),
+        ("list", None),
+        ("stop", (True, ["late", "b"])),
+    ]
     assert "Force stopped:" in result.output
 
 
@@ -136,7 +155,7 @@ def test_shed_never_sends_an_empty_stop(
     result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "4"], input="y\n")
 
     assert result.exit_code == 0, result.output
-    assert tracker.calls == [("list", None), ("update", 4), ("list", None)]
+    assert tracker.calls == [("metadata", None), ("list", None), ("update", 4), ("list", None)]
     assert "No building or in-progress tasks are above the limit." in result.output
 
 
@@ -151,8 +170,23 @@ def test_shed_does_not_stop_when_concurrency_update_is_rejected(
     result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "1"], input="y\n")
 
     assert result.exit_code == 1
-    assert tracker.calls == [("list", None), ("update", 1)]
+    assert tracker.calls == [("metadata", None), ("list", None), ("update", 1)]
     assert "STOPPING" in result.output
+
+
+def test_shed_rejects_a_limit_that_is_not_lower(
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raising or keeping the limit would admit more work, so it is refused before anything is listed or changed."""
+    tracker = MockShedTracker(current_concurrency=4)
+    install(monkeypatch, tracker, [])
+
+    result = cli_runner.invoke(run, ["shed", str(RUN_ID), "--concurrency", "4"], input="y\n")
+
+    assert result.exit_code == 1
+    assert tracker.calls == [("metadata", None)]
+    assert "concurrency is 4; --concurrency must be lower" in result.output
 
 
 def test_shed_dry_run_and_cancel_change_nothing(
@@ -172,4 +206,4 @@ def test_shed_dry_run_and_cancel_change_nothing(
     assert "b" in dry_run.output
     assert declined.exit_code == 0, declined.output
     assert "Cancelled." in declined.output
-    assert tracker.calls == [("list", None), ("list", None)]
+    assert tracker.calls == [("metadata", None), ("list", None), ("metadata", None), ("list", None)]
