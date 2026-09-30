@@ -374,6 +374,50 @@ def test_maintenance_begin_times_out_for_previously_stopping_runner(
     assert ecs.stopped_tasks == []
 
 
+def test_maintenance_begin_treats_expired_historical_stopped_task_as_gone(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("expired-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    describe_tasks = ecs.describe_tasks
+    monkeypatch.setattr(
+        ecs,
+        "describe_tasks",
+        lambda **kwargs: describe_tasks(
+            **{**kwargs, "tasks": [arn for arn in cast(list[str], kwargs["tasks"]) if arn != "expired-runner"]}
+        ),
+    )
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    release_entrypoint.main()
+
+    assert ecs.stopped_tasks == []
+
+
+def test_maintenance_begin_fails_when_a_task_it_stopped_cannot_be_described(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    monkeypatch.setattr(ecs, "describe_tasks", lambda **_kwargs: {"tasks": []})
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    with pytest.raises(RuntimeError, match="could not describe every runner task it stopped"):
+        release_entrypoint.main()
+    assert ecs.stopped_tasks
+
+
 def test_release_entrypoint_digest_failure_does_not_commit_release(
     monkeypatch: MonkeyPatch,
     database_session: Session,
