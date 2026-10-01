@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, select
@@ -334,7 +335,7 @@ def test_expiry_cleans_all_admitted_assignments(postgres_session: Session, dispa
         id=f"review-{uuid4()}",
         artifact_uri="s3://artifacts/review.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=MANAGED_EXECUTION_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     postgres_session.add(org)

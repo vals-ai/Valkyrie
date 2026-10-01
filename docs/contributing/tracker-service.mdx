@@ -9,7 +9,7 @@ Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not
 
 ## Run configuration
 
-Runs currently support `environment: "aws"` only. Optional `properties` sets the AWS region, S3 bucket, log group, and log retention. Managed runs use deployment settings. Runs using your AWS credentials may supply their own properties.
+Runs support `environment: "aws"` or `environment: "local"`. AWS execution uses deployment-managed resources and authority. Optional AWS `properties` must match the deployment resources; local execution uses its configured local data root.
 
 New runs retain these locations for retries, resumes, and artifact reads. Older runs without saved properties use the current settings.
 

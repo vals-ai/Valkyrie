@@ -277,6 +277,7 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
     monkeypatch.setattr(BenchmarkServiceClient, "close", close)
     monkeypatch.setattr(tracker_main, "copy_agent_to_benchmark", copy_agent)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
     monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
     lock_entered = threading.Event()
     if operation == "retry":

@@ -21,6 +21,7 @@ def test_init_self_hosted_strips_whitespace(config_path: Path, monkeypatch: pyte
     for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
         monkeypatch.delenv(key, raising=False)
 
+    config_path.write_text(yaml.safe_dump({"unknown_setting": "value", "aws": {"credentials": {"secret": "canary"}}}))
     runner = CliRunner()
     result = runner.invoke(
         settings.init,

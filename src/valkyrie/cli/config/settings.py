@@ -12,7 +12,7 @@ from valkyrie.cli.runtime_config import (
 )
 from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.cli.config.state import ConfigValue, load_config, read_config_if_exists, write_config
-from valkyrie.sdk.config import ValkyrieConfig
+from valkyrie.sdk.config import AWSConfig, ValkyrieConfig
 
 
 _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
@@ -58,6 +58,12 @@ def init() -> None:
             current_config = read_config_if_exists()
         except Exception:
             pass
+
+    config_keys = {field.alias or name for name, field in ValkyrieConfig.model_fields.items()}
+    current_config = {key: value for key, value in current_config.items() if key in config_keys}
+    if aws_config := current_config.get("aws"):
+        resource_keys = {field.alias or name for name, field in AWSConfig.model_fields.items()}
+        current_config["aws"] = {key: value for key, value in aws_config.items() if key in resource_keys}
 
     mode = click.prompt(
         "Setup mode",
