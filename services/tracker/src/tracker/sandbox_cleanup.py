@@ -172,26 +172,58 @@ def _remaining_cleanup_seconds(context: LambdaContext) -> float:
     return timeout_seconds
 
 
+def _parse_secret_names(raw: str) -> list[str]:
+    """Split a comma-separated secret list, dropping blanks and duplicates while keeping order."""
+    return list(dict.fromkeys(name.strip() for name in raw.split(",") if name.strip()))
+
+
 def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
-    """Run one bounded cleanup sweep from EventBridge Scheduler."""
+    """Run one bounded cleanup sweep per configured provider secret from EventBridge Scheduler."""
     configure_logging()
 
     provider_type = os.environ.get("SANDBOX_CLEANUP_PROVIDER", "daytona").strip().casefold()
     if not provider_type:
         raise RuntimeError("SANDBOX_CLEANUP_PROVIDER must not be empty")
-    secret_name = os.environ.get("SANDBOX_CLEANUP_SECRET_NAME", "").strip()
-    if not secret_name:
+    secret_names = _parse_secret_names(os.environ.get("SANDBOX_CLEANUP_SECRET_NAME", ""))
+    if not secret_names:
         raise RuntimeError("SANDBOX_CLEANUP_SECRET_NAME must not be empty")
 
-    outcomes = asyncio.run(run_cleanup(secret_name, provider_type, context))
+    _remaining_cleanup_seconds(context)
+
+    totals: Counter[str] = Counter()
+    failed_targets = 0
+    for index, secret_name in enumerate(secret_names, start=1):
+        # Targets are identified by position so secret names stay out of logs.
+        try:
+            outcomes = asyncio.run(run_cleanup(secret_name, provider_type, context))
+        except Exception as exc:
+            failed_targets += 1
+            logger.error(
+                "Sandbox cleanup target failed",
+                extra={"target": index, "targets": len(secret_names), "error_type": type(exc).__name__},
+            )
+            continue
+        totals.update(outcomes)
+        logger.info(
+            "Sandbox cleanup target complete",
+            extra={
+                "target": index,
+                "targets": len(secret_names),
+                "scanned": sum(outcomes.values()),
+                **{outcome: outcomes[outcome] for outcome in _OUTCOMES},
+            },
+        )
+
     fields: dict[str, object] = {
         "provider": provider_type,
-        "scanned": sum(outcomes.values()),
-        **{outcome: outcomes[outcome] for outcome in _OUTCOMES},
+        "targets": len(secret_names),
+        "failed_targets": failed_targets,
+        "scanned": sum(totals.values()),
+        **{outcome: totals[outcome] for outcome in _OUTCOMES},
     }
     logger.info("Sandbox cleanup sweep complete", extra=fields)
 
-    failures = sum(outcomes[outcome] for outcome in _FAILURE_OUTCOMES)
+    failures = failed_targets + sum(totals[outcome] for outcome in _FAILURE_OUTCOMES)
     if failures:
         raise RuntimeError(f"Sandbox cleanup did not fully succeed: failures={failures}")
     return fields

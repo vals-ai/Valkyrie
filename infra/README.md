@@ -230,7 +230,9 @@ unless `SANDBOX_CLEANUP_ENABLED` is exactly `true`; Scheduler delivery and async
 dead-letter queue.
 
 The Lambda loads the selected Create Benchmark Service (CBS) provider configuration from Secrets Manager and uses the
-provider directly to list, refresh, and delete sandboxes in its configured scope. Sandboxes strictly older than 48 hours
+provider directly to list, refresh, and delete sandboxes in its configured scope. `SANDBOX_CLEANUP_SECRET_NAME` may list
+several secrets separated by commas, one per sandbox account; each is swept in turn, a failing target does not stop the
+others, and the invocation fails at the end if any target failed. Sandboxes strictly older than 48 hours
 are deleted unless their exact `clean-up` label is `false` after trimming and case-folding. The secret must contain the
 JSON fields required by the selected CBS provider. Providers must support creation-time-filtered inventory metadata;
 currently Daytona is the only compatible provider and uses `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET`.
@@ -239,4 +241,4 @@ currently Daytona is the only compatible provider and uses `DAYTONA_API_KEY`, `D
 | --- | --- | --- |
 | `SANDBOX_CLEANUP_ENABLED` | `false` | Enables the hourly production schedule |
 | `SANDBOX_CLEANUP_PROVIDER` | `daytona` | Selects a cleanup-compatible CBS sandbox provider |
-| `SANDBOX_CLEANUP_SECRET_NAME` | `YourSandboxProviderSecret` | Selects the provider credentials secret |
+| `SANDBOX_CLEANUP_SECRET_NAME` | `YourSandboxProviderSecret` | Selects the provider credentials secret, or a comma-separated list of them |

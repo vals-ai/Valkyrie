@@ -300,6 +300,57 @@ def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypa
         cleanup_module.lambda_handler({}, FakeLambdaContext(60_000))
     assert load_calls == 0
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(RuntimeError, match="Sandbox cleanup did not fully succeed: failures=1"):
         cleanup_module.lambda_handler({}, FakeLambdaContext(60_001))
     assert load_calls == 1
+
+
+def _patch_handler_environment(monkeypatch: pytest.MonkeyPatch, secret_names: str) -> None:
+    monkeypatch.setenv("SANDBOX_CLEANUP_SECRET_NAME", secret_names)
+    monkeypatch.setenv("SANDBOX_CLEANUP_PROVIDER", "daytona")
+    monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-east-1")
+    monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
+
+
+def test_lambda_handler_sweeps_each_listed_secret_once_and_sums_outcomes(monkeypatch: pytest.MonkeyPatch) -> None:
+    swept: list[str] = []
+
+    async def fake_run_cleanup(secret_name: str, _provider_type: str, _context: object) -> Counter[str]:
+        swept.append(secret_name)
+        return Counter({"deleted": 2, "opted_out": 1})
+
+    _patch_handler_environment(monkeypatch, " first , second,first,, third ")
+    monkeypatch.setattr(cleanup_module, "run_cleanup", fake_run_cleanup)
+
+    result = cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
+
+    assert swept == ["first", "second", "third"]
+    assert result["targets"] == 3
+    assert result["failed_targets"] == 0
+    assert result["deleted"] == 6
+    assert result["opted_out"] == 3
+    assert result["scanned"] == 9
+
+
+def test_lambda_handler_continues_past_a_failing_target_then_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    swept: list[str] = []
+
+    async def fake_run_cleanup(secret_name: str, _provider_type: str, _context: object) -> Counter[str]:
+        swept.append(secret_name)
+        if secret_name == "broken":
+            raise RuntimeError("provider unavailable")
+        return Counter({"deleted": 1})
+
+    _patch_handler_environment(monkeypatch, "broken,healthy")
+    monkeypatch.setattr(cleanup_module, "run_cleanup", fake_run_cleanup)
+
+    with pytest.raises(RuntimeError, match="Sandbox cleanup did not fully succeed: failures=1"):
+        cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
+    assert swept == ["broken", "healthy"]
+
+
+def test_lambda_handler_rejects_a_secret_list_with_no_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_handler_environment(monkeypatch, " , ,")
+
+    with pytest.raises(RuntimeError, match="SANDBOX_CLEANUP_SECRET_NAME must not be empty"):
+        cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
