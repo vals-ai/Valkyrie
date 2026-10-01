@@ -170,6 +170,19 @@ async def _reservable_capacity(context: SandboxQueueContext) -> SandboxCapacity 
         return None
 
 
+def _fits(resources: Resources, capacity: SandboxCapacity, reserved: ActiveReservations) -> bool:
+    """Live provider usage misses reserved builds still being created.
+
+    ``reserved`` must be read before ``capacity``: a build promoted in between then
+    counts in both, never in neither.
+    """
+    return (
+        resources.vcpu <= capacity.cpu.available - reserved.vcpu
+        and resources.memory <= capacity.memory.available - reserved.memory
+        and resources.disk <= capacity.disk.available - reserved.disk
+    )
+
+
 async def _reserve(
     session: Session,
     context: SandboxQueueContext,
@@ -178,20 +191,9 @@ async def _reserve(
     task_row_id: UUID,
     expected_started_at: datetime,
     resources: Resources,
-    capacity: SandboxCapacity,
-    reserved: ActiveReservations,
 ) -> bool:
-    """Claim the head with a reservation, holding its build lock on success.
-
-    ``reserved`` must be read before ``capacity``: a build promoted in between then
-    counts in both, never in neither.
-    """
-    fits = (
-        resources.vcpu <= capacity.cpu.available - reserved.vcpu
-        and resources.memory <= capacity.memory.available - reserved.memory
-        and resources.disk <= capacity.disk.available - reserved.disk
-    )
-    if not fits or not await build_lock.acquire():
+    """Claim the head with a reservation, holding its build lock on success."""
+    if not await build_lock.acquire():
         return False
     if claim_eligible_task_with_reservation(session, context.pool_id, task_row_id, expected_started_at, resources):
         return True
@@ -251,7 +253,8 @@ async def enter_queued_sandbox(
     On a reserved queue, image builds with known demand hold a capacity reservation
     and their task build lock instead of the pool lock while the sandbox is created;
     the build lock keeps recovery away from the attempt until it is started or torn
-    down. Every other build keeps the pool lock for the whole creation.
+    down. Every other build keeps the pool lock for the whole creation and, while
+    reservations are active, only claims once its own demand fits beside them.
     """
     reserves = is_reserved_queue_pool_id(context.pool_id) and _has_exact_demand(source, resources)
     build_lock = task_build_lock(context.engine, task_row_id)
@@ -284,9 +287,12 @@ async def enter_queued_sandbox(
                     if not waiting:
                         return None
 
-                    capacity = await _reservable_capacity(context) if eligible and reserves else None
-                    # Live provider usage misses reserved builds still being created.
-                    admissible = eligible and (capacity is not None or reserved.count == 0)
+                    capacity = (
+                        await _reservable_capacity(context) if eligible and (reserves or reserved.count) else None
+                    )
+                    reserving = reserves and capacity is not None
+                    fits = capacity is not None and _fits(resources, capacity, reserved)
+                    admissible = eligible and (fits or (not reserving and reserved.count == 0))
                     if admissible and await context.provider.check_admission(source, resources):
                         with Session(lock.connection) as session:
                             try:
@@ -294,7 +300,7 @@ async def enter_queued_sandbox(
                             except ExecutionAuthorityRevoked:
                                 session.rollback()
                                 return None
-                            if capacity is None:
+                            if not reserving:
                                 claimed = claim_eligible_task(
                                     session,
                                     context.pool_id,
@@ -309,8 +315,6 @@ async def enter_queued_sandbox(
                                     task_row_id=task_row_id,
                                     expected_started_at=expected_started_at,
                                     resources=resources,
-                                    capacity=capacity,
-                                    reserved=reserved,
                                 )
                             if claimed:
                                 session.commit()
@@ -324,7 +328,7 @@ async def enter_queued_sandbox(
                                 if not waiting:
                                     return None
 
-                        if claimed and capacity is None:
+                        if claimed and not reserving:
                             return await _start_sandbox(
                                 stack=stack,
                                 bind=lock.connection,

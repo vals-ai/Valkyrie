@@ -1303,7 +1303,7 @@ async def test_reservations_bound_parallel_builds(
     assert {_task(postgres_engine, task).status for task in (first, second)} == {TaskStatus.IN_PROGRESS}
     assert _reservation_count(postgres_engine, context.pool_id) == 0
     assert first_events == second_events == ["create", "cleanup"]
-    assert provider_events == ["read_capacity", "capacity"] * 3
+    assert provider_events == ["read_capacity", "capacity", "read_capacity", "read_capacity", "capacity"]
 
 
 async def test_failed_reserved_create_holds_its_reservation_until_it_is_released(
@@ -1560,7 +1560,9 @@ async def test_reserved_queue_keeps_the_full_lock_for_inexact_or_unreadable_dema
     assert events == [*expected_events, "create", "cleanup"]
 
 
-async def test_full_lock_build_waits_for_reserved_builds_to_drain(
+@pytest.mark.parametrize("fits", [True, False])
+async def test_full_lock_build_waits_only_while_reserved_demand_does_not_fit(
+    fits: bool,
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -1568,7 +1570,10 @@ async def test_full_lock_build_waits_for_reserved_builds_to_drain(
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
     events: list[str] = []
-    context = _context(postgres_engine, provider_pool_id, events, reserved=True)
+    snapshot = (
+        _CAPACITY if fits else _CAPACITY.model_copy(update={"cpu": ResourceCapacity(total=_RESOURCES.vcpu, used=0)})
+    )
+    context = _context(postgres_engine, provider_pool_id, events, reserved=True, snapshot=snapshot)
     _, benchmark, (reserved_task, snapshot_task) = _run(
         postgres_session,
         context.pool_id,
@@ -1588,9 +1593,7 @@ async def test_full_lock_build_waits_for_reserved_builds_to_drain(
         polled.append(
             (_task(postgres_engine, snapshot_task).status, _reservation_count(postgres_engine, context.pool_id))
         )
-        with Session(postgres_engine) as session:
-            store.release_reservation(session, reserved_task.id, reserved_task.started_at)
-            session.commit()
+        _release_reservation(postgres_engine, reserved_task)
         await creator.release()
 
     monkeypatch.setattr("tracker.scheduler.admission.asyncio.sleep", AsyncMock(side_effect=promote_reserved_build))
@@ -1603,8 +1606,10 @@ async def test_full_lock_build_waits_for_reserved_builds_to_drain(
         assert sandbox is not None
         assert _task(postgres_engine, snapshot_task).status == TaskStatus.IN_PROGRESS
 
-    assert polled == [(TaskStatus.PENDING, 1)]
-    assert events == ["capacity", "create", "cleanup"]
+    assert polled == ([] if fits else [(TaskStatus.PENDING, 1)])
+    assert _reservation_count(postgres_engine, context.pool_id) == (1 if fits else 0)
+    assert events == ["read_capacity", "capacity", "create", "cleanup"]
+    await creator.release()
 
 
 @pytest.fixture
