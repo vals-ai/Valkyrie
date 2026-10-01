@@ -40,6 +40,8 @@ def test_stored_failure_crosses_sdk_and_cli(
     assert task.error_message in rendered
 
     if fixture_name == "original-error.json":
-        assert "TimeoutError: VALKYRIE_282_ACCEPTANCE controlled upstream timeout" in task.error_message
-        assert "VALKYRIE_282_STDOUT_SENTINEL" not in rendered
-        assert "VALKYRIE_282_STDERR_SENTINEL" not in rendered
+        assert task.error_message == (
+            "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: "
+            "AgentError: model returned no patch"
+        )
+        assert "raw model output" not in rendered

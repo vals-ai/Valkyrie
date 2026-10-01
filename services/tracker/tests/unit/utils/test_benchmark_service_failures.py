@@ -789,6 +789,8 @@ class TestBenchmarkServiceFailures:
         secret_source: str,
         failure_phase: str,
         caplog: pytest.LogCaptureFixture,
+        harness_headers: dict[str, str],
+        tmp_path: Path,
     ) -> None:
         """An error the agent writes to $VALKYRIE_ERROR_PATH is what operators read back for the task."""
         if secret_source in {"contract", "gateway"}:
@@ -947,6 +949,17 @@ class TestBenchmarkServiceFailures:
 
         record = next(record for record in caplog.records if record.getMessage() == "Task execution failed")
         assert "fake-sensitive-value" not in JsonFormatter().format(record)
+
+        task_list = TestClient(app).get(f"/benchmarks/{benchmark_id}/tasks")
+        results = TestClient(app).get(
+            "/retrieve-results", params={"benchmark_id": str(benchmark_id)}, headers=harness_headers
+        )
+        assert task_list.status_code == results.status_code == 200
+        assert task_list.json()["tasks"][0]["error_message"] == expected_error
+        assert results.json()["task_errors"] == {task_row.task_id: expected_error}
+        (tmp_path / "original-error.json").write_text(
+            json.dumps({"task": body, "tasks": task_list.json(), "results": results.json()}, indent=2)
+        )
 
     @pytest.mark.usefixtures("process_benchmark_env")
     @pytest.mark.parametrize("explicit_cause", [True, False])

@@ -1859,6 +1859,96 @@ class TestEgressPolicy:
 class TestStreamCommandOutputAgentFailure:
     """Agent command failure cleanup and error classification."""
 
+    async def _reported_failure(self, content: str, secret_values: tuple[str, ...] | None) -> tuple[str, list[str]]:
+        commands: list[str] = []
+
+        async def command(_command: str) -> AsyncIterator[str]:
+            yield "unrelated raw output"
+            raise ProviderSandboxCommandError(1)
+
+        async def execute(command: str) -> ExecResult:
+            commands.append(command)
+            if command.startswith("head -c "):
+                limit = int(command.split()[2])
+
+                return ExecResult(exit_code=0, output=content.encode()[:limit].decode(errors="replace"))
+
+            return ExecResult(exit_code=0, output="1000000000")
+
+        sandbox = Mock(id="privacy-test", command=command, exec=execute)
+        sandbox.name = "privacy-test"
+        sandbox.state = "started"
+
+        with pytest.raises(AgentRunFailedError) as error:
+            await sandbox_module.stream_command_output(
+                sandbox,
+                "run-agent",
+                lambda _: None,
+                redact_error=None
+                if secret_values is None
+                else sandbox_module.create_agent_error_redactor(secret_values),
+            )
+
+        return str(error.value), commands
+
+    @pytest.mark.parametrize("content", ["test-secret-value", "ValueError: test-secret-value"])
+    async def test_opaque_secrets_disable_optional_error_read(self, content: str) -> None:
+        message, commands = await self._reported_failure(content, None)
+
+        assert message == "Sandbox error: Agent command failed with exit code 1"
+        assert not any(command.startswith("head -c ") for command in commands)
+
+    async def test_known_secret_values_are_masked_before_error_is_raised(self) -> None:
+        message, _ = await self._reported_failure(
+            "ValueError: rejected test-secret-long and test-secret",
+            ("test-secret", "test-secret-long", ""),
+        )
+
+        assert message.endswith("ValueError: rejected [REDACTED] and [REDACTED]")
+        assert "test-secret" not in message
+        assert "unrelated raw output" not in message
+
+    async def test_multiline_secret_is_masked_before_whitespace_normalization(self) -> None:
+        message, _ = await self._reported_failure("ValueError: rejected line-one\nline-two", ("line-one\nline-two",))
+
+        assert message.endswith("ValueError: rejected [REDACTED]")
+
+    @pytest.mark.parametrize(("padding", "retained_characters"), [("x", 2025), ("é", 1012)])
+    async def test_masking_expansion_preserves_a_bounded_summary(self, padding: str, retained_characters: int) -> None:
+        prefix = "ValueError: API_KEY "
+        padding_bytes = 2048 - len(prefix.encode())
+        count, remainder = divmod(padding_bytes, len(padding.encode()))
+        content = prefix + padding * count + "x" * remainder
+
+        message, _ = await self._reported_failure(content, ("API_KEY",))
+
+        assert "ValueError: [REDACTED] " in message
+        assert "API_KEY" not in message
+
+        summary = message.split("exit code 1: ", 1)[1]
+        assert summary == "ValueError: [REDACTED] " + padding * retained_characters
+        assert len(summary.encode()) <= 2048
+        assert "\ufffd" not in summary
+
+    @pytest.mark.parametrize("content", ["raw prompt or model output", "", "ValueError:", "ValueError: bad\x00text"])
+    async def test_malformed_report_keeps_only_exit_code(self, content: str) -> None:
+        message, _ = await self._reported_failure(content, ())
+
+        assert message == "Sandbox error: Agent command failed with exit code 1"
+
+    async def test_oversized_report_is_not_truncated_through_a_secret(self) -> None:
+        content = "ValueError: " + "x" * 2030 + "test-secret-value"
+
+        message, commands = await self._reported_failure(content, ("test-secret-value",))
+
+        assert message == "Sandbox error: Agent command failed with exit code 1"
+        assert any(command.startswith("head -c 2049 ") for command in commands)
+
+    async def test_small_original_error_is_preserved_with_no_declared_secrets(self) -> None:
+        message, _ = await self._reported_failure("ValueError: no patch\n", ())
+
+        assert message.endswith("ValueError: no patch")
+
     async def test_stream_command_output_uses_sandbox_timing_and_removes_files(self) -> None:
         observed_commands: list[str] = []
 
