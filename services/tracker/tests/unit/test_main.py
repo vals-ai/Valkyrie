@@ -1261,7 +1261,7 @@ class TestTrackerAPI:
         )
 
         assert response.status_code == 400
-        assert "AWS credentials" in response.json()["detail"]
+        assert "AWS request headers" in response.json()["detail"]
         assert database_session.exec(select(Benchmark)).all() == []
         assert mock_kicker.queued_calls == []
 
@@ -3340,7 +3340,7 @@ class TestTrackerAPI:
         response = client.get("/fetch-benchmark", params={"benchmark_id": str(example_benchmark_object.id)})
 
         assert response.status_code == 400
-        assert "access-key AWS" in response.json()["detail"]
+        assert "no deployment-managed AWS runtime" in response.json()["detail"]
         assert "no deployment-managed AWS runtime" in response.json()["detail"]
 
 
