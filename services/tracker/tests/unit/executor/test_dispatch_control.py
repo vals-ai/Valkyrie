@@ -6,11 +6,7 @@ from uuid import uuid4
 import pytest
 from sqlmodel import Session, col, select
 
-from executor_protocol import (
-    DATASET_VERSION_PROTOCOL_VERSION,
-    MANAGED_EXECUTION_PROTOCOL_VERSION,
-    RESERVED_QUEUE_PROTOCOL_VERSION,
-)
+from executor_protocol import DATASET_VERSION_PROTOCOL_VERSION, MANAGED_EXECUTION_PROTOCOL_VERSION
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -114,61 +110,63 @@ def test_managed_start_accepts_the_managed_execution_protocol(
     assert dispatch.executor_release_id == release.id
 
 
-@pytest.mark.parametrize(
-    ("protocol_version", "expected_queue_pool_id"),
-    [
-        (DATASET_VERSION_PROTOCOL_VERSION, _LEGACY_QUEUE_POOL_ID),
-        (RESERVED_QUEUE_PROTOCOL_VERSION, reserved_queue_pool_id(_LEGACY_QUEUE_POOL_ID)),
-    ],
-)
-def test_start_selects_the_queue_protocol_the_active_release_speaks(
-    protocol_version: str,
-    expected_queue_pool_id: str,
+def test_start_persists_a_reserved_queue_id_with_protocol_four(
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
-    register_release(database_session, _release("active", protocol_version=protocol_version))
-    promote_release(database_session, "active")
+    release = _release("active", protocol_version=DATASET_VERSION_PROTOCOL_VERSION)
+    register_release(database_session, release)
+    promote_release(database_session, release.id)
     database_session.commit()
     example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
         update={"queue_pool_id": _LEGACY_QUEUE_POOL_ID}
     )
 
-    admit_start_dispatch(database_session, benchmark=example_benchmark_object, dispatch_id=uuid4())
+    dispatch = admit_start_dispatch(database_session, benchmark=example_benchmark_object, dispatch_id=uuid4())
     database_session.commit()
     database_session.expire_all()
 
     persisted = database_session.get(Benchmark, example_benchmark_object.id)
     assert persisted is not None
-    assert persisted.arguments.queue_pool_id == expected_queue_pool_id
+    assert persisted.arguments.queue_pool_id == reserved_queue_pool_id(_LEGACY_QUEUE_POOL_ID)
+    assert persisted.current_execution_release_id == release.id
+    assert dispatch.executor_release_id == release.id
 
 
-def test_reserved_queue_recovery_refuses_a_release_without_the_reserved_protocol(
+def test_reserved_queue_recovery_keeps_its_id_with_the_active_protocol_four_release(
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
-    reserved = _release("reserved", protocol_version=RESERVED_QUEUE_PROTOCOL_VERSION)
-    register_release(database_session, reserved)
-    pin_benchmark_to_release(example_benchmark_object, reserved)
+    previous = _release("previous", protocol_version=DATASET_VERSION_PROTOCOL_VERSION)
+    register_release(database_session, previous)
+    pin_benchmark_to_release(example_benchmark_object, previous)
+    reserved_id = reserved_queue_pool_id(_LEGACY_QUEUE_POOL_ID)
     example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
-        update={"queue_pool_id": reserved_queue_pool_id(_LEGACY_QUEUE_POOL_ID)}
+        update={"queue_pool_id": reserved_id}
     )
     database_session.add(example_benchmark_object)
-    register_release(database_session, _release("legacy", protocol_version=DATASET_VERSION_PROTOCOL_VERSION))
-    promote_release(database_session, "legacy")
+    register_release(database_session, _release("active", protocol_version=DATASET_VERSION_PROTOCOL_VERSION))
+    promote_release(database_session, "active")
     database_session.commit()
 
-    with pytest.raises(ReleaseControlError, match="reserved sandbox builds"):
-        admit_recovery_dispatch(
-            database_session,
-            benchmark=example_benchmark_object,
-            pre_action_status=BenchmarkStatus.STOPPED,
-            dispatch_id=uuid4(),
-            kind=ExecutorDispatchKind.RETRY,
-        )
+    dispatch = admit_recovery_dispatch(
+        database_session,
+        benchmark=example_benchmark_object,
+        pre_action_status=BenchmarkStatus.STOPPED,
+        dispatch_id=uuid4(),
+        kind=ExecutorDispatchKind.RETRY,
+    )
+    database_session.commit()
+    database_session.expire_all()
+
+    persisted = database_session.get(Benchmark, example_benchmark_object.id)
+    assert persisted is not None
+    assert persisted.arguments.queue_pool_id == reserved_id
+    assert persisted.current_execution_release_id == "active"
+    assert dispatch.executor_release_id == "active"
 
 
-def test_legacy_queue_recovery_keeps_its_protocol_under_a_reserved_release(
+def test_legacy_queue_recovery_keeps_its_stored_id_with_the_active_protocol_four_release(
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
@@ -179,8 +177,8 @@ def test_legacy_queue_recovery_keeps_its_protocol_under_a_reserved_release(
         update={"queue_pool_id": _LEGACY_QUEUE_POOL_ID}
     )
     database_session.add(example_benchmark_object)
-    register_release(database_session, _release("reserved", protocol_version=RESERVED_QUEUE_PROTOCOL_VERSION))
-    promote_release(database_session, "reserved")
+    register_release(database_session, _release("active", protocol_version=DATASET_VERSION_PROTOCOL_VERSION))
+    promote_release(database_session, "active")
     database_session.commit()
 
     dispatch = admit_recovery_dispatch(
@@ -190,9 +188,14 @@ def test_legacy_queue_recovery_keeps_its_protocol_under_a_reserved_release(
         dispatch_id=uuid4(),
         kind=ExecutorDispatchKind.RETRY,
     )
+    database_session.commit()
+    database_session.expire_all()
 
-    assert dispatch.executor_release_id == "reserved"
-    assert example_benchmark_object.arguments.queue_pool_id == _LEGACY_QUEUE_POOL_ID
+    persisted = database_session.get(Benchmark, example_benchmark_object.id)
+    assert persisted is not None
+    assert persisted.arguments.queue_pool_id == _LEGACY_QUEUE_POOL_ID
+    assert persisted.current_execution_release_id == "active"
+    assert dispatch.executor_release_id == "active"
 
 
 def test_in_progress_managed_recovery_refuses_a_pinned_legacy_protocol(
