@@ -2,7 +2,7 @@
 
 Run: uv run pytest tests/contract/test_sdk_tracker_contract.py
 
-Covers canonical payloads, mixed-version compatibility, and route schemas.
+Covers canonical payloads, authenticated request contracts, and route schemas.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, cast
 import httpx
 import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from services.tracker.main import app
 from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
@@ -26,7 +26,6 @@ from tracker.database.models import (
     OutputArtifact,
 )
 from tracker.types import (
-    AWSCredentials,
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
@@ -47,7 +46,6 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
-    HarnessConfig,
     LogEventResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -65,9 +63,8 @@ from tracker.types import (
     TasksResponse,
     TaskSummary,
 )
-from valkyrie.sdk import AWSAccessKeys, AWSConfig, ValkyrieClient, ValkyrieConfig
+from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
-    AWSCredentials as SDKAWSCredentials,
     AgentContractRequest as SDKAgentContractRequest,
     AgentDownloadURLResponse as SDKAgentDownloadURLResponse,
     AgentEntry as SDKAgentEntry,
@@ -93,7 +90,6 @@ from valkyrie.sdk.models import (
     FinalEvaluation as SDKFinalEvaluation,
     FilterOptionsResponse as SDKFilterOptionsResponse,
     FinalViewResponse as SDKFinalViewResponse,
-    HarnessConfig as SDKHarnessConfig,
     LogEvent as SDKLogEvent,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
@@ -192,8 +188,6 @@ MODEL_PAIRS = (
     (FilterOptionsResponse, SDKFilterOptionsResponse),
     (OutputArtifact, SDKOutputArtifact),
     (AgentContractRequest, SDKAgentContractRequest),
-    (AWSCredentials, SDKAWSCredentials),
-    (HarnessConfig, SDKHarnessConfig),
     (LogEventResponse, SDKLogEvent),
     (StartBenchmarkRequest, SDKStartBenchmarkRequest),
     (BenchmarkDetails, SDKBenchmarkDetails),
@@ -244,30 +238,6 @@ INTERNAL_ROUTES = {
 
 def load_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
-
-
-class _LegacyTrackerStartBenchmarkRequest(BaseModel):
-    """Start-request fields relevant before queue priority was introduced."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    contract: AgentContractRequest
-    benchmark_name: str
-    concurrency: int = 5
-    label: str | None = None
-    task_ids: list[str] | None = None
-    slice_str: str | None = None
-    lambda_function: str | None = None
-    dataset: str | None = None
-    harness_config: HarnessConfig
-    custom_benchmark_service: str | None = None
-    service_headers: dict[str, str] = Field(default_factory=dict)
-    sandbox_provider: str = "daytona"
-    sandbox_provider_secret_name: str | None = None
-    service_auth_header_name: str | None = None
-    service_auth_secret_name: str | None = None
-    webhook_secret_name: str | None = None
-    webhook_intervals: list[int] | None = None
 
 
 @pytest.mark.parametrize(
@@ -347,38 +317,32 @@ def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) 
     for priority in range(5):
         accepted = cast(
             StartBenchmarkRequest | SDKStartBenchmarkRequest,
-            model.model_validate({**payload, "sandbox_provider": "modal", "priority": priority}),
+            model.model_validate({**payload, "priority": priority}),
         )
         assert accepted.priority == priority
 
     for invalid in (False, True, "1", -1, 5):
         with pytest.raises(ValidationError):
-            model.model_validate({**payload, "sandbox_provider": "modal", "priority": invalid})
+            model.model_validate({**payload, "priority": invalid})
 
 
-async def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
+async def test_sdk_start_matches_tracker_api_key_contract() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        wire_payload = json.loads(request.content)
-        legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
-        assert legacy_request.concurrency == 5
-        assert "priority" not in wire_payload
-        assert "environment" not in wire_payload
-        assert "properties" not in wire_payload
+        payload = json.loads(request.content)
+        started = StartBenchmarkRequest.model_validate(payload)
+
+        assert started.concurrency == 5
+        assert request.headers["x-api-key"] == "vals-key"
+        assert "authorization" not in request.headers
+        assert not any(name.startswith("x-harness-") for name in request.headers)
+        assert "harness_config" not in payload
+        assert "sandbox_provider_secret_name" not in payload
         return httpx.Response(200, json=load_fixture("start.json")["response"])
 
-    config = ValkyrieConfig(
-        aws=AWSConfig(
-            credentials=AWSAccessKeys(
-                AWS_ACCESS_KEY_ID="test-key",
-                AWS_SECRET_ACCESS_KEY="test-secret",
-            ),
-            AWS_DEFAULT_REGION="us-west-2",
-            S3_BUCKET="test-bucket",
-        ),
-        sandbox_providers={"daytona": "DaytonaSecret"},
-    )
     async with ValkyrieClient(
-        config, base_url="https://tracker.test", transport=httpx.MockTransport(handler)
+        ValkyrieConfig.model_validate({"api_key": "vals-key"}),
+        base_url="https://tracker.test",
+        transport=httpx.MockTransport(handler),
     ) as client:
         await client.runs.start("sweagent", "swebench")
 

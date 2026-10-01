@@ -128,22 +128,6 @@
     "destination": "/reference/cli/config#remove"
   },
   {
-    "source": "/reference/cli/config/provider/set",
-    "destination": "/reference/cli/config#provider-set"
-  },
-  {
-    "source": "/reference/cli/config/provider/default",
-    "destination": "/reference/cli/config#provider-default"
-  },
-  {
-    "source": "/reference/cli/config/provider/remove",
-    "destination": "/reference/cli/config#provider-remove"
-  },
-  {
-    "source": "/reference/cli/config/provider/list",
-    "destination": "/reference/cli/config#provider-list"
-  },
-  {
     "source": "/reference/cli/config/service/set",
     "destination": "/reference/cli/config#service-set"
   },
@@ -526,9 +510,5 @@
   {
     "source": "/reference/sdk/models/config/aws-config",
     "destination": "/reference/sdk/models/config#aws-config"
-  },
-  {
-    "source": "/reference/sdk/models/config/aws-access-keys",
-    "destination": "/reference/sdk/models/config#aws-access-keys"
   }
 ]

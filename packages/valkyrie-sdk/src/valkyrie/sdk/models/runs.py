@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, BeforeValidator, Field, field_serializer
+from pydantic import ConfigDict, BaseModel, BeforeValidator, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
@@ -68,6 +68,8 @@ class DatasetVersion(ResponseModel):
 
 class StartBenchmarkRequest(BaseModel):
     """Wire payload used to start a benchmark run."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     environment: Literal["aws", "local"] = "aws"
     properties: AWSResources | LocalResources | None = None

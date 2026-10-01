@@ -184,7 +184,9 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
     monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
     monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", controlled_sleep)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
-    run = asyncio.create_task(process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs))
+    run = asyncio.create_task(
+        process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs)
+    )
     try:
         await coordinator_polls.get()
         await asyncio.wait_for(two_evaluations_started.wait(), timeout=2)
@@ -238,9 +240,7 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
 ) -> None:
     task_ids = ["resume_eval", "recover_build"]
     provider_pool_id = "evaluation-pool"
-    request, benchmark = _queued_run(
-        contract, database_session, task_ids, pool_id=provider_pool_id, concurrency=2
-    )
+    request, benchmark = _queued_run(contract, database_session, task_ids, pool_id=provider_pool_id, concurrency=2)
     _add_tasks(
         database_session,
         benchmark,
@@ -428,7 +428,9 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
-    run = asyncio.create_task(process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs))
+    run = asyncio.create_task(
+        process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs)
+    )
     await asyncio.wait_for(task_started.wait(), timeout=2)
     run.cancel()
     with pytest.raises(asyncio.CancelledError):

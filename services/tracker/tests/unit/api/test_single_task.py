@@ -227,22 +227,15 @@ def test_run_artifacts_are_scoped_and_storage_errors_are_mapped(
         ExpiresIn=300,
     )
     for endpoint, params in (("artifacts", {}), ("artifacts/download-url", {"path": "file"})):
-        assert (
-            _client.get(f"/benchmarks/{other.id}/{endpoint}", params=params).status_code == 404
-        )
+        assert _client.get(f"/benchmarks/{other.id}/{endpoint}", params=params).status_code == 404
     for path in ("../other", "/outside", "task/../file", "a\\b"):
         assert (
-            _client.get(
-                f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": path}
-            ).status_code
-            == 400
+            _client.get(f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": path}).status_code == 400
         )
     for code, status in (("NoSuchKey", 404), ("AccessDenied", 403), ("InternalError", 502)):
         client.head_object.side_effect = ClientError({"Error": {"Code": code}}, "HeadObject")
         assert (
-            _client.get(
-                f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": "file"}
-            ).status_code
+            _client.get(f"/benchmarks/{benchmark.id}/artifacts/download-url", params={"path": "file"}).status_code
             == status
         )
 

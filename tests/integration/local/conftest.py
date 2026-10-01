@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from services.tracker import main as tracker_main
 from tracker.auth import get_current_org
-from executor_protocol import SUPPORTED_PROTOCOL_VERSION
+from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
 from tracker.database.models import (
     DEFAULT_ORG_NAME,
     AgentContractRequest,
@@ -32,8 +32,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config
 from valkyrie.cli.runtime_config import TRACKER_SERVICE_URL_ENV_VAR, VALKYRIE_CONFIG_PATH_ENV_VAR
 
 TEST_ORG_ID = UUID("c15649d2-6ec4-4b4a-974a-cc00ea80bbf7")
@@ -57,7 +55,7 @@ def database_session() -> Generator[Session, None, None]:
                 id="cli-test-release",
                 artifact_uri="s3://test-artifacts/cli-test-release.pex",
                 artifact_digest="a" * 64,
-                protocol_version=SUPPORTED_PROTOCOL_VERSION,
+                protocol_version=MANAGED_EXECUTION_PROTOCOL_VERSION,
                 status=ExecutorReleaseStatus.ACTIVE,
                 readiness_verified=True,
             )
@@ -72,25 +70,8 @@ def database_session() -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def harness_config() -> HarnessConfig:
-    """Provide tracker configuration without cloud access."""
-    return HarnessConfig(
-        aws=AWSCredentials(
-            aws_access_key_id="test-key",
-            aws_secret_access_key="test-secret",
-            aws_default_region="us-east-1",
-        ),
-        s3_bucket="test-bucket",
-        log_group="test-log-group",
-        log_retention_policy=1,
-        sandbox_provider_secret_name="test-provider-secret",
-    )
-
-
-@pytest.fixture
 def local_tracker_app(
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[FastAPI, None, None]:
     """Connect the production tracker app to local test dependencies."""
@@ -102,7 +83,15 @@ def local_tracker_app(
     assert org is not None
     tracker_main.app.dependency_overrides[get_session] = get_test_session
     tracker_main.app.dependency_overrides[get_current_org] = lambda: org
-    tracker_main.app.dependency_overrides[fetch_harness_config] = lambda: harness_config
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "test-bucket")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "test-log-group")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "1")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_SANDBOX_PROVIDER", "daytona")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", "test-provider-secret")
+    monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
     monkeypatch.setattr(tracker_main, "check_database_connection", lambda: True)
 
     try:
@@ -119,21 +108,7 @@ def route_cli_to_local_tracker(
 ) -> None:
     """Route production tracker clients through the local FastAPI app."""
     config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "aws": {
-                    "credentials": {
-                        "AWS_ACCESS_KEY_ID": "test-key",
-                        "AWS_SECRET_ACCESS_KEY": "test-secret",
-                    },
-                    "AWS_DEFAULT_REGION": "us-east-1",
-                    "S3_BUCKET": "test-bucket",
-                },
-                "sandbox_providers": {"daytona": "test-provider-secret"},
-            }
-        )
-    )
+    config_path.write_text(yaml.safe_dump({"api_key": "local-test-key"}))
     monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     monkeypatch.setenv(TRACKER_SERVICE_URL_ENV_VAR, "http://tracker.test")
 
@@ -157,6 +132,7 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
         label="nightly",
         started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         started_by_email="runner@example.com",
+        aws_managed=True,
         arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="cli-agent",
@@ -178,6 +154,7 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
         started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         finished_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
         started_by_email="reviewer@example.com",
+        aws_managed=True,
         arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="review-agent",

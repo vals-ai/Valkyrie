@@ -479,7 +479,7 @@ def fetch_aws_runtime_metadata(org: Org = Depends(get_current_org)) -> AWSRuntim
     """Return managed AWS resource locations without credential material."""
     resources = resolve_aws_runtime_metadata(org.id)
     if resources is None:
-        return AWSRuntimeResponse(mode="access_key")
+        return AWSRuntimeResponse(mode="unavailable")
     return AWSRuntimeResponse(
         mode="managed",
         region=resources.region,

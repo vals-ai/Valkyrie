@@ -12,11 +12,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
-from starlette.requests import Request
 
 from main import app
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION

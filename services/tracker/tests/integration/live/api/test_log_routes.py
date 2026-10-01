@@ -24,7 +24,6 @@ from tracker.aws.cloudwatch_logs import (
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark, AWSBenchmarkArguments, Task
-from tracker.types import HarnessConfig
 
 
 def _wait_for_events(
@@ -54,8 +53,8 @@ def _wait_for_events(
 def test_log_routes_round_trip_real_cloudwatch(
     live_api_client: TestClient,
     database_session: Session,
-    harness_config: HarnessConfig,
-    harness_headers: dict[str, str],
+    live_aws_runtime: AWSRuntime,
+    api_headers: dict[str, str],
 ) -> None:
     """Exercise aggregate, task, bounded, filtered, and streaming reads against CloudWatch.
 
@@ -68,6 +67,7 @@ def test_log_routes_round_trip_real_cloudwatch(
     benchmark = Benchmark(
         org_id=TEST_ORG_ID,
         name="live-cloudwatch-logs",
+        aws_managed=True,
         arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="live-cloudwatch-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
@@ -80,7 +80,7 @@ def test_log_routes_round_trip_real_cloudwatch(
     database_session.refresh(first_task)
     database_session.refresh(second_task)
 
-    runtime = AWSRuntime.from_harness_config(harness_config)
+    runtime = live_aws_runtime
     log_group_name = benchmark_log_group_name(runtime.resources.log_group, str(benchmark.id))
     log_sink = CloudWatchBenchmarkLogSink(runtime.clients, runtime.resources.log_group)
     logs_client = runtime.clients.cloudwatch_logs_client()
@@ -107,7 +107,7 @@ def test_log_routes_round_trip_real_cloudwatch(
         aggregate_events = _wait_for_events(
             live_api_client,
             f"/benchmarks/{benchmark.id}/logs",
-            headers=harness_headers,
+            headers=api_headers,
             params={"query": marker, **bounds},
             expected_count=2,
         )
@@ -119,7 +119,7 @@ def test_log_routes_round_trip_real_cloudwatch(
         task_events = _wait_for_events(
             live_api_client,
             f"/benchmarks/{benchmark.id}/logs",
-            headers=harness_headers,
+            headers=api_headers,
             params={"task_id": first_task.task_id, "query": "literal *", **bounds},
             expected_count=1,
         )
@@ -127,7 +127,7 @@ def test_log_routes_round_trip_real_cloudwatch(
 
         stream_response = live_api_client.get(
             f"/benchmarks/{benchmark.id}/logs/stream",
-            headers=harness_headers,
+            headers=api_headers,
             params={
                 "task_id": first_task.task_id,
                 "query": "literal *",

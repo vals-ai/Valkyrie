@@ -4,8 +4,10 @@ import os
 from asyncio import Semaphore
 from collections.abc import AsyncGenerator, Generator
 from uuid import uuid4
+from typing import Any, cast
 
 import pytest
+import boto3
 from benchmark_service import Resources, SandboxProvider, SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient
 from dotenv import load_dotenv
@@ -18,12 +20,12 @@ from tests.integration.seed_agent_artifacts import (
     seed_test_agent_artifact,
 )
 from tests.utils import TEST_ORG_ID
-from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import get_contract_s3_key
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import DEFAULT_ORG_NAME, AgentContractRequest, Org
-from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import create_benchmark_service_client, fetch_sandbox_provider_config
 
 _ = load_dotenv()
@@ -56,49 +58,33 @@ def daytona_secret_name() -> str:
 
 
 @pytest.fixture(scope="session")
-def live_aws_credentials() -> AWSCredentials:
-    """Require and return the AWS credentials used by live integration tests."""
-    aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-    if not aws_access_key_id:
-        pytest.fail("AWS_ACCESS_KEY_ID must be set to run live integration tests.")
+def live_aws_runtime() -> AWSRuntime:
+    """Resolve live resources while AWS authentication stays in the SDK default chain."""
+    names = ("AWS_DEFAULT_REGION", "TEST_AWS_S3_BUCKET", "TEST_LOG_GROUP")
+    settings = {name: os.getenv(name) for name in names}
+    for name, value in settings.items():
+        if not value:
+            pytest.fail(f"{name} must be set to run live integration tests.")
 
-    aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-    if not aws_secret_access_key:
-        pytest.fail("AWS_SECRET_ACCESS_KEY must be set to run live integration tests.")
+    region = settings["AWS_DEFAULT_REGION"]
+    bucket = settings["TEST_AWS_S3_BUCKET"]
+    log_group = settings["TEST_LOG_GROUP"]
+    assert region is not None and bucket is not None and log_group is not None
+    identity_client = cast(Any, boto3.client)("sts", region_name=region)
+    try:
+        account_id = cast(str, identity_client.get_caller_identity()["Account"])
+    finally:
+        identity_client.close()
 
-    aws_default_region = os.getenv("AWS_DEFAULT_REGION")
-    if not aws_default_region:
-        pytest.fail("AWS_DEFAULT_REGION must be set to run live integration tests.")
-
-    return AWSCredentials(
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-        aws_default_region=aws_default_region,
-        aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
-    )
-
-
-@pytest.fixture(scope="session")
-def harness_config(daytona_secret_name: str, live_aws_credentials: AWSCredentials) -> HarnessConfig:
-    """Require and assemble the harness configuration for live integration tests."""
-    aws_s3_bucket = os.getenv("TEST_AWS_S3_BUCKET")
-
-    if not aws_s3_bucket:
-        pytest.fail("TEST_AWS_S3_BUCKET must be set to run live integration tests.")
-
-    log_group = os.getenv("TEST_LOG_GROUP")
-
-    if not log_group:
-        pytest.fail("TEST_LOG_GROUP must be set to run live integration tests.")
-
-    log_retention_policy = int(os.getenv("TEST_LOG_RETENTION") or 1)
-
-    return HarnessConfig(
-        sandbox_provider_secret_name=daytona_secret_name,
-        aws=live_aws_credentials,
-        log_group=log_group,
-        log_retention_policy=log_retention_policy,
-        s3_bucket=aws_s3_bucket,
+    return AWSRuntime(
+        resources=AWSResources(
+            region=region,
+            s3_bucket=bucket,
+            log_group=log_group,
+            log_retention_days=int(os.getenv("TEST_LOG_RETENTION") or 1),
+        ),
+        clients=DefaultChainAWSClientProvider(region),
+        expected_bucket_owner=account_id,
     )
 
 
@@ -109,17 +95,17 @@ def test_agent_name(worker_id: str) -> str:
 
 
 @pytest.fixture(scope="session")
-def seeded_test_agent_artifact(test_agent_name: str, harness_config: HarnessConfig) -> Generator[str, None, None]:
+def seeded_test_agent_artifact(test_agent_name: str, live_aws_runtime: AWSRuntime) -> Generator[str, None, None]:
     """Seed the live S3 agent artifact and always delete it after the session."""
-    s3_client = create_s3_client(harness_config.aws)
+    s3_client = create_s3_client(live_aws_runtime)
     key = get_contract_s3_key(test_agent_name)
 
     try:
-        seed_test_agent_artifact(s3_client, harness_config.s3_bucket, test_agent_name)
+        seed_test_agent_artifact(s3_client, live_aws_runtime.resources.s3_bucket, test_agent_name)
         yield test_agent_name
     finally:
         try:
-            delete_test_agent_artifact(s3_client, harness_config.s3_bucket, key)
+            delete_test_agent_artifact(s3_client, live_aws_runtime.resources.s3_bucket, key)
         finally:
             s3_client.close()
 
@@ -164,12 +150,12 @@ async def benchmark_service(service_headers: dict[str, str]) -> AsyncGenerator[B
 @pytest.fixture
 async def sandbox_provider_config(
     daytona_secret_name: str,
-    live_aws_credentials: AWSCredentials,
+    live_aws_runtime: AWSRuntime,
 ) -> SandboxProviderConfig:
     """Return the real provider configuration used by live service calls."""
     return await fetch_sandbox_provider_config(
         daytona_secret_name,
-        SecretsManagerStore(ExplicitCredentialsAWSClientProvider(live_aws_credentials)),
+        SecretsManagerStore(live_aws_runtime.clients),
         "daytona",
     )
 

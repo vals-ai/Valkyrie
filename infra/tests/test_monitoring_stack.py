@@ -56,7 +56,7 @@ TEST_TRACKER_SECRET_NAME_PREFIX = "test-tracker-secret"
 TEST_DEV_ENV = {
     "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
     "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
-    "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME": "test-provider-secret",
+    "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME": "test-tracker-secret-provider",
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": TEST_DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
     "SENTRY_DSN_SECRET_NAME": TEST_SENTRY_DSN_SECRET_NAME,
@@ -64,7 +64,7 @@ TEST_DEV_ENV = {
 TEST_BENCH_ENV = {
     "AWS_DEPLOYMENT_ROLE_ORG_IDS": TEST_MANAGED_ORG_ID,
     "AWS_TRACKER_SECRET_NAME_PREFIXES": TEST_TRACKER_SECRET_NAME_PREFIX,
-    "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME": "test-provider-secret",
+    "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME": "test-tracker-secret-provider",
     "SENTRY_DSN_SECRET_NAME": TEST_SENTRY_DSN_SECRET_NAME,
 }
 TEST_PROD_ENV = {
@@ -325,6 +325,7 @@ class MonitoringStackTest(unittest.TestCase):
             for variable in (
                 "AWS_DEPLOYMENT_ROLE_ORG_IDS",
                 "AWS_TRACKER_SECRET_NAME_PREFIXES",
+                "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME",
             ):
                 with self.subTest(stage=stage_name, variable=variable):
                     environment = dict(stage_environment)

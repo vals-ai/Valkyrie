@@ -45,12 +45,26 @@ from tracker.executor.dispatch_control import admit_recovery_dispatch, terminali
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
 from tracker.notifications import SlackNotifier
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
 from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import TaskMonitor
+
+
+@pytest.fixture(autouse=True)
+def managed_execution_runtime(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> None:
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", lambda *_args: aws_runtime)
+
+
+def _execution_context(request: StartBenchmarkRequest, benchmark: Benchmark) -> dict[str, Any]:
+    return ManagedExecutionContext(
+        version=2,
+        benchmark_id=benchmark.id,
+        verified_task_ids=[],
+        start_benchmark_request=RunExecutionRequest.model_validate(request.model_dump(mode="python")),
+    ).model_dump(mode="json")
 
 
 async def _skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
@@ -183,7 +197,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -233,8 +247,7 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
 
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime, sandbox_provider_secret_name="test-provider-secret")
         with pytest.raises(ExecutionAuthorityRevoked):
             async with run_orchestration_module.hold_dispatch_authority(authority):
                 await run_orchestration_module.upload_final_view(final_view, runtime.objects)
@@ -247,7 +260,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -288,7 +301,9 @@ class TestRunFinalization:
             contract=contract,
             benchmark_name=benchmark.name,
             concurrency=1,
-            harness_config=harness_config,
+            properties=aws_runtime.resources,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         )
 
         async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
@@ -364,9 +379,7 @@ class TestRunFinalization:
         promote_release(postgres_session, benchmark.current_execution_release_id)
         postgres_session.commit()
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark.id),
-            verified_task_ids=[],
+            execution_context_json=_execution_context(request, benchmark),
             **authority_kwargs,
         )
 
@@ -391,7 +404,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -424,7 +437,9 @@ class TestRunFinalization:
             contract=contract,
             benchmark_name=benchmark.name,
             concurrency=1,
-            harness_config=harness_config,
+            properties=aws_runtime.resources,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         )
         first_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
         second_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
@@ -473,15 +488,11 @@ class TestRunFinalization:
 
         await asyncio.gather(
             process_benchmark(
-                start_benchmark_request_json=request.model_dump(),
-                benchmark_id_str=str(benchmark.id),
-                verified_task_ids=[],
+                execution_context_json=_execution_context(request, benchmark),
                 **first_authority,
             ),
             process_benchmark(
-                start_benchmark_request_json=request.model_dump(),
-                benchmark_id_str=str(benchmark.id),
-                verified_task_ids=[],
+                execution_context_json=_execution_context(request, benchmark),
                 **second_authority,
             ),
         )
@@ -502,7 +513,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -535,7 +546,9 @@ class TestRunFinalization:
             contract=contract,
             benchmark_name=benchmark.name,
             concurrency=1,
-            harness_config=harness_config,
+            properties=aws_runtime.resources,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
             webhook_secret_name="test-webhook-secret",
             webhook_intervals=[100],
         )
@@ -602,9 +615,7 @@ class TestRunFinalization:
         postgres_session.close()
 
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark.id),
-            verified_task_ids=[],
+            execution_context_json=_execution_context(request, benchmark),
             **authority_kwargs,
         )
 
@@ -620,7 +631,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -686,10 +697,12 @@ class TestRunFinalization:
                 contract=contract,
                 benchmark_name=benchmark.name,
                 concurrency=1,
-                harness_config=harness_config,
+                properties=aws_runtime.resources,
+                sandbox_provider="daytona",
+                sandbox_provider_secret_name="test-provider-secret",
             )
             authority_kwargs = executor_authority_kwargs(benchmark, session=postgres_session)
-            await process_benchmark(request.model_dump(), str(benchmark.id), [], **authority_kwargs)
+            await process_benchmark(execution_context_json=_execution_context(request, benchmark), **authority_kwargs)
 
             with Session(postgres_engine) as assertion_session:
                 persisted_benchmark = assertion_session.get(Benchmark, benchmark.id)

@@ -554,10 +554,10 @@ def _parse_queued_execution(
     execution_context_json: dict[str, Any] | None,
 ) -> _QueuedExecution:
     if execution_context_json is None:
-        raise ValueError("Queued access-key benchmark requests are no longer supported.")
+        raise ValueError("Queued benchmark request requires an execution context.")
 
     if start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
-        raise ValueError("Queued benchmark request mixes access-key and managed execution inputs.")
+        raise ValueError("Queued benchmark request must contain only an execution context.")
     try:
         context = ManagedExecutionContext.model_validate(execution_context_json)
     except ValidationError:
@@ -689,7 +689,7 @@ async def _process_benchmark(
             pass
 
         if benchmark_row.arguments.environment == "aws" and not benchmark_row.aws_managed:
-            raise TrackerServiceError("Access-key runs are no longer supported")
+            raise TrackerServiceError("Run has no deployment-managed runtime")
 
         if start_benchmark_request.resolved_dataset_version != benchmark_row.arguments.dataset_version or (
             benchmark_row.arguments.dataset_version is not None

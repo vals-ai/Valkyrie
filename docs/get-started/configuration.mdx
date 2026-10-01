@@ -1,6 +1,6 @@
 ---
 title: Configure the CLI
-description: Manage Valkyrie credentials, endpoints, and sandbox providers.
+description: Manage Valkyrie API keys, endpoints, and local resource locations.
 ---
 
 The CLI stores configuration in `~/.config/valkyrie/valkyrie.yaml`. Every `config` command is in the [`valkyrie config` reference](/reference/cli/config).
@@ -11,9 +11,9 @@ The CLI stores configuration in `~/.config/valkyrie/valkyrie.yaml`. Every `confi
 valkyrie config init
 ```
 
-Initialization selects a [hosting mode](/get-started/hosting) and collects its required credentials. Hosted setup needs only a Vals API key when the organization can use managed AWS; self-hosted and access-key organizations also collect AWS resources and credentials.
+Hosted setup stores the selected environment and your Vals API key. The server resolves execution resources and sandbox-provider access. API-key entry is hidden at the prompt.
 
-The SDK and CLI use the same nested AWS configuration:
+For local commands that access S3 directly, configure resource locations and authenticate the local AWS SDK through its default credential chain:
 
 ```yaml
 aws:
@@ -21,27 +21,13 @@ aws:
   S3_BUCKET: benchmark-artifacts
   LOG_GROUP: benchmarks
   LOG_RETENTION_POLICY: 365
-  credentials:
-    AWS_ACCESS_KEY_ID: <access-key-id>
-    AWS_SECRET_ACCESS_KEY: <secret-access-key>
-sandbox_providers:
-  daytona: DaytonaSecrets
 ```
 
-Omit `credentials` for managed execution with local AWS operations using the AWS SDK credential chain. Omit `aws` when the client needs no AWS resources.
+Omit `aws` when the client needs no direct AWS operations. A local AWS SSO profile can be selected with `AWS_PROFILE`.
 
-## Migrate an existing configuration
+## Validate an existing configuration
 
-SDK 0.3.0 requires the nested YAML layout shown above. Edit the file named in the error without rerunning interactive setup:
-
-1. Move `AWS_DEFAULT_REGION`, `S3_BUCKET`, `LOG_GROUP`, and `LOG_RETENTION_POLICY` under `aws`.
-2. Move `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and any `AWS_SESSION_TOKEN` under `aws.credentials`. If these keys are already directly under `aws`, move them into its `credentials` mapping.
-3. Replace a legacy `DAYTONA_SECRET_NAME` entry with `sandbox_providers.daytona`.
-4. Keep each existing value and remove its old entry. Keep API keys, existing sandbox providers, benchmark settings, and other unrelated settings unchanged.
-
-If a container or CI job creates this file from a secret or template, update that source before upgrading its SDK or CLI. Otherwise, the next start will recreate the old layout. For interactive setup, `valkyrie config init` also moves legacy top-level keys, but asks configuration questions and can change settings for the selected hosting mode.
-
-Python callers passing flat AWS aliases or field names to `ValkyrieConfig.model_validate()` still work with a `DeprecationWarning`; this compatibility does not apply to YAML files. Update attribute reads to the nested models: for example, use `config.aws.s3_bucket` instead of `config.s3_bucket`, and `config.aws.credentials.aws_access_key_id` for a static access key. Check that `config.aws` and, when needed, `config.aws.credentials` are not `None` first.
+Configuration accepts the fields in the [SDK configuration reference](/reference/sdk/models/config#valkyrie-config). Validation names unsupported keys without printing their values. Edit the reported file to match the current schema, or rerun hosted setup to write a supported configuration while keeping benchmark endpoints and authentication.
 
 ## Set or remove a value
 
@@ -55,30 +41,9 @@ valkyrie config remove <KEY>
 
 Use `config set api_key` only for the Vals API key used by hosted tracker authentication. Benchmark-service credentials use the separate [authentication commands](/benchmarks/authentication).
 
-## Configure sandbox providers
+## Sandbox providers
 
-Map a provider name to an AWS Secrets Manager secret:
-
-```bash
-valkyrie config provider set daytona DaytonaSecrets
-```
-
-Managed hosted runs resolve the provider secret from the Vals deployment, so hosted setup stores no provider mapping. Configure one for access-key execution or to override the deployment default.
-
-The first configured provider becomes the default. Change it explicitly with:
-
-```bash
-valkyrie config provider default daytona
-```
-
-List or remove provider mappings with:
-
-```bash
-valkyrie config provider list
-valkyrie config provider remove <name>
-```
-
-Select another configured provider for one run with `valkyrie run start --provider <name>`. See [Configure sandbox providers](/get-started/sandbox-providers) for the Daytona secret shape.
+The server supplies the default sandbox provider and its Secrets Manager entry. Select a supported provider for one run with `valkyrie run start --provider <name>`. See [sandbox providers](/get-started/sandbox-providers) for deployment configuration.
 
 ## Environment variables
 

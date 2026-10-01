@@ -157,7 +157,7 @@ def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.Monke
 
     config = ValkyrieConfig.model_validate(
         {
-            "sandbox_providers": {"modal": "ModalSecret"},
+            "api_key": "vals-key",
         }
     )
     client = ValkyrieClient(config, base_url="https://tracker.test", transport=httpx.MockTransport(handler))

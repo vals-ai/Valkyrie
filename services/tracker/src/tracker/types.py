@@ -63,6 +63,8 @@ class BenchmarkDetails(BaseModel):
 
 
 class StartBenchmarkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     environment: Literal["aws", "local"] = "aws"
     properties: AWSResources | LocalResources | None = None
     managed_s3_bucket: str | None = Field(
@@ -90,16 +92,6 @@ class StartBenchmarkRequest(BaseModel):
     service_auth_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_retired_credential_fields(cls, data: object) -> object:
-        """Reject client-supplied AWS credentials, which are no longer supported."""
-        if isinstance(data, dict) and data.get("harness_config") is not None:
-            raise ValueError(
-                "harness_config is no longer supported; runs resolve AWS resources from the deployment"
-            )
-        return data
 
     @model_validator(mode="after")
     def validate_execution_environment(self) -> "StartBenchmarkRequest":
@@ -320,7 +312,7 @@ class ManagedExecutionContext(BaseModel):
 
 
 class AWSRuntimeResponse(BaseModel):
-    mode: Literal["access_key", "managed"]
+    mode: Literal["unavailable", "managed"]
     region: str | None = None
     s3_bucket: str | None = None
 

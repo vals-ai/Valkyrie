@@ -1,4 +1,7 @@
-"""Recover accepted managed starts without treating ordinary API failures as runs."""
+"""Recover accepted managed starts without treating ordinary API failures as runs.
+
+Run: uv run pytest tests/unit/sdk/test_managed_start_errors.py
+"""
 
 from uuid import UUID
 
@@ -24,7 +27,7 @@ async def test_managed_start_preserves_accepted_run_identity_and_api_cause(
         paths.append(request.url.path)
         return httpx.Response(503, json={"detail": _ACCEPTED_DETAIL})
 
-    config = sdk_config(AWS_ACCESS_KEY_ID=None, AWS_SECRET_ACCESS_KEY=None, AWS_SESSION_TOKEN=None)
+    config = sdk_config()
     async with make_client(handler, config=config) as client:
         with pytest.raises(ValkyrieRunAcceptedError) as raised:
             await client.runs.start("sweagent", "swebench", managed_s3_bucket="vs-dev-acme-123")
@@ -86,7 +89,7 @@ async def test_start_keeps_unconfirmed_api_failures_distinct(
         paths.append(request.url.path)
         return httpx.Response(status_code, json={"detail": detail})
 
-    config = sdk_config(AWS_ACCESS_KEY_ID=None, AWS_SECRET_ACCESS_KEY=None, AWS_SESSION_TOKEN=None)
+    config = sdk_config()
     async with make_client(handler, config=config) as client:
         with pytest.raises(ValkyrieAPIError) as raised:
             await client.runs.start("sweagent", "swebench", managed_s3_bucket="vs-dev-acme-123" if managed else None)

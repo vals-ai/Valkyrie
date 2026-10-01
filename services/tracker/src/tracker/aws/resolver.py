@@ -36,13 +36,12 @@ class ManagedAWSConfigurationError(ManagedAWSError):
 
 
 def _reject_harness_headers(request: Request) -> None:
-    """Reject requests carrying retired client-supplied AWS credential headers."""
+    """Require application requests to use server-owned AWS authority."""
     if any(key.startswith(_HARNESS_HEADER_PREFIX) for key in request.headers):
         raise HTTPException(
             status_code=400,
             detail=(
-                "Client-supplied AWS credentials are no longer supported; "
-                "runs resolve AWS resources from the deployment configuration."
+                "AWS request headers are not accepted; runs resolve AWS resources from the deployment configuration."
             ),
         )
 
@@ -166,9 +165,7 @@ def _deployment_runtime_with_submission_properties(org_id: UUID, properties: AWS
     """Build the deployment runtime, rejecting properties that differ from it."""
     runtime = _http_deployment_runtime(org_id)
     if properties is not None and properties != runtime.resources:
-        raise HTTPException(
-            status_code=400, detail="Managed run properties must match the deployment AWS resources"
-        )
+        raise HTTPException(status_code=400, detail="Managed run properties must match the deployment AWS resources")
     return runtime.with_resources(properties) if properties is not None else runtime
 
 
@@ -200,7 +197,7 @@ def resolve_run_aws_runtime(
     if not aws_managed:
         raise HTTPException(
             status_code=400,
-            detail="This run was started with access-key AWS, which is no longer supported. Start a new run.",
+            detail="Run has no deployment-managed AWS runtime. Start a new run.",
         )
     return _http_deployment_runtime(org_id, properties)
 

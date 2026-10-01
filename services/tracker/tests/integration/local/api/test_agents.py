@@ -10,18 +10,12 @@ from pytest import MonkeyPatch, mark
 
 
 def test_agents_empty_when_bucket_empty(client: TestClient, monkeypatch: MonkeyPatch) -> None:
-    """Authenticated agent listing must accept explicit harness credentials."""
+    """Authenticated agent listing uses server-configured storage."""
     monkeypatch.setattr("tracker.api.agents.list_agents", AsyncMock(return_value=[]))
 
     response = client.get(
         "/agents",
-        headers={
-            "Authorization": "Bearer fake",
-            "X-Harness-AWS-Access-Key-Id": "test-access-key",
-            "X-Harness-AWS-Secret-Access-Key": "test-secret-key",
-            "X-Harness-AWS-Default-Region": "us-east-1",
-            "X-Harness-S3-Bucket": "test-bucket",
-        },
+        headers={"Authorization": "Bearer fake"},
     )
 
     assert response.status_code == 200

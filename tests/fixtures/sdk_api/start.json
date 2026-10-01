@@ -35,21 +35,9 @@
     "slice_str": null,
     "lambda_function": null,
     "dataset": "default",
-    "harness_config": {
-      "aws": {
-        "aws_access_key_id": "aws-key",
-        "aws_secret_access_key": "aws-secret",
-        "aws_default_region": "us-west-2",
-        "aws_session_token": null
-      },
-      "s3_bucket": "runs-bucket",
-      "log_group": "benchmarks",
-      "log_retention_policy": 30,
-      "sandbox_provider_secret_name": "ModalSecret"
-    },
     "custom_benchmark_service": null,
     "service_headers": {},
-    "sandbox_provider": "modal",
+    "sandbox_provider": null,
     "sandbox_provider_secret_name": null,
     "service_auth_header_name": null,
     "service_auth_secret_name": null,

@@ -262,6 +262,10 @@ def config_for(stage: Stage) -> StageConfig:
             raise ValueError(f"{stage.name} deployments require AWS_TRACKER_SECRET_NAME_PREFIXES.")
         if not sandbox_provider_secret_name:
             raise ValueError(f"{stage.name} deployments require AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME.")
+        if not any(sandbox_provider_secret_name.startswith(prefix) for prefix in tracker_secret_name_prefixes):
+            raise ValueError(
+                "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME must match an AWS_TRACKER_SECRET_NAME_PREFIXES entry."
+            )
 
     managed_storage_org_environments = _managed_storage_environment_mapping(
         "AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS",

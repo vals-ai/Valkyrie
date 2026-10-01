@@ -342,7 +342,8 @@ class TrackerService:
 
             body = payload.model_dump(
                 mode="json",
-                exclude={"environment"} | ({"sandbox_provider"} if provider is None else set[str]()),
+                exclude={"environment", "sandbox_provider_secret_name"}
+                | ({"sandbox_provider"} if provider is None else set[str]()),
             )
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)

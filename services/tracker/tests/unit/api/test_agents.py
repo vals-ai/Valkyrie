@@ -26,7 +26,6 @@ import tracker.api.agents as agents_api
 from main import app
 from tracker.aws import s3 as aws_s3
 from tracker.aws.s3 import S3ObjectStore
-from tracker.aws.clients import DefaultChainAWSClientProvider
 
 _client = TestClient(app)
 
@@ -63,9 +62,7 @@ def _agent_archive(
 class TestAgentWrites:
     """Write validation and clean storage permission failures."""
 
-    def test_conditional_upload_returns_conflict(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_conditional_upload_returns_conflict(self, monkeypatch: pytest.MonkeyPatch) -> None:
         upload = AsyncMock(side_effect=FileExistsError("agents/demo.zip"))
         monkeypatch.setattr(aws_s3, "upload_stream_to_s3", upload)
         response = _client.put(
@@ -98,32 +95,22 @@ class TestAgentWrites:
             _agent_archive().replace(b"agent content", b"wrong content"),
         ],
     )
-    def test_upload_rejects_invalid_contract_symlink_and_crc(
-        self, body: bytes
-    ) -> None:
-        response = _client.put(
-            "/agents/demo", headers={"Content-Type": "application/zip"}, content=body
-        )
+    def test_upload_rejects_invalid_contract_symlink_and_crc(self, body: bytes) -> None:
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=body)
 
         assert response.status_code == 400
 
     @pytest.mark.parametrize(
         "setting", ["AGENT_UPLOAD_MAX_BYTES", "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", "AGENT_ARCHIVE_MAX_ENTRIES"]
     )
-    def test_upload_limits_return_413(
-        self, monkeypatch: pytest.MonkeyPatch, setting: str
-    ) -> None:
+    def test_upload_limits_return_413(self, monkeypatch: pytest.MonkeyPatch, setting: str) -> None:
         monkeypatch.setattr(config, setting, 1)
-        response = _client.put(
-            "/agents/demo", headers={"Content-Type": "application/zip"}, content=_agent_archive()
-        )
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=_agent_archive())
 
         assert response.status_code == 413
         assert setting in response.json()["detail"]
 
-    def test_actual_upload_bytes_are_bounded(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_actual_upload_bytes_are_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(config, "AGENT_UPLOAD_MAX_BYTES", 3)
         response = _client.put(
             "/agents/demo",
@@ -133,29 +120,21 @@ class TestAgentWrites:
 
         assert response.status_code == 413
 
-    def test_metadata_limits_precede_decompression(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_metadata_limits_precede_decompression(self, monkeypatch: pytest.MonkeyPatch) -> None:
         body = _agent_archive()
         monkeypatch.setattr(config, "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 1)
         monkeypatch.setattr(zipfile.ZipFile, "open", MagicMock(side_effect=AssertionError("archive was decompressed")))
 
-        response = _client.put(
-            "/agents/demo", headers={"Content-Type": "application/zip"}, content=body
-        )
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=body)
 
         assert response.status_code == 413
 
-    def test_actual_decompressed_bytes_are_bounded(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_actual_decompressed_bytes_are_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         body = _agent_archive()
         monkeypatch.setattr(config, "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 1000)
         monkeypatch.setattr(zipfile.ZipExtFile, "read", MagicMock(return_value=b"x" * 1001))
 
-        response = _client.put(
-            "/agents/demo", headers={"Content-Type": "application/zip"}, content=body
-        )
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=body)
 
         assert response.status_code == 413
 
@@ -197,9 +176,7 @@ class TestAgentWrites:
             ("demo", {"Content-Type": "application/zip", "Content-Length": "-1"}, 400),
         ],
     )
-    def test_upload_rejects_invalid_headers(
-        self, name: str, headers: dict[str, str], status: int
-    ) -> None:
+    def test_upload_rejects_invalid_headers(self, name: str, headers: dict[str, str], status: int) -> None:
         response = _client.put(f"/agents/{name}", headers=headers, content=b"archive")
 
         assert response.status_code == status
@@ -242,7 +219,9 @@ class TestAgentRoutes:
         list_agents = AsyncMock(return_value=[("agent-a", datetime(2026, 1, 2, tzinfo=timezone.utc))])
         monkeypatch.setattr(agents_api, "list_agents", list_agents)
 
-        response = _client.get("/agents", )
+        response = _client.get(
+            "/agents",
+        )
 
         assert response.status_code == 200
         assert response.json() == {"agents": [{"name": "agent-a", "last_modified": "2026-01-02 00:00:00+00:00"}]}

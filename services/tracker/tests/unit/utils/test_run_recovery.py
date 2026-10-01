@@ -67,7 +67,6 @@ from tracker.database.models import (
 from tracker.exceptions import S3Error
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import ReleaseControlError, promote_release
-from tracker.aws.runtime import AWSResources
 from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import run_control as run_control_module
 from tracker.utils import (
@@ -613,7 +612,7 @@ class TestRunRecovery:
             late_resume_response = client.post(
                 f"/retry-or-resume-benchmark/{benchmark_row.id}",
                 json={"task_ids": [selected_task.task_id]},
-                )
+            )
             handle_early_exit(stale_task, stale_session, authority)
 
         assert late_resume_response.status_code == 200, late_resume_response.text
@@ -918,7 +917,7 @@ class TestRunRecovery:
             response = client.get(
                 "/retrieve-results",
                 params={"benchmark_id": str(benchmark_row.id)},
-                )
+            )
         finally:
             event.remove(bind, "before_cursor_execute", record_statement)
 
@@ -1635,7 +1634,9 @@ class TestRunRecovery:
         force_stop = AsyncMock()
         monkeypatch.setattr("main.force_stop_sandboxes", force_stop)
 
-        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true",)
+        response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}?force=true",
+        )
 
         assert response.status_code == 400
         detail = response.json()["detail"]
@@ -2315,7 +2316,10 @@ class TestRunRecovery:
         assert response.status_code == 200
         admitted_payload = mock_kicker.queued_calls[0]
         assert benchmark_row.arguments.lambda_function == "vals-format-lambda"
-        assert admitted_payload["execution_context_json"]["start_benchmark_request"]["lambda_function"] == "vals-format-lambda"
+        assert (
+            admitted_payload["execution_context_json"]["start_benchmark_request"]["lambda_function"]
+            == "vals-format-lambda"
+        )
         assert admitted_payload["execution_context_json"]["verified_task_ids"] == ["task_error"]
         dispatch_id = UUID(admitted_payload["executor_dispatch_id"])
         dispatch = database_session.get(ExecutorDispatch, dispatch_id)
@@ -2388,7 +2392,10 @@ class TestRunRecovery:
 
         assert response.status_code == 200, response.text
         admitted_payload = mock_kicker.queued_calls[0]
-        assert sorted(admitted_payload["execution_context_json"]["verified_task_ids"]) == ["task_stopped", "task_stopped_graded"]
+        assert sorted(admitted_payload["execution_context_json"]["verified_task_ids"]) == [
+            "task_stopped",
+            "task_stopped_graded",
+        ]
 
         database_session.expire_all()
         task_statuses = {
@@ -2421,7 +2428,9 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+        )
 
         assert response.status_code == 409
         assert "no current executor release" in response.json()["detail"]
@@ -2459,7 +2468,9 @@ class TestRunRecovery:
             _fail_release_resolution,
         )
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+        )
 
         assert response.status_code == 409
         with Session(bind=database_session.get_bind()) as fresh_session:
@@ -2554,7 +2565,9 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _unexpected_verify_task_ids)
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}",)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+        )
 
         assert response.status_code == 200
         assert mock_kicker.queued_calls[0]["execution_context_json"]["verified_task_ids"] == []
@@ -2600,7 +2613,9 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_stopped_task)
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}",)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+        )
 
         assert response.status_code == 503
         assert response.json()["detail"] == "No active executor release is configured"
@@ -2646,7 +2661,9 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_stopped_task)
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}",)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+        )
 
         assert response.status_code == 200
         database_session.refresh(benchmark_row)
@@ -2675,9 +2692,7 @@ class TestRunRecovery:
         database_session.add(task)
         database_session.commit()
 
-        retry_response = client.post(
-            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true"
-        )
+        retry_response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
         assert retry_response.status_code == 200
         database_session.refresh(benchmark_row)
@@ -2695,7 +2710,9 @@ class TestRunRecovery:
         database_session.add(task)
         database_session.commit()
 
-        second_resume = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}",)
+        second_resume = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+        )
 
         assert second_resume.status_code == 200
         database_session.refresh(benchmark_row)
@@ -2743,7 +2760,9 @@ class TestRunRecovery:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+        )
 
         assert response.status_code == 200
         dispatches = database_session.exec(select(ExecutorDispatch)).all()
@@ -2910,7 +2929,9 @@ class TestRunRecovery:
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: FailingKicker())
 
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+        )
 
         assert response.status_code == 503
         database_session.refresh(benchmark_row)
@@ -3451,7 +3472,6 @@ def test_owner_recovery_updates_agent_from_the_deployment_library(
 
     response = client.post(
         f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true",
-
     )
 
     assert response.status_code == 200, response.text

@@ -108,19 +108,15 @@ def test_start_runtime_selection(
 @pytest.mark.parametrize(
     "resolver",
     [
-        pytest.param(
-            lambda request: resolve_start_aws_runtime(request, _ORG_ID), id="start"
-        ),
-        pytest.param(
-            lambda request: resolve_run_aws_runtime(request, aws_managed=True, org_id=_ORG_ID), id="run"
-        ),
+        pytest.param(lambda request: resolve_start_aws_runtime(request, _ORG_ID), id="start"),
+        pytest.param(lambda request: resolve_run_aws_runtime(request, aws_managed=True, org_id=_ORG_ID), id="run"),
         pytest.param(
             lambda request: resolve_run_metadata_aws_runtime(request, aws_managed=True, org_id=_ORG_ID),
             id="run-metadata",
         ),
     ],
 )
-def test_retired_credential_headers_are_rejected(
+def test_aws_request_headers_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
     resolver: Any,
 ) -> None:
@@ -131,7 +127,7 @@ def test_retired_credential_headers_are_rejected(
         resolver(_request(_HARNESS_HEADERS))
 
     assert exc_info.value.status_code == 400
-    assert "no longer supported" in exc_info.value.detail
+    assert "AWS request headers are not accepted" in exc_info.value.detail
 
 
 @pytest.mark.parametrize(
@@ -148,18 +144,18 @@ def test_run_runtime_rejects_any_harness_header(monkeypatch: pytest.MonkeyPatch,
         resolve_run_aws_runtime(_request(headers), aws_managed=True, org_id=_ORG_ID)
 
     assert exc_info.value.status_code == 400
-    assert "no longer supported" in exc_info.value.detail
+    assert "AWS request headers are not accepted" in exc_info.value.detail
 
 
 def test_run_runtime_rejects_access_key_runs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Runs created before the credential-path removal fail clearly on resume and retry."""
+    """Run operations require a saved deployment-managed runtime."""
     _configure_managed_runtime(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         resolve_run_aws_runtime(_request(), aws_managed=False, org_id=_ORG_ID)
 
     assert exc_info.value.status_code == 400
-    assert "no longer supported" in exc_info.value.detail
+    assert "no deployment-managed AWS runtime" in exc_info.value.detail
 
 
 def test_run_metadata_omits_runtime_for_access_key_runs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,7 +257,7 @@ def test_aws_runtime_metadata_reflects_managed_submission_availability(
             "s3_bucket": "deployment-bucket",
         }
         if expected_mode == "managed"
-        else {"mode": "access_key", "region": None, "s3_bucket": None}
+        else {"mode": "unavailable", "region": None, "s3_bucket": None}
     )
 
 
@@ -319,9 +315,9 @@ def test_managed_execution_context_is_recursively_credential_free() -> None:
             )
 
 
-def test_start_request_rejects_retired_credential_fields() -> None:
-    """Retired credential fields fail validation instead of being silently ignored."""
-    with pytest.raises(ValidationError, match="harness_config is no longer supported"):
+def test_start_request_rejects_unsupported_fields() -> None:
+    """Start requests enforce the documented payload schema."""
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         StartBenchmarkRequest(
             contract=AgentContractRequest(name="agent", run_cmd="run"),
             benchmark_name="test",

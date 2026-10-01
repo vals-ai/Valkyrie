@@ -77,7 +77,6 @@ __all__ = [
     "RunArtifactEntry",
     "RunArtifactsResponse",
     "RunArtifactDownloadResponse",
-
     "AWSResources",
     "LocalResources",
     "AgentContractRequest",
@@ -111,7 +110,6 @@ __all__ = [
     "FetchTasksRequest",
     "FinalEvaluation",
     "FinalViewResponse",
-
     "LogEvent",
     "LogPage",
     "Order",

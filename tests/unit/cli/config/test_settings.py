@@ -11,8 +11,8 @@ import yaml
 from click.testing import CliRunner
 
 import pytest
-
 from valkyrie.sdk import ValkyrieConfig
+
 
 settings = import_module("valkyrie.cli.config.settings")
 
@@ -27,8 +27,6 @@ def test_init_self_hosted_strips_whitespace(config_path: Path, monkeypatch: pyte
         input="\n".join(
             [
                 "self-hosted",
-                "  aws-key  ",
-                " aws-secret\t",
                 " us-east-1 ",
                 " bucket ",
                 "  benchmarks  ",
@@ -42,42 +40,12 @@ def test_init_self_hosted_strips_whitespace(config_path: Path, monkeypatch: pyte
     config = yaml.safe_load(config_path.read_text())
     assert config == {
         "aws": {
-            "credentials": {"AWS_ACCESS_KEY_ID": "aws-key", "AWS_SECRET_ACCESS_KEY": "aws-secret"},
             "AWS_DEFAULT_REGION": "us-east-1",
             "S3_BUCKET": "bucket",
             "LOG_GROUP": "benchmarks",
             "LOG_RETENTION_POLICY": "365",
         },
     }
-
-
-def test_init_self_hosted_migrates_flat_config(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Self-hosted setup moves flat config keys to the nested layout without prompting for them again."""
-    for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
-        monkeypatch.delenv(key, raising=False)
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-                "DAYTONA_SECRET_NAME": "DaytonaSecrets",
-            }
-        )
-    )
-
-    result = CliRunner().invoke(settings.init, input="self-hosted\n")
-
-    assert result.exit_code == 0, result.output
-    config = ValkyrieConfig.from_yaml(config_path)
-    assert config.aws is not None
-    assert config.aws.credentials is not None
-    assert config.aws.credentials.aws_secret_access_key.get_secret_value() == "aws-secret"
-    assert config.aws.s3_bucket == "bucket"
-    assert config.sandbox_providers == {"daytona": "DaytonaSecrets"}
 
 
 @pytest.mark.parametrize(
@@ -126,7 +94,7 @@ def test_init_hosted_strips_api_key(
 
     def mock_aws_runtime_metadata(api_key: str, base_url: str) -> SimpleNamespace:
         runtime_metadata_calls.append((api_key, base_url))
-        return SimpleNamespace(mode="access_key", region=None, s3_bucket=None)
+        return SimpleNamespace(mode="unavailable", region=None, s3_bucket=None)
 
     monkeypatch.setattr(settings.TrackerService, "init_org", mock_init_org)
     monkeypatch.setattr(settings.TrackerService, "aws_runtime_metadata", mock_aws_runtime_metadata)
@@ -139,12 +107,6 @@ def test_init_hosted_strips_api_key(
                 "hosted",
                 selection,
                 "  secret-key  ",
-                "aws-key",
-                "aws-secret",
-                "us-east-1",
-                "bucket",
-                "benchmarks",
-                "365",
             ]
         )
         + "\n",
@@ -231,59 +193,7 @@ def test_init_hosted_managed_migrates_obsolete_local_settings(
     assert config["api_key"] == "new-key"
     assert config["environment"] == "bench"
     assert config["benchmark_auth"] == {"svc": "new-key"}
-    assert "Removed local aws, sandbox_providers, default_sandbox_provider settings" in result.output
-
-
-def test_init_hosted_managed_preserves_access_key_configuration(
-    config_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """BYO-AWS hosted setup keeps AWS credentials, resources, and provider mappings."""
-    for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "aws": {
-                    "credentials": {
-                        "AWS_ACCESS_KEY_ID": "old-key",
-                        "AWS_SECRET_ACCESS_KEY": "old-secret",
-                    },
-                    "AWS_DEFAULT_REGION": "us-east-1",
-                    "S3_BUCKET": "own-bucket",
-                    "LOG_GROUP": "benchmarks",
-                    "LOG_RETENTION_POLICY": 365,
-                },
-                "sandbox_providers": {"daytona": "OwnSecrets"},
-                "default_sandbox_provider": "daytona",
-            }
-        )
-    )
-    monkeypatch.setattr(
-        settings.TrackerService,
-        "init_org",
-        lambda _api_key, _base_url: {"org_name": "test-org"},
-    )
-    monkeypatch.setattr(
-        settings.TrackerService,
-        "aws_runtime_metadata",
-        lambda _api_key, _base_url: SimpleNamespace(mode="managed", region="us-east-1", s3_bucket="managed-bucket"),
-    )
-
-    result = CliRunner().invoke(settings.init, input="hosted\nbench\nvals-key\n")
-
-    assert result.exit_code == 0, result.output
-    config = yaml.safe_load(config_path.read_text())
-    assert config["aws"] == {
-        "credentials": {"AWS_ACCESS_KEY_ID": "old-key", "AWS_SECRET_ACCESS_KEY": "old-secret"},
-        "AWS_DEFAULT_REGION": "us-east-1",
-        "S3_BUCKET": "own-bucket",
-        "LOG_GROUP": "benchmarks",
-        "LOG_RETENTION_POLICY": 365,
-    }
-    assert config["sandbox_providers"] == {"daytona": "OwnSecrets"}
-    assert config["default_sandbox_provider"] == "daytona"
-    assert "Existing AWS credentials were kept" in result.output
+    assert "new-key" not in result.output
 
 
 @pytest.mark.usefixtures("config_path")
@@ -315,7 +225,7 @@ def test_init_whitespace_only_required_value_aborts(monkeypatch: pytest.MonkeyPa
     result = runner.invoke(settings.init, input="self-hosted\n   \n")
 
     assert result.exit_code != 0
-    assert "AWS_ACCESS_KEY_ID is required" in result.output
+    assert "AWS_DEFAULT_REGION is required" in result.output
 
 
 def test_set_api_key_rotates_matching_benchmark_auth(config_path: Path) -> None:
@@ -355,32 +265,6 @@ def test_set_api_key_without_previous_key_preserves_benchmark_auth(config_path: 
     assert config["api_key"] == "new-key"
     assert config["benchmark_auth"] == {"independent-service": "independent-key"}
     assert "Updated benchmark service auth" not in result.output
-
-
-def test_set_aws_session_token_without_printing_value(config_path: Path) -> None:
-    """Temporary AWS credentials can be configured without echoing the token."""
-    config_path.write_text(yaml.safe_dump({"aws": {"credentials": {"AWS_ACCESS_KEY_ID": "ASIAEXAMPLE"}}}))
-
-    result = CliRunner().invoke(settings.set, ["AWS_SESSION_TOKEN", "temporary-token"])
-
-    assert result.exit_code == 0, result.output
-    config = yaml.safe_load(config_path.read_text())
-    assert config["aws"]["credentials"]["AWS_SESSION_TOKEN"] == "temporary-token"
-    assert "temporary-token" not in result.output
-
-
-def test_set_and_remove_aws_credentials_preserves_resources(config_path: Path) -> None:
-    config_path.write_text(yaml.safe_dump({"aws": {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}}))
-    runner = CliRunner()
-    for key, value in (("AWS_ACCESS_KEY_ID", "test-key"), ("AWS_SECRET_ACCESS_KEY", "test-secret")):
-        result = runner.invoke(settings.set, [key, value])
-        assert result.exit_code == 0, result.output
-    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
-        result = runner.invoke(settings.config_remove, [key])
-        assert result.exit_code == 0, result.output
-    assert yaml.safe_load(config_path.read_text()) == {
-        "aws": {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}
-    }
 
 
 def test_set_aws_resources_and_remove_optional_key_preserves_config(config_path: Path, cli_runner: CliRunner) -> None:

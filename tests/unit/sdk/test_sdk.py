@@ -15,10 +15,10 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from tests.unit.sdk.conftest import ClientFactory, ConfigValuesFactory, SDKConfigFactory
 from valkyrie.sdk.models import AWSResources
 
 from valkyrie.sdk import (
-    AWSAccessKeys,
     AWSConfig,
     AgentContractRequest,
     FetchBenchmarksRequest,
@@ -42,29 +42,17 @@ def load_sdk_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def test_config_loads_nested_yaml_and_builds_headers(tmp_path: Path) -> None:
+def test_config_loads_resources_without_forwarding_them(tmp_path: Path) -> None:
     config_path = tmp_path / "valkyrie.yaml"
     config_path.write_text(
-        """
-api_key: vals-key
-aws:
-  credentials:
-    AWS_ACCESS_KEY_ID: aws-key
-    AWS_SECRET_ACCESS_KEY: aws-secret
-  AWS_DEFAULT_REGION: us-west-2
-  S3_BUCKET: runs-bucket
-sandbox_providers:
-  daytona: DaytonaSecret
-default_sandbox_provider: daytona
-""".strip(),
-        encoding="utf-8",
+        "api_key: vals-key\naws:\n  AWS_DEFAULT_REGION: us-west-2\n  S3_BUCKET: runs-bucket\n", encoding="utf-8"
     )
 
     config = ValkyrieConfig.from_yaml(config_path)
 
-    assert config.resolve_sandbox_provider() == ("daytona", "DaytonaSecret")
-    assert config.request_headers()["X-Api-Key"] == "vals-key"
-    assert config.request_headers()["X-Harness-Aws-Access-Key-Id"] == "aws-key"
+    assert config.request_headers() == {"X-Api-Key": "vals-key"}
+    assert config.aws is not None
+    assert config.aws.s3_bucket == "runs-bucket"
 
 
 def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_config) -> None:
@@ -77,8 +65,6 @@ api_key: vals-key
 aws:
   AWS_DEFAULT_REGION: us-west-2
   S3_BUCKET: runs-bucket
-sandbox_providers:
-  daytona: DaytonaSecret
 """.strip(),
         encoding="utf-8",
     )
@@ -92,141 +78,62 @@ sandbox_providers:
         sdk_config(environment="staging")
 
 
-def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> None:
+def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config: SDKConfigFactory) -> None:
     config = sdk_config()
 
     rendered_config = f"{config!r}\n{config.model_dump_json(by_alias=True)}"
-    for secret in ("vals-key", "aws-key", "aws-secret", "aws-session", "benchmark-token"):
+    for secret in ("vals-key", "benchmark-token"):
         assert secret not in rendered_config
 
-    headers = config.request_headers()
-    assert headers["X-Api-Key"] == "vals-key"
-    assert headers["X-Harness-Aws-Access-Key-Id"] == "aws-key"
-    assert headers["X-Harness-Aws-Secret-Access-Key"] == "aws-secret"
-    assert headers["X-Harness-Aws-Session-Token"] == "aws-session"
-
-    assert config.aws is not None
-    harness = config.aws.harness_config("ModalSecret")
-    assert harness is not None
-    assert harness.aws.aws_access_key_id == "aws-key"
-    assert harness.aws.aws_secret_access_key == "aws-secret"
-    assert harness.aws.aws_session_token == "aws-session"
+    assert config.request_headers() == {"X-Api-Key": "vals-key"}
 
 
-def test_config_omits_optional_secret_headers(sdk_config, config_values) -> None:
-    aws = config_values()["aws"]
-    aws["credentials"]["AWS_SESSION_TOKEN"] = None
-    config = sdk_config(api_key=None, aws=aws)
-
-    headers = config.request_headers()
-
-    assert "X-Api-Key" not in headers
-    assert "X-Harness-Aws-Session-Token" not in headers
-    assert config.aws is not None
-    harness = config.aws.harness_config("ModalSecret")
-    assert harness is not None
-    assert harness.aws.aws_session_token is None
+def test_config_omits_absent_api_key(sdk_config: SDKConfigFactory) -> None:
+    assert sdk_config(api_key=None).request_headers() == {}
 
 
 def test_run_error_is_a_public_sdk_error() -> None:
     assert issubclass(ValkyrieRunError, ValkyrieSDKError)
 
 
-def test_config_rejects_missing_required_values_and_invalid_provider(config_values, sdk_config) -> None:
-    values = config_values()
-    values["aws"].pop("S3_BUCKET")
+def test_config_rejects_incomplete_resources(config_values: ConfigValuesFactory) -> None:
+    values = config_values(aws={"AWS_DEFAULT_REGION": "us-west-2"})
     with pytest.raises(ValidationError, match="S3_BUCKET"):
         ValkyrieConfig.model_validate(values)
-    with pytest.raises(ValidationError):
-        sdk_config(sandbox_providers={})
-    for field, value in (
-        ("LOG_GROUP", " "),
-        ("AWS_SECRET_ACCESS_KEY", " "),
-        ("AWS_SECRET_ACCESS_KEY", None),
-        ("AWS_ACCESS_KEY_ID", None),
-    ):
-        aws = config_values()["aws"]
-        if field == "LOG_GROUP":
-            aws[field] = value
-        else:
-            aws["credentials"][field] = value
-        with pytest.raises(ValidationError, match=field):
-            sdk_config(aws=aws)
 
-    config = sdk_config()
-    with pytest.raises(ValkyrieConfigError, match="Unknown sandbox provider"):
-        config.resolve_sandbox_provider("unknown")
-
-
-def test_config_rejects_unknown_keys_and_legacy_daytona(config_values, sdk_config) -> None:
-    with pytest.raises(ValidationError, match="extra_forbidden"):
-        sdk_config(S3_BUKET="typo")
-
-    with pytest.raises(ValidationError, match="DAYTONA_SECRET_NAME"):
-        sdk_config(DAYTONA_SECRET_NAME="LegacyDaytonaSecret")
-
-    legacy_values = config_values()
-    legacy_values.pop("sandbox_providers")
-    legacy_values.pop("default_sandbox_provider")
-    legacy_values["DAYTONA_SECRET_NAME"] = "LegacyDaytonaSecret"
-    with pytest.raises(ValidationError, match="DAYTONA_SECRET_NAME"):
-        ValkyrieConfig.model_validate(legacy_values)
-
-
-@pytest.mark.parametrize("key_style", ["alias", "field_name"])
-def test_config_accepts_flat_aws_keys_from_code_callers(key_style: str) -> None:
-    """
-    Verify that SDK callers passing the earlier flat AWS keys still get a valid nested config.
-
-    Test cases:
-    - Flat aliases such as `S3_BUCKET` move under `aws` with a deprecation warning.
-    - Flat field names such as `s3_bucket` move the same way.
-    """
-    flat = {
-        "AWS_ACCESS_KEY_ID": "aws-key",
-        "AWS_SECRET_ACCESS_KEY": "aws-secret",
-        "AWS_DEFAULT_REGION": "us-west-2",
-        "S3_BUCKET": "runs-bucket",
-        "LOG_GROUP": "benchmarks",
-    }
-    values: dict[str, object] = {key if key_style == "alias" else key.lower(): value for key, value in flat.items()}
-    values["sandbox_providers"] = {"daytona": "DaytonaSecret"}
-    original = dict(values)
-
-    with pytest.warns(DeprecationWarning, match="nest them under `aws`"):
-        config = ValkyrieConfig.model_validate(values)
-
-    assert values == original
-    assert config.aws is not None
-    assert (config.aws.aws_default_region, config.aws.s3_bucket) == ("us-west-2", "runs-bucket")
-    assert config.aws.credentials is not None
-    assert config.aws.credentials.aws_access_key_id.get_secret_value() == "aws-key"
-
-
-@pytest.mark.parametrize("typed_model", ["aws", "credentials"])
-def test_config_rejects_flat_keys_beside_typed_models(typed_model: str) -> None:
-    """
-    Verify that a flat key beside a typed nested model fails validation instead of crashing.
-
-    Test cases:
-    - A typed `AWSConfig` with a flat `S3_BUCKET` reports the flat key.
-    - Typed `AWSAccessKeys` with a flat `AWS_ACCESS_KEY_ID` reports the flat key.
-    """
-    values: dict[str, object]
-    if typed_model == "aws":
-        values = {"aws": AWSConfig(AWS_DEFAULT_REGION="us-west-2", S3_BUCKET="runs-bucket"), "S3_BUCKET": "legacy"}
-        flat_key = "S3_BUCKET"
-    else:
-        credentials = AWSAccessKeys(AWS_ACCESS_KEY_ID="aws-key", AWS_SECRET_ACCESS_KEY="aws-secret")
-        values = {
-            "aws": {"credentials": credentials, "AWS_DEFAULT_REGION": "us-west-2", "S3_BUCKET": "runs-bucket"},
-            "AWS_ACCESS_KEY_ID": "other-key",
-        }
-        flat_key = "AWS_ACCESS_KEY_ID"
-    values["sandbox_providers"] = {"daytona": "DaytonaSecret"}
-
-    with pytest.raises(ValidationError, match=flat_key):
+    values = config_values(aws={"AWS_DEFAULT_REGION": "us-west-2", "S3_BUCKET": "runs", "LOG_GROUP": " "})
+    with pytest.raises(ValidationError, match="LOG_GROUP"):
         ValkyrieConfig.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "S3_BUKET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "DAYTONA_SECRET_NAME",
+        "sandbox_providers",
+        "default_sandbox_provider",
+    ],
+)
+def test_config_rejects_unsupported_fields(field: str, sdk_config: SDKConfigFactory) -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        sdk_config(**{field: "private-canary"})
+
+
+@pytest.mark.parametrize("field", ["S3_BUCKET", "s3_bucket", "AWS_DEFAULT_REGION", "aws_default_region"])
+def test_config_requires_nested_resources(field: str) -> None:
+    with pytest.raises(ValidationError, match=field):
+        ValkyrieConfig.model_validate({field: "value"})
+
+
+def test_config_rejects_flat_keys_beside_typed_resources() -> None:
+    with pytest.raises(ValidationError, match="S3_BUCKET"):
+        ValkyrieConfig.model_validate(
+            {"aws": AWSConfig(AWS_DEFAULT_REGION="us-west-2", S3_BUCKET="runs"), "S3_BUCKET": "other"}
+        )
 
 
 def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
@@ -249,51 +156,22 @@ def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
         ValkyrieClient.from_config(incomplete_path)
 
 
-def test_from_yaml_errors_name_keys_without_config_values(tmp_path: Path) -> None:
-    """Config errors name misplaced keys without echoing stored credentials."""
-    flat_path = tmp_path / "flat.yaml"
-    flat_path.write_text(
-        """
-AWS_ACCESS_KEY_ID: aws-key
-AWS_SECRET_ACCESS_KEY: secret-canary
-S3_BUCKET: runs-bucket
-DAYTONA_SECRET_NAME: DaytonaSecret
-""".strip(),
-        encoding="utf-8",
-    )
-    original_yaml = flat_path.read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    "content",
+    [
+        "AWS_SECRET_ACCESS_KEY: secret-canary\n",
+        "aws:\n  AWS_DEFAULT_REGION: us-west-2\n  S3_BUCKET: runs-bucket\n  credentials:\n    AWS_SECRET_ACCESS_KEY: secret-canary\n",
+    ],
+)
+def test_from_yaml_errors_redact_rejected_credentials(tmp_path: Path, content: str) -> None:
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(content, encoding="utf-8")
 
-    with pytest.raises(ValkyrieConfigError, match="AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET") as flat_error:
-        ValkyrieConfig.from_yaml(flat_path)
+    with pytest.raises(ValkyrieConfigError) as raised:
+        ValkyrieConfig.from_yaml(config_path)
 
-    message = str(flat_error.value)
-    assert str(flat_path) in message
-    assert "AWS_ACCESS_KEY_ID -> aws.credentials.AWS_ACCESS_KEY_ID" in message
-    assert "AWS_SECRET_ACCESS_KEY -> aws.credentials.AWS_SECRET_ACCESS_KEY" in message
-    assert "S3_BUCKET -> aws.S3_BUCKET" in message
-    assert "DAYTONA_SECRET_NAME -> sandbox_providers.daytona" in message
-    assert "https://docs.valkyrie.vals.ai/get-started/configuration#migrate-an-existing-configuration" in message
-    assert "secret-canary" not in message
-    assert flat_path.read_text(encoding="utf-8") == original_yaml
-
-    nested_path = tmp_path / "nested.yaml"
-    nested_path.write_text(
-        """
-aws:
-  AWS_ACCESS_KEY_ID: aws-key
-  AWS_SECRET_ACCESS_KEY: secret-canary
-  AWS_DEFAULT_REGION: us-west-2
-  S3_BUCKET: runs-bucket
-sandbox_providers:
-  daytona: DaytonaSecret
-""".strip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValkyrieConfigError, match="aws.AWS_SECRET_ACCESS_KEY") as nested_error:
-        ValkyrieConfig.from_yaml(nested_path)
-
-    assert "secret-canary" not in str(nested_error.value)
+    assert "secret-canary" not in str(raised.value)
+    assert config_path.read_text(encoding="utf-8") == content
 
 
 async def test_start_normalizes_agent_and_builds_configured_payload(make_client) -> None:
@@ -337,7 +215,7 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     body = json.loads(request.content)
     assert request.url.path == "/start-benchmark"
     assert request.headers["x-api-key"] == "vals-key"
-    assert request.headers["x-harness-aws-session-token"] == "aws-session"
+    assert not any(name.startswith("x-harness-") for name in request.headers)
     contract = body["contract"]
     assert contract["name"] == "sweagent"
     assert contract["model"] == "claude-sonnet"
@@ -345,14 +223,15 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert contract["kwargs"] == {"temperature": "0"}
     assert body["custom_benchmark_service"] == "https://local.swebench"
     assert body["service_headers"] == {"Authorization": "benchmark-token", "X-Custom": "explicit"}
-    assert body["sandbox_provider"] == "modal"
-    assert body["harness_config"]["sandbox_provider_secret_name"] == "ModalSecret"
+    assert "harness_config" not in body
+    assert "sandbox_provider" not in body
+    assert "sandbox_provider_secret_name" not in body
     assert body["webhook_secret_name"] == "SlackWebhook"
     assert body["webhook_intervals"] == [25, 100]
 
 
-async def test_start_without_static_keys_builds_managed_request(make_client, sdk_config) -> None:
-    """Managed SDK starts must omit every harness credential surface."""
+async def test_start_uses_api_key_without_local_resources(make_client, sdk_config) -> None:
+    """Hosted starts send the API key without local AWS resources."""
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -373,7 +252,6 @@ async def test_start_without_static_keys_builds_managed_request(make_client, sdk
 
     config = sdk_config(
         aws=None,
-        default_sandbox_provider="daytona",
     )
     client = make_client(handler, config=config)
     async with client:
@@ -386,9 +264,9 @@ async def test_start_without_static_keys_builds_managed_request(make_client, sdk
 
     body = json.loads(request.content)
 
-    assert body["harness_config"] is None
-    assert body["sandbox_provider"] == "daytona"
-    assert body["sandbox_provider_secret_name"] == "DaytonaSecret"
+    assert "harness_config" not in body
+    assert "sandbox_provider" not in body
+    assert "sandbox_provider_secret_name" not in body
 
 
 async def test_start_with_managed_storage_uses_guarded_route(make_client, sdk_config) -> None:
@@ -412,12 +290,7 @@ async def test_start_with_managed_storage_uses_guarded_route(make_client, sdk_co
             },
         )
 
-    config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
-        default_sandbox_provider="daytona",
-    )
+    config = sdk_config()
     client = make_client(handler, config=config)
     async with client:
         response = await client.runs.start(
@@ -434,7 +307,7 @@ async def test_start_with_managed_storage_uses_guarded_route(make_client, sdk_co
     body = json.loads(request.content)
     assert body["managed_s3_bucket"] == "vs-dev-acme-123"
     assert "properties" not in body
-    assert "harness_config" not in body or body["harness_config"] is None
+    assert "harness_config" not in body
 
 
 async def test_start_without_managed_storage_uses_ordinary_route(make_client) -> None:
@@ -487,11 +360,7 @@ async def test_start_with_managed_storage_rejects_unconfirmed_bucket(
             },
         )
 
-    config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
-    )
+    config = sdk_config()
     async with make_client(handler, config=config) as client:
         with pytest.raises(ValkyrieRunError, match=str(run_id)) as error:
             await client.runs.start(
@@ -506,38 +375,18 @@ async def test_start_with_managed_storage_rejects_unconfirmed_bucket(
     assert str(ValkyrieRunError("invalid input")) == "invalid input"
 
 
-@pytest.mark.parametrize("conflict", ["properties", "access_keys"])
-async def test_start_with_managed_storage_rejects_conflicting_aws_configuration_before_request(
-    make_client,
-    sdk_config,
-    conflict: str,
-) -> None:
-    requests: list[httpx.Request] = []
-    config = sdk_config()
-    properties = None
-    if conflict == "properties":
-        config = sdk_config(
-            AWS_ACCESS_KEY_ID=None,
-            AWS_SECRET_ACCESS_KEY=None,
-            AWS_SESSION_TOKEN=None,
-        )
-        properties = AWSResources(
-            region="us-east-1",
-            s3_bucket="custom-bucket",
-            log_group="custom-logs",
-            log_retention_days=7,
-        )
+async def test_start_with_managed_storage_rejects_explicit_resources_before_request(make_client: ClientFactory) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Conflicting resources must fail before HTTP")
 
-    async with make_client(lambda request: requests.append(request), config=config) as client:
+    async with make_client(handler) as client:
         with pytest.raises(ValkyrieRunError):
             await client.runs.start(
                 "sweagent",
                 "swebench",
                 managed_s3_bucket="vs-dev-acme-123",
-                properties=properties,
+                properties=AWSResources(region="us-east-1", s3_bucket="custom", log_group="logs", log_retention_days=7),
             )
-
-    assert requests == []
 
 
 async def test_start_can_omit_optional_run_configuration(make_client, sdk_config) -> None:
@@ -604,7 +453,7 @@ async def test_start_serializes_explicit_queue_priority(make_client, sdk_config,
             },
         )
 
-    client = make_client(handler, config=sdk_config(default_sandbox_provider="daytona"))
+    client = make_client(handler, config=sdk_config())
     async with client:
         await client.runs.start("sweagent", "swebench", priority=3, properties=properties)
 
@@ -1021,8 +870,8 @@ async def test_tracker_url_only_start_sends_configuration_without_credentials(
         assert "properties" not in payload
         assert "environment" not in payload
         assert request.url.host == "127.0.0.1"
-        assert payload["harness_config"] is None
-        assert payload["sandbox_provider_secret_name"] is None
+        assert "harness_config" not in payload
+        assert "sandbox_provider_secret_name" not in payload
         assert not config.request_headers()
         return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
 

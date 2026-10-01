@@ -223,10 +223,6 @@ def connect_stream_testbed(
 def _write_valkyrie_config(config_path: Path, **overrides: object) -> Path:
     config: dict[str, object] = {
         "aws": {
-            "credentials": {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-            },
             "AWS_DEFAULT_REGION": "us-east-1",
             "S3_BUCKET": "bucket",
             "LOG_GROUP": "benchmarks",
@@ -675,177 +671,17 @@ def test_retry_or_resume_sends_retry_mode(
     assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0, "update_agent": False}
 
 
-def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Static AWS credentials require a configured sandbox provider."""
-    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml")
-
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-
-    with pytest.raises(TrackerServiceError) as error:
-        TrackerService(base_url="http://tracker")
-
-    assert "Run `valkyrie config provider set <provider> <secret-name>`." in str(error.value)
-
-
-@pytest.mark.parametrize(
-    ("config_overrides", "runtime_provider", "expected_provider", "expected_secret"),
-    [
-        pytest.param(
-            {"sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}},
-            None,
-            "daytona",
-            "DaytonaSecrets",
-            id="first-named-provider",
-        ),
-        pytest.param(
-            {
-                "sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
-                "default_sandbox_provider": "modal",
-            },
-            None,
-            "modal",
-            "ModalSecrets",
-            id="configured-default",
-        ),
-        pytest.param(
-            {"sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}},
-            "modal",
-            "modal",
-            "ModalSecrets",
-            id="runtime-override",
-        ),
-        pytest.param(
-            {"sandbox_providers": {"future": "FutureSecrets"}},
-            "future",
-            "future",
-            "FutureSecrets",
-            id="provider-not-in-tracker-enum",
-        ),
-    ],
-)
-def test_start_benchmark_resolves_provider_configuration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClient,
-    config_overrides: dict[str, object],
-    runtime_provider: str | None,
-    expected_provider: str,
-    expected_secret: str,
-) -> None:
-    """Start requests must resolve every supported provider configuration into the API payload.
-
-    Test cases:
-    - First-named, configured-default, and runtime-selected providers resolve their secrets.
-    - A newly configured provider name is forwarded without a tracker enum change.
-    """
-    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml", **config_overrides)
-
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
-        provider=runtime_provider,
-    )
-
-    assert mock_client.json is not None
-    assert mock_client.json["sandbox_provider"] == expected_provider
-    harness_config = mock_client.json["harness_config"]
-    assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == expected_secret
-
-
-def test_start_benchmark_forwards_aws_session_token(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Nested AWS resources and temporary credentials must reach request headers and the start payload."""
-    config_path = _write_valkyrie_config(
-        tmp_path / "valkyrie.yaml",
-        aws={
-            "credentials": {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_SESSION_TOKEN": "temporary-token",
-            },
-            "AWS_DEFAULT_REGION": "us-east-1",
-            "S3_BUCKET": "bucket",
-            "LOG_GROUP": "custom-logs",
-            "LOG_RETENTION_POLICY": 7,
-        },
-        sandbox_providers={"modal": "ModalSecrets"},
-    )
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, json={"status": "success"})
-
-    original_client = httpx.Client
-
-    def build_client(
-        *,
-        timeout: float | httpx.Timeout | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> httpx.Client:
-        return original_client(transport=httpx.MockTransport(handler), timeout=timeout, headers=headers)
-
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
-        provider="modal",
-    )
-
-    request = requests[0]
-    assert request.headers["X-Harness-Aws-Access-Key-Id"] == "aws-key"
-    assert request.headers["X-Harness-Aws-Secret-Access-Key"] == "aws-secret"
-    assert request.headers["X-Harness-Aws-Session-Token"] == "temporary-token"
-    assert request.headers["X-Harness-Aws-Default-Region"] == "us-east-1"
-    assert request.headers["X-Harness-S3-Bucket"] == "bucket"
-    assert request.headers["X-Harness-Log-Group"] == "custom-logs"
-    assert request.headers["X-Harness-Log-Retention-Policy"] == "7"
-    assert json.loads(request.content)["harness_config"] == {
-        "aws": {
-            "aws_access_key_id": "aws-key",
-            "aws_secret_access_key": "aws-secret",
-            "aws_session_token": "temporary-token",
-            "aws_default_region": "us-east-1",
-        },
-        "s3_bucket": "bucket",
-        "log_group": "custom-logs",
-        "log_retention_policy": 7,
-        "sandbox_provider_secret_name": "ModalSecrets",
-    }
-
-
-@pytest.mark.parametrize("providers", [{"daytona": "DaytonaSecrets"}, {}])
 @pytest.mark.parametrize("aws", [None, {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}])
-def test_start_benchmark_without_static_keys_sends_managed_request(
+def test_start_benchmark_sends_application_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    providers: dict[str, str],
     aws: dict[str, str] | None,
 ) -> None:
-    """A config without static keys must send an API-key-only managed start."""
+    """Run submission sends application identity and lets the server resolve its runtime."""
     config_path = _write_valkyrie_config(
         tmp_path / "valkyrie.yaml",
         aws=aws,
         api_key="vals-key",
-        sandbox_providers=providers,
     )
     requests: list[httpx.Request] = []
 
@@ -882,81 +718,9 @@ def test_start_benchmark_without_static_keys_sends_managed_request(
 
     body = json.loads(request.content)
 
-    assert body["harness_config"] is None
-    assert body["sandbox_provider"] == "daytona"
-    assert body["sandbox_provider_secret_name"] == providers.get("daytona")
-
-
-@pytest.mark.parametrize(
-    "credentials",
-    [
-        {"AWS_ACCESS_KEY_ID": "aws-key"},
-        {"AWS_SECRET_ACCESS_KEY": "aws-secret"},
-        {"AWS_SESSION_TOKEN": "orphan-session-token"},
-        {
-            "AWS_ACCESS_KEY_ID": " ",
-            "AWS_SECRET_ACCESS_KEY": "",
-        },
-    ],
-)
-def test_tracker_client_rejects_incomplete_static_credentials(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    credentials: dict[str, str],
-) -> None:
-    """Partial static credentials must fail before creating a Tracker request."""
-    config_path = _write_valkyrie_config(
-        tmp_path / "valkyrie.yaml",
-        sandbox_providers={"daytona": "DaytonaSecrets"},
-        aws={
-            "credentials": credentials,
-            "AWS_DEFAULT_REGION": "us-east-1",
-            "S3_BUCKET": "bucket",
-        },
-    )
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-
-    with pytest.raises(TrackerServiceError, match="blank|Field required"):
-        TrackerService(base_url="http://tracker")
-
-
-def test_config_provider_commands_manage_named_provider_secrets(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Config provider commands should manage the sandbox_providers map.
-
-    Test cases:
-    - provider set creates named provider secrets without flat provider fields.
-    - provider default writes a configured provider name and rejects unknown providers.
-    - provider remove deletes only the requested provider.
-    """
-    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml")
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    runner = CliRunner()
-
-    result = runner.invoke(cli_main.cli, ["config", "provider", "set", "daytona", "DaytonaSecrets"])
-    assert result.exit_code == 0
-    result = runner.invoke(cli_main.cli, ["config", "provider", "set", "modal", "ModalSecrets"])
-    assert result.exit_code == 0
-
-    config = yaml.safe_load(config_path.read_text())
-    assert config["sandbox_providers"] == {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}
-
-    result = runner.invoke(cli_main.cli, ["config", "provider", "default", "modal"])
-    assert result.exit_code == 0
-    config = yaml.safe_load(config_path.read_text())
-    assert config["default_sandbox_provider"] == "modal"
-
-    result = runner.invoke(cli_main.cli, ["config", "provider", "default", "future"])
-    assert result.exit_code != 0
-    assert "not configured" in result.output
-
-    result = runner.invoke(cli_main.cli, ["config", "provider", "remove", "daytona"])
-    assert result.exit_code == 0
-
-    config = yaml.safe_load(config_path.read_text())
-    assert config["sandbox_providers"] == {"modal": "ModalSecrets"}
-    assert config["default_sandbox_provider"] == "modal"
+    assert "harness_config" not in body
+    assert "sandbox_provider" not in body
+    assert "sandbox_provider_secret_name" not in body
 
 
 def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
@@ -1020,7 +784,6 @@ def test_run_start_provider_option_reaches_tracker(
 
     Test cases:
     - `--provider modal` is forwarded as the runtime provider selection.
-    - Provider prevalidation avoids constructing a throwaway tracker client.
     """
     _started_run_id, _streamed_run_ids, mock_tracker_service = connect_stream_testbed
     runner = CliRunner()
@@ -1031,7 +794,6 @@ def test_run_start_provider_option_reaches_tracker(
     )
 
     assert result.exit_code == 0, result.output
-    assert mock_tracker_service.provider_validations == ["modal"]
     assert mock_tracker_service.init_calls == 1
     start_kwargs = mock_tracker_service.start_calls[-1]["kwargs"]
     assert isinstance(start_kwargs, dict)
@@ -1211,29 +973,3 @@ def test_service_list_merges_hosted_and_custom_services(
     assert by_name["swebench"].url == "http://local-swebench"
     assert by_name["fab"].url == "https://fab.benchmarks.vals.ai"
     assert by_name["custombench"].url == "http://custombench"
-
-
-@pytest.mark.parametrize(
-    ("providers", "provider", "expected"),
-    [
-        ({"daytona": "DaytonaSecrets"}, None, ("daytona", "DaytonaSecrets")),
-        ({}, "docker", ("docker", None)),
-        ({"daytona": "DaytonaSecrets"}, "missing", None),
-    ],
-)
-def test_validate_provider_reads_config_and_reports_unknown_choices(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    providers: dict[str, str],
-    provider: str | None,
-    expected: tuple[str, str | None] | None,
-) -> None:
-    configuration = tmp_path / "providers.yaml"
-    configuration.write_text(yaml.safe_dump({"sandbox_providers": providers}))
-    monkeypatch.setattr("valkyrie.cli.tracker_client.config_location", lambda: configuration)
-
-    if expected is None:
-        with pytest.raises(TrackerServiceError, match="Unknown sandbox provider.*Configured providers: daytona"):
-            TrackerService.validate_sandbox_provider(provider)
-    else:
-        assert TrackerService.validate_sandbox_provider(provider) == expected

@@ -118,7 +118,7 @@ class DownloadClient:
 class StaticS3ClientProvider:
     """Return one recording client for a runtime used by an S3 unit test."""
 
-    def __init__(self, client: AsyncMock, *, credential_source: Literal["access_key", "managed"]) -> None:
+    def __init__(self, client: AsyncMock, *, credential_source: Literal["local", "managed"]) -> None:
         self._client = client
         self.credential_source = credential_source
 
@@ -130,7 +130,7 @@ def _copy_runtime(
     *,
     bucket: str,
     client: AsyncMock,
-    credential_source: Literal["access_key", "managed"],
+    credential_source: Literal["local", "managed"],
     expected_bucket_owner: str | None,
 ) -> AWSRuntime:
     return AWSRuntime(
@@ -221,9 +221,7 @@ async def test_object_store_read_session_and_listing_preserve_object_metadata(
         listed = [stored_object async for stored_object in reader.list_objects("agents/")]
 
     assert [stored_object.key for stored_object in listed] == ["agents/alpha.zip", "agents/beta.zip"]
-    assert paginator.calls == [
-        {"Bucket": "test-bucket", "Prefix": "agents/", "ExpectedBucketOwner": "123456789012"}
-    ]
+    assert paginator.calls == [{"Bucket": "test-bucket", "Prefix": "agents/", "ExpectedBucketOwner": "123456789012"}]
     assert client.entries == 1
 
 
@@ -345,7 +343,7 @@ async def test_managed_direct_operations_apply_owner_guard(
     ]
 
 
-async def test_explicit_credential_upload_does_not_add_owner_guard(
+async def test_managed_upload_adds_owner_guard(
     monkeypatch: pytest.MonkeyPatch,
     aws_runtime: AWSRuntime,
 ) -> None:
@@ -359,7 +357,9 @@ async def test_explicit_credential_upload_does_not_add_owner_guard(
 
     await upload_to_s3(b"content", "key", aws_runtime)
 
-    client.put_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", Body=b"content")
+    client.put_object.assert_awaited_once_with(
+        Bucket="test-bucket", Key="key", Body=b"content", ExpectedBucketOwner="123456789012"
+    )
 
 
 async def test_managed_upload_rejects_missing_expected_bucket_owner(
@@ -455,6 +455,7 @@ async def test_versioned_copy_can_be_deleted_exactly(
         Bucket="test-bucket",
         Key="benchmarks/run/demo.zip",
         VersionId="version-1",
+        ExpectedBucketOwner="123456789012",
     )
 
 
@@ -620,13 +621,13 @@ async def test_s3_object_copier_omits_unset_owner_guards_for_explicit_credential
     source = _copy_runtime(
         bucket="source",
         client=source_client,
-        credential_source="access_key",
+        credential_source="local",
         expected_bucket_owner=None,
     )
     destination = _copy_runtime(
         bucket="destination",
         client=destination_client,
-        credential_source="access_key",
+        credential_source="local",
         expected_bucket_owner=None,
     )
 

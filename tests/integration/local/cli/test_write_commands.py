@@ -222,7 +222,7 @@ def test_cli_downloads_run_artifacts_through_tracker(
 ) -> None:
     import httpx
     from unittest.mock import AsyncMock
-    from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+    from tracker.aws.clients import DefaultChainAWSClientProvider
 
     running, _ = seeded_runs
     client = AsyncMock()
@@ -230,7 +230,7 @@ def test_cli_downloads_run_artifacts_through_tracker(
     client.list_objects_v2.return_value = {"Contents": [{"Key": f"benchmarks/{running.id}/task/result.txt", "Size": 6}]}
     client.head_object.return_value = {"ContentLength": 6}
     client.generate_presigned_url.return_value = "https://download.test/artifact"
-    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", lambda _: client)
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", lambda _: client)
 
     async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         if request.url.host == "download.test":

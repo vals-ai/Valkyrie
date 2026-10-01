@@ -59,10 +59,7 @@ def overview() -> dict[str, object]:
 def invoke_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., Result]:
     """Use a config without AWS credentials and replace only the SDK's HTTP transport."""
     config_path = tmp_path / "queue.yaml"
-    config_path.write_text(
-        "api_key: test-key\naws:\n  AWS_DEFAULT_REGION: us-east-1\n  S3_BUCKET: test-bucket\n"
-        "sandbox_providers:\n  daytona: test-provider\n"
-    )
+    config_path.write_text("api_key: test-key\naws:\n  AWS_DEFAULT_REGION: us-east-1\n  S3_BUCKET: test-bucket\n")
     monkeypatch.setenv("VALKYRIE_CONFIG_PATH", str(config_path))
     monkeypatch.setenv("TRACKER_SERVICE_URL", "https://tracker.test")
 

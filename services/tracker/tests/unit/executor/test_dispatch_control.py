@@ -37,7 +37,7 @@ from tracker.executor.release_control import (
 )
 
 
-def _release(release_id: str, *, protocol_version: str = "1") -> ExecutorRelease:
+def _release(release_id: str, *, protocol_version: str = MANAGED_EXECUTION_PROTOCOL_VERSION) -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",

@@ -14,7 +14,6 @@ from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore, delete_from_s3, download_from_s3, get_agent_result_s3_key
 from tracker.database.models import Benchmark
 from tracker.sandbox import archive_and_upload_output, create_sandbox
-from tracker.types import HarnessConfig
 
 
 def _archive_members(archive_content: bytes) -> dict[str, bytes]:
@@ -45,7 +44,7 @@ class TestUploadToS3:
         random_sandbox_name: str,
         test_resources: Resources,
         sandbox_provider: SandboxProvider,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Verify sandbox output archives preserve file contents when uploaded to S3.
@@ -58,7 +57,7 @@ class TestUploadToS3:
         file_content = '{"result": "success", "score": 95}'
         dir_path = "/tmp/test_output_dir"
         task_id = random_task_id()
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         object_store = S3ObjectStore(aws_runtime)
         file_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output.json")
         dir_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output_dir")

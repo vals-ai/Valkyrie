@@ -12,7 +12,7 @@ from valkyrie.cli.runtime_config import (
 )
 from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.cli.config.state import ConfigValue, load_config, read_config_if_exists, write_config
-from valkyrie.sdk.config import RETIRED_CONFIG_KEYS, migrate_legacy_config_keys
+from valkyrie.sdk.config import ValkyrieConfig
 
 
 _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
@@ -65,7 +65,6 @@ def init() -> None:
         default="self-hosted",
     )
     environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
-    migrate_legacy_config_keys(current_config)
 
     if mode == "hosted":
         environment = click.prompt(
@@ -75,7 +74,9 @@ def init() -> None:
         )
         current_config[ENVIRONMENT_CONFIG_KEY] = environment
         tracker_url = os.environ.get(TRACKER_SERVICE_URL_ENV_VAR) or tracker_url_for_environment(environment)
-        api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")).strip()
+        api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key", hide_input=True)).strip()
+        if not api_key:
+            raise click.ClickException("API key must not be blank")
         _rotate_matching_benchmark_auth(current_config, api_key)
         current_config["api_key"] = api_key
 
@@ -111,31 +112,15 @@ def init() -> None:
                     fg="yellow",
                 )
             )
-        removed = [
-            key
-            for key in (
-                "aws",
-                "sandbox_providers",
-                "default_sandbox_provider",
-                *sorted(RETIRED_CONFIG_KEYS),
-            )
-            if key in current_config
-        ]
-        for key in removed:
-            current_config.pop(key, None)
-        if removed:
-            click.echo(
-                f"Removed local {', '.join(removed)} settings; runs resolve them from the Vals deployment.\n"
-            )
+        config_keys = {field.alias or name for name, field in ValkyrieConfig.model_fields.items() if name != "aws"}
+        current_config = {key: value for key, value in current_config.items() if key in config_keys}
 
     if environment_variables:
         aws = current_config.setdefault("aws", {})
         for key, default in environment_variables.items():
             sourced = aws.get(key) or os.environ.get(key)
             if sourced:
-                click.echo(
-                    f"  {key}: sourced from {'environment' if not aws.get(key) else 'existing config'}"
-                )
+                click.echo(f"  {key}: sourced from {'environment' if not aws.get(key) else 'existing config'}")
                 aws[key] = sourced
                 continue
 

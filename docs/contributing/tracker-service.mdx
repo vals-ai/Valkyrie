@@ -75,14 +75,11 @@ make test-integration-local  # Local API and Postgres tests
 make test-integration-live   # AWS, benchmark service, and sandbox tests
 ```
 
-`tests/integration/live` requires `services/tracker/.env`:
+`tests/integration/live` uses the AWS SDK default credential chain, including a local AWS SSO profile, and requires the following resource and service settings in `services/tracker/.env`:
 
 ```env
 # AWS: uses Secrets Manager and performs live S3 and CloudWatch create/read/delete tests
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=us-east-1
-AWS_SESSION_TOKEN=              # Optional, required for temporary credentials
 
 # Test infrastructure
 TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts

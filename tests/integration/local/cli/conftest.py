@@ -8,7 +8,7 @@ import httpx
 import pytest
 from botocore.exceptions import ClientError
 from fastapi import FastAPI
-from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import DefaultChainAWSClientProvider
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
     paginator.paginate.side_effect = pages
     client.get_paginator = MagicMock(return_value=paginator)
 
-    def s3_client(_provider: ExplicitCredentialsAWSClientProvider) -> AsyncMock:
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
         return client
 
     async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -66,7 +66,7 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
         async with httpx.ASGITransport(app=local_tracker_app) as transport:
             return await transport.handle_async_request(request)
 
-    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", s3_client)
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
 
     return objects

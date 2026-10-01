@@ -519,76 +519,41 @@ class TestBenchmarkTaskListing:
         assert [task["task_id"] for task in response_body["tasks"]] == ["t-a", "t-b", "t-c"]
 
 
-_HARNESS_HEADERS: dict[str, str] = {
-    "Authorization": "Bearer fake",
-    "X-Harness-AWS-Access-Key-Id": "AKIA",
-    "X-Harness-AWS-Secret-Access-Key": "secret",
-    "X-Harness-AWS-Default-Region": "us-east-1",
-    "X-Harness-S3-Bucket": "agentic-harness",
-    "X-Harness-Log-Group": "benchmarks",
-    "X-Harness-Log-Retention-Policy": "30",
-}
-
-
 class TestBenchmarkConsoleUrls:
-    """Benchmark console URL construction from harness metadata."""
+    """Benchmark console links follow the resolved server resources."""
 
-    def test_get_single_benchmark_builds_run_console_urls_from_harness_headers(
+    def test_get_single_benchmark_builds_run_console_urls(
         self,
         client: TestClient,
         database_session: Session,
     ) -> None:
-        """Run detail must build CloudWatch and S3 links from valid harness headers.
-
-        Test cases:
-        - A complete header set returns both console URLs for the benchmark.
-        """
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
 
-        response_body = client.get(f"/benchmarks/{benchmark.id}", headers=_HARNESS_HEADERS).json()
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
 
-        assert "cloudwatch/home" in response_body["cloudwatch_url"]
-        assert str(benchmark.id) in response_body["cloudwatch_url"]
-        assert "s3/buckets/agentic-harness" in response_body["s3_bucket_url"]
-        assert str(benchmark.id) in response_body["s3_bucket_url"]
+        assert response.status_code == 200
+        body = response.json()
+        assert "cloudwatch/home" in body["cloudwatch_url"]
+        assert str(benchmark.id) in body["cloudwatch_url"]
+        assert "s3/buckets/test-bucket" in body["s3_bucket_url"]
+        assert str(benchmark.id) in body["s3_bucket_url"]
 
-    def test_get_single_benchmark_omits_console_urls_without_harness_headers(
+    def test_get_single_benchmark_omits_unavailable_runtime_links(
         self,
         client: TestClient,
         database_session: Session,
     ) -> None:
-        """Run detail must remain usable when optional harness headers are absent.
-
-        Test cases:
-        - Missing headers return null CloudWatch and S3 links instead of an error.
-        """
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
+        benchmark.aws_managed = False
+        database_session.add(benchmark)
+        database_session.commit()
 
-        response_body = client.get(
-            f"/benchmarks/{benchmark.id}",
-            headers={"Authorization": "Bearer fake"},
-        ).json()
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
 
-        assert response_body["cloudwatch_url"] is None
-        assert response_body["s3_bucket_url"] is None
-
-    def test_get_single_benchmark_s3_url_without_log_group_skips_cloudwatch(
-        self,
-        client: TestClient,
-        database_session: Session,
-    ) -> None:
-        """S3 navigation must not depend on an optional CloudWatch log group.
-
-        Test cases:
-        - Complete AWS headers without a log group return only the S3 link.
-        """
-        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
-
-        headers = {header: value for header, value in _HARNESS_HEADERS.items() if header != "X-Harness-Log-Group"}
-        response_body = client.get(f"/benchmarks/{benchmark.id}", headers=headers).json()
-
-        assert response_body["cloudwatch_url"] is None
-        assert "s3/buckets/agentic-harness" in response_body["s3_bucket_url"]
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cloudwatch_url"] is None
+        assert body["s3_bucket_url"] is None
 
 
 def test_unauth_returns_401(client: TestClient) -> None:

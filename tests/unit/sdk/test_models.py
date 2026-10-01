@@ -12,12 +12,10 @@ import pytest
 from pydantic import ValidationError
 
 from valkyrie.sdk.models import (
-    AWSCredentials,
     AgentContractRequest,
     FetchBenchmarkResponse,
     FetchBenchmarksResponse,
     FinalViewResponse,
-    HarnessConfig,
     OutputArtifact,
     StartBenchmarkRequest,
 )
@@ -139,34 +137,6 @@ def test_agent_contract_rejects_duplicate_normalized_output_artifact_paths(
 def test_output_artifact_rejects_unsafe_sources(source: str) -> None:
     with pytest.raises(ValidationError):
         OutputArtifact(path="result.json", source=source)
-
-
-def test_aws_credentials_are_frozen_and_secret_is_hidden() -> None:
-    credentials = AWSCredentials(
-        aws_access_key_id="key",
-        aws_secret_access_key="secret",
-        aws_default_region="us-west-2",
-    )
-
-    assert "secret" not in repr(credentials)
-    with pytest.raises(ValidationError):
-        credentials.aws_default_region = "us-east-1"
-
-
-def test_harness_config_serializes_expected_shape() -> None:
-    config = HarnessConfig(
-        aws=AWSCredentials(
-            aws_access_key_id="key",
-            aws_secret_access_key="secret",
-            aws_default_region="us-west-2",
-        ),
-        s3_bucket="bucket",
-        log_group="benchmarks",
-        log_retention_policy=30,
-        sandbox_provider_secret_name="ModalSecret",
-    )
-
-    assert config.model_dump(mode="json")["aws"]["aws_secret_access_key"] == "secret"
 
 
 def test_start_request_matches_canonical_wire_shape() -> None:

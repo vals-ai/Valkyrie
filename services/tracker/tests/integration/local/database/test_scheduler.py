@@ -35,7 +35,6 @@ from sqlmodel import Session, create_engine, func, select
 
 from tests.factories import make_task
 from tracker.auth import RequestIdentity
-from tracker.aws.resolver import AWSRuntimeResolution
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
@@ -59,7 +58,7 @@ from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
 import tracker.scheduler.admission as admission
 import tracker.scheduler.store as store
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import task_execution
 import main as tracker_main
 
@@ -68,12 +67,13 @@ _SOURCE = ImageSource(image="scheduler-test-image")
 _RESOURCES = Resources(vcpu=1, memory=2, disk=3)
 
 
-def _use_access_key_runtime(monkeypatch: pytest.MonkeyPatch, harness_config: HarnessConfig) -> None:
+def _use_managed_runtime(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> None:
     monkeypatch.setattr(
         tracker_main,
-        "resolve_run_aws_runtime_and_access_key_config",
-        Mock(return_value=AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)),
+        "resolve_run_aws_runtime",
+        Mock(return_value=aws_runtime),
     )
+    monkeypatch.setattr(tracker_main, "resolve_start_aws_runtime", Mock(return_value=aws_runtime))
 
 
 def _use_real_sandbox_recovery(service: AsyncMock) -> None:
@@ -121,11 +121,13 @@ def _run(
     benchmark = Benchmark(
         org_id=org.id,
         name=f"run-{uuid4()}",
+        aws_managed=True,
         arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
             concurrency=concurrency,
             priority=priority,
             queue_pool_id=pool_id,
+            sandbox_provider_secret_name="test-provider-secret",
         ),
     )
     rows = [
@@ -227,7 +229,7 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     executor_authority: Any,
 ) -> None:
     org, benchmark, _ = _run(
@@ -252,7 +254,7 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
     monkeypatch.setitem(tracker_main.app.dependency_overrides, tracker_main.get_current_starter, lambda: identity)
     monkeypatch.setattr(tracker_main, "check_database_connection", lambda: True)
     monkeypatch.setattr(tracker_main, "SANDBOX_QUEUE_ENABLED", False)
-    _use_access_key_runtime(monkeypatch, harness_config)
+    _use_managed_runtime(monkeypatch, aws_runtime)
 
     async def health_check(*_args: Any, **_kwargs: Any) -> object:
         return object()
@@ -303,7 +305,9 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
             benchmark_name=f"postgres-lock-{uuid4()}",
             contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
             task_ids=["new-task"],
-            harness_config=harness_config,
+            properties=aws_runtime.resources,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         ).model_dump(mode="json")
 
     request: asyncio.Task[httpx.Response] | None = None
@@ -814,7 +818,7 @@ async def test_held_evaluation_lock_rejects_recovery_without_mutation(
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     executor_authority: Any,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
@@ -838,7 +842,7 @@ async def test_held_evaluation_lock_rejects_recovery_without_mutation(
     ).one()
     enqueue = AsyncMock()
     monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
-    _use_access_key_runtime(monkeypatch, harness_config)
+    _use_managed_runtime(monkeypatch, aws_runtime)
 
     async with store.task_evaluation_lock(postgres_engine, task.id) as acquired:
         assert acquired
@@ -877,7 +881,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     executor_authority: Any,
     runtime_services: RuntimeServices,
 ) -> None:
@@ -909,7 +913,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
             await release_first.wait()
 
     monkeypatch.setattr(tracker_main, "_enqueue_executor_dispatch", enqueue)
-    _use_access_key_runtime(monkeypatch, harness_config)
+    _use_managed_runtime(monkeypatch, aws_runtime)
 
     async def recover() -> None:
         with Session(postgres_engine) as recovery_session:
@@ -954,7 +958,7 @@ async def test_two_recovery_handoffs_leave_one_evaluation_owner(
     _use_real_sandbox_recovery(service)
     monkeypatch.setattr(task_execution, "engine", postgres_engine)
     monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
-    request = benchmark.access_key_start_benchmark_request(harness_config)
+    request = benchmark.managed_start_benchmark_request()
 
     async def run(task_row: Task, authority: ExecutionAuthority) -> dict[str, dict[str, Any] | None]:
         return await task_execution.process_task(
@@ -984,7 +988,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     executor_authority: Any,
     runtime_services: RuntimeServices,
 ) -> None:
@@ -1020,7 +1024,7 @@ async def test_resumed_evaluation_uses_lock_connection_for_callback_and_finaliza
     )
     monkeypatch.setattr(task_execution, "engine", single_connection_engine)
     monkeypatch.setattr(task_execution.TaskLogBuffer, "buffer_logs", Mock())
-    request = benchmark.access_key_start_benchmark_request(harness_config)
+    request = benchmark.managed_start_benchmark_request()
     try:
         result = await task_execution.process_task(
             task,
@@ -1049,7 +1053,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
+    aws_runtime: AWSRuntime,
     executor_authority: Any,
     runtime_services: RuntimeServices,
 ) -> None:
@@ -1104,7 +1108,7 @@ async def test_setup_retry_reenters_fifo_before_competitor(
 
     await task_execution.process_task(
         retrying,
-        benchmark.access_key_start_benchmark_request(harness_config),
+        benchmark.managed_start_benchmark_request(),
         cast(BenchmarkServiceClient, service),
         benchmark.id,
         retrying.task_id,
@@ -1132,9 +1136,8 @@ async def test_setup_retry_reenters_fifo_before_competitor(
 
 
 @pytest.fixture
-async def runtime_services(harness_config: HarnessConfig) -> AsyncGenerator[RuntimeServices, None]:
+async def runtime_services(aws_runtime: AWSRuntime) -> AsyncGenerator[RuntimeServices, None]:
     """Open real AWS adapters while tests replace their external calls."""
-    aws_runtime = AWSRuntime.from_harness_config(harness_config)
     runtime = CloudRuntimeFactory.create_runtime(
         aws_runtime,
     )

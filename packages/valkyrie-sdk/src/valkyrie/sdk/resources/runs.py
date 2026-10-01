@@ -148,7 +148,14 @@ class RunsResource:
                     exclude={"environment"}
                     | {
                         name
-                        for name in ("priority", "properties", "managed_s3_bucket", "dataset_version", "sandbox_provider")
+                        for name in (
+                            "priority",
+                            "properties",
+                            "managed_s3_bucket",
+                            "dataset_version",
+                            "sandbox_provider",
+                            "sandbox_provider_secret_name",
+                        )
                         if getattr(payload, name) is None
                     },
                 ),

@@ -144,7 +144,7 @@
         "properties": {
           "mode": {
             "enum": [
-              "access_key",
+              "unavailable",
               "managed"
             ],
             "title": "Mode",
@@ -1692,6 +1692,7 @@
         "type": "object"
       },
       "ManagedStorageStartBenchmarkRequest": {
+        "additionalProperties": false,
         "description": "Start a run whose artifacts are written to an owner-provisioned managed storage bucket.",
         "properties": {
           "benchmark_name": {
@@ -2716,6 +2717,7 @@
         "type": "object"
       },
       "StartBenchmarkRequest": {
+        "additionalProperties": false,
         "properties": {
           "benchmark_name": {
             "title": "Benchmark Name",

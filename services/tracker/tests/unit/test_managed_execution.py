@@ -124,7 +124,7 @@ def test_persisted_request_reconstruction_rejects_invalid_aws_modes(
         aws_managed=True,
     )
 
-    with pytest.raises(ValueError, match="Access-key runs cannot create managed"):
+    with pytest.raises(ValueError, match="Run has no deployment-managed execution context"):
         access_key_benchmark.managed_start_benchmark_request()
 
     managed_benchmark.arguments = managed_benchmark.arguments.model_copy(update={"sandbox_provider_secret_name": None})
@@ -158,7 +158,7 @@ def test_taskiq_adapter_rejects_access_key_shape(contract: AgentContractRequest)
     )
     benchmark_id = uuid4()
 
-    with pytest.raises(ValueError, match="access-key benchmark requests are no longer supported"):
+    with pytest.raises(ValueError, match="benchmark request requires an execution context"):
         _parse_queued_execution(
             request.model_dump(mode="json"),
             str(benchmark_id),
@@ -188,7 +188,7 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(contract: Agent
     benchmark_id = uuid4()
     context = _execution_context(request, benchmark_id)
 
-    with pytest.raises(ValueError, match="mixes access-key and managed"):
+    with pytest.raises(ValueError, match="must contain only an execution context"):
         _parse_queued_execution({}, None, None, context)
 
     invalid_version = {**context, "version": 1}
@@ -246,7 +246,7 @@ async def test_managed_execution_for_access_key_row_marks_run_error(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Access-key runs are no longer supported" in (benchmark.error_message or "")
+    assert "Run has no deployment-managed runtime" in (benchmark.error_message or "")
 
 
 async def test_access_key_execution_for_managed_row_marks_run_error(
@@ -267,7 +267,7 @@ async def test_access_key_execution_for_managed_row_marks_run_error(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "access-key benchmark requests are no longer supported" in (benchmark.error_message or "")
+    assert "benchmark request requires an execution context" in (benchmark.error_message or "")
 
 
 async def test_ineligible_managed_execution_marks_run_error(

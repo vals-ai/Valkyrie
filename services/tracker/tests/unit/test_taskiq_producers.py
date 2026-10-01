@@ -268,9 +268,7 @@ def test_managed_start_rejects_aws_authority_before_persistence(
         raise AssertionError("invalid managed requests must be rejected before checking S3")
 
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", agent_exists)
-    request = _start_request(contract).model_copy(
-        update={"service_headers": {"AWS_SECRET_ACCESS_KEY": "credential"}}
-    )
+    request = _start_request(contract).model_copy(update={"service_headers": {"AWS_SECRET_ACCESS_KEY": "credential"}})
 
     response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
 
@@ -435,4 +433,3 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
         ).all()
     } == original_dispatch_ids
     assert payloads == []
-

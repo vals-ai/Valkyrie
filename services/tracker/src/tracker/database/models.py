@@ -440,7 +440,7 @@ class Benchmark(SQLModel, table=True):
         from tracker.types import RunExecutionRequest
 
         if not self.aws_managed:
-            raise ValueError("Access-key runs cannot create managed execution requests")
+            raise ValueError("Run has no deployment-managed execution context")
         if self.arguments.environment == "aws" and not self.arguments.sandbox_provider_secret_name:
             raise ValueError("Managed runs require a sandbox provider secret name")
 

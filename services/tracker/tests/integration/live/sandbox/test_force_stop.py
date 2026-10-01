@@ -20,7 +20,6 @@ from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
-from tracker.types import HarnessConfig
 from tracker.utils import fetch_sandbox_provider_config, force_stop_sandboxes
 
 process_benchmark = getattr(tracker_utils, "process_benchmark")
@@ -110,7 +109,7 @@ class TestForceStop:
         benchmark_service: BenchmarkServiceClient,
         test_resources: Resources,
         daytona_secret_name: str,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         test_image: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
@@ -138,7 +137,7 @@ class TestForceStop:
             force=True,
             org=Org(id=TEST_ORG_ID, name="default"),
         )
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
@@ -205,7 +204,7 @@ class TestForceStop:
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         daytona_secret_name: str,
         benchmark_service: BenchmarkServiceClient,
         test_image: str,
@@ -222,7 +221,7 @@ class TestForceStop:
         example_benchmark_object.status = BenchmarkStatus.IN_PROGRESS
         database_session.add(example_benchmark_object)
         database_session.commit()
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
@@ -313,8 +312,8 @@ class TestForceStop:
         example_benchmark_object: Benchmark,
         database_session: Session,
         daytona_secret_name: str,
-        harness_config: HarnessConfig,
-        harness_headers: dict[str, str],
+        live_aws_runtime: AWSRuntime,
+        api_headers: dict[str, str],
         service_headers: dict[str, str],
         live_api_client: TestClient,
         executor_authority_kwargs: Any,
@@ -334,7 +333,7 @@ class TestForceStop:
         benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
         benchmark_task: Optional[asyncio.Task[None]] = None
         provider: Optional[SandboxProvider] = None
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
 
         try:
             verify_response = await benchmark_service.verify_task_ids(
@@ -345,8 +344,8 @@ class TestForceStop:
             authority_kwargs = executor_authority_kwargs(example_benchmark_object)
             benchmark_task = asyncio.create_task(
                 process_benchmark(
-                    start_benchmark_request_json=example_benchmark_object.access_key_start_benchmark_request(
-                        harness_config, service_headers=service_headers
+                    start_benchmark_request_json=example_benchmark_object.managed_start_benchmark_request(
+                        service_headers=service_headers
                     ).model_dump(),
                     benchmark_id_str=str(example_benchmark_object.id),
                     verified_task_ids=verify_response.task_ids,
@@ -362,7 +361,7 @@ class TestForceStop:
 
             response = live_api_client.post(
                 f"/stop-benchmark/{example_benchmark_object.id}?force=true",
-                headers=harness_headers,
+                headers=api_headers,
             )
             assert response.status_code == 200
             assert response.json() == {"status": "success"}

@@ -75,7 +75,6 @@ from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
-    ManagedExecutionContext,
     RunExecutionRequest,
     StartBenchmarkRequest,
 )
@@ -206,7 +205,9 @@ class TestTrackerAPI:
         assert queued_payload["resolved_dataset_version"]["id"] == "release-a"
 
         current_default[0] = "release-b"
-        queued_request = RunExecutionRequest.model_validate(mock_kicker.queued_calls[0]["execution_context_json"]["start_benchmark_request"])
+        queued_request = RunExecutionRequest.model_validate(
+            mock_kicker.queued_calls[0]["execution_context_json"]["start_benchmark_request"]
+        )
         async with queued_request.benchmark_service as queued_service:
             await queued_service.verify_task_ids(["task-release-a"], None, dataset=queued_request.dataset)
         async with first_run.benchmark_service() as scoring_service:
@@ -220,12 +221,10 @@ class TestTrackerAPI:
 
         conflicting_header = client.post(
             f"/retry-or-resume-benchmark/{first_run_id}",
-            
             json={"service_headers": {"x-benchmark-dataset-version": "release-b"}},
         )
         replacement_url = client.post(
             f"/retry-or-resume-benchmark/{first_run_id}",
-            
             json={"benchmark_url": "https://other.example"},
         )
 
@@ -237,9 +236,9 @@ class TestTrackerAPI:
 
         assert resumed.status_code == 200, resumed.text
         assert observed_versions == ["release-a"] * 4
-        assert mock_kicker.queued_calls[1]["execution_context_json"]["start_benchmark_request"]["resolved_dataset_version"]["id"] == (
-            "release-a"
-        )
+        assert mock_kicker.queued_calls[1]["execution_context_json"]["start_benchmark_request"][
+            "resolved_dataset_version"
+        ]["id"] == ("release-a")
 
         active_release = database_session.get(ExecutorRelease, "test-release")
         assert active_release is not None
@@ -289,7 +288,12 @@ class TestTrackerAPI:
         monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
-        request = StartBenchmarkRequest(contract=contract, benchmark_name="swebench", sandbox_provider="daytona", sandbox_provider_secret_name="provider-secret")
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+        )
 
         response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
 
@@ -540,7 +544,11 @@ class TestTrackerAPI:
         )
         headers: dict[str, str] = {}
         if conflict == "header":
-            headers = {"x-harness-aws-access-key-id": "k", "x-harness-aws-secret-access-key": "s", "x-harness-aws-region": "us-east-1"}
+            headers = {
+                "x-harness-aws-access-key-id": "k",
+                "x-harness-aws-secret-access-key": "s",
+                "x-harness-aws-region": "us-east-1",
+            }
         elif conflict == "partial_header":
             headers = {"x-harness-aws-access-key-id": "partial"}
 
@@ -843,7 +851,6 @@ class TestTrackerAPI:
         active_response = client.post(
             f"/analyze-benchmark/{example_benchmark_object.id}",
             json={"lambda_function": "docent-analyzer"},
-            
         )
         assert active_response.status_code == 400
         assert "must be FINISHED" in active_response.json()["detail"]
@@ -854,7 +861,6 @@ class TestTrackerAPI:
         missing_lambda_response = client.post(
             f"/analyze-benchmark/{example_benchmark_object.id}",
             json={},
-            
         )
         assert missing_lambda_response.status_code == 400
         assert "No ingest_lambda provided" in missing_lambda_response.json()["detail"]
@@ -866,7 +872,6 @@ class TestTrackerAPI:
         cached_response = client.post(
             f"/analyze-benchmark/{example_benchmark_object.id}",
             json={},
-            
         )
         assert cached_response.status_code == 200
         assert cached_response.json() == {
@@ -1699,7 +1704,7 @@ class TestTrackerAPI:
                 contract=contract,
                 benchmark_name="swebench",
                 sandbox_provider="daytona",
-            sandbox_provider_secret_name="provider-secret",
+                sandbox_provider_secret_name="provider-secret",
             ),
             object_store=main_module.S3ObjectStore(_managed_test_runtime("test-bucket")),
         )
@@ -2336,7 +2341,6 @@ class TestTrackerAPI:
             invalid_response = client.get(
                 "/preview-results",
                 params=[("benchmark_id", str(benchmark_row.id)), *[("task_ids", task_id) for task_id in task_ids]],
-                
             )
 
             assert invalid_response.status_code == 400
@@ -2349,7 +2353,6 @@ class TestTrackerAPI:
         response = client.get(
             "/preview-results",
             params={"benchmark_id": str(benchmark_row.id)},
-            
         )
 
         assert response.status_code == 200
@@ -2384,7 +2387,6 @@ class TestTrackerAPI:
                 ("benchmark_id", str(benchmark_row.id)),
                 ("task_ids", "pending-task"),
             ],
-            
         )
 
         assert subset_response.status_code == 200
@@ -2411,7 +2413,6 @@ class TestTrackerAPI:
                 ("benchmark_id", str(example_benchmark_object.id)),
                 ("task_ids", "task_0"),
             ],
-            
         )
 
         assert response.status_code == 403
@@ -2992,7 +2993,6 @@ class TestTrackerAPI:
         fetch_response = client.get(
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark_id)},
-            
         )
         assert fetch_response.status_code == 200
         assert fetch_response.json()["label"] == "nightly"
@@ -3148,7 +3148,6 @@ class TestTrackerAPI:
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",
             params={"task_ids": ["task_1", "task_2"]},
-            
         )
 
         assert response.status_code == 200
@@ -3194,7 +3193,6 @@ class TestTrackerAPI:
 
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",
-            
         )
 
         assert response.status_code == 200
@@ -3221,7 +3219,6 @@ class TestTrackerAPI:
 
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",
-            
         )
 
         assert response.status_code == 404
@@ -3244,7 +3241,6 @@ class TestTrackerAPI:
 
         response = client.get(
             f"/fetch-run-outputs/{example_benchmark_object.id}",
-            
         )
 
         assert response.status_code == 404
@@ -3329,7 +3325,6 @@ class TestTrackerAPI:
             f"/retry-or-resume-benchmark/{benchmark.id}",
             json={"task_ids": [], "service_headers": {}},
             params={"retry": "true"},
-            
         )
         assert response.status_code == 502
         assert response.json() == {"detail": "Benchmark service authentication failed"}
@@ -3351,7 +3346,7 @@ class TestTrackerAPI:
 
         assert response.status_code == 400
         assert "access-key AWS" in response.json()["detail"]
-        assert "no longer supported" in response.json()["detail"]
+        assert "no deployment-managed AWS runtime" in response.json()["detail"]
 
 
 async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(

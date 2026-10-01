@@ -65,9 +65,8 @@ class TestAgentsResource:
         async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
             assert request.url.host == download_host
             assert ("x-api-key" in request.headers) == (download_host == "tracker.test")
-            assert any(header.startswith("x-harness") for header in request.headers) == (
-                download_host == "tracker.test"
-            )
+            assert not any(header.startswith("x-harness") for header in request.headers)
+            assert "authorization" not in request.headers
 
             return httpx.Response(200, content=_archive())
 
