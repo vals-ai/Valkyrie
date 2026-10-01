@@ -9,6 +9,7 @@
 - Start, retry and resume requests larger than 1 MiB now return 413 before any processing.
 - The Tracker and runner image is built in two stages; the runtime image no longer contains gcc, git or uv, and commands run from `/app/.venv/bin` on `PATH`.
 - Changes to `tracker/runtime/`, `tracker/local/`, `tracker/egress.py` and `tracker/executor/dependencies.py` now publish a new executor release, because the executor imports them.
+- Dev and release-test databases now use `db.r7g.large`, the same size as bench and prod, with the connection alarm at 1,400.
 - Remove the Redis queue and long-lived executor service. The unused Redis
   cluster, security group, and their CloudFormation exports, the Tracker service
   security group export, and the release-test executor-host ECR repository and
