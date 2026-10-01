@@ -27,6 +27,8 @@ DRIVER_ENV = {
         "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/sandbox-provider-DEF456"
     ),
     "RELEASE_TEST_OPERATOR_PRINCIPAL_ARN": "arn:aws:iam::123456789012:role/ReleaseTestAdmin",
+    "AWS_DEPLOYMENT_ROLE_ORG_IDS": "00000000-0000-0000-0000-000000000001",
+    "AWS_TRACKER_SECRET_NAME_PREFIXES": "example/release-test/",
 }
 
 
