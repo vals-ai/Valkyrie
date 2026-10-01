@@ -1245,20 +1245,14 @@ async def test_reserved_image_builds_provision_concurrently_outside_the_pool_loc
     assert events.index("cleanup") > max(index for index, event in enumerate(events) if event == "create")
 
 
-@pytest.mark.parametrize("limit", ["capacity", "building_cap"])
-async def test_reservations_and_building_cap_bound_parallel_builds(
-    limit: str,
+async def test_reservations_bound_parallel_builds(
     postgres_engine: Engine,
     postgres_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     executor_authority: Any,
 ) -> None:
     provider_pool_id = f"daytona:{uuid4()}"
-    if limit == "capacity":
-        snapshot = _CAPACITY.model_copy(update={"cpu": ResourceCapacity(total=_RESOURCES.vcpu, used=0)})
-    else:
-        snapshot = _CAPACITY
-        monkeypatch.setattr(admission, "SANDBOX_QUEUE_BUILDING_CAP", 1)
+    snapshot = _CAPACITY.model_copy(update={"cpu": ResourceCapacity(total=_RESOURCES.vcpu, used=0)})
     provider_events: list[str] = []
     context = _context(postgres_engine, provider_pool_id, provider_events, reserved=True, snapshot=snapshot)
     _, benchmark, (first, second) = _run(
@@ -1309,8 +1303,7 @@ async def test_reservations_and_building_cap_bound_parallel_builds(
     assert {_task(postgres_engine, task).status for task in (first, second)} == {TaskStatus.IN_PROGRESS}
     assert _reservation_count(postgres_engine, context.pool_id) == 0
     assert first_events == second_events == ["create", "cleanup"]
-    admission_rounds = 3 if limit == "capacity" else 2
-    assert provider_events == ["read_capacity", "capacity"] * admission_rounds
+    assert provider_events == ["read_capacity", "capacity"] * 3
 
 
 async def test_failed_reserved_create_holds_its_reservation_until_it_is_released(

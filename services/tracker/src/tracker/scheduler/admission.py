@@ -23,7 +23,6 @@ from benchmark_service import (
 from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session, col, select, update
 
-from tracker.config import SANDBOX_QUEUE_BUILDING_CAP
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
@@ -285,11 +284,7 @@ async def enter_queued_sandbox(
                     if not waiting:
                         return None
 
-                    capacity = (
-                        await _reservable_capacity(context)
-                        if eligible and reserves and reserved.count < SANDBOX_QUEUE_BUILDING_CAP
-                        else None
-                    )
+                    capacity = await _reservable_capacity(context) if eligible and reserves else None
                     # Live provider usage misses reserved builds still being created.
                     admissible = eligible and (capacity is not None or reserved.count == 0)
                     if admissible and await context.provider.check_admission(source, resources):
