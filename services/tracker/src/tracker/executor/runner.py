@@ -15,12 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol, TypeVar, cast
 from urllib.parse import urlparse
+from uuid import UUID
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
-from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
-from uuid import UUID
-
+from botocore.exceptions import ClientError
 from executor_protocol import (
     DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS,
@@ -33,6 +32,12 @@ from executor_protocol import (
     validate_executor_digest,
     validate_source_executor_artifact_uri,
 )
+from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
+from sqlmodel import Session
+
+from tracker.database.models import Benchmark, ExecutorDispatch, ExecutorDispatchStatus
+from tracker.database.session import engine
+from tracker.executor.dispatch_control import record_dispatch_failure
 from tracker.executor.dispatch_payload import SealedPayload, open_payload
 from tracker.executor.runner_observability import (
     capture_dispatch_error,
@@ -46,6 +51,10 @@ from tracker.executor.runner_observability import (
 logger = logging.getLogger(__name__)
 
 _AUTHORITY_LOSS_GRACE_SECONDS = 10
+
+
+class PayloadDecryptError(RuntimeError):
+    """KMS denied opening the sealed dispatch payload before claim committed."""
 
 
 class S3Client(Protocol):
@@ -148,6 +157,8 @@ class ClaimedDispatch:
 class ExecutorDispatchStore(Protocol):
     async def claim(self, dispatch_id: str) -> ClaimedDispatch | None: ...
 
+    async def fail_before_claim(self, dispatch_id: str, error_type: str) -> bool: ...
+
     async def renew(self, authority: DispatchAuthority) -> RenewalResult: ...
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
@@ -196,6 +207,29 @@ class PostgresExecutorDispatchStore:
     async def claim(self, dispatch_id: str) -> ClaimedDispatch | None:
         return await asyncio.to_thread(self._claim, dispatch_id)
 
+    async def fail_before_claim(self, dispatch_id: str, error_type: str) -> bool:
+        return await asyncio.to_thread(self._fail_before_claim, dispatch_id, error_type)
+
+    def _fail_before_claim(self, dispatch_id: str, error_type: str) -> bool:
+        with Session(engine) as session:
+            dispatch = session.get(ExecutorDispatch, UUID(dispatch_id))
+            benchmark = session.get(Benchmark, dispatch.benchmark_id)
+            failed = record_dispatch_failure(
+                session,
+                benchmark=benchmark,
+                dispatch_id=dispatch.id,
+                task_ids=dispatch.assigned_task_ids or [],
+                error_message=f"Executor payload decrypt failed: {error_type}",
+                producer="executor_dispatch",
+                operation="dispatch_claim",
+                error_type=error_type,
+                cause_code="PAYLOAD_DECRYPT_FAILED",
+                failure_reason="PAYLOAD_DECRYPT_FAILED",
+                dispatch_status=ExecutorDispatchStatus.QUEUED,
+            )
+            session.commit()
+            return failed
+
     def _claim(self, dispatch_id: str) -> ClaimedDispatch | None:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -233,7 +267,10 @@ class PostgresExecutorDispatchStore:
             if sealed_row is None:
                 raise ValueError(f"Queued executor dispatch {dispatch_id} has no sealed payload")
             sealed = SealedPayload(*(bytes(value) for value in sealed_row))
-            payload = open_payload(UUID(dispatch_id), sealed)
+            try:
+                payload = open_payload(UUID(dispatch_id), sealed)
+            except ClientError as error:
+                raise PayloadDecryptError(error.response["Error"]["Code"]) from None
             payload.update(
                 {
                     "executor_dispatch_id": dispatch_id,
@@ -790,6 +827,9 @@ async def run_executor_dispatch(
     )
     try:
         claimed = await asyncio.shield(claim_task)
+    except PayloadDecryptError as error:
+        await store.fail_before_claim(executor_dispatch_id, str(error))
+        raise
     except asyncio.CancelledError:
         claimed = await claim_task
         if claimed is not None:

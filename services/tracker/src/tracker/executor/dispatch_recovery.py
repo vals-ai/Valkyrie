@@ -3,23 +3,68 @@
 from __future__ import annotations
 
 import logging
+import os
 from threading import Event, Thread
 
+import boto3
+from botocore.config import Config
 from sqlalchemy import delete, select
 from sqlmodel import Session, col
 
 from executor_protocol import ExecutorDispatchStatus
-from tracker.database.models import ExecutorDispatch, ExecutorDispatchPayload
+from tracker.database.models import Benchmark, ExecutorDispatch, ExecutorDispatchPayload
 from tracker.database.session import engine
-from tracker.executor.dispatch_control import reconcile_expired_dispatches
+from tracker.executor.dispatch_control import record_dispatch_failure, reconcile_expired_dispatches
 
 _RECONCILIATION_INTERVAL_SECONDS = 60.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _logger = logging.getLogger(__name__)
+_ECS_CONFIG = Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 1})
+
+
+def _reconcile_stopped_tasks(session: Session) -> int:
+    candidates = session.exec(
+        select(ExecutorDispatch.id, ExecutorDispatch.ecs_task_arn)
+        .where(ExecutorDispatch.status == ExecutorDispatchStatus.QUEUED)
+        .where(ExecutorDispatch.ecs_task_arn.is_not(None))
+    ).all()
+    if not candidates:
+        return 0
+    ecs = boto3.client("ecs", config=_ECS_CONFIG)
+    recovered = 0
+    for offset in range(0, len(candidates), 100):
+        batch = candidates[offset : offset + 100]
+        response = ecs.describe_tasks(cluster=os.environ["EXECUTOR_RUNNER_CLUSTER"], tasks=[arn for _, arn in batch])
+        dispatch_ids = {arn: dispatch_id for dispatch_id, arn in batch}
+        for task in response["tasks"]:
+            if task["lastStatus"] != "STOPPED":
+                continue
+            dispatch = session.get(ExecutorDispatch, dispatch_ids[task["taskArn"]])
+            benchmark = session.get(Benchmark, dispatch.benchmark_id)
+            reasons = [task.get("stoppedReason"), *(c.get("reason") for c in task.get("containers", []))]
+            message = "; ".join(reason for reason in reasons if reason)
+            if record_dispatch_failure(
+                session,
+                benchmark=benchmark,
+                dispatch_id=dispatch.id,
+                task_ids=dispatch.assigned_task_ids or [],
+                error_message=f"Executor task stopped before claim: {message}",
+                producer="executor_dispatch",
+                operation="dispatch_reconciliation",
+                error_type="ExecutorTaskStoppedBeforeClaim",
+                cause_code="ECS_TASK_STOPPED",
+                failure_reason="ECS_TASK_STOPPED",
+                dispatch_status=ExecutorDispatchStatus.QUEUED,
+            ):
+                recovered += 1
+    return recovered
 
 
 def reconcile_expired_dispatches_once() -> int:
-    """Run one atomic lease-reconciliation pass in a fresh database session."""
+    """Run one lease-reconciliation pass, then fail ECS tasks that stopped before claiming.
+
+    Each pass commits on its own so an ECS outage never blocks database recovery.
+    """
     with Session(engine) as session:
         try:
             recovered_count = reconcile_expired_dispatches(session)
@@ -30,6 +75,15 @@ def reconcile_expired_dispatches_once() -> int:
                     )
                 )
             )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+    if os.environ["EXECUTOR_LAUNCHER"] != "ecs":
+        return recovered_count
+    with Session(engine) as session:
+        try:
+            recovered_count += _reconcile_stopped_tasks(session)
             session.commit()
         except Exception:
             session.rollback()

@@ -28,10 +28,15 @@ class FakeStore:
         self.terminalized: list[tuple[runner.DispatchAuthority, list[str]]] = []
         self.finished: list[runner.DispatchAuthority] = []
         self.renewals: list[runner.DispatchAuthority] = []
+        self.preclaim_failures: list[tuple[str, str]] = []
 
     async def claim(self, dispatch_id: str) -> runner.ClaimedDispatch | None:
         claim, self.available = self.available, None
         return claim
+
+    async def fail_before_claim(self, dispatch_id: str, error_type: str) -> bool:
+        self.preclaim_failures.append((dispatch_id, error_type))
+        return True
 
     async def renew(self, authority: runner.DispatchAuthority) -> runner.RenewalResult:
         return runner.RenewalResult(True, (True, False))
