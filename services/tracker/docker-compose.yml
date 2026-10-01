@@ -28,7 +28,7 @@ services:
     build:
       context: ../..
       dockerfile: services/tracker/Dockerfile
-    command: ["uv", "run", "--no-sync", "python", "-m", "tracker.serve"]
+    command: ["python", "-m", "tracker.serve"]
     ports:
       - "8000:8000"
     environment:

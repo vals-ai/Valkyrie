@@ -382,7 +382,7 @@ class TrackerStack(Stack):
                 **sentry_secrets,
                 **descope_secrets,
             },
-            command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
+            command=["python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(
                 command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],
                 interval=Duration.seconds(CONTAINER_HEALTH_INTERVAL_SECONDS),
