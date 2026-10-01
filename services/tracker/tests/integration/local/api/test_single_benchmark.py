@@ -148,7 +148,7 @@ class TestBenchmarkStatusStreamPostgres:
                             "GET",
                             f"http://127.0.0.1:{port}/fetch-benchmark",
                             params={"benchmark_id": str(benchmark_id), "connect": "true"},
-                            headers=_HARNESS_HEADERS,
+                            headers={"Authorization": "Bearer fake"},
                         ) as response:
                             assert response.status_code == 200
                             lines = response.iter_lines()
@@ -202,7 +202,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers=_HARNESS_HEADERS,
+            headers={"Authorization": "Bearer fake"},
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 
@@ -255,7 +255,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers=_HARNESS_HEADERS,
+            headers={"Authorization": "Bearer fake"},
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 
@@ -269,7 +269,9 @@ class TestBenchmarkStatusStream:
         assert streamed_status["benchmark_name"] == "streamed-benchmark"
         assert streamed_status["details"]["status"] == "FINISHED"
         assert streamed_status["final_score"] == 0.75
-        fetched = client.get("/fetch-benchmark", params={"benchmark_id": str(benchmark.id)}, headers=_HARNESS_HEADERS)
+        fetched = client.get(
+            "/fetch-benchmark", params={"benchmark_id": str(benchmark.id)}, headers={"Authorization": "Bearer fake"}
+        )
         assert fetched.status_code == 200
         assert streamed_status["s3_bucket_url"] == fetched.json()["s3_bucket_url"]
         assert streamed_status["storage_bucket"] == fetched.json()["storage_bucket"]
@@ -314,7 +316,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers={**_HARNESS_HEADERS, "Authorization": "Bearer fake"},
+            headers={"Authorization": "Bearer fake"},
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 

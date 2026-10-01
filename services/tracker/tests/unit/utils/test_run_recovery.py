@@ -3288,7 +3288,7 @@ async def test_recovery_pins_resources_under_lock_and_execution_uses_saved_bucke
     assert benchmark.arguments.properties == resources
     context = enqueue.call_args.kwargs["payload"]["execution_context_json"]
     assert context["version"] == 3
-    request = StartBenchmarkRequest.model_validate(context["start_benchmark_request"])
+    request = RunExecutionRequest.model_validate(context["start_benchmark_request"])
     assert request.properties == resources
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "another-default")
     metadata_after_recovery = client.get(f"/fetch-benchmark-metadata/{benchmark.id}")

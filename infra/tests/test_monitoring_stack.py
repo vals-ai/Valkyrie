@@ -334,6 +334,12 @@ class MonitoringStackTest(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, variable):
                             config_for(Stage(stage_name))
 
+    def test_default_provider_secret_requires_tracker_read_authority(self) -> None:
+        environment = {**TEST_DEV_ENV, "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME": "unreadable-provider"}
+        with mock.patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(ValueError, "must match an AWS_TRACKER_SECRET_NAME_PREFIXES"):
+                config_for(Stage(DEV))
+
     def test_offline_synth_uses_safe_managed_runtime_placeholders(self) -> None:
         for stage_name in (DEV, BENCH, PROD):
             with self.subTest(stage=stage_name):
