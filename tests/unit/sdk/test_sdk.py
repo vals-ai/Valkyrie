@@ -225,8 +225,6 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert "harness_config" not in body
     assert "sandbox_provider" not in body
     assert "sandbox_provider_secret_name" not in body
-    assert body["webhook_secret_name"] == "SlackWebhook"
-    assert body["webhook_intervals"] == [25, 100]
 
 
 async def test_start_uses_api_key_without_local_resources(make_client, sdk_config) -> None:

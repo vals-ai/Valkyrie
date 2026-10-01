@@ -431,7 +431,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     result = await runtime.get_sandbox_provider_config()
 
     assert result is provider_config
-    assert calls == ["logs", "agent_secrets", "webhook_secret", "lambda", "sandbox_provider_secret"]
+    assert calls == ["logs", "agent_secrets", "lambda", "sandbox_provider_secret"]
 
 
 async def test_managed_preflight_failure_happens_before_sandbox(

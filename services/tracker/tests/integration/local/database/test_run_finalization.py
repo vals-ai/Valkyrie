@@ -548,8 +548,6 @@ class TestRunFinalization:
             properties=aws_runtime.resources,
             sandbox_provider="daytona",
             sandbox_provider_secret_name="test-provider-secret",
-            webhook_secret_name="test-webhook-secret",
-            webhook_intervals=[100],
         )
         authority_kwargs = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
         benchmark.arguments = benchmark.arguments.model_copy(update={"lambda_function": "test-lambda"})
