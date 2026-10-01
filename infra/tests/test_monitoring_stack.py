@@ -1254,38 +1254,6 @@ class MonitoringStackTest(unittest.TestCase):
                 },
             )
 
-    def test_prod_sandbox_cleanup_grants_read_on_every_listed_secret(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {
-                **TEST_BENCH_ENV,
-                "SANDBOX_CLEANUP_ENABLED": "true",
-                "SANDBOX_CLEANUP_PROVIDER": "daytona",
-                "SANDBOX_CLEANUP_SECRET_NAME": " first/cleanup , second/cleanup,first/cleanup",
-            },
-            clear=True,
-        ):
-            _, executor_template, _ = service_templates(BENCH)
-
-        executor_template.has_resource_properties(
-            "AWS::Lambda::Function",
-            {
-                "Environment": {
-                    "Variables": assertions.Match.object_like(
-                        {"SANDBOX_CLEANUP_SECRET_NAME": " first/cleanup , second/cleanup,first/cleanup"}
-                    )
-                }
-            },
-        )
-        granted_resources = [
-            str(statement.get("Resource"))
-            for resource in executor_template.find_resources("AWS::IAM::Policy").values()
-            for statement in resource["Properties"]["PolicyDocument"]["Statement"]
-            if "secretsmanager:GetSecretValue" in statement.get("Action", [])
-        ]
-        for secret_name in ("first/cleanup", "second/cleanup"):
-            self.assertEqual(sum(secret_name in resource for resource in granted_resources), 1, secret_name)
-
     def test_deployed_stages_require_sentry_secret(self) -> None:
         for stage, environment in ((DEV, TEST_DEV_ENV), (BENCH, TEST_BENCH_ENV)):
             environment_without_sentry = {

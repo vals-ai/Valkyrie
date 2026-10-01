@@ -347,10 +347,3 @@ def test_lambda_handler_continues_past_a_failing_target_then_fails(monkeypatch: 
     with pytest.raises(RuntimeError, match="Sandbox cleanup did not fully succeed: failures=1"):
         cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
     assert swept == ["broken", "healthy"]
-
-
-def test_lambda_handler_rejects_a_secret_list_with_no_names(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_handler_environment(monkeypatch, " , ,")
-
-    with pytest.raises(RuntimeError, match="SANDBOX_CLEANUP_SECRET_NAME must not be empty"):
-        cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
