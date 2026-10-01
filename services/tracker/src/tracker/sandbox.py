@@ -899,6 +899,7 @@ async def _stream_controlled_output(
             sealed_once = True
 
     async def exhausted_at(ended_at: float) -> bool:
+        nonlocal stop_at
         if controller.elapsed_seconds(ended_at) < controller.effective_allowance_seconds():
             return False
         stop_at = deadline + GENERATION_TERMINATION_GRACE_SECONDS
