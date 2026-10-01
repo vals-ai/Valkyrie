@@ -219,6 +219,10 @@ historical physical `WorkerStack` name. CDK follows the existing stack
 dependencies when an individual stack is selected. Production account IDs are
 required inputs and stay outside the repository.
 
+Release-test driver commands download agent bundles through the Tracker API with
+their configured API key. Direct S3 permissions cover campaign artifacts and run
+outputs; agent aliases are scoped to the API key's organization.
+
 ## Benchmark Catalog
 
 `BENCHMARK_CATALOG_URL` optionally points tracker-service at a benchmark catalog API. When it is unset, `valkyrie config service list` returns an empty catalog.

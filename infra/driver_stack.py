@@ -38,7 +38,6 @@ from stage import Stage
 from stage_config import config_for
 
 _ARTIFACT_PREFIX = "releases/package-r"
-_CAMPAIGN_AGENT_KEY = "agents/coexistence_sleep_agent.zip"
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
     operating_system_family=aws_ecs.OperatingSystemFamily.LINUX,
@@ -212,10 +211,7 @@ class DriverStack(Stack):
         task_role.add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["s3:GetObject"],
-                resources=[
-                    bucket.arn_for_objects(f"{_ARTIFACT_PREFIX}/*"),
-                    bucket.arn_for_objects(_CAMPAIGN_AGENT_KEY),
-                ],
+                resources=[bucket.arn_for_objects(f"{_ARTIFACT_PREFIX}/*")],
             )
         )
         task_role.add_to_policy(

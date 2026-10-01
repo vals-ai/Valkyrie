@@ -276,13 +276,12 @@ class DriverStackTest(unittest.TestCase):
                 "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/sandbox-provider-DEF456",
             )
 
-    def test_driver_task_can_read_only_the_campaign_artifacts_and_exact_agent_object(self) -> None:
+    def test_driver_task_reads_campaign_artifacts_without_direct_agent_access(self) -> None:
         with driver_template() as template:
             statements = policy_statements(template)
             rendered = json.dumps(statements)
             self.assertIn("releases/package-r/*", rendered)
-            self.assertIn("agents/coexistence_sleep_agent.zip", rendered)
-            self.assertNotIn('"agents/*"', rendered)
+            self.assertNotIn("/agents/", rendered)
             self.assertNotIn('"s3:List*"', rendered)
             self.assertNotIn('"s3:GetBucket*"', rendered)
 
