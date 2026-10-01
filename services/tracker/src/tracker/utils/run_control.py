@@ -1,9 +1,10 @@
 """Operations that stop, resume, or retry a run and tear down its sandboxes."""
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
-import json
 from dataclasses import dataclass
+import json
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -14,6 +15,8 @@ from benchmark_service import (
     SandboxQuery,
 )
 from benchmark_service.client import BenchmarkServiceError
+import boto3
+from botocore.config import Config
 from sqlmodel import Session, asc, col, func, or_, select, update
 
 from tracker.database.models import (
@@ -25,12 +28,15 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.executor.dispatch_control import terminalize_active_dispatches
+from tracker.executor.dispatch_control import (
+    active_dispatch_exists,
+    stop_unclaimed_dispatches,
+    terminalize_active_dispatches,
+)
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
-from tracker.sandbox import delete_sandbox
 from tracker.runtime.services import RuntimeServices
-
+from tracker.sandbox import delete_sandbox
 from tracker.utils.resources import fetch_benchmark_row
 
 logger = get_logger(__name__)
@@ -42,11 +48,14 @@ def apply_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
-) -> None:
+) -> list[str]:
     """Apply the Stop state transition without committing the transaction."""
     # Stop and recovery both update the benchmark and its tasks. Lock the benchmark
     # first so every lifecycle transition uses the same lock order.
     fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
+    stopped_unclaimed, task_arns = (
+        stop_unclaimed_dispatches(session, benchmark_row) if task_ids is None else (False, [])
+    )
 
     stoppable_statuses = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]
     if force:
@@ -78,9 +87,14 @@ def apply_stop_benchmark(
             benchmark_row.status = BenchmarkStatus.STOPPED
             terminalize_active_dispatches(session, benchmark_row.id)
             session.add(benchmark_row)
-    elif task_ids is None and result.rowcount > 0:
-        benchmark_row.status = BenchmarkStatus.STOPPING
+    elif task_ids is None and (result.rowcount > 0 or stopped_unclaimed):
+        if stopped_unclaimed and not active_dispatch_exists(session, benchmark_row.id):
+            benchmark_row.status = BenchmarkStatus.STOPPED
+            benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
+        else:
+            benchmark_row.status = BenchmarkStatus.STOPPING
         session.add(benchmark_row)
+    return task_arns
 
 
 async def initiate_stop_benchmark(
@@ -92,10 +106,22 @@ async def initiate_stop_benchmark(
 ) -> None:
     """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
+        task_arns = apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
         session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
+    if task_arns:
+        ecs = boto3.client("ecs", config=Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 1}))
+        for task_arn in task_arns:
+            try:
+                await asyncio.to_thread(
+                    ecs.stop_task,
+                    cluster=os.environ["EXECUTOR_RUNNER_CLUSTER"],
+                    task=task_arn,
+                    reason="Benchmark stopped before runner claim",
+                )
+            except Exception:
+                logger.exception("Failed to stop unclaimed executor task %s", task_arn)
 
 
 async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider, org: Org) -> None:

@@ -120,7 +120,7 @@ class ExecutorRunnerStackTest(unittest.TestCase):
         self.assertEqual(len(launch), 1)
         self.assertIn("ExecutorRunner-dev:*", json.dumps(launch[0]["Resource"]))
         self.assertIn("ecs:cluster", launch[0]["Condition"]["ArnEquals"])
-        for action in ("ecs:DescribeTasks",):
+        for action in ("ecs:DescribeTasks", "ecs:StopTask"):
             policy = by_action(action)
             self.assertEqual(len(policy), 1)
             self.assertIn(":task/", json.dumps(policy[0]["Resource"]))

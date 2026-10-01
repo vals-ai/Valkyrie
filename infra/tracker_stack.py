@@ -327,6 +327,13 @@ class TrackerStack(Stack):
         )
         self.tracker_task_role.add_to_policy(
             aws_iam.PolicyStatement(
+                actions=["ecs:StopTask"],
+                resources=[runner_task_arn],
+                conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
+            )
+        )
+        self.tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
                 actions=["iam:PassRole"],
                 resources=[runner_task_role.role_arn, runner_execution_role.role_arn],
                 conditions={"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}},

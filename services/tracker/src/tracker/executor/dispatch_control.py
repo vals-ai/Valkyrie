@@ -5,7 +5,7 @@ from enum import Enum
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, or_, update
+from sqlalchemy import and_, delete, func, or_, update
 from sqlmodel import Session, col, select
 
 from executor_protocol import DATASET_VERSION_PROTOCOL_VERSION, MANAGED_EXECUTION_PROTOCOL_VERSION
@@ -15,6 +15,7 @@ from tracker.database.models import (
     ErrorResult,
     ExecutorDispatch,
     ExecutorDispatchKind,
+    ExecutorDispatchPayload,
     ExecutorDispatchStatus,
     ExecutorRelease,
     Task,
@@ -158,6 +159,26 @@ def active_dispatch_exists(
     if except_dispatch_id is not None:
         dispatches = dispatches.where(col(ExecutorDispatch.id) != except_dispatch_id)
     return session.exec(dispatches).first() is not None
+
+
+def stop_unclaimed_dispatches(session: Session, benchmark: Benchmark) -> tuple[bool, list[str]]:
+    """Revoke queued runners under the benchmark lock held by the stop transition."""
+    dispatches = session.exec(
+        select(ExecutorDispatch)
+        .where(ExecutorDispatch.benchmark_id == benchmark.id)
+        .where(ExecutorDispatch.status == ExecutorDispatchStatus.QUEUED)
+        .with_for_update()
+    ).all()
+    arns = []
+    for dispatch in dispatches:
+        dispatch.status = ExecutorDispatchStatus.FAILED
+        dispatch.finished_at = datetime.now(ZoneInfo("UTC"))
+        dispatch.failure_reason = "STOPPED_BEFORE_CLAIM"
+        session.add(dispatch)
+        session.exec(delete(ExecutorDispatchPayload).where(ExecutorDispatchPayload.dispatch_id == dispatch.id))
+        if dispatch.ecs_task_arn is not None:
+            arns.append(dispatch.ecs_task_arn)
+    return bool(dispatches), arns
 
 
 def _terminalize_dispatch_tasks(

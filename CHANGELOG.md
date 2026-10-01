@@ -5,6 +5,7 @@
 - Run each admitted executor dispatch in its own pinned ECS task; local development uses a runner subprocess.
 - Seal dispatch inputs with a per-dispatch AES-256-GCM key wrapped by KMS and consume the payload transactionally at claim time.
 - Report ECS task startup failures and KMS payload-decrypt errors on the dispatch and run instead of waiting for the claim deadline.
+- Stopping a run revokes unclaimed executor dispatches and their sealed payloads immediately, requests ECS task shutdown, and leaves claimed work on graceful-stop handling.
 - Remove the Redis queue and long-lived executor service. The unused Redis
   cluster, security group, and their CloudFormation exports, the Tracker service
   security group export, and the release-test executor-host ECR repository and
