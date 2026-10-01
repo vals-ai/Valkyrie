@@ -668,16 +668,19 @@ def test_retry_or_resume_sends_retry_mode(
 
 
 @pytest.mark.parametrize("aws", [None, {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}])
+@pytest.mark.parametrize("ignore_custom_services", [False, True])
 def test_start_benchmark_sends_application_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     aws: dict[str, str] | None,
+    ignore_custom_services: bool,
 ) -> None:
     """Run submission sends application identity and lets the server resolve its runtime."""
     config_path = _write_valkyrie_config(
         tmp_path / "valkyrie.yaml",
         aws=aws,
         api_key="vals-key",
+        custom_benchmark_services={"swebench": "https://bench.example.test"},
     )
     requests: list[httpx.Request] = []
 
@@ -702,7 +705,7 @@ def test_start_benchmark_sends_application_identity(
         contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
         benchmark_name="swebench",
         concurrency=1,
-        ignore_custom_services=True,
+        ignore_custom_services=ignore_custom_services,
         task_ids=None,
         slice_str=None,
     )
@@ -714,6 +717,7 @@ def test_start_benchmark_sends_application_identity(
 
     body = json.loads(request.content)
 
+    assert body["custom_benchmark_service"] == (None if ignore_custom_services else "https://bench.example.test")
     assert "harness_config" not in body
     assert "sandbox_provider" not in body
     assert "sandbox_provider_secret_name" not in body

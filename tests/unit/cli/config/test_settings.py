@@ -285,6 +285,13 @@ def test_set_aws_resources_and_remove_optional_key_preserves_config(config_path:
         result = cli_runner.invoke(settings.set, [key, value])
         assert result.exit_code == 0, result.output
 
+    before_removal = config_path.read_text()
+    result = cli_runner.invoke(settings.config_remove, ["S3_BUCKET"])
+
+    assert result.exit_code == 1
+    assert "required" in result.output
+    assert config_path.read_text() == before_removal
+
     result = cli_runner.invoke(settings.config_remove, ["api_key"])
 
     assert result.exit_code == 0, result.output
@@ -296,3 +303,43 @@ def test_set_aws_resources_and_remove_optional_key_preserves_config(config_path:
     configured = ValkyrieConfig.from_yaml(config_path)
     assert configured.aws is not None
     assert configured.aws.s3_bucket == "local-client-bucket"
+
+
+@pytest.mark.parametrize("source", ["environment", "config"])
+def test_init_self_hosted_uses_local_resource_settings(
+    source: str,
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli_runner: CliRunner,
+) -> None:
+    resources = {
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "S3_BUCKET": "local-bucket",
+        "LOG_GROUP": "local-logs",
+        "LOG_RETENTION_POLICY": "30",
+    }
+    for key, value in resources.items():
+        monkeypatch.delenv(key, raising=False)
+        if source == "environment":
+            monkeypatch.setenv(key, value)
+    if source == "config":
+        config_path.write_text(yaml.safe_dump({"aws": resources}))
+
+    result = cli_runner.invoke(settings.init, input="self-hosted\n")
+
+    assert result.exit_code == 0, result.output
+    assert yaml.safe_load(config_path.read_text()) == {"aws": resources}
+
+
+def test_init_hosted_rejects_blank_environment_key(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli_runner: CliRunner,
+) -> None:
+    monkeypatch.setenv("VALKYRIE_API_KEY", "   ")
+
+    result = cli_runner.invoke(settings.init, input="hosted\nbench\n")
+
+    assert result.exit_code == 1
+    assert "API key must not be blank" in result.output
+    assert not config_path.exists()
