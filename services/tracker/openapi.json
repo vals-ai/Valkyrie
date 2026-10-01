@@ -84,6 +84,11 @@
             ],
             "title": "Lambda Function"
           },
+          "multi_turn": {
+            "default": false,
+            "title": "Multi Turn",
+            "type": "boolean"
+          },
           "properties": {
             "anyOf": [
               {
@@ -249,6 +254,16 @@
       },
       "AgentContractRequest-Input": {
         "properties": {
+          "conversation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "egress_allowlist": {
             "default": [],
             "items": {
@@ -356,6 +371,16 @@
       },
       "AgentContractRequest-Output": {
         "properties": {
+          "conversation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "egress_allowlist": {
             "default": [],
             "items": {
@@ -1092,6 +1117,33 @@
         "title": "Body_stop_benchmark",
         "type": "object"
       },
+      "ConversationConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "max_turns": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Max Turns",
+            "type": "integer"
+          },
+          "protocol": {
+            "const": "valkyrie.conversation.v1",
+            "default": "valkyrie.conversation.v1",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 1800,
+            "maximum": 14400.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "ConversationConfig",
+        "type": "object"
+      },
       "DatasetVersion": {
         "description": "An immutable dataset identity and its optional display label.",
         "properties": {
@@ -1630,6 +1682,11 @@
             ],
             "title": "Lambda Function"
           },
+          "multi_turn": {
+            "default": false,
+            "title": "Multi Turn",
+            "type": "boolean"
+          },
           "properties": {
             "$ref": "#/components/schemas/LocalResources"
           },
@@ -1893,6 +1950,11 @@
             ],
             "description": "Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it.",
             "title": "Managed S3 Bucket"
+          },
+          "multi_turn": {
+            "default": false,
+            "title": "Multi Turn",
+            "type": "boolean"
           },
           "priority": {
             "anyOf": [
@@ -2920,6 +2982,11 @@
             ],
             "description": "Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it; POST /start-benchmark rejects it.",
             "title": "Managed S3 Bucket"
+          },
+          "multi_turn": {
+            "default": false,
+            "title": "Multi Turn",
+            "type": "boolean"
           },
           "priority": {
             "anyOf": [

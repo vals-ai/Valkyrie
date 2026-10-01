@@ -75,6 +75,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    multi_turn: bool = Field(default=False, strict=True)
     priority: int | None = Field(default=None, strict=True, ge=0, le=4)
     label: str | None = None
     task_ids: list[str] | None = None
@@ -222,6 +223,7 @@ class _BenchmarkArguments(ResponseModel):
     """Arguments retained with a completed run."""
 
     contract: AgentContractRequest
+    multi_turn: bool = False
     concurrency: int
     task_ids: list[str] | None = None
     slice_str: str | None = None

@@ -526,6 +526,8 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest, object_store
         raise HTTPException(status_code=404, detail=f"Agent '{request.contract.name}' not found") from error
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
+    if request.multi_turn and resolved.conversation is None:
+        raise HTTPException(400, "multi_turn requires an agent supporting valkyrie.conversation.v1")
     if request.contract.secrets:
         resolved.secrets = {**resolved.secrets, **request.contract.secrets}
     # Kwargs were validated against the bundle's schema and rendered its command.

@@ -317,6 +317,7 @@ class TrackerService:
         provider: str | None = None,
         webhook_secret_name: str | None = None,
         webhook_intervals: list[int] | None = None,
+        multi_turn: bool = False,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -347,6 +348,7 @@ class TrackerService:
                 contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
+                multi_turn=multi_turn,
                 priority=priority,
                 label=label,
                 task_ids=task_ids,
@@ -367,7 +369,7 @@ class TrackerService:
                 webhook_intervals=webhook_intervals,
             )
 
-            body = payload.model_dump(exclude={"environment"})
+            body = payload.model_dump(exclude={"environment"} | ({"multi_turn"} if not multi_turn else set()))
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
 

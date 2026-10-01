@@ -18,6 +18,7 @@ async def start(
     *,
     model: str | None = None,
     concurrency: int = 5,
+    multi_turn: bool = False,
     priority: int | None = None,
     properties: AWSResources | None = None,
     managed_s3_bucket: str | None = None,
@@ -52,6 +53,10 @@ async def start(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"concurrency"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · int · default: <code>{"5"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"multi_turn"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

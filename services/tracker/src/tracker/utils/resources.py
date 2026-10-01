@@ -42,11 +42,16 @@ def create_benchmark_service_client(
     url: str,
     service_headers: dict[str, str] | None = None,
     dataset_version: DatasetVersion | None = None,
+    multi_turn: bool = False,
 ) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient with benchmark-service headers."""
     url = validate_service_url_syntax(url)
     headers = dict(service_headers or {})
     validate_service_headers(headers)
+    if any(key.lower() == "x-valkyrie-conversation" for key in headers):
+        raise ValueError("Use the multi_turn run option, not a conversation service header")
+    if multi_turn:
+        headers["x-valkyrie-conversation"] = "valkyrie.conversation.v1"
 
     return BenchmarkServiceClient(
         url=url, headers=headers, dataset_version=dataset_version.id if dataset_version is not None else None
@@ -81,6 +86,7 @@ def start_benchmark_request_to_benchmark(
                 "properties": request.properties,
                 "contract": request.contract,
                 "concurrency": request.concurrency,
+                "multi_turn": request.multi_turn,
                 "priority": request.priority,
                 "queue_pool_id": queue_pool_id,
                 "task_ids": request.task_ids,

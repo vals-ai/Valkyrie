@@ -174,6 +174,12 @@ def resolve_webhook_config(
     help="Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
 @click.option(
+    "--multi-turn",
+    is_flag=True,
+    default=False,
+    help="Opt in to user simulation during task evaluation; requires a conversation-capable agent and service.",
+)
+@click.option(
     "--agent",
     type=str,
     required=True,
@@ -334,6 +340,7 @@ def start(
     ignore_custom_services: bool,
     connect: bool,
     count: int,
+    multi_turn: bool = False,
 ) -> None:
     """
     Run an agent on a benchmark.
@@ -424,6 +431,7 @@ def start(
                         provider=provider,
                         webhook_secret_name=webhook_secret if webhook_intervals else None,
                         webhook_intervals=webhook_intervals,
+                        **({"multi_turn": True} if multi_turn else {}),
                     )
                 except TrackerServiceError as error:
                     click.echo("\r\033[K", nl=False)

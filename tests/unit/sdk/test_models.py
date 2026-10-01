@@ -171,7 +171,11 @@ def test_harness_config_serializes_expected_shape() -> None:
 
 def test_start_request_matches_canonical_wire_shape() -> None:
     payload = load_fixture("start.json")["request"]
-    assert StartBenchmarkRequest.model_validate(payload).model_dump(mode="json") == payload
+    model = StartBenchmarkRequest.model_validate(payload)
+    assert model.multi_turn is False
+    assert model.contract.conversation is None
+    # Additive defaults do not alter any field in the pre-multi-turn request.
+    assert model.model_dump(mode="json", exclude={"multi_turn": True, "contract": {"conversation"}}) == payload
 
 
 def test_nested_response_models_ignore_additive_fields() -> None:

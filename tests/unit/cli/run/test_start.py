@@ -31,6 +31,16 @@ _STARTED_AT = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
 _UNKNOWN_OUTCOME = "outcome may be unknown"
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_multi_turn_is_explicit_run_flag(start_testbed, enabled):
+    result = start_testbed.invoke(["--multi-turn"] if enabled else [])
+    assert result.exit_code == 0, result.output
+    kwargs = start_testbed.tracker.start_benchmark.call_args.kwargs
+    assert kwargs.get("multi_turn", False) is enabled
+    if not enabled:
+        assert "multi_turn" not in kwargs
+
+
 def _start_response(run_id: UUID) -> httpx.Response:
     return httpx.Response(
         200,

@@ -624,6 +624,7 @@ Start a run.
 
 ```bash Syntax
 valkyrie run start \
+  [--multi-turn] \
   --agent <TEXT> \
   [--model <TEXT>] \
   --benchmark <TEXT> \
@@ -655,6 +656,11 @@ valkyrie run start \
 ```
 
 **Options**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--multi-turn"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · <code>{"boolean"}</code> · default: <code>{"False"}</code></span></div>
+  <p className="mb-0 mt-1">{"Opt in to user simulation during task evaluation; requires a conversation-capable agent and service."}</p>
+</div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"--agent"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · <code>{"text"}</code></span></div>

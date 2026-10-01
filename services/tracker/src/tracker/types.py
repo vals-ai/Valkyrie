@@ -90,6 +90,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    multi_turn: bool = Field(default=False, strict=True)
     priority: int | None = Field(default=None, strict=True, ge=0, le=4)
     label: str | None = None
     task_ids: list[str] | None = None
@@ -146,6 +147,7 @@ class StartBenchmarkRequest(BaseModel):
         return create_benchmark_service_client(
             url=benchmark_service_url,
             service_headers=self.service_headers,
+            multi_turn=self.multi_turn,
         )
 
 
@@ -163,6 +165,7 @@ class RunExecutionRequest(StartBenchmarkRequest):
             url=benchmark_service_url,
             service_headers=self.service_headers,
             dataset_version=self.resolved_dataset_version,
+            multi_turn=self.multi_turn,
         )
 
 

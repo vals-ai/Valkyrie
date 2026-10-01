@@ -42,6 +42,23 @@ def load_sdk_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_multi_turn_run_payload(make_client, enabled):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
+
+    async with make_client(handler) as client:
+        await client.runs.start("agent", "valsmith", multi_turn=enabled)
+    payload = json.loads(requests[0].content)
+    assert payload.get("multi_turn", False) is enabled
+    if not enabled:
+        assert "multi_turn" not in payload
+
+
 def test_config_loads_nested_yaml_and_builds_headers(tmp_path: Path) -> None:
     config_path = tmp_path / "valkyrie.yaml"
     config_path.write_text(

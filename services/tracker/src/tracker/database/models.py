@@ -214,6 +214,7 @@ class _BenchmarkArguments(BaseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    multi_turn: bool = PydanticField(default=False, strict=True)
     priority: int | None = PydanticField(default=None, exclude=True, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
@@ -448,6 +449,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
             priority=self.arguments.priority,
+            multi_turn=self.arguments.multi_turn,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
@@ -488,6 +490,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
             label=self.label,
+            multi_turn=self.arguments.multi_turn,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
@@ -517,7 +520,10 @@ class Benchmark(SQLModel, table=True):
             else self.custom_benchmark_service or create_benchmark_service_url(self.name)
         )
         return create_benchmark_service_client(
-            url=url, service_headers=service_headers, dataset_version=self.arguments.dataset_version
+            url=url,
+            service_headers=service_headers,
+            dataset_version=self.arguments.dataset_version,
+            multi_turn=self.arguments.multi_turn,
         )
 
     @property

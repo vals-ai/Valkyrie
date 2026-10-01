@@ -897,6 +897,8 @@ async def _process_task_attempt(
 
     try:
         evaluation_resume_state = task_row.eval_resume_state
+        if start_benchmark_request.multi_turn and start_benchmark_request.contract.conversation is None:
+            raise ValueError("multi_turn requires an agent supporting valkyrie.conversation.v1")
         if task_row.status == TaskStatus.EVALUATING and evaluation_resume_state is not None:
             evaluation_lock = task_evaluation_lock(engine, task_row.id)
             evaluation_lock_acquired = await evaluation_lock.__aenter__()
@@ -1201,6 +1203,7 @@ async def _process_task_attempt(
 
                 if not unrestricted_docker:
                     await apply_egress_policy(agent_sandbox, run_egress_policy)
+
                 async def run_one_turn(timeout: float | None) -> tuple[AgentCausedExitReason | None, float]:
                     return await run_agent(
                         agent_sandbox,
@@ -1216,7 +1219,9 @@ async def _process_task_attempt(
                         execution_is_current=execution_is_current,
                     )
 
-                conversation = start_benchmark_request.contract.conversation
+                conversation = (
+                    start_benchmark_request.contract.conversation if start_benchmark_request.multi_turn else None
+                )
                 if conversation is None:
                     exit_reason, agent_run_time = await run_one_turn(task_data.agent_timeout)
                 else:
@@ -1226,20 +1231,25 @@ async def _process_task_attempt(
                         return await companion_turn(benchmark_service, payload)
 
                     if task_data.agent_timeout is not None:
-                        conversation = conversation.model_copy(update={
-                            "timeout_seconds": min(conversation.timeout_seconds, task_data.agent_timeout),
-                        })
+                        conversation = conversation.model_copy(
+                            update={
+                                "timeout_seconds": min(conversation.timeout_seconds, task_data.agent_timeout),
+                            }
+                        )
                     exit_reason, agent_run_time = await run_conversation(
-                        sandbox=agent_sandbox, config=conversation,
+                        sandbox=agent_sandbox,
+                        config=conversation,
                         problem_path=task_data.problem_path,
                         context={
-                            "run_id": str(benchmark_id), "task_id": task_row.task_id,
+                            "run_id": str(benchmark_id),
+                            "task_id": task_row.task_id,
                             "dataset": start_benchmark_request.dataset,
                             "sandbox_id": sandbox.id,
                         },
                         store=object_store,
                         artifact_prefix=task_artifact_key(str(benchmark_id), task_id, "conversation"),
-                        next_user=next_user, agent_turn=run_one_turn,
+                        next_user=next_user,
+                        agent_turn=run_one_turn,
                         execution_is_current=execution_is_current,
                     )
                 logger.info(

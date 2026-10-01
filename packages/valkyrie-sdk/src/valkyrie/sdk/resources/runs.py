@@ -85,6 +85,7 @@ class RunsResource:
         *,
         model: str | None = None,
         concurrency: int = 5,
+        multi_turn: bool = False,
         priority: int | None = None,
         properties: AWSResources | None = None,
         managed_s3_bucket: str | None = None,
@@ -132,6 +133,7 @@ class RunsResource:
             contract=contract,
             benchmark_name=benchmark,
             concurrency=concurrency,
+            multi_turn=multi_turn,
             priority=priority,
             properties=properties,
             managed_s3_bucket=managed_s3_bucket,
@@ -160,6 +162,7 @@ class RunsResource:
                 json=payload.model_dump(
                     mode="json",
                     exclude={"environment"}
+                    | ({"multi_turn"} if not multi_turn else set[str]())
                     | ({"sandbox_provider"} if provider_name is None else set[str]())
                     | {
                         name
