@@ -41,7 +41,7 @@ from tracker.database.session import get_session
 class TestSingleBenchmark:
     """Single benchmark responses and missing runs."""
 
-    @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer session-token"}])
+    @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer session-token"}, {"X-Descope-Api-Key": "fake"}])
     def test_read_requires_api_key(self, client: TestClient, headers: dict[str, str]) -> None:
         response = client.get(f"/benchmarks/{uuid4()}", headers=headers)
 
