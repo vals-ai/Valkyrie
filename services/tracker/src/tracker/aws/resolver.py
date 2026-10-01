@@ -1,5 +1,3 @@
-"""Resolve deployment-managed AWS authority."""
-
 from collections import OrderedDict
 from time import monotonic
 from uuid import UUID
@@ -36,7 +34,6 @@ class ManagedAWSConfigurationError(ManagedAWSError):
 
 
 def _reject_harness_headers(request: Request) -> None:
-    """Require application requests to use server-owned AWS authority."""
     if any(key.startswith(_HARNESS_HEADER_PREFIX) for key in request.headers):
         raise HTTPException(
             status_code=400,
@@ -107,7 +104,6 @@ def organization_can_use_managed_aws(org_id: UUID) -> bool:
 
 
 def _deployment_sandbox_provider() -> tuple[str, str]:
-    """Return the deployment's default sandbox provider and its secret name."""
     if not config.AWS_DEPLOYMENT_SANDBOX_PROVIDER or not config.AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME:
         raise ManagedAWSConfigurationError(
             "Managed AWS configuration is missing AWS_DEPLOYMENT_SANDBOX_PROVIDER or "
@@ -117,7 +113,6 @@ def _deployment_sandbox_provider() -> tuple[str, str]:
 
 
 def resolve_managed_sandbox_provider(request: StartBenchmarkRequest) -> StartBenchmarkRequest:
-    """Fill deployment sandbox-provider defaults omitted by a managed submission."""
     if request.sandbox_provider_secret_name:
         return request
     try:
@@ -162,7 +157,6 @@ def _http_deployment_runtime(org_id: UUID, properties: AWSResources | None = Non
 
 
 def _deployment_runtime_with_submission_properties(org_id: UUID, properties: AWSResources | None) -> AWSRuntime:
-    """Build the deployment runtime, rejecting properties that differ from it."""
     runtime = _http_deployment_runtime(org_id)
     if properties is not None and properties != runtime.resources:
         raise HTTPException(status_code=400, detail="Managed run properties must match the deployment AWS resources")
@@ -174,7 +168,6 @@ def resolve_start_aws_runtime(
     org_id: UUID,
     properties: AWSResources | None = None,
 ) -> AWSRuntime:
-    """Resolve deployment AWS authority for a new run."""
     _reject_harness_headers(request)
     if not config.AWS_MANAGED_SUBMISSIONS_ENABLED:
         raise HTTPException(
@@ -192,7 +185,6 @@ def resolve_run_aws_runtime(
     org_id: UUID,
     properties: AWSResources | None = None,
 ) -> AWSRuntime:
-    """Resolve deployment AWS authority for an existing run."""
     _reject_harness_headers(request)
     if not aws_managed:
         raise HTTPException(
@@ -209,7 +201,6 @@ def resolve_run_metadata_aws_runtime(
     org_id: UUID,
     properties: AWSResources | None = None,
 ) -> AWSRuntime | None:
-    """Resolve deployment AWS authority for metadata links on an existing run."""
     if not aws_managed:
         return None
     _reject_harness_headers(request)
@@ -289,7 +280,6 @@ def resolve_agent_library_aws_runtime(
     request: Request,
     org_id: UUID,
 ) -> AWSRuntime:
-    """Resolve agent-library operations to deployment AWS authority."""
     _reject_harness_headers(request)
     return _http_deployment_runtime(org_id)
 

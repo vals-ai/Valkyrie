@@ -176,6 +176,26 @@ class TrackerService:
         auth = config.get("benchmark_auth") or {}
         return auth.get(benchmark_name)
 
+    @staticmethod
+    def _resolve_sandbox_provider(sdk_config: ValkyrieConfig, provider: str | None) -> tuple[str | None, str | None]:
+        try:
+            name, secret = sdk_config.resolve_sandbox_provider(provider)
+        except ValkyrieConfigError as error:
+            raise TrackerServiceError(str(error)) from error
+        return name, secret
+
+    @classmethod
+    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str | None, str | None]:
+        """Validate the selected sandbox provider before starting a run."""
+        try:
+            config = ValkyrieConfig.from_yaml(config_location())
+        except ValkyrieConfigError as error:
+            raise TrackerServiceError(str(error)) from error
+        return cls._resolve_sandbox_provider(config, provider)
+
+    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str | None, str | None]:
+        return self._resolve_sandbox_provider(self._sdk_config, provider)
+
     def health_check(self) -> Response:
         """
         Check tracker service health.
@@ -300,6 +320,7 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
+            provider_name, provider_secret_name = self.resolve_sandbox_provider(provider)
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -315,13 +336,18 @@ class TrackerService:
                 if not ignore_custom_services
                 else None,
                 service_headers=service_headers or {},
-                sandbox_provider=provider,
+                sandbox_provider=provider_name,
+                sandbox_provider_secret_name=provider_secret_name,
             )
 
             body = payload.model_dump(
                 mode="json",
-                exclude={"environment", "sandbox_provider_secret_name"}
-                | ({"sandbox_provider"} if provider is None else set[str]()),
+                exclude={"environment"}
+                | {
+                    name
+                    for name in ("sandbox_provider", "sandbox_provider_secret_name")
+                    if getattr(payload, name) is None
+                },
             )
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)

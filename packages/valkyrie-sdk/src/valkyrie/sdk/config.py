@@ -17,38 +17,14 @@ TRACKER_URLS: dict[str, str] = {
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
 
 
-class AWSConfig(BaseModel):
-    """AWS resources used by local operations."""
-
-    model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
-
-    aws_default_region: str = Field(alias="AWS_DEFAULT_REGION")
-    s3_bucket: str = Field(alias="S3_BUCKET")
-    log_group: str = Field(default="benchmarks", alias="LOG_GROUP")
-    log_retention_policy: int = Field(default=365, alias="LOG_RETENTION_POLICY", gt=0)
-
-    @field_validator(
-        "aws_default_region",
-        "s3_bucket",
-        "log_group",
-    )
-    @classmethod
-    def reject_blank_required_values(cls, value: str) -> str:
-        """Reject blank required values."""
-        if not value.strip():
-            raise ValueError("must not be blank")
-        return value
-
-
 class ValkyrieConfig(BaseModel):
-    """Validated SDK configuration for API-key-authenticated runs."""
-
     model_config = ConfigDict(populate_by_name=True, extra="forbid", hide_input_in_errors=True)
 
     environment: Literal["bench", "prod", "dev"] = "bench"
     tracker_url_override: str | None = Field(default=None, alias="tracker_url")
     api_key: SecretStr | None = Field(default=None, repr=False)
-    aws: AWSConfig | None = None
+    sandbox_providers: dict[str, str] = Field(default_factory=dict, repr=False)
+    default_sandbox_provider: str | None = None
     custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
     benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
 
@@ -88,8 +64,18 @@ class ValkyrieConfig(BaseModel):
         except ValidationError as exc:
             raise ValkyrieConfigError(f"Invalid Valkyrie config at {config_path}: {exc}") from exc
 
+    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str | None, str | None]:
+        """Resolve the selected sandbox provider and secret name."""
+        if not self.sandbox_providers:
+            return provider or self.default_sandbox_provider, None
+        provider_name = provider or self.default_sandbox_provider or next(iter(self.sandbox_providers))
+        secret_name = self.sandbox_providers.get(provider_name)
+        if secret_name is None:
+            configured = ", ".join(self.sandbox_providers)
+            raise ValkyrieConfigError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
+        return provider_name, secret_name
+
     def request_headers(self) -> dict[str, str]:
-        """Build the API-key header for tracker requests."""
         headers: dict[str, str] = {}
         if self.api_key and (api_key := self.api_key.get_secret_value()):
             headers["X-Api-Key"] = api_key

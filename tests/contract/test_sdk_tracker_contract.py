@@ -1,10 +1,3 @@
-"""SDK and Tracker wire-contract tests.
-
-Run: uv run pytest tests/contract/test_sdk_tracker_contract.py
-
-Covers canonical payloads, authenticated request contracts, and route schemas.
-"""
-
 from __future__ import annotations
 
 import json

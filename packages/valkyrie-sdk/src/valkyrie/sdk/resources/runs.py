@@ -114,6 +114,7 @@ class RunsResource:
         contract = self._normalize_contract(agent, model=model, agent_kwargs=agent_kwargs, secrets=secrets)
         effective_service_headers = self._service_headers(benchmark, service_headers)
 
+        provider_name, provider_secret_name = self._sdk.config.resolve_sandbox_provider(provider)
         payload = StartBenchmarkRequest(
             contract=contract,
             benchmark_name=benchmark,
@@ -131,7 +132,8 @@ class RunsResource:
                 None if ignore_custom_services else self._sdk.config.custom_benchmark_services.get(benchmark)
             ),
             service_headers=effective_service_headers,
-            sandbox_provider=provider,
+            sandbox_provider=provider_name,
+            sandbox_provider_secret_name=provider_secret_name,
         )
         try:
             response = await self._sdk.request_model(

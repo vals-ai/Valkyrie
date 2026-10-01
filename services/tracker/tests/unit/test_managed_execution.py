@@ -1,8 +1,3 @@
-"""Tests for managed executor inputs and retired access-key rejection.
-
-Run: uv run pytest tests/unit/test_managed_execution.py
-"""
-
 import json
 from dataclasses import replace
 from typing import Any, cast
@@ -101,7 +96,6 @@ def _persist_benchmark(
 
 
 def _persist_access_key_benchmark(session: Session, contract: AgentContractRequest) -> Benchmark:
-    """Persist a pre-migration run row stored with access-key execution."""
     benchmark = Benchmark(
         org_id=TEST_ORG_ID,
         name="test-benchmark",

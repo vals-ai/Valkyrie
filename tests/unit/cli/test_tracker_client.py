@@ -13,6 +13,7 @@ from importlib import import_module
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -217,14 +218,7 @@ def connect_stream_testbed(
 
 
 def _write_valkyrie_config(config_path: Path, **overrides: object) -> Path:
-    config: dict[str, object] = {
-        "aws": {
-            "AWS_DEFAULT_REGION": "us-east-1",
-            "S3_BUCKET": "bucket",
-            "LOG_GROUP": "benchmarks",
-            "LOG_RETENTION_POLICY": 365,
-        },
-    }
+    config: dict[str, object] = {}
     for key, value in overrides.items():
         if value is None:
             config.pop(key, None)
@@ -667,20 +661,20 @@ def test_retry_or_resume_sends_retry_mode(
     assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0, "update_agent": False}
 
 
-@pytest.mark.parametrize("aws", [None, {"AWS_DEFAULT_REGION": "us-east-1", "S3_BUCKET": "bucket"}])
 @pytest.mark.parametrize("ignore_custom_services", [False, True])
+@pytest.mark.parametrize("default_provider", [None, "modal"])
 def test_start_benchmark_sends_application_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    aws: dict[str, str] | None,
     ignore_custom_services: bool,
+    default_provider: str | None,
 ) -> None:
-    """Run submission sends application identity and lets the server resolve its runtime."""
     config_path = _write_valkyrie_config(
         tmp_path / "valkyrie.yaml",
-        aws=aws,
         api_key="vals-key",
         custom_benchmark_services={"swebench": "https://bench.example.test"},
+        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"} if default_provider else {},
+        default_sandbox_provider=default_provider,
     )
     requests: list[httpx.Request] = []
 
@@ -719,8 +713,12 @@ def test_start_benchmark_sends_application_identity(
 
     assert body["custom_benchmark_service"] == (None if ignore_custom_services else "https://bench.example.test")
     assert "harness_config" not in body
-    assert "sandbox_provider" not in body
-    assert "sandbox_provider_secret_name" not in body
+    if default_provider:
+        assert body["sandbox_provider"] == "modal"
+        assert body["sandbox_provider_secret_name"] == "ModalSecrets"
+    else:
+        assert "sandbox_provider" not in body
+        assert "sandbox_provider_secret_name" not in body
 
 
 def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
@@ -798,6 +796,47 @@ def test_run_start_provider_option_reaches_tracker(
     start_kwargs = mock_tracker_service.start_calls[-1]["kwargs"]
     assert isinstance(start_kwargs, dict)
     assert start_kwargs["provider"] == "modal"
+
+
+def test_run_start_rejects_unknown_provider_before_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner
+) -> None:
+    _write_valkyrie_config(tmp_path / "valkyrie.yaml", sandbox_providers={"daytona": "DaytonaSecrets"})
+    agent_path = tmp_path / "agent"
+    agent_path.mkdir()
+    upload = AsyncMock(return_value=True)
+    monkeypatch.setattr(run_start, "push_agent_if_absent", upload)
+
+    result = cli_runner.invoke(
+        cli_main.cli,
+        ["run", "start", "--agent", str(agent_path), "--benchmark", "swebench", "--provider", "unknown"],
+    )
+
+    assert result.exit_code == 1
+    assert "Unknown sandbox provider 'unknown'" in result.output
+    upload.assert_not_awaited()
+
+
+@pytest.mark.parametrize("broken_config", ["missing", "invalid"])
+def test_run_start_reports_config_errors_before_upload(
+    broken_config: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner
+) -> None:
+    path = tmp_path / "valkyrie.yaml"
+    if broken_config == "missing":
+        path.unlink()
+    else:
+        path.write_text("[]\n")
+    agent_path = tmp_path / "agent"
+    agent_path.mkdir()
+    upload = AsyncMock(return_value=True)
+    monkeypatch.setattr(run_start, "push_agent_if_absent", upload)
+
+    result = cli_runner.invoke(cli_main.cli, ["run", "start", "--agent", str(agent_path), "--benchmark", "swebench"])
+
+    assert result.exit_code == 1
+    assert "Error:" in result.output
+    assert str(path) in result.output
+    upload.assert_not_awaited()
 
 
 def test_run_start_sends_configured_service_auth_and_cli_headers(

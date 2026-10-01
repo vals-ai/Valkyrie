@@ -69,7 +69,7 @@ from tracker.database.models import (
 )
 from tracker.config import STABLE_QUEUE_NAME
 from tracker.exceptions import TrackerServiceError
-from tracker.identity_provider import IdentityProvider, UserProfile
+from descope.descope_client import DescopeClient
 from tracker.runtime.artifacts import copy_agent_to_benchmark as copy_agent_artifact_to_benchmark
 from tracker.types import (
     BenchmarkTableRow,
@@ -1070,7 +1070,6 @@ class TestTrackerAPI:
         database_session: Session,
         mock_kicker: Any,
     ) -> None:
-        """A managed submission without provider fields persists the deployment defaults."""
         monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", True)
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
@@ -1250,7 +1249,6 @@ class TestTrackerAPI:
         mock_kicker: Any,
         database_session: Session,
     ) -> None:
-        """Caller-supplied AWS credential headers are rejected."""
         monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", False)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
@@ -1878,7 +1876,6 @@ class TestTrackerAPI:
         database_session: Session,
         mock_kicker: Any,
     ) -> None:
-        """An explicitly selected provider and secret are stored and queued verbatim."""
         request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
@@ -2830,7 +2827,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
 
-        mock_client = MagicMock(spec=IdentityProvider)
+        mock_client = MagicMock(spec=DescopeClient)
         mock_client.exchange_access_key.return_value = {
             "tenants": {"test-tenant": {}},
             "keyId": "K2abc",
@@ -2841,7 +2838,7 @@ class TestTrackerAPI:
                 "name": "Alice",
             },
         }
-        monkeypatch.setattr("tracker.auth._identity_provider", mock_client)
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
 
         response = client.post("/init", headers={"X-Api-Key": "valid-key"})
         assert response.status_code == 200
@@ -2856,7 +2853,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
 
-        mock_client = MagicMock(spec=IdentityProvider)
+        mock_client = MagicMock(spec=DescopeClient)
         mock_client.exchange_access_key.return_value = {
             "tenants": {"test-tenant": {}},
             "keyId": "K2abc",
@@ -2865,7 +2862,7 @@ class TestTrackerAPI:
                 "tenants": {"test-tenant": {}},
             },
         }
-        monkeypatch.setattr("tracker.auth._identity_provider", mock_client)
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
 
         response = client.post("/init", headers={"X-Api-Key": "valid-key"})
         assert response.status_code == 200
@@ -2878,7 +2875,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
 
-        mock_client = MagicMock(spec=IdentityProvider)
+        mock_client = MagicMock(spec=DescopeClient)
         mock_client.exchange_access_key.return_value = {
             "tenants": {"test-tenant": {}},
             "keyId": "K2abc",
@@ -2888,13 +2885,13 @@ class TestTrackerAPI:
                 "customClaims": {"user_id": "U2abc"},
             },
         }
-        mock_client.load_user_profile.return_value = UserProfile(email="alice@vals.ai", name="Alice")
-        monkeypatch.setattr("tracker.auth._identity_provider", mock_client)
+        mock_client.mgmt.user.load_by_user_id.return_value = {"user": {"email": "alice@vals.ai", "name": "Alice"}}
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
 
         response = client.post("/init", headers={"X-Api-Key": "valid-key"})
         assert response.status_code == 200
         assert not response.json()["email_claim_missing"]
-        mock_client.load_user_profile.assert_called_once_with("U2abc")
+        mock_client.mgmt.user.load_by_user_id.assert_called_once_with("U2abc")
 
     async def test_fetch_benchmarks_includes_started_by_email(
         self,

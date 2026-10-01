@@ -71,7 +71,6 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def managed_deployment_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Give managed-execution tests an eligible deployment configuration."""
     for key, value in {
         "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
         "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),

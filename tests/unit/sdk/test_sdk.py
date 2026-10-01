@@ -15,11 +15,10 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from tests.unit.sdk.conftest import ClientFactory, ConfigValuesFactory, SDKConfigFactory
+from tests.unit.sdk.conftest import ClientFactory, SDKConfigFactory
 from valkyrie.sdk.models import AWSResources
 
 from valkyrie.sdk import (
-    AWSConfig,
     AgentContractRequest,
     FetchBenchmarksRequest,
     FinalViewResponse,
@@ -42,17 +41,17 @@ def load_sdk_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def test_config_loads_resources_without_forwarding_them(tmp_path: Path) -> None:
+def test_config_loads_api_key_and_provider_defaults(tmp_path: Path) -> None:
     config_path = tmp_path / "valkyrie.yaml"
     config_path.write_text(
-        "api_key: vals-key\naws:\n  AWS_DEFAULT_REGION: us-west-2\n  S3_BUCKET: runs-bucket\n", encoding="utf-8"
+        "api_key: vals-key\nsandbox_providers:\n  modal: ModalSecrets\ndefault_sandbox_provider: modal\n",
+        encoding="utf-8",
     )
 
     config = ValkyrieConfig.from_yaml(config_path)
 
     assert config.request_headers() == {"X-Api-Key": "vals-key"}
-    assert config.aws is not None
-    assert config.aws.s3_bucket == "runs-bucket"
+    assert config.resolve_sandbox_provider() == ("modal", "ModalSecrets")
 
 
 def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_config) -> None:
@@ -62,9 +61,6 @@ def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pyt
         """
 environment: prod
 api_key: vals-key
-aws:
-  AWS_DEFAULT_REGION: us-west-2
-  S3_BUCKET: runs-bucket
 """.strip(),
         encoding="utf-8",
     )
@@ -92,18 +88,47 @@ def test_config_omits_absent_api_key(sdk_config: SDKConfigFactory) -> None:
     assert sdk_config(api_key=None).request_headers() == {}
 
 
+@pytest.mark.parametrize(
+    ("providers", "default", "selected", "expected"),
+    [
+        ({"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}, "modal", "daytona", ("daytona", "DaytonaSecrets")),
+        ({"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}, "modal", None, ("modal", "ModalSecrets")),
+        ({"modal": "ModalSecrets", "daytona": "DaytonaSecrets"}, None, None, ("modal", "ModalSecrets")),
+        ({}, None, None, (None, None)),
+    ],
+)
+async def test_start_preserves_provider_selection(
+    providers: dict[str, str],
+    default: str | None,
+    selected: str | None,
+    expected: tuple[str | None, str | None],
+    sdk_config: SDKConfigFactory,
+) -> None:
+    config = sdk_config(sandbox_providers=providers, default_sandbox_provider=default)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.content)
+        assert request.url.path == "/start-benchmark"
+        assert request.headers["X-Api-Key"] == "vals-key"
+        assert payload.get("sandbox_provider") == expected[0]
+        assert payload.get("sandbox_provider_secret_name") == expected[1]
+        assert "harness_config" not in payload
+        assert "properties" not in payload
+        return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
+
+    async with ValkyrieClient(config, transport=httpx.MockTransport(handler)) as client:
+        await client.runs.start("agent", "test", provider=selected)
+        if providers:
+            with pytest.raises(ValkyrieConfigError, match="Unknown sandbox provider"):
+                await client.runs.start("agent", "test", provider="unknown")
+
+    assert len(requests) == 1
+
+
 def test_run_error_is_a_public_sdk_error() -> None:
     assert issubclass(ValkyrieRunError, ValkyrieSDKError)
-
-
-def test_config_rejects_incomplete_resources(config_values: ConfigValuesFactory) -> None:
-    values = config_values(aws={"AWS_DEFAULT_REGION": "us-west-2"})
-    with pytest.raises(ValidationError, match="S3_BUCKET"):
-        ValkyrieConfig.model_validate(values)
-
-    values = config_values(aws={"AWS_DEFAULT_REGION": "us-west-2", "S3_BUCKET": "runs", "LOG_GROUP": " "})
-    with pytest.raises(ValidationError, match="LOG_GROUP"):
-        ValkyrieConfig.model_validate(values)
 
 
 @pytest.mark.parametrize(
@@ -114,8 +139,11 @@ def test_config_rejects_incomplete_resources(config_values: ConfigValuesFactory)
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
         "DAYTONA_SECRET_NAME",
-        "sandbox_providers",
-        "default_sandbox_provider",
+        "aws",
+        "AWS_DEFAULT_REGION",
+        "S3_BUCKET",
+        "LOG_GROUP",
+        "LOG_RETENTION_POLICY",
     ],
 )
 def test_config_rejects_unsupported_fields(field: str, sdk_config: SDKConfigFactory) -> None:
@@ -124,16 +152,9 @@ def test_config_rejects_unsupported_fields(field: str, sdk_config: SDKConfigFact
 
 
 @pytest.mark.parametrize("field", ["S3_BUCKET", "s3_bucket", "AWS_DEFAULT_REGION", "aws_default_region"])
-def test_config_requires_nested_resources(field: str) -> None:
+def test_config_rejects_client_resource_fields(field: str) -> None:
     with pytest.raises(ValidationError, match=field):
         ValkyrieConfig.model_validate({field: "value"})
-
-
-def test_config_rejects_flat_keys_beside_typed_resources() -> None:
-    with pytest.raises(ValidationError, match="S3_BUCKET"):
-        ValkyrieConfig.model_validate(
-            {"aws": AWSConfig(AWS_DEFAULT_REGION="us-west-2", S3_BUCKET="runs"), "S3_BUCKET": "other"}
-        )
 
 
 def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
@@ -228,7 +249,6 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
 
 
 async def test_start_uses_api_key_without_local_resources(make_client, sdk_config) -> None:
-    """Hosted starts send the API key without local AWS resources."""
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -247,9 +267,7 @@ async def test_start_uses_api_key_without_local_resources(make_client, sdk_confi
             },
         )
 
-    config = sdk_config(
-        aws=None,
-    )
+    config = sdk_config()
     client = make_client(handler, config=config)
     async with client:
         await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
@@ -835,11 +853,8 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
 
 
 @pytest.mark.parametrize("provider", [None, "modal"])
-@pytest.mark.parametrize("aws", [None, AWSConfig(AWS_DEFAULT_REGION="us-west-2", S3_BUCKET="runs-bucket")])
-async def test_tracker_url_only_start_sends_configuration_without_credentials(
-    provider: str | None, aws: AWSConfig | None
-) -> None:
-    config = ValkyrieConfig(tracker_url="http://127.0.0.1:8765", aws=aws)
+async def test_tracker_url_only_start_sends_configuration_without_credentials(provider: str | None) -> None:
+    config = ValkyrieConfig(tracker_url="http://127.0.0.1:8765")
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)

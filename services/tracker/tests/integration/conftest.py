@@ -59,7 +59,6 @@ def daytona_secret_name() -> str:
 
 @pytest.fixture(scope="session")
 def live_aws_runtime() -> AWSRuntime:
-    """Resolve live resources while AWS authentication stays in the SDK default chain."""
     names = ("AWS_DEFAULT_REGION", "TEST_AWS_S3_BUCKET", "TEST_LOG_GROUP")
     settings = {name: os.getenv(name) for name in names}
     for name, value in settings.items():

@@ -308,15 +308,6 @@ async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) ->
 async def copy_agent_to_benchmark(
     benchmark_id: str, contract_name: str, runtime: AWSRuntime, *, org_id: UUID
 ) -> S3ObjectCopy | None:
-    """
-    Freeze the agent for a benchmark run by copying
-    agents/<org_id>/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
-
-    # NOTE: Skips if it already exists at that location
-
-    Returns:
-        The created object identity, or None when the destination already exists.
-    """
     source_key = get_contract_s3_key(contract_name, org_id)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
 
@@ -447,13 +438,6 @@ def create_benchmark_url(benchmark_id: str, resources: AWSResources) -> str:
 
 @handle_s3_error(message="Failed to list agents from S3")
 async def list_agents(runtime: AWSRuntime, *, org_id: UUID) -> list[tuple[str, datetime | None]]:
-    """List zipped agent bundles under the organization's prefix.
-
-    Returns (name, last_modified) pairs, one per `agents/<org_id>/<name>.zip`.
-
-    Raises:
-        S3Error: If listing fails due to AWS errors or network issues
-    """
     agents: list[tuple[str, datetime | None]] = []
     prefix = agent_library_prefix(org_id)
     async with runtime.clients.s3_client() as client:

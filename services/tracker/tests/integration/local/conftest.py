@@ -74,8 +74,7 @@ def local_app(
 
 @pytest.fixture
 def access_key_auth(local_app: FastAPI) -> Generator[None, None, None]:
-    """Accept any x-api-key as the default-tenant caller."""
-    with patch.object(auth_module, "_identity_provider") as mock_client:
+    with patch.object(auth_module, "_descope_client") as mock_client:
         mock_client.exchange_access_key.return_value = {
             "tenants": {"default": {}},
             "keyId": "K_caller",
@@ -89,7 +88,6 @@ def access_key_auth(local_app: FastAPI) -> Generator[None, None, None]:
 
 @pytest.fixture
 def access_key_client(access_key_auth: None, local_app: FastAPI) -> Generator[TestClient, None, None]:
-    """Use access-key authentication with the local tracker app."""
     with TestClient(local_app) as test_client:
         yield test_client
 

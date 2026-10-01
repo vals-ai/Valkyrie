@@ -40,7 +40,6 @@ def clear_managed_storage_validation_cache() -> None:
 
 @pytest.fixture
 def aws_runtime() -> AWSRuntime:
-    """Provide a deterministic default-chain runtime for non-live tests."""
     return AWSRuntime(
         resources=AWSResources(
             region="us-east-1",

@@ -1,8 +1,3 @@
-"""Artifact freezing and organization-scoped alias policy.
-
-Run: uv run pytest tests/unit/test_runtime_artifacts.py
-"""
-
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -119,8 +114,6 @@ async def test_list_agents_keeps_zip_bundles_and_last_modified_metadata() -> Non
 
 
 class TestTenantAgentFreeze:
-    """A frozen run reads only its owner's current alias and stays immutable."""
-
     async def test_freezes_each_tenants_alias_without_shared_fallback(self, tmp_path: Path) -> None:
         store = FilesystemObjectStore(tmp_path / "objects", tmp_path / "staging")
         orgs = (TEST_ORG_ID, UUID("00000000-0000-0000-0000-000000000002"))

@@ -12,15 +12,7 @@ from valkyrie.cli.runtime_config import (
 )
 from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.cli.config.state import ConfigValue, load_config, read_config_if_exists, write_config
-from valkyrie.sdk.config import AWSConfig, ValkyrieConfig
-
-
-_REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
-    "AWS_DEFAULT_REGION": None,  # What region your secrets are in
-    "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
-    "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
-    "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
-}
+from valkyrie.sdk.config import ValkyrieConfig
 
 
 def _rotate_matching_benchmark_auth(config: dict[str, Any], new_api_key: str) -> int:
@@ -64,19 +56,11 @@ def init() -> None:
         for name, field in ValkyrieConfig.model_fields.items()
         if (field.alias or name) in current_config or name in current_config
     }
-    if aws_config := current_config.get("aws"):
-        current_config["aws"] = {
-            field.alias or name: aws_config.get(field.alias or name, aws_config.get(name))
-            for name, field in AWSConfig.model_fields.items()
-            if (field.alias or name) in aws_config or name in aws_config
-        }
-
     mode = click.prompt(
         "Setup mode",
         type=click.Choice(["hosted", "self-hosted"]),
         default="self-hosted",
     )
-    environment_variables = _REQUIRED_ENVIRONMENT_VARIABLES
 
     if mode == "hosted":
         environment = click.prompt(
@@ -110,7 +94,6 @@ def init() -> None:
                 )
             )
 
-        environment_variables = {}
         if runtime.mode == "managed":
             click.echo(
                 "Managed AWS execution is enabled. Runs resolve AWS resources and the "
@@ -124,38 +107,11 @@ def init() -> None:
                     fg="yellow",
                 )
             )
-        config_keys = {field.alias or name for name, field in ValkyrieConfig.model_fields.items() if name != "aws"}
-        current_config = {key: value for key, value in current_config.items() if key in config_keys}
-
-    if environment_variables:
-        aws = current_config.setdefault("aws", {})
-        for key, default in environment_variables.items():
-            sourced = aws.get(key) or os.environ.get(key)
-            if sourced:
-                click.echo(f"  {key}: sourced from {'environment' if not aws.get(key) else 'existing config'}")
-                aws[key] = sourced
-                continue
-
-            if not default:
-                value = click.prompt(
-                    f"  {key} (required, Enter to cancel)",
-                    default="",
-                    show_default=False,
-                ).strip()
-
-                if not value:
-                    click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
-                    raise click.Abort()
-            else:
-                value = click.prompt(f"  {key}", default=str(default)).strip()
-
-            aws[key] = value
-
     if mode != "hosted":
         current_config.pop("api_key", None)
         current_config.pop(ENVIRONMENT_CONFIG_KEY, None)
 
-    write_config(current_config)
+    write_config(current_config, sort_keys=False)
 
     click.echo(click.style(f"\nConfig written to {config_path}", fg="green", bold=True))
 
@@ -167,7 +123,6 @@ def set(key: str, value: str) -> None:
     """
     Set a single key in the Valkyrie config.
 
-    Example: valkyrie config set AWS_DEFAULT_REGION us-west-2
     """
 
     current = load_config()
@@ -183,12 +138,9 @@ def set(key: str, value: str) -> None:
     if config_value is ConfigValue.API_KEY:
         rotated_benchmark_auth = _rotate_matching_benchmark_auth(current, value)
 
-    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
-        current.setdefault("aws", {})[config_value.value] = value
-    else:
-        current[config_value.value] = value
+    current[config_value.value] = value
 
-    write_config(current)
+    write_config(current, sort_keys=False)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
     if rotated_benchmark_auth:
@@ -202,7 +154,6 @@ def config_remove(key: str) -> None:
     """
     Remove a single key from the Valkyrie config.
 
-    Example: valkyrie config remove AWS_DEFAULT_REGION
     """
 
     current = load_config()
@@ -214,13 +165,8 @@ def config_remove(key: str) -> None:
             f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
         )
 
-    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
-        raise click.ClickException(
-            f"Key '{key}' is required and cannot be removed. Consider using `valkyrie config set` to update it."
-        )
-
     current.pop(config_value.value, None)
 
-    write_config(current)
+    write_config(current, sort_keys=False)
 
     click.echo(click.style(f"  {key} removed.", fg="green"))

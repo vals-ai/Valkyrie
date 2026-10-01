@@ -19,13 +19,11 @@ from tests.factories import make_benchmark
 
 @pytest.fixture
 def api_headers() -> dict[str, str]:
-    """Use application-key headers with the local app's overridden identity dependency."""
     return {"X-Api-Key": "test-api-key"}
 
 
 @pytest.fixture
 def live_deployment(live_aws_runtime: AWSRuntime, daytona_secret_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Configure the local tracker process for the live test account and resources."""
     resources = live_aws_runtime.resources
     for name, value in {
         "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
@@ -45,7 +43,6 @@ def live_deployment(live_aws_runtime: AWSRuntime, daytona_secret_name: str, monk
 def example_benchmark_object(
     contract: AgentContractRequest, live_aws_runtime: AWSRuntime, daytona_secret_name: str, live_deployment: None
 ) -> Benchmark:
-    """Provide a managed run using the configured live resources and provider."""
     benchmark = make_benchmark(contract=contract, concurrency=5)
     benchmark.aws_managed = True
     assert isinstance(benchmark.arguments, AWSBenchmarkArguments)
@@ -61,7 +58,6 @@ def live_api_client(
     live_deployment: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[TestClient, None, None]:
-    """Route the local API through managed live resources and default-chain AWS clients."""
 
     def get_test_session() -> Generator[Session, None, None]:
         yield tracker_database

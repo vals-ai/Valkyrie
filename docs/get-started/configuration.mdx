@@ -1,6 +1,6 @@
 ---
 title: Configure the CLI
-description: Manage Valkyrie API keys, endpoints, and local resource locations.
+description: Manage Valkyrie API keys, endpoints, and sandbox providers.
 ---
 
 The CLI stores configuration in `~/.config/valkyrie/valkyrie.yaml`. Every `config` command is in the [`valkyrie config` reference](/reference/cli/config).
@@ -12,18 +12,6 @@ valkyrie config init
 ```
 
 Hosted setup stores the selected environment and your Vals API key. The server resolves execution resources and sandbox-provider access. API-key entry is hidden at the prompt.
-
-For local commands that access S3 directly, configure resource locations and authenticate the local AWS SDK through its default credential chain:
-
-```yaml
-aws:
-  AWS_DEFAULT_REGION: us-east-1
-  S3_BUCKET: benchmark-artifacts
-  LOG_GROUP: benchmarks
-  LOG_RETENTION_POLICY: 365
-```
-
-Omit `aws` when the client needs no direct AWS operations. A local AWS SSO profile can be selected with `AWS_PROFILE`.
 
 ## Validate an existing configuration
 
@@ -41,9 +29,28 @@ valkyrie config remove <KEY>
 
 Use `config set api_key` only for the Vals API key used by hosted tracker authentication. Benchmark-service credentials use the separate [authentication commands](/benchmarks/authentication).
 
-## Sandbox providers
+## Configure sandbox providers
 
-The server supplies the default sandbox provider and its Secrets Manager entry. Select a supported provider for one run with `valkyrie run start --provider <name>`. See [sandbox providers](/get-started/sandbox-providers) for deployment configuration.
+Map a provider name to an AWS Secrets Manager secret:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+```
+
+The first configured provider becomes the default. Change it explicitly with:
+
+```bash
+valkyrie config provider default daytona
+```
+
+List or remove provider mappings with:
+
+```bash
+valkyrie config provider list
+valkyrie config provider remove <name>
+```
+
+Select another configured provider for one run with `valkyrie run start --provider <name>`. See [Configure sandbox providers](/get-started/sandbox-providers) for the Daytona secret shape.
 
 ## Environment variables
 

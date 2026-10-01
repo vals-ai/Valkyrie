@@ -62,7 +62,6 @@ async def _create_benchmark(
     task_ids: list[str] | None = None,
     concurrency: int = 5,
 ) -> tuple[Benchmark, RunExecutionRequest]:
-    """Create a managed benchmark and its persisted execution request."""
     request = StartBenchmarkRequest(
         benchmark_name=_BENCHMARK,
         contract=contract,

@@ -1,8 +1,3 @@
-"""Recover accepted managed starts without treating ordinary API failures as runs.
-
-Run: uv run pytest tests/unit/sdk/test_managed_start_errors.py
-"""
-
 from uuid import UUID
 
 import httpx

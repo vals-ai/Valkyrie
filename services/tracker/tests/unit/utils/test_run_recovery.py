@@ -1555,12 +1555,6 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
     ) -> None:
-        """Force stop should use the provider secret stored with the run.
-
-        Test cases:
-        - A modal run is force-stopped with its stored provider and secret.
-        - The stored provider and secret are used for the stored run.
-        """
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         benchmark_row.arguments = benchmark_row.arguments.model_copy(
@@ -3444,7 +3438,6 @@ def test_owner_recovery_rejects_caller_aws_headers(
     managed_recovery_run: Benchmark,
     database_session: Session,
 ) -> None:
-    """A caller-supplied AWS credential header is rejected before recovery mutates state."""
     benchmark = managed_recovery_run
     resources = replace(deployment_aws_runtime(benchmark.org_id).resources, s3_bucket="vs-dev-owner-42")
     benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})
@@ -3466,7 +3459,6 @@ def test_owner_recovery_updates_agent_from_the_deployment_library(
     database_session: Session,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Refresh a managed-storage run's bundle from the deployment library."""
     benchmark = managed_recovery_run
     resources = replace(deployment_aws_runtime(benchmark.org_id).resources, s3_bucket="vs-dev-owner-42")
     benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})

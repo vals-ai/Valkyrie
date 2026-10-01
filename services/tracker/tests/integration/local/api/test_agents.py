@@ -10,7 +10,6 @@ from pytest import MonkeyPatch, mark
 
 
 def test_agents_empty_when_bucket_empty(client: TestClient, monkeypatch: MonkeyPatch) -> None:
-    """Authenticated agent listing uses server-configured storage."""
     monkeypatch.setattr("tracker.api.agents.list_agents", AsyncMock(return_value=[]))
 
     response = client.get(

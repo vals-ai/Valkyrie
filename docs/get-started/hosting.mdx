@@ -15,7 +15,7 @@ valkyrie config init
 
 Choose `bench` or `prod` and enter your Vals API key. Setup validates the key and stores the selected environment. Execution uses server IAM and server-configured storage, logs, and sandbox-provider access. Contact [contact@vals.ai](mailto:contact@vals.ai) if the organization is not enabled for hosted execution.
 
-Commands that access S3 directly, such as `valkyrie agent download` and `valkyrie run analyze`, use [local resource settings](/get-started/configuration) and the local AWS SDK default credential chain. A local AWS SSO profile works through `AWS_PROFILE`.
+Agent uploads, downloads, and run analysis use the authenticated Tracker API.
 
 ## Self-hosted mode
 
@@ -28,6 +28,6 @@ export TRACKER_SERVICE_URL=https://your-tracker.example.com
 valkyrie config init
 ```
 
-Choose **self-hosted** to configure resource locations for local AWS operations. A Tracker with `AUTH_REQUIRED=false` assigns requests to its default organization. For authenticated deployments, configure an identity provider and a matching API key.
+Choose **self-hosted** to save client configuration for that Tracker. A Tracker with `AUTH_REQUIRED=false` assigns requests to its default organization. Authenticated deployments use Descope and an API key.
 
 Read the [infrastructure guide](/self-hosting/infrastructure) before deploying the included AWS CDK application.

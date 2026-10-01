@@ -21,12 +21,6 @@ def config_values() -> ConfigValuesFactory:
     def factory(**overrides: object) -> dict[str, object]:
         values: dict[str, object] = {
             "api_key": "vals-key",
-            "aws": {
-                "AWS_DEFAULT_REGION": "us-west-2",
-                "S3_BUCKET": "runs-bucket",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 30,
-            },
             "custom_benchmark_services": {"swebench": "https://local.swebench/"},
             "benchmark_auth": {"swebench": "benchmark-token"},
         }

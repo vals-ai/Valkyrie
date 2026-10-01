@@ -120,7 +120,6 @@ def test_aws_request_headers_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
     resolver: Any,
 ) -> None:
-    """Requests carrying client-supplied AWS credentials fail instead of selecting a credentialed runtime."""
     _configure_managed_runtime(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -148,7 +147,6 @@ def test_run_runtime_rejects_any_harness_header(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_run_runtime_rejects_access_key_runs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run operations require a saved deployment-managed runtime."""
     _configure_managed_runtime(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -198,7 +196,6 @@ def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.
 def test_saved_resources_survive_new_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Resume uses the saved region and locations with the deployment credential source."""
     _configure_managed_runtime(monkeypatch)
     original = resolve_run_aws_runtime(_request(), aws_managed=True, org_id=_ORG_ID)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "new-deployment-region")
@@ -217,7 +214,6 @@ def test_saved_resources_survive_new_defaults(
 
 
 def test_managed_start_cannot_override_deployment_resources(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resource properties cannot give managed callers a different deployment bucket."""
     from dataclasses import replace
 
     _configure_managed_runtime(monkeypatch)
@@ -316,7 +312,6 @@ def test_managed_execution_context_is_recursively_credential_free() -> None:
 
 
 def test_start_request_rejects_unsupported_fields() -> None:
-    """Start requests enforce the documented payload schema."""
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         StartBenchmarkRequest(
             contract=AgentContractRequest(name="agent", run_cmd="run"),
@@ -396,7 +391,6 @@ def _managed_start_request(**overrides: object) -> StartBenchmarkRequest:
 def test_managed_request_uses_deployment_sandbox_provider_default(
     monkeypatch: pytest.MonkeyPatch, sandbox_provider: str | None
 ) -> None:
-    """A managed request without a provider secret resolves the deployment default pair."""
     _configure_managed_runtime(monkeypatch)
     request = _managed_start_request(sandbox_provider=sandbox_provider)
 
@@ -407,7 +401,6 @@ def test_managed_request_uses_deployment_sandbox_provider_default(
 
 
 def test_managed_request_honors_explicit_provider_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An explicit provider and secret pair is not rewritten to the deployment default."""
     _configure_managed_runtime(monkeypatch)
     request = _managed_start_request(sandbox_provider="modal", sandbox_provider_secret_name="ModalSecrets")
 
@@ -418,7 +411,6 @@ def test_managed_request_honors_explicit_provider_secret(monkeypatch: pytest.Mon
 
 
 def test_managed_request_rejects_unknown_provider_without_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Naming a non-default provider without a secret fails instead of switching providers."""
     _configure_managed_runtime(monkeypatch)
     request = _managed_start_request(sandbox_provider="modal")
 
@@ -430,7 +422,6 @@ def test_managed_request_rejects_unknown_provider_without_secret(monkeypatch: py
 
 
 def test_managed_request_requires_deployment_sandbox_provider_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A deployment without provider defaults reports a configuration error, not a client error."""
     _configure_managed_runtime(monkeypatch)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", None)
     request = _managed_start_request()
@@ -443,7 +434,6 @@ def test_managed_request_requires_deployment_sandbox_provider_config(monkeypatch
 
 
 def test_managed_start_errors_do_not_direct_users_to_access_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hosted managed failures give supported recovery steps instead of AWS credential setup."""
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
     with pytest.raises(HTTPException) as error:
         resolve_start_aws_runtime(_request(), _ORG_ID)

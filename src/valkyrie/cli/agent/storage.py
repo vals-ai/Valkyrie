@@ -28,7 +28,6 @@ async def push_agent(agent_name: str | None, agent_path: Path) -> str:
 
 
 async def push_agent_if_absent(agent_name: str, agent_path: Path) -> bool:
-    """Atomically create an organization agent alias, returning False on a collision."""
     async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
         try:
             await client.agents.push(agent_path, name=agent_name, overwrite=False)
@@ -46,7 +45,6 @@ async def remove_agent(agent_name: str) -> None:
 
 
 async def list_agents() -> list[tuple[str, datetime | None]]:
-    """List the organization's agents through Tracker."""
     async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
         result = await client.agents.list()
 

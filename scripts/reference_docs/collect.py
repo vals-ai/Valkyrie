@@ -282,7 +282,7 @@ def _collect_model(model: type[BaseModel]) -> SDKModelReference:
         name=model.__name__,
         family=_family(model),
         slug=_type_slug(model.__name__),
-        description=_clean_docstring(inspect.getdoc(model)),
+        description=_clean_docstring(model.__doc__),
         fields=fields,
     )
 

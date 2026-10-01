@@ -11,10 +11,6 @@ from valkyrie.cli.runtime_config import config_location
 
 class ConfigValue(str, Enum):
     API_KEY = "api_key"
-    AWS_DEFAULT_REGION = "AWS_DEFAULT_REGION"
-    S3_BUCKET = "S3_BUCKET"
-    LOG_GROUP = "LOG_GROUP"
-    LOG_RETENTION_POLICY = "LOG_RETENTION_POLICY"
 
     @classmethod
     def from_str(cls, key: str) -> "ConfigValue":
@@ -44,7 +40,7 @@ def load_config() -> dict[str, Any]:
     return read_config_if_exists()
 
 
-def write_config(config: dict[str, Any], *, sort_keys: bool = True) -> None:
+def write_config(config: dict[str, Any], *, sort_keys: bool = False) -> None:
     """Write the Valkyrie configuration to disk."""
     config_path = config_location()
     config_path.parent.mkdir(parents=True, exist_ok=True)

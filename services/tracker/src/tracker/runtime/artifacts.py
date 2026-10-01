@@ -10,7 +10,6 @@ BENCHMARKS_PREFIX = "benchmarks"
 
 
 def agent_library_prefix(org_id: UUID | None) -> str:
-    """Scope cloud aliases by tenant; local stores already have an organization root."""
     return f"{AGENTS_PREFIX}/{org_id}/" if org_id is not None else f"{AGENTS_PREFIX}/"
 
 

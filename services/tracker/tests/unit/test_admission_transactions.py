@@ -97,7 +97,6 @@ def _start_body(benchmark: Benchmark) -> dict[str, Any]:
 
 @pytest.fixture(autouse=True)
 def managed_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every admission request resolves the deployment-managed runtime."""
     monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", True)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")

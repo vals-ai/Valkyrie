@@ -297,6 +297,11 @@ def start(
 
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
+    try:
+        TrackerService.validate_sandbox_provider(provider)
+    except TrackerServiceError as error:
+        raise click.ClickException(str(error)) from error
+
     service_headers = benchmark_service_headers(benchmark, headers)
 
     task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None

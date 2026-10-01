@@ -49,12 +49,6 @@ def install(github_url: str, name: str | None):
     help="Agent name (defaults to the contract name)",
 )
 def push(agent_path: Path, name: str | None):
-    """Push a local agent to the organization's library through Tracker.
-
-    Example:
-        valkyrie agent push ./agents/my-agent
-        valkyrie agent push ./agents/my-agent --name my-agent
-    """
     try:
         agent_name = asyncio.run(push_agent(name or None, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
@@ -67,11 +61,6 @@ def push(agent_path: Path, name: str | None):
 @click.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
 def agent_remove(agent_name: str):
-    """Remove an agent from the organization's library through Tracker.
-
-    Example:
-        valkyrie agent remove my-agent
-    """
     try:
         if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
             click.echo("Cancelled.")

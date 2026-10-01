@@ -117,7 +117,6 @@ class StartBenchmarkRequest(BaseModel):
 
     @property
     def sandbox_provider_secret_reference(self) -> str | None:
-        """Return the configured sandbox provider secret name."""
         return self.sandbox_provider_secret_name
 
     @property

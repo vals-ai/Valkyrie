@@ -3,14 +3,14 @@ title: Configure sandbox providers
 description: Store sandbox-provider credentials and select a provider for runs.
 ---
 
-Valkyrie resolves sandbox-provider credentials from AWS Secrets Manager. Configure the provider and secret name on the Tracker deployment. Its IAM role must be able to read that secret.
+Valkyrie resolves sandbox-provider credentials from AWS Secrets Manager. Register each secret under a provider name in the CLI configuration. Full syntax is in the [`config provider set`](/reference/cli/config#provider-set) and [`config provider default`](/reference/cli/config#provider-default) reference.
 
 ## Select a provider
 
 The first configured provider becomes the default. Set the default explicitly with:
 
 ```bash
-export AWS_DEPLOYMENT_SANDBOX_PROVIDER=daytona
+valkyrie config provider default daytona
 ```
 
 Select a configured provider for one run:
@@ -38,9 +38,12 @@ Provider secret schemas are provider-specific. Registering a name does not make 
 Register the secret:
 
 ```bash
-export AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME=DaytonaSecrets
+valkyrie config provider set daytona DaytonaSecrets
 ```
 
+<Note>
+  `valkyrie config init` moves a legacy `DAYTONA_SECRET_NAME` configuration key to `sandbox_providers.daytona`.
+</Note>
 
 ## Modal
 
@@ -62,8 +65,7 @@ modal token set --token-id ak-... --token-secret as-... --profile=your-profile
 Register the secret under the name `modal`:
 
 ```bash
-export AWS_DEPLOYMENT_SANDBOX_PROVIDER=modal
-export AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME=ModalSecrets
+valkyrie config provider set modal ModalSecrets
 ```
 
 The provider name is sent to the benchmark service as the provider type, so Modal credentials must be registered under `modal`.
