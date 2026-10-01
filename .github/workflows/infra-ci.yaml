@@ -63,6 +63,16 @@ jobs:
         working-directory: infra
         run: make typecheck
 
+      - name: Synthesize standalone ValSmith stacks without AWS access
+        working-directory: infra
+        run: |
+          CDK_OUTDIR="$RUNNER_TEMP/valsmith-images" \
+            CDK_CONTEXT_JSON='{"component":"images","inputs":"valsmith_network_inputs.json"}' \
+            uv run python valsmith_network_app.py
+          CDK_OUTDIR="$RUNNER_TEMP/valsmith-network" \
+            CDK_CONTEXT_JSON='{"component":"network","inputs":"valsmith_network_inputs.json","proxy_image_uri":"629807611108.dkr.ecr.us-east-1.amazonaws.com/valsmith-outbound-proxy-prod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+            uv run python valsmith_network_app.py
+
       - name: Enable ARM64 container builds
         uses: docker/setup-qemu-action@v4
 
