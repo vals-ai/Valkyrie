@@ -815,6 +815,7 @@ async def _stream_controlled_output(
     output_task = asyncio.create_task(pump())
     wait_task = asyncio.create_task(workload.wait())
     event_task = asyncio.create_task(stage.frames.get()) if stage is not None else None
+    pending_acks: set[asyncio.Task[None]] = set()
     deadline = controller.deadline(started_at) if stage is None else 0.0
     deadline_task: asyncio.Task[None] | None = None
     stop_at: float | None = None
@@ -943,7 +944,7 @@ async def _stream_controlled_output(
                     await disarm()
                     await finish_output()
                     continue
-            if wait_task.done() and output_task.done() and (stage is None or (stage.frames.empty() and event_task is not None and not event_task.done())):
+            if wait_task.done() and output_task.done() and not pending_acks and (stage is None or (stage.frames.empty() and event_task is not None and not event_task.done())):
                 completed = await completed_result()
                 await finish_output()
                 await disarm()
@@ -972,6 +973,7 @@ async def _stream_controlled_output(
                 return _controlled_result_outcome(completed, started_at)
 
             watched: set[asyncio.Task[Any]] = {event_task} if event_task is not None else set()
+            watched.update(pending_acks)
             if not wait_task.done():
                 watched.add(wait_task)
             if not output_task.done():
@@ -979,6 +981,9 @@ async def _stream_controlled_output(
             if deadline_task is not None:
                 watched.add(deadline_task)
             done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+            for ack_task in done & pending_acks:
+                pending_acks.remove(ack_task)
+                await ack_task
             if output_task in done:
                 await finish_output()
             if stage is None and wait_task.done() and output_task.done():
@@ -992,7 +997,7 @@ async def _stream_controlled_output(
                 assert stage is not None
                 event_task = asyncio.create_task(stage.frames.get())
                 if last_frame is not None and frame.wire == last_frame.wire:
-                    await acknowledge(frame.seq)
+                    pending_acks.add(asyncio.create_task(acknowledge(frame.seq)))
                     continue
                 if frame.seq != (last_frame.seq + 1 if last_frame else 1):
                     raise ControlledGenerationError("Stage frames arrived out of order")
@@ -1005,11 +1010,10 @@ async def _stream_controlled_output(
                         return AgentCausedExitReason.TIMEOUT, controller.effective_allowance_seconds()
                     await controller.begin_generation()
                     active_container = frame.container
-                    await acknowledge(frame.seq)
-                    controller.active_since = loop.time()
                     deadline = controller.deadline(controller.active_since)
                     deadline_task = asyncio.create_task(wait_deadline())
                     last_frame = frame
+                    pending_acks.add(asyncio.create_task(acknowledge(frame.seq)))
                     continue
                 else:
                     if controller.active_since is None or frame.container != active_container:
@@ -1025,7 +1029,7 @@ async def _stream_controlled_output(
                         return AgentCausedExitReason.TIMEOUT, controller.effective_allowance_seconds()
                     active_container = None
                 last_frame = frame
-                await acknowledge(frame.seq)
+                pending_acks.add(asyncio.create_task(acknowledge(frame.seq)))
                 continue
             if deadline_task is not None and deadline_task in done:
                 apparent_deadline = deadline
@@ -1086,6 +1090,7 @@ async def _stream_controlled_output(
         raise
     finally:
         await disarm()
+        await _cancel_and_join_controlled_tasks(*pending_acks)
         if event_task is not None:
             await _cancel_and_join_controlled_tasks(event_task)
         await _cancel_and_join_controlled_tasks(wait_task, output_task)
