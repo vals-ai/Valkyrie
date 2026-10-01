@@ -42,6 +42,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aiodocker"
+version = "0.27.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/19/f07d8532d7489ed8629847d004d0bbd286287286a76828be43aca7e6b106/aiodocker-0.27.0.tar.gz", hash = "sha256:74586f4929aee4563ee7db50996a1a39ac35e06c80701daad31f94aadb6551c7", size = 328202, upload-time = "2026-05-27T07:06:49.731Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/54/cd3aa680c9653b8708e164d610948e7a9aa50bba619705ac6169f61b0837/aiodocker-0.27.0-py3-none-any.whl", hash = "sha256:c55647bdcaf546dd4fc9b52794a9510575e126888dff478a9185f580a40dc45e", size = 55037, upload-time = "2026-05-27T07:06:48.316Z" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "24.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -425,23 +437,20 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.41.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=28e0d3ccd7affa10bcb811e422797a3c8b279c57#28e0d3ccd7affa10bcb811e422797a3c8b279c57" }
+version = "0.44.0"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?tag=v0.44.0#5e76f959a7fb0955680eb876f0cf40f47df8f67e" }
 dependencies = [
-    { name = "boto3" },
-    { name = "cachetools" },
+    { name = "aiodocker" },
     { name = "click" },
     { name = "daytona" },
     { name = "daytona-api-client-async" },
-    { name = "descope" },
-    { name = "fastapi", extra = ["standard"] },
+    { name = "fastapi", extra = ["standard-no-fastapi-cloud-cli"] },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "modal" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "sentry-sdk", extra = ["fastapi"] },
     { name = "starlette" },
     { name = "tenacity" },
     { name = "websockets" },
@@ -723,6 +732,16 @@ standard = [
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+standard-no-fastapi-cloud-cli = [
+    { name = "email-validator" },
+    { name = "fastapi-cli", extra = ["standard-no-fastapi-cloud-cli"] },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "pydantic-extra-types" },
+    { name = "pydantic-settings" },
+    { name = "python-multipart" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 
 [[package]]
 name = "fastapi-cli"
@@ -741,6 +760,9 @@ wheels = [
 [package.optional-dependencies]
 standard = [
     { name = "fastapi-cloud-cli" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+standard-no-fastapi-cloud-cli = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2314,7 +2336,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "cachetools", specifier = ">=7.1.1,<8" },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=28e0d3ccd7affa10bcb811e422797a3c8b279c57" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?tag=v0.44.0" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },
     { name = "httpx", specifier = ">=0.28.1" },
@@ -2540,7 +2562,7 @@ dev = [
 
 [[package]]
 name = "valkyrie-sdk"
-version = "0.2.27"
+version = "0.3.1"
 source = { editable = "packages/valkyrie-sdk" }
 dependencies = [
     { name = "httpx" },

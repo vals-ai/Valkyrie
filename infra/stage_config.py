@@ -48,8 +48,6 @@ class DatabaseConfig:
     allocated_storage_gb: int
     backup_retention_days: int
     connection_alarm_threshold: int
-    pool_size: int
-    max_overflow: int
 
 
 @dataclass(frozen=True)
@@ -139,6 +137,7 @@ class StageConfig:
     database: DatabaseConfig
     service_log_retention: aws_logs.RetentionDays
     managed_aws: ManagedAWSRuntimeConfig
+    dataset_version_pinning_enabled: bool
 
 
 BENCH_CONFIG = StageConfig(
@@ -151,8 +150,6 @@ BENCH_CONFIG = StageConfig(
         allocated_storage_gb=100,
         backup_retention_days=7,
         connection_alarm_threshold=1400,
-        pool_size=50,
-        max_overflow=10,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
     managed_aws=ManagedAWSRuntimeConfig(
@@ -163,6 +160,7 @@ BENCH_CONFIG = StageConfig(
         tracker_lambda_function_name_patterns=_TRACKER_LAMBDA_PATTERNS,
         executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
     ),
+    dataset_version_pinning_enabled=False,
 )
 
 PROD_CONFIG = StageConfig(
@@ -175,8 +173,6 @@ PROD_CONFIG = StageConfig(
         allocated_storage_gb=100,
         backup_retention_days=7,
         connection_alarm_threshold=1400,
-        pool_size=50,
-        max_overflow=10,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
     managed_aws=ManagedAWSRuntimeConfig(
@@ -187,6 +183,7 @@ PROD_CONFIG = StageConfig(
         tracker_lambda_function_name_patterns=("vals-format-lambda",),
         executor_lambda_function_name_patterns=("vals-format-lambda",),
     ),
+    dataset_version_pinning_enabled=False,
 )
 
 DEV_CONFIG = StageConfig(
@@ -199,8 +196,6 @@ DEV_CONFIG = StageConfig(
         allocated_storage_gb=100,
         backup_retention_days=1,
         connection_alarm_threshold=65,
-        pool_size=5,
-        max_overflow=2,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_WEEK,
     managed_aws=ManagedAWSRuntimeConfig(
@@ -211,6 +206,7 @@ DEV_CONFIG = StageConfig(
         tracker_lambda_function_name_patterns=_TRACKER_LAMBDA_PATTERNS,
         executor_lambda_function_name_patterns=_EXECUTOR_OUTPUT_LAMBDA_PATTERNS,
     ),
+    dataset_version_pinning_enabled=True,
 )
 
 RELEASE_TEST_CONFIG = StageConfig(
@@ -224,6 +220,7 @@ RELEASE_TEST_CONFIG = StageConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=7,
     ),
+    dataset_version_pinning_enabled=False,
 )
 
 RELEASE_TEST_BENCHMARK_SERVICE_BASE_URL = "benchmarks.vals.ai"

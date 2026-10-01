@@ -1,8 +1,7 @@
 """Provider-neutral object storage capabilities used by Tracker and the CLI."""
 
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Coroutine
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -13,6 +12,7 @@ class StoredObject:
 
     key: str
     last_modified: datetime | None = None
+    size: int = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -22,22 +22,8 @@ class StoredObjectCopy:
     deletion_token: str | None
 
 
-class ObjectReadSession(Protocol):
-    """Related object reads performed within one provider-owned resource scope."""
-
-    def get_bytes(self, key: str) -> Coroutine[Any, Any, bytes]:
-        raise NotImplementedError  # pragma: no cover
-
-    def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
-        raise NotImplementedError  # pragma: no cover
-
-
 class ObjectStore(Protocol):
     """Object transfers using opaque, store-relative keys and prefixes."""
-
-    def read_session(self) -> AbstractAsyncContextManager[ObjectReadSession]:
-        """Open one resource scope for related listings and object reads."""
-        raise NotImplementedError  # pragma: no cover
 
     async def put_bytes(self, key: str, content: bytes) -> None:
         raise NotImplementedError  # pragma: no cover
@@ -48,6 +34,7 @@ class ObjectStore(Protocol):
         chunks: AsyncIterable[bytes],
         *,
         should_continue: Callable[[], bool] | None = None,
+        overwrite: bool = True,
     ) -> int:
         """Store all chunks and return their total byte count."""
         raise NotImplementedError  # pragma: no cover
@@ -70,7 +57,18 @@ class ObjectStore(Protocol):
     def list_objects(self, prefix: str) -> AsyncIterator[StoredObject]:
         raise NotImplementedError  # pragma: no cover
 
-    async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
+    async def stat(self, key: str) -> StoredObject:
+        """Return metadata for one existing object."""
+        raise NotImplementedError  # pragma: no cover
+
+    async def list_objects_page(
+        self, prefix: str, *, cursor: str | None, limit: int
+    ) -> tuple[list[StoredObject], str | None]:
+        """List one bounded page, preserving the provider's continuation cursor."""
+        raise NotImplementedError  # pragma: no cover
+
+    async def temporary_download_url(self, key: str, *, expires_in: int) -> str | None:
+        """Return a signed URL, or None when callers must transfer the object bytes."""
         raise NotImplementedError  # pragma: no cover
 
 

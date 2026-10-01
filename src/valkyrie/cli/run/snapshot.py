@@ -66,6 +66,11 @@ def build_run_snapshot(
         "agent_name": contract.name if contract is not None else None,
         "model": contract.model if contract is not None else None,
         "dataset": (arguments.dataset or "default") if arguments is not None else None,
+        "dataset_version": (
+            arguments.dataset_version.model_dump()
+            if arguments is not None and arguments.dataset_version is not None
+            else None
+        ),
         "label": response.label,
         "started_by_email": metadata.started_by_email if metadata is not None else None,
         "started_at": _utc_isoformat(details.started_at),

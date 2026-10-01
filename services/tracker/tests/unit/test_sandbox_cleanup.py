@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType, SimpleNamespace
 from typing import cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service import (
@@ -115,15 +116,19 @@ class FakeLambdaContext:
         return self.remaining_milliseconds[0]
 
 
-async def test_run_cleanup_materializes_inventory_before_mutation_and_closes_provider() -> None:
+async def test_run_cleanup_materializes_inventory_before_mutation_and_closes_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = FakeSandboxProvider(
         [_sandbox("listed-before-pagination-failure")],
         list_error=RuntimeError("pagination failed"),
     )
     config = FakeProviderConfig(provider)
+    monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-east-1")
+    monkeypatch.setattr(cleanup_module, "fetch_sandbox_provider_config", AsyncMock(return_value=config))
 
     with pytest.raises(RuntimeError, match="pagination failed"):
-        await run_cleanup(cast(SandboxProviderConfig, config), now=NOW)
+        await run_cleanup("cleanup-secret", "daytona", FakeLambdaContext(840_000))
 
     assert provider.get_calls == []
     assert provider.delete_calls == []
@@ -229,25 +234,15 @@ async def test_cleanup_treats_not_found_as_complete_and_continues_after_item_fai
 
 
 def test_lambda_handler_fails_for_each_unsuccessful_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = cast(SandboxProviderConfig, object())
     failure_outcome = "invalid_metadata"
 
-    def fake_fetch_config(
-        _secret_name: str,
-        _aws: object | None,
-        _provider_type: str,
-    ) -> SandboxProviderConfig:
-        return config
-
-    async def fake_run_cleanup(_config: SandboxProviderConfig, *, now: datetime | None = None) -> Counter[str]:
-        del now
+    async def fake_run_cleanup(_secret_name: str, _provider_type: str, _context: object) -> Counter[str]:
         return Counter({failure_outcome: 1})
 
     monkeypatch.setenv("SANDBOX_CLEANUP_SECRET_NAME", "cleanup-secret")
     monkeypatch.setenv("SANDBOX_CLEANUP_PROVIDER", "daytona")
     monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-east-1")
     monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
-    monkeypatch.setattr(cleanup_module, "fetch_sandbox_provider_config", fake_fetch_config)
     monkeypatch.setattr(cleanup_module, "run_cleanup", fake_run_cleanup)
 
     for failure_outcome in ("invalid_metadata", "identity_mismatch", "refresh_failed", "delete_failed"):
@@ -255,10 +250,11 @@ def test_lambda_handler_fails_for_each_unsuccessful_outcome(monkeypatch: pytest.
             cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
 
 
-def test_load_provider_config_builds_the_cleanup_default_chain_store(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_load_provider_config_builds_the_cleanup_default_chain_store(monkeypatch: pytest.MonkeyPatch) -> None:
     expected_provider = object()
     expected_store = object()
-    expected_config = cast(SandboxProviderConfig, object())
+    provider = FakeSandboxProvider([])
+    expected_config = cast(SandboxProviderConfig, FakeProviderConfig(provider))
 
     def build_default_chain_provider(region: str) -> object:
         assert region == "us-west-2"
@@ -268,7 +264,9 @@ def test_load_provider_config_builds_the_cleanup_default_chain_store(monkeypatch
         assert provider is expected_provider
         return expected_store
 
-    def fetch_provider_config(secret_name: str, secret_store: object, provider_type: str) -> SandboxProviderConfig:
+    async def fetch_provider_config(
+        secret_name: str, secret_store: object, provider_type: str
+    ) -> SandboxProviderConfig:
         assert secret_name == "cleanup-secret"
         assert secret_store is expected_store
         assert provider_type == "daytona"
@@ -279,8 +277,8 @@ def test_load_provider_config_builds_the_cleanup_default_chain_store(monkeypatch
     monkeypatch.setattr(cleanup_module, "SecretsManagerStore", build_secret_store)
     monkeypatch.setattr(cleanup_module, "fetch_sandbox_provider_config", fetch_provider_config)
 
-    load_provider_config = getattr(cleanup_module, "_load_provider_config")
-    assert load_provider_config("cleanup-secret", "daytona") is expected_config
+    assert await run_cleanup("cleanup-secret", "daytona", FakeLambdaContext(840_000)) == Counter()
+    assert provider.closed
 
 
 def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -290,10 +288,11 @@ def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypa
     monkeypatch.setattr(cleanup_module, "AWS_DEPLOYMENT_REGION", "us-east-1")
     load_calls = 0
 
-    def fake_fetch_config(*_args: object, **_kwargs: object) -> SandboxProviderConfig:
+    async def fake_fetch_config(*_args: object, **_kwargs: object) -> SandboxProviderConfig:
         nonlocal load_calls
         load_calls += 1
-        return cast(SandboxProviderConfig, object())
+        await asyncio.Event().wait()
+        raise AssertionError("Secret retrieval should time out")
 
     monkeypatch.setattr(cleanup_module, "fetch_sandbox_provider_config", fake_fetch_config)
 
@@ -301,6 +300,6 @@ def test_lambda_handler_preserves_shutdown_margin_around_config_loading(monkeypa
         cleanup_module.lambda_handler({}, FakeLambdaContext(60_000))
     assert load_calls == 0
 
-    with pytest.raises(RuntimeError, match="Insufficient Lambda time"):
-        cleanup_module.lambda_handler({}, FakeLambdaContext(840_000, 60_000))
+    with pytest.raises(TimeoutError):
+        cleanup_module.lambda_handler({}, FakeLambdaContext(60_001))
     assert load_calls == 1

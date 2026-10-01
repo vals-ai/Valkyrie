@@ -8,7 +8,7 @@ Valkyrie ships an AWS CDK application under `infra/` that creates everything a d
 ## Architecture
 
 - **Shared stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
-- **Tracker stack**: public API, load balancer, and PostgreSQL
+- **Tracker stack**: public API, load balancer, PostgreSQL, and an RDS Proxy for database clients
 - **Executor stack**: stable ExecutorHost, executor release storage, release control, and retained worker logs
 - **Monitoring stack**: tracker, load balancer, database, and Redis alarms
 

@@ -9,10 +9,12 @@ from tracker.agent.schemas import AgentConfig
 from tracker.database.models import AgentContractRequest
 from tracker.types import StartBenchmarkResponse
 
+from valkyrie.sdk.errors import ValkyrieSDKError
+
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent_if_absent
+from valkyrie.cli.agent.storage import push_agent_if_absent
 from valkyrie.cli.display import local_time
 from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService, response_error_detail
@@ -98,8 +100,12 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
     click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
     click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
-    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
+    version = start_benchmark_response.dataset_version
+    click.echo(f"│ {'Dataset version:':<17} {version.label or version.id if version else 'not pinned'}")
+    if start_benchmark_response.dataset_version_warning:
+        click.secho(start_benchmark_response.dataset_version_warning, fg="yellow")
+    click.echo(f"│ {'Logs:':<17} {start_benchmark_response.cloudwatch_url}")
+    click.echo(f"│ {'Artifacts:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
     if not connect:
         click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
@@ -229,6 +235,7 @@ def resolve_webhook_config(
     default=None,
     help="Dataset name to use from the benchmark service (defaults to 'default')",
 )
+@click.option("--dataset-version", type=str, default=None, help="Fixed dataset version to use for this run")
 @click.option(
     "--provider",
     type=str,
@@ -316,6 +323,7 @@ def start(
     task_ids_file: str | None,
     slice_str: str | None,
     dataset: str | None,
+    dataset_version: str | None,
     provider: str | None,
     priority: int | None,
     label: str | None,
@@ -361,7 +369,6 @@ def start(
 
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
-        managed_execution = not TrackerService.parse_config_keys()
 
         agent_path = Path(agent)
 
@@ -383,21 +390,13 @@ def start(
                     f"Use --agent {contract.name} to run the published release, "
                     "or explicitly publish the local directory under a different name first."
                 )
-            if managed_execution:
-                contract = AgentContractRequest(
-                    name=contract.name,
-                    model=agent_config.model,
-                    kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
-                )
-        elif managed_execution:
-            contract = AgentContractRequest(
-                name=agent,
-                model=agent_config.model,
-                kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
-            )
-        else:
-            contract = asyncio.run(get_contract_from_s3(agent, agent_config))
-            contract.name = agent
+            agent = contract.name
+
+        contract = AgentContractRequest(
+            name=agent,
+            model=agent_config.model,
+            kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
+        )
 
         # Merge CLI secrets into contract defaults (override with cli secret)
         if secrets:
@@ -419,6 +418,7 @@ def start(
                         label,
                         lambda_function,
                         dataset,
+                        dataset_version,
                         priority=priority,
                         service_headers=service_headers or None,
                         provider=provider,
@@ -452,5 +452,5 @@ def start(
                     stream_benchmark_status(tracker, start_response.benchmark_id)
 
         format_confirmed_start_summary(confirmed_run_ids, count)
-    except (BundlerError, TrackerServiceError, ContractValidationError) as e:
+    except (BundlerError, TrackerServiceError, ContractValidationError, ValkyrieSDKError) as e:
         raise click.ClickException(str(e))

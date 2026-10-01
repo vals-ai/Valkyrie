@@ -41,7 +41,7 @@ def test_verify_archive_requires_executor_entrypoint_and_importable_protocol(tmp
         verify_archive(wrong_protocol_location)
 
 
-def test_new_artifact_manifest_requires_protocol_three(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_new_artifact_manifest_uses_protocol_four(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_command(command: Sequence[str], **_kwargs: object) -> None:
         if "export" in command:
             Path(command[command.index("--output-file") + 1]).write_text("requirements")
@@ -60,5 +60,5 @@ def test_new_artifact_manifest_requires_protocol_three(tmp_path: Path, monkeypat
 
     manifest = builder.build(tmp_path, "a" * 40)
 
-    assert manifest["protocol_version"] == "3"
-    assert json.loads((tmp_path / "manifest.json").read_text())["protocol_version"] == "3"
+    assert manifest["protocol_version"] == "4"
+    assert json.loads((tmp_path / "manifest.json").read_text())["protocol_version"] == "4"

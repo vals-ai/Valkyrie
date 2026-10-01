@@ -36,7 +36,8 @@
       "lambda_function": null,
       "dataset": "default",
       "sandbox_provider": "modal",
-      "sandbox_provider_secret_name": "ModalSecret"
+      "sandbox_provider_secret_name": "ModalSecret",
+      "dataset_version": null
     },
     "tasks_stopped": 0,
     "final_evaluation": {
@@ -49,10 +50,10 @@
       }
     },
     "average_task_breakdown": {
-      "sandbox_build_duration": 1.0,
-      "agent_run_duration": 2.0,
-      "evaluation_run_duration": 3.0,
-      "sandbox_run_duration": 6.0
+      "sandbox_build_duration": 1,
+      "agent_run_duration": 2,
+      "evaluation_run_duration": 3,
+      "sandbox_run_duration": 6
     },
     "evaluation_results": {
       "task-1": {

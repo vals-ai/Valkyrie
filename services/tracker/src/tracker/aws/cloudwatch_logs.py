@@ -27,21 +27,13 @@ from tracker.runtime.logs import (
     LogProviderError,
     RunLogReference,
     TaskLogReference,
+    task_log_stream_name,
 )
 
 _created_streams: set[str] = set()
 _FOLLOW_DEDUPLICATION_WINDOW = 10_000
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
-
-
-def _sanitize_log_stream_name(task_id: str) -> str:
-    """Escape rejected characters and distinguish the result from legacy names."""
-    escaped = task_id.replace("%", "%25").replace(":", "%3A").replace("*", "%2A")
-    if escaped == task_id:
-        return task_id
-    digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
-    return f"{escaped}-{digest}"
 
 
 def _legacy_sanitize_log_stream_name(task_id: str) -> str:
@@ -52,14 +44,6 @@ def _legacy_sanitize_log_stream_name(task_id: str) -> str:
 def benchmark_log_group_name(log_group: str, benchmark_id: str) -> str:
     """Return the canonical CloudWatch log group for a benchmark run."""
     return f"{log_group}/{benchmark_id}"
-
-
-def task_log_stream_name(task_id: str, started_at: datetime) -> str:
-    """Return the canonical versioned CloudWatch stream for a task attempt."""
-    if started_at.utcoffset() is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    suffix = f"{int(started_at.timestamp() * 1_000_000):x}"
-    return f"{_sanitize_log_stream_name(task_id)}_{suffix}"
 
 
 def _legacy_task_log_stream_name(task_id: str, started_at: datetime) -> str:
@@ -135,20 +119,19 @@ class CloudWatchBenchmarkLogSink(BenchmarkLogSink):
         self._clients = clients
         self._log_group = log_group
 
-    @handle_cloudwatch_error(message="Failed to create log group")
     @logfire.instrument("create_log_group", extract_args=("benchmark_id",))
-    def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
-        client = self._clients.cloudwatch_logs_client()
+    async def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
         log_group_name = benchmark_log_group_name(self._log_group, benchmark_id)
         try:
-            client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
-            client.put_retention_policy(  # pyright: ignore[reportUnknownMemberType]
-                logGroupName=log_group_name,
-                retentionInDays=retention_days,
-            )
-        except ClientError as error:
-            if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-                raise
+            async with self._clients.cloudwatch_logs_async_client() as client:
+                try:
+                    await client.create_log_group(logGroupName=log_group_name)
+                except ClientError as error:
+                    if error.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+                        raise
+                await client.put_retention_policy(logGroupName=log_group_name, retentionInDays=retention_days)
+        except (ClientError, BotoCoreError) as error:
+            raise CloudWatchError(f"Failed to create log group: {error}") from error
 
     @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
     def write(self, stream_key: str, message: str) -> None:

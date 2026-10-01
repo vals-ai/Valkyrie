@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import yaml
 
@@ -74,6 +75,10 @@ def tracker_service_url() -> str:
     if url := os.environ.get(TRACKER_SERVICE_URL_ENV_VAR):
         return url
 
+    path = config_location()
+    config = cast(dict[str, Any], (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {})
+    if url := config.get("tracker_url"):
+        return str(url).rstrip("/")
     return _TRACKER_URLS[selected_environment()]
 
 
