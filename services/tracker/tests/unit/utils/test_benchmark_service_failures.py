@@ -766,7 +766,10 @@ class TestBenchmarkServiceFailures:
         assert "ProgramBench task container failed to start" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
-    @pytest.mark.parametrize("secret_source", ["none", "contract", "provider"])
+    @pytest.mark.parametrize(
+        ("secret_source", "failure_phase"),
+        [("none", "run"), ("contract", "run"), ("provider", "run"), ("contract", "install")],
+    )
     async def test_agent_reported_error_reaches_task_api(
         self,
         contract: AgentContractRequest,
@@ -775,6 +778,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         secret_source: str,
+        failure_phase: str,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """An error the agent writes to $VALKYRIE_ERROR_PATH is what operators read back for the task."""
@@ -829,12 +833,13 @@ class TestBenchmarkServiceFailures:
             sandbox.exec = _exec
             yield sandbox
 
-        async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
-            return None
-
         monkeypatch.setattr(utils_module, "create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
-        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
+        if failure_phase == "install":
+            monkeypatch.setattr(utils_module, "install_agent_dependencies", sandbox_module.install_agent_dependencies)
+            install_with_retries = getattr(sandbox_module, "_install_agent_dependencies_with_retries")
+            monkeypatch.setattr(install_with_retries.retry, "sleep", AsyncMock())
+            monkeypatch.setattr(utils_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
 
         def capture_log(_self: Any, _stream_key: str, message: str) -> None:
             logged_messages.append(message)
@@ -855,14 +860,27 @@ class TestBenchmarkServiceFailures:
                 utils_module.logger.removeHandler(caplog.handler)
 
         assert result == {"task_0": None}
+
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_result = self._latest_task_error_result(database_session, task_row)
-        expected_error = "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1"
+
+        error_results = database_session.exec(
+            select(ErrorResult)
+            .where(ErrorResult.task == task_row.id)
+            .where(ErrorResult.org_id == task_row.org_id)
+            .order_by(desc(ErrorResult.created_at))
+        ).all()
+        assert error_results
+        assert all("fake-sensitive-value" not in error.error_message for error in error_results)
+
+        error_result = error_results[0]
+        subject = "Agent command" if failure_phase == "run" else f"Dependency installation for contract {contract.name}"
+        expected_error = f"AgentRunFailedError: Sandbox error: {subject} failed with exit code 1"
         if secret_source == "none":
             expected_error += ": AgentError: model returned no patch"
         elif secret_source == "contract":
             expected_error += ": AgentError: rejected [REDACTED]"
+
         assert error_result.error_message == expected_error
         assert error_result.error_type == "AgentRunFailedError"
         assert error_result.category == FailureCategory.AGENT
@@ -870,6 +888,7 @@ class TestBenchmarkServiceFailures:
 
         api_response = TestClient(app).get(f"/benchmarks/{benchmark_id}/tasks/{task_row.task_id}")
         assert api_response.status_code == 200
+
         body = api_response.json()
         assert body["failure_category"] == "agent"
         assert body["error_message"] == error_result.error_message
@@ -878,9 +897,11 @@ class TestBenchmarkServiceFailures:
         assert "fake-sensitive-value" not in json.dumps(body)
         assert any(expected_error in message for message in logged_messages)
         assert "fake-sensitive-value" not in "\n".join(logged_messages)
-        event = next(event for event in events if "exception" in event)
+
+        event = next(event for event in events if event.get("tags", {}).get("failure_category") == "agent")
         assert event["tags"]["failure_category"] == "agent"
-        assert "fake-sensitive-value" not in json.dumps(event)
+        assert "fake-sensitive-value" not in json.dumps(events)
+
         record = next(record for record in caplog.records if record.getMessage() == "Task execution failed")
         assert "fake-sensitive-value" not in JsonFormatter().format(record)
 
