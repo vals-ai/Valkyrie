@@ -803,8 +803,8 @@ class MonitoringStackTest(unittest.TestCase):
         for stage_name, environment, expected_allocated_storage, instance_class in (
             (BENCH, TEST_BENCH_ENV, "100", "db.r7g.large"),
             (PROD, TEST_PROD_ENV, "100", "db.r7g.large"),
-            (DEV, TEST_DEV_ENV, "100", "db.t4g.micro"),
-            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, "100", "db.t4g.micro"),
+            (DEV, TEST_DEV_ENV, "100", "db.r7g.large"),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV, "100", "db.r7g.large"),
         ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, _, monitoring_template = service_templates(stage_name)
@@ -832,7 +832,7 @@ class MonitoringStackTest(unittest.TestCase):
         )
         tracker_template.has_resource_properties(
             "AWS::RDS::DBInstance",
-            {"DBInstanceClass": "db.t4g.micro", "BackupRetentionPeriod": 1},
+            {"DBInstanceClass": "db.r7g.large", "BackupRetentionPeriod": 1},
         )
         tracker_template.has_resource_properties(
             "AWS::ApplicationAutoScaling::ScalableTarget",
@@ -840,7 +840,7 @@ class MonitoringStackTest(unittest.TestCase):
         )
         monitoring_template.has_resource_properties(
             "AWS::CloudWatch::Alarm",
-            {"AlarmName": "Valkyrie-DB-Connections-High-dev", "Threshold": 65},
+            {"AlarmName": "Valkyrie-DB-Connections-High-dev", "Threshold": 1400},
         )
 
     def test_tracker_capacity_matches_each_stage_topology(self) -> None:

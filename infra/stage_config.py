@@ -188,10 +188,10 @@ DEV_CONFIG = StageConfig(
     sentry_environment=DEV,
     tracker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=2),
     database=DatabaseConfig(
-        instance_class="t4g.micro",
+        instance_class="r7g.large",
         allocated_storage_gb=100,
         backup_retention_days=1,
-        connection_alarm_threshold=65,
+        connection_alarm_threshold=1400,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_WEEK,
     managed_aws=ManagedAWSRuntimeConfig(
