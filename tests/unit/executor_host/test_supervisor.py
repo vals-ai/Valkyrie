@@ -1529,7 +1529,9 @@ async def test_claim_retry_starts_local_lease_at_successful_attempt(
         process_payload=_process_payload(),
     )
     assert attempts == 2
-    assert remaining_at_run == [supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS]
+    assert remaining_at_run == pytest.approx(
+        [supervisor_module.DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS], rel=0, abs=1e-9
+    )
     assert store.finished == [store.authority]
 
 
