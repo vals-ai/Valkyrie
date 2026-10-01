@@ -35,9 +35,7 @@ async def task_scoped_gateway_key(
 
     # The address is a resolved secret; validate before sending the static key.
     url = validate_service_url_syntax(env_vars["MODEL_GATEWAY_URL"])
-    validate_custom_service_destination(
-        url, org_name=org_name, auth_required=AUTH_REQUIRED, restrict_vals_hosts=False
-    )
+    validate_custom_service_destination(url, org_name=org_name, auth_required=AUTH_REQUIRED, restrict_vals_hosts=False)
 
     # Models other agents in the sandbox call alongside the main one.
     allowed_models = [attested_model, *(companion_models.split(",") if companion_models else [])]
