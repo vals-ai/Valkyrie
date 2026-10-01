@@ -3095,6 +3095,51 @@ class TestRunRecovery:
         assert lock_execution_authority(database_session, authority).id == benchmark_row.id
         database_session.rollback()
 
+    async def test_whole_run_stop_revokes_unclaimed_runner_and_payload(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        executor_authority: Any,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark = example_benchmark_object
+        benchmark.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark)
+        task = Task(org_id=TEST_ORG_ID, task_id="pending", benchmark=benchmark.id, status=TaskStatus.PENDING)
+        database_session.add(task)
+        database_session.commit()
+        authority = executor_authority(benchmark, session=database_session)
+        dispatch = database_session.get(ExecutorDispatch, authority.dispatch_id)
+        assert dispatch is not None
+        dispatch.status = ExecutorDispatchStatus.QUEUED
+        dispatch.started_at = None
+        dispatch.ecs_task_arn = "arn:aws:ecs:us-east-1:123456789012:task/cluster/task"
+        database_session.add(dispatch)
+        database_session.add(
+            ExecutorDispatchPayload(
+                dispatch_id=dispatch.id, ciphertext=b"secret", encrypted_data_key=b"key", nonce=b"nonce"
+            )
+        )
+        database_session.commit()
+        monkeypatch.setenv("EXECUTOR_RUNNER_CLUSTER", "cluster")
+        ecs = Mock()
+        monkeypatch.setattr(run_control_module.boto3, "client", lambda *_args, **_kwargs: ecs)
+
+        await initiate_stop_benchmark(benchmark, database_session, force=False, org=self._test_org)
+
+        database_session.refresh(benchmark)
+        database_session.refresh(task)
+        database_session.refresh(dispatch)
+        assert benchmark.status == BenchmarkStatus.STOPPED
+        assert benchmark.finished_at is not None
+        assert task.status == TaskStatus.STOPPED
+        assert dispatch.status == ExecutorDispatchStatus.FAILED
+        assert dispatch.failure_reason == "STOPPED_BEFORE_CLAIM"
+        assert database_session.get(ExecutorDispatchPayload, dispatch.id) is None
+        ecs.stop_task.assert_called_once_with(
+            cluster="cluster", task=dispatch.ecs_task_arn, reason="Benchmark stopped before runner claim"
+        )
+
     async def test_force_stop_finalizes_database_immediately(
         self,
         example_benchmark_object: Benchmark,

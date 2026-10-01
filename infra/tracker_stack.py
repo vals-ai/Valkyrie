@@ -317,6 +317,21 @@ class TrackerStack(Stack):
                 conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
             )
         )
+        runner_task_arn = self.format_arn(service="ecs", resource="task", resource_name=f"{cluster.cluster_name}/*")
+        self.tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["ecs:DescribeTasks"],
+                resources=[runner_task_arn],
+                conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
+            )
+        )
+        self.tracker_task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["ecs:StopTask"],
+                resources=[runner_task_arn],
+                conditions={"ArnEquals": {"ecs:cluster": cluster.cluster_arn}},
+            )
+        )
         self.tracker_task_role.add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["iam:PassRole"],
@@ -367,7 +382,7 @@ class TrackerStack(Stack):
                 **sentry_secrets,
                 **descope_secrets,
             },
-            command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
+            command=["python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(
                 command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],
                 interval=Duration.seconds(CONTAINER_HEALTH_INTERVAL_SECONDS),

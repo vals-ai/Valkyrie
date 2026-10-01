@@ -127,7 +127,7 @@ from tracker.logging import configure_logging, get_logger, request_id_var
 from tracker.executor.release_control import MaintenanceModeError, ReleaseControlError, lock_executor_admission
 from tracker.executor.dispatch_recovery import AutomaticDispatchRecovery
 from tracker.executor.release_retirement import AutomaticReleaseRetirement
-from tracker.middleware import LocalTrustedHostMiddleware, RequestContextMiddleware
+from tracker.middleware import LocalTrustedHostMiddleware, RequestContextMiddleware, RunRequestSizeLimitMiddleware
 from tracker.observability import configure_observability
 from tracker.outbound_security import (
     validate_custom_service_destination,
@@ -215,6 +215,7 @@ app = FastAPI(generate_unique_id_function=_operation_id, redirect_slashes=False,
 
 logfire.instrument_fastapi(app, excluded_urls="/health$")
 
+app.add_middleware(RunRequestSizeLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(LocalTrustedHostMiddleware)
 

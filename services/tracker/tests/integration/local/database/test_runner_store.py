@@ -3,44 +3,44 @@
 import asyncio
 import base64
 from datetime import UTC, datetime, timedelta
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from botocore.exceptions import ClientError
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, select
 
-from tracker.executor.runner import (
-    DispatchAuthority,
-    PostgresExecutorDispatchStore,
-    RenewalResult,
-)
 from tests.factories import make_benchmark, make_task
-from tracker.executor.dispatch_payload import generate_payload_key, seal_payload
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
     ErrorResult,
     ExecutorDispatch,
-    ExecutorDispatchPayload,
     ExecutorDispatchKind,
+    ExecutorDispatchPayload,
     ExecutorDispatchStatus,
     ExecutorRelease,
     Org,
     Task,
     TaskStatus,
 )
+from tracker.executor import runner
+from tracker.executor.dispatch_control import (
+    admit_recovery_dispatch,
+    admit_start_dispatch,
+    reconcile_expired_dispatches,
+)
+from tracker.executor.dispatch_payload import generate_payload_key, seal_payload
 from tracker.executor.release_control import (
     create_executor_dispatch,
     pin_benchmark_to_release,
     promote_release,
     register_release,
 )
-from tracker.executor.dispatch_control import (
-    admit_recovery_dispatch,
-    admit_start_dispatch,
-    reconcile_expired_dispatches,
-)
+from tracker.executor.runner import DispatchAuthority, PostgresExecutorDispatchStore, RenewalResult
+from tracker.utils.run_control import apply_stop_benchmark
 
 
 @pytest.mark.asyncio
@@ -546,3 +546,96 @@ async def test_missing_queued_payload_is_error_without_claim_commit(
         await store.claim(str(dispatch.id))
     postgres_session.expire_all()
     assert postgres_session.get(ExecutorDispatch, dispatch.id).status == ExecutorDispatchStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_kms_decrypt_failure_records_diagnostic_without_leaking_secret(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
+    benchmark = postgres_session.get(runner.Benchmark, dispatch.benchmark_id)
+    task = make_task(benchmark, "task-0", status=TaskStatus.PENDING)
+    task.started_at = dispatch.created_at - timedelta(seconds=1)
+    postgres_session.add(task)
+    postgres_session.commit()
+    monkeypatch.setattr(runner, "engine", postgres_engine)
+
+    def kms_failure(*_args: object) -> None:
+        raise ClientError({"Error": {"Code": "InvalidCiphertextException", "Message": "secret-marker"}}, "Decrypt")
+
+    monkeypatch.setattr(runner, "open_payload", kms_failure)
+    with pytest.raises(runner.PayloadDecryptError, match="InvalidCiphertextException") as caught:
+        await runner.run_executor_dispatch(
+            Mock(), store, keeper=runner._LeaseKeeper(store), executor_dispatch_id=str(dispatch.id)
+        )
+    assert "secret-marker" not in str(caught.value)
+    postgres_session.expire_all()
+    failed = postgres_session.get(ExecutorDispatch, dispatch.id)
+    assert failed.status == ExecutorDispatchStatus.FAILED
+    assert failed.failure_reason == "PAYLOAD_DECRYPT_FAILED"
+    assert postgres_session.get(runner.Benchmark, benchmark.id).status == BenchmarkStatus.ERROR
+    error = postgres_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
+    assert error.error_type == "InvalidCiphertextException"
+    assert "secret-marker" not in error.error_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim_first", [False, True])
+async def test_stop_and_claim_have_one_owner(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    claim_first: bool,
+) -> None:
+    store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
+    benchmark = postgres_session.get(runner.Benchmark, dispatch.benchmark_id)
+    org = postgres_session.get(Org, benchmark.org_id)
+    task = make_task(benchmark, "task-0", status=TaskStatus.PENDING)
+    postgres_session.add(task)
+    postgres_session.commit()
+    if claim_first:
+        assert await store.claim(str(dispatch.id)) is not None
+    task_arns = apply_stop_benchmark(benchmark, postgres_session, force=False, org=org)
+    postgres_session.commit()
+    assert task_arns == []
+    if not claim_first:
+        assert await store.claim(str(dispatch.id)) is None
+    postgres_session.expire_all()
+    assert postgres_session.get(ExecutorDispatch, dispatch.id).status == (
+        ExecutorDispatchStatus.RUNNING if claim_first else ExecutorDispatchStatus.FAILED
+    )
+    assert postgres_session.get(runner.Benchmark, benchmark.id).status == (
+        BenchmarkStatus.STOPPING if claim_first else BenchmarkStatus.STOPPED
+    )
+    assert postgres_session.get(ExecutorDispatchPayload, dispatch.id) is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stop_and_claim_cannot_resurrect_revoked_dispatch(
+    postgres_engine: Engine,
+    postgres_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, dispatch = _sealed_case(postgres_session, postgres_engine, monkeypatch)
+    benchmark = postgres_session.get(runner.Benchmark, dispatch.benchmark_id)
+    postgres_session.add(make_task(benchmark, "task-0", status=TaskStatus.PENDING))
+    postgres_session.commit()
+
+    def stop() -> None:
+        with Session(postgres_engine) as session:
+            row = session.get(runner.Benchmark, benchmark.id)
+            org = session.get(Org, benchmark.org_id)
+            apply_stop_benchmark(row, session, force=False, org=org)
+            session.commit()
+
+    claimed, _ = await asyncio.gather(store.claim(str(dispatch.id)), asyncio.to_thread(stop))
+    postgres_session.expire_all()
+    assert postgres_session.get(ExecutorDispatch, dispatch.id).status == (
+        ExecutorDispatchStatus.RUNNING if claimed is not None else ExecutorDispatchStatus.FAILED
+    )
+    assert postgres_session.get(runner.Benchmark, benchmark.id).status == (
+        BenchmarkStatus.STOPPING if claimed is not None else BenchmarkStatus.STOPPED
+    )
+    assert postgres_session.get(ExecutorDispatchPayload, dispatch.id) is None
