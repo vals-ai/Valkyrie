@@ -33,13 +33,13 @@ async def _file_chunks(stream: BinaryIO) -> AsyncIterator[bytes]:
 
 
 class AgentsResource:
-    """Async operations for the configured deployment's shared agent library."""
+    """Async operations for the authenticated organization's agent library."""
 
     def __init__(self, client: ValkyrieClient) -> None:
         self._sdk = client
 
     async def list(self) -> AgentsResponse:
-        """List uploaded agents in the configured shared library."""
+        """List uploaded agents in the authenticated organization's library."""
         return await self._sdk.request_model("GET", "/agents", AgentsResponse)
 
     async def download_url(self, name: str) -> AgentDownloadURLResponse:

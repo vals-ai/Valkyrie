@@ -26,6 +26,20 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
         return {"ETag": "local-etag"}
 
     async def complete(**kwargs: Any) -> dict[str, str]:
+        if kwargs.get("IfNoneMatch") == "*" and kwargs["Key"] in objects:
+            parts.clear()
+            raise ClientError(
+                {
+                    "ResponseMetadata": {
+                        "HTTPStatusCode": 412,
+                        "RequestId": "test",
+                        "HostId": "test",
+                        "HTTPHeaders": {},
+                        "RetryAttempts": 0,
+                    }
+                },
+                "CompleteMultipartUpload",
+            )
         objects[kwargs["Key"]] = b"".join(parts)
         parts.clear()
 
@@ -42,14 +56,22 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
 
         return {}
 
-    async def pages(**_kwargs: Any) -> AsyncIterator[dict[str, object]]:
-        yield {"Contents": [{"Key": key, "Size": len(value)} for key, value in objects.items()]}
+    async def pages(**kwargs: Any) -> AsyncIterator[dict[str, object]]:
+        yield {
+            "Contents": [
+                {"Key": key, "Size": len(value)} for key, value in objects.items() if key.startswith(kwargs["Prefix"])
+            ]
+        }
 
     client.upload_part.side_effect = upload_part
     client.complete_multipart_upload.side_effect = complete
     client.head_object.side_effect = head
     client.delete_object.side_effect = delete
-    client.generate_presigned_url.return_value = "https://download.test/agents/alias.zip"
+
+    async def presigned_url(_operation: str, **kwargs: Any) -> str:
+        return f"https://download.test/{kwargs['Params']['Key']}"
+
+    client.generate_presigned_url.side_effect = presigned_url
     paginator = MagicMock()
     paginator.paginate.side_effect = pages
     client.get_paginator = MagicMock(return_value=paginator)

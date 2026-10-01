@@ -511,10 +511,12 @@ def init_org(
     return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
-async def _resolve_contract_from_s3(request: StartBenchmarkRequest, object_store: ObjectStore) -> AgentContractRequest:
+async def _resolve_contract_from_s3(
+    request: StartBenchmarkRequest, object_store: ObjectStore, *, org_id: UUID | None
+) -> AgentContractRequest:
     """Resolve the published agent contract from the configured object store."""
     try:
-        zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name))
+        zip_bytes = await object_store.get_bytes(agent_bundle_key(request.contract.name, org_id=org_id))
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=f"Agent '{request.contract.name}' not found") from error
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
@@ -680,6 +682,7 @@ async def _start_benchmark(
         aws_managed = True
         managed_s3_bucket = request.managed_s3_bucket
     object_store = runtime.objects
+    org_id = run_starter.org.id if aws_runtime is not None else None
 
     if aws_managed:
         assert aws_runtime is not None
@@ -783,6 +786,7 @@ async def _start_benchmark(
     else:
         provider_secret_name = request.sandbox_provider_secret_name
         assert provider_secret_name is not None
+        assert request.sandbox_provider is not None
         provider_config = await fetch_sandbox_provider_config(
             provider_secret_name,
             runtime.secrets,
@@ -805,18 +809,21 @@ async def _start_benchmark(
                 detail="Queue priority requires a sandbox provider configured for admission",
             )
 
+    if aws_managed and not await library_store.exists(agent_bundle_key(request.contract.name, org_id=org_id)):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
+        )
+
     if not request.contract.install_cmd and not request.contract.run_cmd:
-        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, library_store)})
+        request = request.model_copy(
+            update={"contract": await _resolve_contract_from_s3(request, library_store, org_id=org_id)}
+        )
         if aws_managed:
             try:
                 validate_managed_execution_request(request)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-    elif aws_managed and not await library_store.exists(agent_bundle_key(request.contract.name)):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
-        )
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
@@ -897,6 +904,7 @@ async def _start_benchmark(
             object_store,
             str(benchmark_row.id),
             request.contract.name,
+            org_id=org_id,
             copier=agent_copier,
         )
         commit_task = asyncio.create_task(
@@ -1656,12 +1664,15 @@ async def _refresh_recovered_agent(
     *,
     benchmark_id: UUID,
     agent_name: str,
+    org_id: UUID | None,
     session: Session,
     admission: AdmissionResult,
 ) -> None:
     """Replace the run's agent bundle after recovery admission and before its executor is enqueued."""
     try:
-        await copier.copy(agent_bundle_key(agent_name), benchmark_agent_bundle_key(str(benchmark_id), agent_name))
+        await copier.copy(
+            agent_bundle_key(agent_name, org_id=org_id), benchmark_agent_bundle_key(str(benchmark_id), agent_name)
+        )
     except Exception as exc:
         dispatch = ExecutorDispatch.model_validate(json.loads(admission.dispatch_json))
         logger.exception(
@@ -1801,7 +1812,11 @@ async def retry_or_resume_benchmark(
                 if library_runtime.resources.s3_bucket != run_runtime.resources.s3_bucket
                 else library_store
             )
-        if not await library_store.exists(agent_bundle_key(preparation.agent_name)):
+        if not await library_store.exists(
+            agent_bundle_key(
+                preparation.agent_name, org_id=None if isinstance(preparation.properties, LocalResources) else org_id
+            )
+        ):
             raise HTTPException(
                 status_code=404,
                 detail=f"Agent {preparation.agent_name!r} was not found. Push the agent before using --update-agent.",
@@ -1838,6 +1853,7 @@ async def retry_or_resume_benchmark(
                     agent_copier,
                     benchmark_id=benchmark_id,
                     agent_name=preparation.agent_name,
+                    org_id=None if isinstance(preparation.properties, LocalResources) else org_id,
                     session=session,
                     admission=result,
                 )

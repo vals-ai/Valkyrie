@@ -1638,7 +1638,7 @@ class TestTrackerAPI:
 
         assert response.status_code == 500
         assert database_session.exec(select(Benchmark)).all() == []
-        assert existence_checks[0] == ("shared-library", f"agents/{contract.name}.zip")
+        assert existence_checks[0] == ("shared-library", f"agents/{TEST_ORG_ID}/{contract.name}.zip")
         destination_bucket, destination_key = existence_checks[1]
         assert destination_bucket == "vs-dev-owner-42"
         assert deletions == [("vs-dev-owner-42", destination_key, "destination-version")]
@@ -3351,7 +3351,7 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     mock_kicker: Any,
 ) -> None:
     storage = MemoryS3()
-    storage.objects["shared-library", f"agents/{contract.name}.zip"] = b"original bundle"
+    storage.objects["shared-library", f"agents/{TEST_ORG_ID}/{contract.name}.zip"] = b"original bundle"
     for name, value in {
         "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
         "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
@@ -3413,10 +3413,13 @@ async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(
     frozen_key = f"benchmarks/{run_id}/{contract.name}.zip"
     assert storage.objects["vs-dev-acme-123", frozen_key] == b"original bundle"
     copy_arguments = next(arguments for operation, arguments in storage.calls if operation == "copy")
-    assert copy_arguments["CopySource"] == {"Bucket": "shared-library", "Key": f"agents/{contract.name}.zip"}
+    assert copy_arguments["CopySource"] == {
+        "Bucket": "shared-library",
+        "Key": f"agents/{TEST_ORG_ID}/{contract.name}.zip",
+    }
     assert copy_arguments["ExpectedSourceBucketOwner"] == "123456789012"
     assert copy_arguments["CopySourceIfMatch"] == '"frozen-etag"'
-    storage.objects["shared-library", f"agents/{contract.name}.zip"] = b"new bundle"
+    storage.objects["shared-library", f"agents/{TEST_ORG_ID}/{contract.name}.zip"] = b"new bundle"
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "changed-log-default")
     monkeypatch.setattr("tracker.config.AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", False)
@@ -3649,7 +3652,7 @@ async def test_local_resume_updates_agent_from_the_local_library(
     database_session.commit()
     agent_name = benchmark.arguments.contract.name
     objects = LocalRuntimeFactory.create_runtime(root.data_root, benchmark.org_id).objects
-    await objects.put_bytes(agent_bundle_key(agent_name), b"updated agent")
+    await objects.put_bytes(agent_bundle_key(agent_name, org_id=None), b"updated agent")
 
     response = local_client.post(
         f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true",

@@ -3,7 +3,7 @@ title: Manage agents
 description: Install, upload, list, download, and remove agent bundles.
 ---
 
-The CLI and standalone SDK manage agents through Tracker. Bundles use the shared `agents/` layout in the bucket resolved by your existing configuration. Every agent must contain a valid [agent contract](/agents/agent-contract).
+The CLI and standalone SDK manage agents through Tracker. AWS bundles are isolated by the organization selected by your Vals API key under `agents/<org_id>/` in the deployment bucket. Local Tracker keeps bundles in `agents/` beneath the organization’s data root. Every agent must contain a valid [agent contract](/agents/agent-contract).
 
 Uploads and removals use the existing deployment permissions. A hosted deployment can allow reads but deny writes. Development and self-hosted deployments can permit writes without changing the CLI or SDK. A storage permission error requires an operator to check the deployment's S3 access; retrying with another alias does not grant access.
 

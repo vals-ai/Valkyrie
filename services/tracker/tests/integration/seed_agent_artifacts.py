@@ -1,6 +1,7 @@
 import os
 import zipfile
 from io import BytesIO
+from uuid import UUID
 
 import boto3
 from botocore.config import Config
@@ -32,8 +33,8 @@ def create_s3_client(runtime: AWSRuntime) -> S3Client:
     )
 
 
-def seed_test_agent_artifact(s3_client: S3Client, s3_bucket: str, contract_name: str) -> str:
-    key = get_contract_s3_key(contract_name)
+def seed_test_agent_artifact(s3_client: S3Client, s3_bucket: str, contract_name: str, org_id: UUID) -> str:
+    key = get_contract_s3_key(contract_name, org_id)
 
     try:
         s3_client.put_object(

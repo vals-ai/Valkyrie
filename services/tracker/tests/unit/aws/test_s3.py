@@ -14,6 +14,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from starlette.requests import Request
 
+from tests.utils import TEST_ORG_ID
 from tracker.aws import s3 as s3_module
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.runtime import AWSResources, AWSRuntime
@@ -302,7 +303,9 @@ async def test_managed_direct_operations_apply_owner_guard(
     client.__aenter__.return_value = client
     client.get_object.return_value = {"Body": DownloadBody(b"content")}
     client.copy_object.return_value = {"VersionId": "version-1"}
-    paginator = ObjectListPaginator([{"Contents": [{"Key": "benchmarks/run/result.json"}, {"Key": "agents/demo.zip"}]}])
+    paginator = ObjectListPaginator(
+        [{"Contents": [{"Key": "benchmarks/run/result.json"}, {"Key": f"agents/{TEST_ORG_ID}/demo.zip"}]}]
+    )
     client.get_paginator = MagicMock(return_value=paginator)
     runtime = AWSRuntime(
         resources=aws_runtime.resources,
@@ -322,9 +325,9 @@ async def test_managed_direct_operations_apply_owner_guard(
     assert await s3_object_exists("key", runtime)
     assert [key async for key in list_s3_objects("benchmarks/", runtime)] == [
         "benchmarks/run/result.json",
-        "agents/demo.zip",
+        f"agents/{TEST_ORG_ID}/demo.zip",
     ]
-    assert await list_agents(runtime) == [("demo", None)]
+    assert await list_agents(runtime, org_id=TEST_ORG_ID) == [("demo", None)]
 
     owner = {"ExpectedBucketOwner": "123456789012"}
     client.put_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", Body=b"content", **owner)
@@ -339,7 +342,7 @@ async def test_managed_direct_operations_apply_owner_guard(
     client.head_object.assert_awaited_once_with(Bucket="test-bucket", Key="key", **owner)
     assert paginator.calls == [
         {"Bucket": "test-bucket", "Prefix": "benchmarks/", **owner},
-        {"Bucket": "test-bucket", "Prefix": "agents/", **owner},
+        {"Bucket": "test-bucket", "Prefix": f"agents/{TEST_ORG_ID}/", **owner},
     ]
 
 

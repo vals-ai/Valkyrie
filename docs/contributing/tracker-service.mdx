@@ -43,7 +43,7 @@ Add `include_capacity=true` to request best-effort CPU, memory, disk, and aggreg
 
 ## Agent library limits
 
-Agent upload and removal use the same authentication and AWS runtime as listing and downloading. Bundles remain in the shared `agents/` prefix. PUT replaces an existing alias; DELETE reports a missing alias as HTTP 404. Existing storage permissions can deny writes with HTTP 403. These endpoints do not grant additional permissions.
+Agent upload and removal use the same authentication and AWS runtime as listing and downloading. AWS bundles use `agents/<org_id>/<name>.zip`, where the authenticated organization determines the prefix. Local bundles use `agents/<name>.zip` beneath the existing organization data root. Run snapshots remain under `benchmarks/<benchmark_id>/`. PUT replaces an existing alias; DELETE reports a missing alias as HTTP 404. Existing storage permissions can deny writes with HTTP 403. These endpoints do not grant additional permissions.
 
 Set these positive-integer environment variables on the Tracker process to override archive limits:
 

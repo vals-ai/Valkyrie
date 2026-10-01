@@ -40,7 +40,7 @@ from tests.unit.utils.task_execution_support import (
 )
 from tests.utils import TEST_ORG_ID
 from tracker import config
-from tracker.auth import RequestIdentity
+from tracker.auth import RequestIdentity, get_current_org
 from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
@@ -1652,6 +1652,7 @@ class TestRunRecovery:
         force_stop.assert_not_awaited()
 
     @pytest.mark.parametrize("agent_exists", [True, False])
+    @pytest.mark.parametrize("org_id", [TEST_ORG_ID, UUID("00000000-0000-0000-0000-000000000002")])
     async def test_retry_or_resume_updates_agent_before_dispatch(
         self,
         example_benchmark_object: Benchmark,
@@ -1659,15 +1660,33 @@ class TestRunRecovery:
         monkeypatch: MonkeyPatch,
         mock_kicker: MockKicker,
         agent_exists: bool,
+        org_id: UUID,
     ) -> None:
         benchmark_row = example_benchmark_object
+        org = database_session.get(Org, org_id) or Org(id=org_id, name="second")
+        database_session.add(org)
+        benchmark_row.org_id = org_id
+        monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: org)
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(org_id))
         benchmark_row.status = BenchmarkStatus.STOPPED
         database_session.add(benchmark_row)
         database_session.commit()
         saved_contract = benchmark_row.arguments.contract.model_dump(mode="json")
-        exists = AsyncMock(return_value=agent_exists)
+        own_key = main_module.agent_bundle_key(saved_contract["name"], org_id=org_id)
+        other_id = UUID("00000000-0000-0000-0000-000000000003")
+        other_key = main_module.agent_bundle_key(saved_contract["name"], org_id=other_id)
+        global_key = f"agents/{saved_contract['name']}.zip"
+        objects = {other_key: b"another tenant", global_key: b"unscoped alias"}
+        if agent_exists:
+            objects[own_key] = str(org_id).encode()
+
+        async def alias_exists(key: str) -> bool:
+            return key in objects
+
+        exists = AsyncMock(side_effect=alias_exists)
 
         async def copy_bundle(source_key: str, destination_key: str) -> None:
+            objects[destination_key] = objects[source_key]
             assert not mock_kicker.queued_calls
             with Session(database_session.get_bind()) as session:
                 stored_benchmark = session.get(Benchmark, benchmark_row.id)
@@ -1683,7 +1702,9 @@ class TestRunRecovery:
             json={"task_ids": ["task_0"]},
         )
 
-        exists.assert_awaited_once_with(main_module.agent_bundle_key(saved_contract["name"]))
+        exists.assert_awaited_once_with(
+            main_module.agent_bundle_key(saved_contract["name"], org_id=benchmark_row.org_id)
+        )
         if not agent_exists:
             assert response.status_code == 404
             assert "Push the agent" in response.json()["detail"]
@@ -1695,9 +1716,13 @@ class TestRunRecovery:
 
         assert response.status_code == 200
         copy.assert_awaited_once_with(
-            main_module.agent_bundle_key(saved_contract["name"]),
+            main_module.agent_bundle_key(saved_contract["name"], org_id=benchmark_row.org_id),
             main_module.benchmark_agent_bundle_key(str(benchmark_row.id), saved_contract["name"]),
         )
+        frozen_key = main_module.benchmark_agent_bundle_key(str(benchmark_row.id), saved_contract["name"])
+        assert objects[frozen_key] == str(org_id).encode()
+        assert objects[other_key] == b"another tenant"
+        assert objects[global_key] == b"unscoped alias"
         admitted_request = mock_kicker.queued_calls[0]["execution_context_json"]["start_benchmark_request"]
         assert admitted_request["contract"] == saved_contract
 
@@ -3475,12 +3500,12 @@ def test_owner_recovery_updates_agent_from_the_deployment_library(
     )
 
     assert response.status_code == 200, response.text
-    assert checked == [("legacy-bucket", main_module.agent_bundle_key(agent_name))]
+    assert checked == [("legacy-bucket", main_module.agent_bundle_key(agent_name, org_id=benchmark.org_id))]
     assert copied == [
         (
             "legacy-bucket",
             "vs-dev-owner-42",
-            main_module.agent_bundle_key(agent_name),
+            main_module.agent_bundle_key(agent_name, org_id=benchmark.org_id),
             main_module.benchmark_agent_bundle_key(str(benchmark.id), agent_name),
         )
     ]

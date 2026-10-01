@@ -4,10 +4,10 @@ from typing import Any
 from uuid import UUID
 
 import click
-from tracker.exceptions import S3Error
+from valkyrie.sdk.errors import ValkyrieSDKError
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.agent.storage import get_ingest_lambda_from_s3
+from valkyrie.cli.agent.storage import get_ingest_lambda
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -30,10 +30,10 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
             metadata = tracker.fetch_benchmark_metadata(run_id)
             contract_name = metadata.benchmark_arguments.contract.name
             try:
-                lambda_function = asyncio.run(get_ingest_lambda_from_s3(contract_name))
-            except S3Error as e:
+                lambda_function = asyncio.run(get_ingest_lambda(contract_name))
+            except (ValkyrieSDKError, ValueError) as e:
                 raise click.ClickException(
-                    f"Could not load contract for agent '{contract_name}' from S3: {e}\n\n"
+                    f"Could not load contract for agent '{contract_name}' through Tracker: {e}\n\n"
                     "If the agent has never been pushed, run `valk agent push ./<agent_dir>`."
                 )
             if not lambda_function:

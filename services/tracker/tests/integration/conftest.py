@@ -98,10 +98,10 @@ def test_agent_name(worker_id: str) -> str:
 def seeded_test_agent_artifact(test_agent_name: str, live_aws_runtime: AWSRuntime) -> Generator[str, None, None]:
     """Seed the live S3 agent artifact and always delete it after the session."""
     s3_client = create_s3_client(live_aws_runtime)
-    key = get_contract_s3_key(test_agent_name)
+    key = get_contract_s3_key(test_agent_name, TEST_ORG_ID)
 
     try:
-        seed_test_agent_artifact(s3_client, live_aws_runtime.resources.s3_bucket, test_agent_name)
+        seed_test_agent_artifact(s3_client, live_aws_runtime.resources.s3_bucket, test_agent_name, TEST_ORG_ID)
         yield test_agent_name
     finally:
         try:

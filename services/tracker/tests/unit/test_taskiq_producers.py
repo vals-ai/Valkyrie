@@ -183,8 +183,10 @@ def test_managed_start_and_resume_emit_credential_free_v3(
     assert payloads == []
 
 
+@pytest.mark.parametrize("org_id", [TEST_ORG_ID, UUID("00000000-0000-0000-0000-000000000002")])
 async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
     contract: AgentContractRequest,
+    org_id: UUID,
 ) -> None:
     """Rebuilding from the bundle is what makes the settings trustworthy."""
     contract = contract.model_copy(
@@ -199,16 +201,53 @@ async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
             "secrets:\n  API_KEY: default\n  EXTRA_KEY: extra\n"
             "kwargs:\n  variant:\n    type: str\n    default: max\n    required: false\n",
         )
-    object_store.get_bytes.return_value = archive.getvalue()
 
-    resolved = await main._resolve_contract_from_s3(_start_request(contract), cast(ObjectStore, object_store))
+    async def get_bytes(key: str) -> bytes:
+        if key == f"agents/{org_id}/dummy.zip":
+            return archive.getvalue()
+        raise FileNotFoundError(key)
+
+    object_store.get_bytes.side_effect = get_bytes
+
+    resolved = await main._resolve_contract_from_s3(
+        _start_request(contract), cast(ObjectStore, object_store), org_id=org_id
+    )
 
     assert resolved.inference_settings_attested is True
     assert resolved.name == "dummy"
     assert resolved.model == "test-model"
     assert resolved.kwargs == {"variant": "custom"}
     assert resolved.secrets == {"API_KEY": "override", "EXTRA_KEY": "extra"}
-    object_store.get_bytes.assert_awaited_once_with("agents/dummy.zip")
+    object_store.get_bytes.assert_awaited_once_with(f"agents/{org_id}/dummy.zip")
+
+
+@pytest.mark.parametrize("resolve_contract", [False, True])
+def test_start_rejects_aliases_outside_the_authenticated_tenant(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    resolve_contract: bool,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    _promote_test_release(database_session)
+    payloads = _capture_task_payloads(monkeypatch)
+    aliases = {
+        f"agents/{contract.name}.zip",
+        f"agents/00000000-0000-0000-0000-000000000002/{contract.name}.zip",
+    }
+
+    async def exists(_store: ObjectStore, key: str) -> bool:
+        return key in aliases
+
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", exists)
+    if resolve_contract:
+        contract = contract.model_copy(update={"install_cmd": "", "run_cmd": ""})
+
+    response = client.post("/start-benchmark", json=_start_request(contract).model_dump(mode="json"))
+
+    assert response.status_code == 404
+    assert database_session.exec(select(Benchmark)).all() == []
+    assert payloads == []
 
 
 def test_start_clears_a_caller_asserted_attestation(

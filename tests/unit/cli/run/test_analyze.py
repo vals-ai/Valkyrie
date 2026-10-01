@@ -10,7 +10,7 @@ from uuid import UUID
 import pytest
 from click.testing import CliRunner
 from tracker.database.models import AgentContractRequest, AWSBenchmarkArguments
-from tracker.exceptions import S3Error
+from valkyrie.sdk.errors import ValkyrieAPIError
 from tracker.types import FetchBenchmarkMetadataResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -64,7 +64,7 @@ class TestAnalyzeCommand:
         tracker.analyze_benchmark.return_value = iter(events)
         mock_ingest_lookup = AsyncMock(return_value="docent-ingest")
         monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
-        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", mock_ingest_lookup)
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda", mock_ingest_lookup)
 
         result = cli_runner.invoke(analyze, [str(_RUN_ID), "--no-cache"])
 
@@ -83,13 +83,13 @@ class TestAnalyzeCommand:
         ("lookup_result", "lookup_error", "expected_message"),
         [
             (None, None, "has no `ingest_lambda` set"),
-            (None, S3Error("missing archive"), "Could not load contract for agent 'analysis-agent'"),
+            (None, ValkyrieAPIError(404, "Agent not found"), "Could not load contract for agent 'analysis-agent'"),
         ],
     )
     def test_missing_analysis_contract_reports_remediation(
         self,
         lookup_result: str | None,
-        lookup_error: S3Error | None,
+        lookup_error: ValkyrieAPIError | None,
         expected_message: str,
         monkeypatch: pytest.MonkeyPatch,
         cli_runner: CliRunner,
@@ -103,7 +103,7 @@ class TestAnalyzeCommand:
         tracker = _tracker()
         mock_ingest_lookup = AsyncMock(return_value=lookup_result, side_effect=lookup_error)
         monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
-        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", mock_ingest_lookup)
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda", mock_ingest_lookup)
 
         result = cli_runner.invoke(analyze, [str(_RUN_ID)])
 
@@ -138,7 +138,7 @@ class TestAnalyzeCommand:
             f"Cannot analyze run {_RUN_ID}: status is {status} (must be FINISHED)."
         )
         monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
-        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", AsyncMock(return_value="docent-ingest"))
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda", AsyncMock(return_value="docent-ingest"))
 
         result = cli_runner.invoke(analyze, [str(_RUN_ID)])
 

@@ -11,6 +11,7 @@ from benchmark_service import ImageSource, Resources, SandboxProvider
 from tests.utils import random_task_id
 from tests.integration.seed_agent_artifacts import create_s3_client
 from tracker.aws.runtime import AWSRuntime
+from tests.utils import TEST_ORG_ID
 from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, upload_agent_artifacts
@@ -63,7 +64,7 @@ class TestUploadArtifactsAcrossImages:
 
         # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
         s3 = create_s3_client(live_aws_runtime)
-        agent_key = get_contract_s3_key(contract.name)
+        agent_key = get_contract_s3_key(contract.name, TEST_ORG_ID)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
         s3.copy_object(
             Bucket=aws_runtime.resources.s3_bucket,

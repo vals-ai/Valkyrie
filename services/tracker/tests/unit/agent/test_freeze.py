@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import tracker.aws.s3 as s3_module
+from tests.utils import TEST_ORG_ID
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectCopy, copy_agent_to_benchmark
 
@@ -31,11 +32,6 @@ class TestCopyAgentToBenchmark:
         exists_mock = AsyncMock(return_value=destination_exists)
         copy_mock = AsyncMock(return_value="version-1")
 
-        # Restore the production key layout replaced by the unit-test S3 fixture.
-        def get_contract_s3_key(name: str) -> str:
-            return f"agents/{name}.zip"
-
-        monkeypatch.setattr(s3_module, "get_contract_s3_key", get_contract_s3_key)
         monkeypatch.setattr(s3_module, "s3_object_exists", exists_mock)
         monkeypatch.setattr(s3_module, "copy_s3_object", copy_mock)
 
@@ -43,6 +39,7 @@ class TestCopyAgentToBenchmark:
             benchmark_id="bench-123",
             contract_name="my_agent",
             runtime=aws_runtime,
+            org_id=TEST_ORG_ID,
         )
 
         assert created == (None if destination_exists else S3ObjectCopy(version_id="version-1"))
@@ -51,7 +48,7 @@ class TestCopyAgentToBenchmark:
             copy_mock.assert_not_awaited()
         else:
             copy_mock.assert_awaited_once_with(
-                "agents/my_agent.zip",
+                f"agents/{TEST_ORG_ID}/my_agent.zip",
                 "benchmarks/bench-123/my_agent.zip",
                 aws_runtime,
             )

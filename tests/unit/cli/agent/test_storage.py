@@ -3,39 +3,43 @@
 Run: uv run pytest tests/unit/cli/agent/test_storage.py
 """
 
-import io
-import zipfile
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from tracker.exceptions import S3Error
 from valkyrie.sdk.errors import ValkyrieAPIError
 
 from valkyrie.cli.agent import storage
 
 
-async def test_ingest_reads_current_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("demo/contract.yaml", "ingest_lambda: demo-ingest")
-    monkeypatch.setattr(storage.cli_s3, "aws_runtime", object)
-    monkeypatch.setattr(storage, "s3_object_exists", AsyncMock(return_value=True))
-    monkeypatch.setattr(storage, "download_from_s3", AsyncMock(return_value=buffer.getvalue()))
+@pytest.mark.parametrize("extension", ["yaml", "yml"])
+async def test_ingest_reads_current_contract(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extension: str) -> None:
+    agent_path = tmp_path / "demo"
+    agent_path.mkdir()
+    contract_path = agent_path / f"contract.{extension}"
+    contract_path.write_text("ingest_lambda: demo-ingest")
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.agents.download.return_value = agent_path
+    monkeypatch.setattr(storage.ValkyrieClient, "from_config", Mock(return_value=client))
 
-    assert await storage.get_ingest_lambda_from_s3("demo") == "demo-ingest"
+    assert await storage.get_ingest_lambda("demo") == "demo-ingest"
 
-    monkeypatch.setattr(storage, "s3_object_exists", AsyncMock(return_value=False))
+    contract_path.write_text("name: demo")
 
-    with pytest.raises(S3Error, match="not found"):
-        await storage.get_ingest_lambda_from_s3("missing")
+    assert await storage.get_ingest_lambda("demo") is None
+
+    client.agents.download.side_effect = ValkyrieAPIError(404, "Agent not found")
+
+    with pytest.raises(ValkyrieAPIError, match="404"):
+        await storage.get_ingest_lambda("missing")
 
 
 async def test_run_start_publish_atomically_refuses_alias_collision(monkeypatch: pytest.MonkeyPatch) -> None:
     client = AsyncMock()
     client.__aenter__.return_value = client
     client.agents.push.side_effect = [None, ValkyrieAPIError(409, "Already exists"), ValkyrieAPIError(500, "Failed")]
-    monkeypatch.setattr(storage.ValkyrieClient, "from_config", lambda *args, **kwargs: client)
+    monkeypatch.setattr(storage.ValkyrieClient, "from_config", Mock(return_value=client))
 
     assert await storage.push_agent_if_absent("demo", Path("/unused")) is True
     assert await storage.push_agent_if_absent("demo", Path("/unused")) is False

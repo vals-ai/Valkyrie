@@ -3,12 +3,22 @@
 Run: uv run pytest tests/integration/local/cli/test_write_commands.py
 """
 
+import asyncio
 import json
 from pathlib import Path
+from uuid import UUID
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from tracker.auth import get_current_org
 
 from click.testing import CliRunner
 from sqlmodel import Session, select
-from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+
+from tests.integration.local.conftest import TEST_ORG_ID
+from valkyrie.cli.agent.storage import get_ingest_lambda
 
 from valkyrie.cli.main import cli
 
@@ -29,14 +39,14 @@ def test_agent_library_round_trip(
 
     assert result.exit_code == 0, result.output
     assert "Agent 'demo' pushed successfully!" in result.output
-    assert "agents/demo.zip" in agent_library
+    assert f"agents/{TEST_ORG_ID}/demo.zip" in agent_library
     result = cli_runner.invoke(cli, ["agent", "remove", "demo"], input="y\n")
     assert result.exit_code == 0, result.output
 
     result = cli_runner.invoke(cli, ["agent", "push", str(source), "--name", "alias"])
 
     assert result.exit_code == 0, result.output
-    assert "agents/alias.zip" in agent_library
+    assert f"agents/{TEST_ORG_ID}/alias.zip" in agent_library
 
     result = cli_runner.invoke(cli, ["agent", "list"])
 
@@ -72,7 +82,7 @@ def test_agent_library_round_trip(
     cancelled = cli_runner.invoke(cli, ["agent", "remove", "alias"], input="n\n")
 
     assert cancelled.exit_code == 0
-    assert "agents/alias.zip" in agent_library
+    assert f"agents/{TEST_ORG_ID}/alias.zip" in agent_library
 
     result = cli_runner.invoke(cli, ["agent", "remove", "alias"], input="y\n")
 
@@ -83,6 +93,59 @@ def test_agent_library_round_trip(
 
     assert missing.exit_code == 1
     assert "404" in missing.output
+
+
+def test_agent_aliases_are_isolated_between_tenants(
+    cli_runner: CliRunner,
+    agent_library: dict[str, bytes],
+    local_tracker_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    other_org = Org(id=UUID("00000000-0000-0000-0000-000000000002"), name="other")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", f"{TEST_ORG_ID},{other_org.id}")
+    source = tmp_path / "source"
+    source.mkdir()
+    contract_path = source / "contract.yaml"
+    contract_path.write_text(
+        "name: demo\ninstall_cmd: 'true'\nrun_cmd: 'echo {problem_statement_path}'\ningest_lambda: first-ingest\n"
+    )
+    result = cli_runner.invoke(cli, ["agent", "push", str(source)])
+    assert result.exit_code == 0, result.output
+    first_key = f"agents/{TEST_ORG_ID}/demo.zip"
+    first_bundle = agent_library[first_key]
+    agent_library["agents/demo.zip"] = b"global alias must not be used"
+
+    with monkeypatch.context() as other_tenant:
+        other_tenant.setitem(local_tracker_app.dependency_overrides, get_current_org, lambda: other_org)
+        with TestClient(local_tracker_app) as client:
+            assert client.get("/agents").json() == {"agents": []}
+            assert client.get("/agents/demo/download-url").status_code == 404
+            assert client.delete("/agents/demo").status_code == 404
+            assert (
+                client.put(
+                    "/agents/demo?overwrite=false", headers={"content-type": "application/zip"}, content=first_bundle
+                ).status_code
+                == 200
+            )
+            assert (
+                client.put(
+                    "/agents/demo?overwrite=false", headers={"content-type": "application/zip"}, content=first_bundle
+                ).status_code
+                == 409
+            )
+        contract_path.write_text(contract_path.read_text().replace("first-ingest", "second-ingest"))
+        result = cli_runner.invoke(cli, ["agent", "push", str(source)])
+        assert result.exit_code == 0, result.output
+        assert asyncio.run(get_ingest_lambda("demo")) == "second-ingest"
+        assert agent_library[first_key] == first_bundle
+        result = cli_runner.invoke(cli, ["agent", "remove", "demo"], input="y\n")
+        assert result.exit_code == 0, result.output
+
+    assert asyncio.run(get_ingest_lambda("demo")) == "first-ingest"
+    assert agent_library[first_key] == first_bundle
+    assert f"agents/{other_org.id}/demo.zip" not in agent_library
+    assert agent_library["agents/demo.zip"] == b"global alias must not be used"
 
 
 def test_cli_stops_only_selected_pending_tasks(
@@ -200,7 +263,7 @@ def test_cli_exports_tracker_results_without_private_contract_values(
 
 
 async def test_sdk_updates_persisted_concurrency(
-    seeded_runs: tuple[Benchmark, Benchmark], database_session: Session, local_tracker_app
+    seeded_runs: tuple[Benchmark, Benchmark], database_session: Session, local_tracker_app: FastAPI
 ) -> None:
     import httpx
     from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
@@ -218,7 +281,11 @@ async def test_sdk_updates_persisted_concurrency(
 
 
 def test_cli_downloads_run_artifacts_through_tracker(
-    cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark], local_tracker_app, monkeypatch, tmp_path: Path
+    cli_runner: CliRunner,
+    seeded_runs: tuple[Benchmark, Benchmark],
+    local_tracker_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import httpx
     from unittest.mock import AsyncMock
@@ -230,7 +297,11 @@ def test_cli_downloads_run_artifacts_through_tracker(
     client.list_objects_v2.return_value = {"Contents": [{"Key": f"benchmarks/{running.id}/task/result.txt", "Size": 6}]}
     client.head_object.return_value = {"ContentLength": 6}
     client.generate_presigned_url.return_value = "https://download.test/artifact"
-    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", lambda _: client)
+
+    def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
+        return client
+
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
 
     async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         if request.url.host == "download.test":

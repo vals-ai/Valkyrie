@@ -10,10 +10,11 @@ import zlib
 from collections.abc import AsyncIterator, Generator
 from contextlib import contextmanager
 from typing import BinaryIO
+from uuid import UUID
 
 import yaml
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from tracker import config
@@ -21,7 +22,10 @@ from tracker.agent.archive import ArchiveLimitError, validate_agent_archive
 from tracker.agent.schemas import validate_agent_name
 from tracker.api.dependencies import AgentLibraryRuntimeDependency
 from tracker.api.download import local_file_response, resolve_download_url
-from tracker.runtime.artifacts import list_agents
+from tracker.auth import get_current_org
+from tracker.database.models import Org
+from tracker.local import config as local_config
+from tracker.runtime.artifacts import agent_bundle_key, list_agents
 from tracker.exceptions import S3Error
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 
@@ -30,13 +34,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents")
 
 
-def _agent_key(name: str) -> str:
+def _agent_key(name: str, org_id: UUID) -> str:
     try:
         validate_agent_name(name)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    return f"agents/{name}.zip"
+    return agent_bundle_key(name, org_id=None if local_config.resources is not None else org_id)
 
 
 @contextmanager
@@ -73,10 +77,11 @@ async def _file_chunks(stream: BinaryIO) -> AsyncIterator[bytes]:
 @router.get("", response_model=AgentsResponse)
 async def list_agents_endpoint(
     runtime: AgentLibraryRuntimeDependency,
+    org: Org = Depends(get_current_org),
 ) -> AgentsResponse:
     """List agent zips in the configured shared library."""
     with _storage_errors():
-        agents = await list_agents(runtime.objects)
+        agents = await list_agents(runtime.objects, org_id=None if local_config.resources is not None else org.id)
 
     return AgentsResponse(
         agents=[
@@ -92,9 +97,10 @@ async def get_agent_download_url(
     runtime: AgentLibraryRuntimeDependency,
     request: Request,
     download: bool = False,
+    org: Org = Depends(get_current_org),
 ) -> AgentDownloadURLResponse | FileResponse:
     """Return a download URL for the authorized agent."""
-    key = _agent_key(name)
+    key = _agent_key(name, org.id)
     with _storage_errors():
         if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
@@ -139,9 +145,10 @@ async def push_agent_endpoint(
     request: Request,
     runtime: AgentLibraryRuntimeDependency,
     overwrite: bool = True,
+    org: Org = Depends(get_current_org),
 ) -> AgentEntry:
     """Validate and publish an agent ZIP, optionally refusing to replace an existing alias."""
-    key = _agent_key(name)
+    key = _agent_key(name, org.id)
     if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/zip":
         raise HTTPException(status_code=415, detail="Expected application/zip")
     content_length = request.headers.get("content-length")
@@ -189,9 +196,10 @@ async def push_agent_endpoint(
 async def remove_agent_endpoint(
     name: str,
     runtime: AgentLibraryRuntimeDependency,
+    org: Org = Depends(get_current_org),
 ) -> AgentEntry:
     """Remove an existing ZIP from the configured shared agent library."""
-    key = _agent_key(name)
+    key = _agent_key(name, org.id)
     with _storage_errors():
         if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
+from uuid import UUID
 
 import logfire
 from botocore.exceptions import BotoCoreError, ClientError
@@ -14,13 +15,13 @@ from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
 from tracker.runtime.storage import ArtifactLocations, StoredObject, StoredObjectCopy
+from tracker.runtime.artifacts import agent_bundle_key, agent_library_prefix
 
 logger = get_logger(__name__)
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
-S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
 # S3 multipart uploads require every part except the last to be at least 5 MiB.
@@ -46,9 +47,9 @@ def s3_owner_arguments(runtime: AWSRuntime) -> dict[str, str]:
     return {"ExpectedBucketOwner": runtime.expected_bucket_owner}
 
 
-def get_contract_s3_key(contract_name: str) -> str:
+def get_contract_s3_key(contract_name: str, org_id: UUID) -> str:
     """Get the S3 key for an agent zip file."""
-    return f"{S3_AGENTS_PREFIX}/{contract_name}.zip"
+    return agent_bundle_key(contract_name, org_id=org_id)
 
 
 def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str) -> str:
@@ -304,17 +305,19 @@ async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) ->
         raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {e}") from e
 
 
-async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, runtime: AWSRuntime) -> S3ObjectCopy | None:
+async def copy_agent_to_benchmark(
+    benchmark_id: str, contract_name: str, runtime: AWSRuntime, *, org_id: UUID
+) -> S3ObjectCopy | None:
     """
     Freeze the agent for a benchmark run by copying
-    agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
+    agents/<org_id>/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
 
     # NOTE: Skips if it already exists at that location
 
     Returns:
         The created object identity, or None when the destination already exists.
     """
-    source_key = get_contract_s3_key(contract_name)
+    source_key = get_contract_s3_key(contract_name, org_id)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
 
     if await s3_object_exists(dest_key, runtime):
@@ -443,25 +446,26 @@ def create_benchmark_url(benchmark_id: str, resources: AWSResources) -> str:
 
 
 @handle_s3_error(message="Failed to list agents from S3")
-async def list_agents(runtime: AWSRuntime) -> list[tuple[str, datetime | None]]:
-    """List zipped agent bundles under the `agents/` prefix.
+async def list_agents(runtime: AWSRuntime, *, org_id: UUID) -> list[tuple[str, datetime | None]]:
+    """List zipped agent bundles under the organization's prefix.
 
-    Returns (name, last_modified) pairs, one per `agents/<name>.zip`.
+    Returns (name, last_modified) pairs, one per `agents/<org_id>/<name>.zip`.
 
     Raises:
         S3Error: If listing fails due to AWS errors or network issues
     """
     agents: list[tuple[str, datetime | None]] = []
+    prefix = agent_library_prefix(org_id)
     async with runtime.clients.s3_client() as client:
         paginator = client.get_paginator("list_objects_v2")
         async for page in paginator.paginate(
             Bucket=runtime.resources.s3_bucket,
-            Prefix="agents/",
+            Prefix=prefix,
             **s3_owner_arguments(runtime),
         ):
             for s3_object in page.get("Contents", []):
-                tail = s3_object["Key"][len("agents/") :]
-                if not tail.endswith(".zip"):
+                tail = s3_object["Key"][len(prefix) :]
+                if "/" in tail or not tail.endswith(".zip"):
                     continue
                 agents.append((tail[: -len(".zip")], s3_object.get("LastModified")))
 

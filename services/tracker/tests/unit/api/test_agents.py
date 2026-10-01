@@ -23,6 +23,7 @@ from tracker.local.resources import LocalResources
 from tracker.exceptions import S3Error
 
 import tracker.api.agents as agents_api
+from tests.utils import TEST_ORG_ID
 from main import app
 from tracker.aws import s3 as aws_s3
 from tracker.aws.s3 import S3ObjectStore
@@ -250,9 +251,9 @@ class TestAgentRoutes:
             "download_url": "https://example.test/agent-a.zip",
             "expires_in": agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
         }
-        exists.assert_awaited_once_with("agents/agent-a.zip")
+        exists.assert_awaited_once_with(f"agents/{TEST_ORG_ID}/agent-a.zip")
         presigned_url.assert_awaited_once_with(
-            "agents/agent-a.zip",
+            f"agents/{TEST_ORG_ID}/agent-a.zip",
             expires_in=agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
         )
 
@@ -273,7 +274,7 @@ class TestAgentRoutes:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Agent 'missing' not found in S3"
-        exists.assert_awaited_once_with("agents/missing.zip")
+        exists.assert_awaited_once_with(f"agents/{TEST_ORG_ID}/missing.zip")
 
     def test_local_agent_download_is_scoped_and_requires_authentication(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

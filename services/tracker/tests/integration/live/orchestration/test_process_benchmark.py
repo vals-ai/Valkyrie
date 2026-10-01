@@ -81,6 +81,7 @@ async def _create_benchmark(
         str(benchmark.id),
         contract.name,
         live_aws_runtime,
+        org_id=benchmark.org_id,
     )
     if copied:
         frozen_contract_keys.add(get_benchmark_contract_s3_key(str(benchmark.id), contract.name))

@@ -19,6 +19,7 @@ from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundEr
 from tests.utils import random_task_id
 from tests.integration.seed_agent_artifacts import create_s3_client
 from tracker.aws.runtime import AWSRuntime
+from tests.utils import TEST_ORG_ID
 from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.egress import combine_run_egress_policies
@@ -171,7 +172,7 @@ class TestSandboxOperations:
 
         # Upload zip to real S3
         s3 = create_s3_client(live_aws_runtime)
-        agent_key = get_contract_s3_key(contract_name)
+        agent_key = get_contract_s3_key(contract_name, TEST_ORG_ID)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
         s3.put_object(
             Bucket=live_aws_runtime.resources.s3_bucket,

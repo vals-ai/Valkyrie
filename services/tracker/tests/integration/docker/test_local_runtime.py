@@ -57,9 +57,9 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path,
         )
     secrets = InMemorySecretStore(contract.secrets, {"LOCAL_TEST_KEY": "transient-value"})
     runtime = LocalRuntimeFactory.create_runtime(tmp_path, org_id, secrets=secrets)
-    await runtime.objects.put_bytes(agent_bundle_key(contract.name), stream.getvalue())
-    await copy_agent_to_benchmark(runtime.objects, benchmark_id, contract.name)
-    await runtime.objects.put_bytes(agent_bundle_key(contract.name), b"replacement bundle")
+    await runtime.objects.put_bytes(agent_bundle_key(contract.name, org_id=None), stream.getvalue())
+    await copy_agent_to_benchmark(runtime.objects, benchmark_id, contract.name, org_id=None)
+    await runtime.objects.put_bytes(agent_bundle_key(contract.name, org_id=None), b"replacement bundle")
     await runtime.logs.create_benchmark(benchmark_id, retention_days=0)
     provider_config = await runtime.get_sandbox_provider_config()
     async with provider_config.create_provider() as provider:
