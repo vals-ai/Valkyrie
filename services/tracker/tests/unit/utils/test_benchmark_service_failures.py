@@ -46,6 +46,7 @@ from tests.unit.utils.task_execution_support import (
     make_retrieve_task_response,
     run_process_task,
 )
+from tracker.runtime.secrets import SecretValue
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -784,9 +785,15 @@ class TestBenchmarkServiceFailures:
         """An error the agent writes to $VALKYRIE_ERROR_PATH is what operators read back for the task."""
         if secret_source == "contract":
             contract = contract.model_copy(update={"secrets": {"OPENAI_API_KEY": "test-key-reference"}})
-            monkeypatch.setattr(
-                RuntimeServices, "resolve_secrets", AsyncMock(return_value={"OPENAI_API_KEY": "fake-sensitive-value"})
-            )
+            original_get = runtime_services.secrets.get
+
+            async def read_secret(name: str) -> SecretValue:
+                if name == "test-key-reference":
+                    return "fake-sensitive-value"
+
+                return await original_get(name)
+
+            monkeypatch.setattr(runtime_services.secrets, "get", read_secret)
         if secret_source == "provider":
             task_data = make_retrieve_task_response().model_copy(
                 update={"sandbox_secrets": {"OPENAI_API_KEY": "provider-key-reference"}}
