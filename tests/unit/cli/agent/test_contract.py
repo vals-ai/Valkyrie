@@ -672,6 +672,7 @@ class TestParseYamlContract:
 
         assert result.name == "my_agent"
 
+
 class TestPushCommand:
     @pytest.mark.parametrize("name", [None, "override"])
     def test_push_reports_resolved_name(
