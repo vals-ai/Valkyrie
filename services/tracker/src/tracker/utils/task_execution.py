@@ -6,7 +6,7 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1105,13 +1105,7 @@ async def _process_task_attempt(
             ),
             **recovery_attempt.environment,
         }
-        # Opaque provider-managed secrets cannot be masked here. Do not export
-        # optional agent error text when those values are unavailable to Tracker.
-        redact_error = (
-            None
-            if task_data.sandbox_secrets
-            else create_agent_error_redactor(env_vars[name] for name in start_benchmark_request.contract.secrets)
-        )
+        redact_error: Callable[[str], str] | None = None
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -1121,7 +1115,7 @@ async def _process_task_attempt(
 
         @asynccontextmanager
         async def sandbox_context() -> AsyncGenerator[Sandbox]:
-            nonlocal start_sandbox_build_time
+            nonlocal start_sandbox_build_time, redact_error
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
                 task_row.task_id
@@ -1140,6 +1134,14 @@ async def _process_task_attempt(
                 org_name=org.name,
                 agent_timeout=task_data.agent_timeout,
             ) as scoped_env_vars:
+                # Mask the values actually supplied to this sandbox, including
+                # its newly minted gateway token. Opaque provider secrets still
+                # disable optional reports because Tracker cannot inspect them.
+                redact_error = (
+                    None
+                    if task_data.sandbox_secrets
+                    else create_agent_error_redactor(scoped_env_vars[name] for name in contract.secrets)
+                )
                 async with create_sandbox(
                     provider=sandbox_provider,
                     sandbox_name=sandbox_name,

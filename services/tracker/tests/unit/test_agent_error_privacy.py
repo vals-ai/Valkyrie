@@ -14,7 +14,7 @@ from tracker.exceptions import AgentRunFailedError
 from tracker.sandbox import create_agent_error_redactor, stream_command_output
 
 
-async def reported_failure(content: str, secret_values: tuple[str, ...] | None) -> tuple[str, list[str]]:
+async def _reported_failure(content: str, secret_values: tuple[str, ...] | None) -> tuple[str, list[str]]:
     commands: list[str] = []
 
     async def command(_command: str) -> AsyncIterator[str]:
@@ -50,13 +50,13 @@ class TestAgentErrorPrivacy:
 
     @pytest.mark.parametrize("content", ["test-secret-value", "ValueError: test-secret-value"])
     async def test_opaque_secrets_disable_optional_error_read(self, content: str) -> None:
-        message, commands = await reported_failure(content, None)
+        message, commands = await _reported_failure(content, None)
 
         assert message == "Sandbox error: Agent command failed with exit code 1"
         assert not any(command.startswith("head -c ") for command in commands)
 
     async def test_known_secret_values_are_masked_before_error_is_raised(self) -> None:
-        message, _ = await reported_failure(
+        message, _ = await _reported_failure(
             "ValueError: rejected test-secret-long and test-secret",
             ("test-secret", "test-secret-long", ""),
         )
@@ -66,7 +66,7 @@ class TestAgentErrorPrivacy:
         assert "unrelated raw output" not in message
 
     async def test_multiline_secret_is_masked_before_whitespace_normalization(self) -> None:
-        message, _ = await reported_failure("ValueError: rejected line-one\nline-two", ("line-one\nline-two",))
+        message, _ = await _reported_failure("ValueError: rejected line-one\nline-two", ("line-one\nline-two",))
 
         assert message.endswith("ValueError: rejected [REDACTED]")
 
@@ -77,7 +77,7 @@ class TestAgentErrorPrivacy:
         count, remainder = divmod(padding_bytes, len(padding.encode()))
         content = prefix + padding * count + "x" * remainder
 
-        message, _ = await reported_failure(content, ("API_KEY",))
+        message, _ = await _reported_failure(content, ("API_KEY",))
 
         assert "ValueError: [REDACTED] " in message
         assert "API_KEY" not in message
@@ -89,19 +89,19 @@ class TestAgentErrorPrivacy:
 
     @pytest.mark.parametrize("content", ["raw prompt or model output", "", "ValueError:", "ValueError: bad\x00text"])
     async def test_malformed_report_keeps_only_exit_code(self, content: str) -> None:
-        message, _ = await reported_failure(content, ())
+        message, _ = await _reported_failure(content, ())
 
         assert message == "Sandbox error: Agent command failed with exit code 1"
 
     async def test_oversized_report_is_not_truncated_through_a_secret(self) -> None:
         content = "ValueError: " + "x" * 2030 + "test-secret-value"
 
-        message, commands = await reported_failure(content, ("test-secret-value",))
+        message, commands = await _reported_failure(content, ("test-secret-value",))
 
         assert message == "Sandbox error: Agent command failed with exit code 1"
         assert any(command.startswith("head -c 2049 ") for command in commands)
 
     async def test_small_original_error_is_preserved_with_no_declared_secrets(self) -> None:
-        message, _ = await reported_failure("ValueError: no patch\n", ())
+        message, _ = await _reported_failure("ValueError: no patch\n", ())
 
         assert message.endswith("ValueError: no patch")

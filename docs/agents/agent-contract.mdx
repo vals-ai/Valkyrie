@@ -126,7 +126,7 @@ For ordinary nonzero `run_cmd` exits, the task error records the exit code. Rese
 
 The optional report must be at most 2048 bytes and contain a printable exception summary, for example `ValueError: model returned no patch`. Tracker normalizes whitespace and rejects malformed or oversized input reports. It replaces literal secret values resolved from the contract's `secrets` with `[REDACTED]` before storing the summary. If masking expands an accepted report beyond 2048 bytes, Tracker shortens the already-masked summary at a complete UTF-8 character boundary. When a task uses provider-managed `sandbox_secrets`, Tracker cannot read those secret values and omits the optional report entirely; the exit code and failure category remain available.
 
-This literal masking does not protect arbitrary customer data, transformed secrets, or secrets acquired by the agent itself. Write an exception summary rather than prompts, credentials, or model/tool output. Valid reports are persisted in task errors and can appear in logs and error monitoring.
+Masking uses the secret values actually passed to the sandbox, including a task-scoped Model Gateway token when one replaces the configured key. This literal masking does not protect arbitrary customer data, transformed secrets, or secrets acquired by the agent itself. Write an exception summary rather than prompts, credentials, or model/tool output. Valid reports are persisted in task errors and can appear in logs and error monitoring.
 
 ```bash
 my_agent --task "{problem_statement_path}" || { echo "AgentError: model returned no patch" > "$VALKYRIE_ERROR_PATH"; exit 1; }

@@ -34,6 +34,7 @@ from websockets.frames import Close
 from websockets.http11 import Response
 
 import tracker.sandbox as sandbox_module
+import tracker.runtime.model_gateway as model_gateway
 import tracker.utils.run_orchestration as run_orchestration_module
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 import tracker.utils.task_execution as utils_module
@@ -769,7 +770,14 @@ class TestBenchmarkServiceFailures:
     @pytest.mark.usefixtures("process_benchmark_env")
     @pytest.mark.parametrize(
         ("secret_source", "failure_phase"),
-        [("none", "run"), ("contract", "run"), ("provider", "run"), ("contract", "install")],
+        [
+            ("none", "run"),
+            ("contract", "run"),
+            ("provider", "run"),
+            ("contract", "install"),
+            ("gateway", "run"),
+            ("gateway", "install"),
+        ],
     )
     async def test_agent_reported_error_reaches_task_api(
         self,
@@ -783,17 +791,43 @@ class TestBenchmarkServiceFailures:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """An error the agent writes to $VALKYRIE_ERROR_PATH is what operators read back for the task."""
-        if secret_source == "contract":
-            contract = contract.model_copy(update={"secrets": {"OPENAI_API_KEY": "test-key-reference"}})
+        if secret_source in {"contract", "gateway"}:
+            secrets = {"OPENAI_API_KEY": "test-key-reference"}
+            if secret_source == "gateway":
+                secrets = {
+                    "MODEL_GATEWAY_API_KEY": "gateway-key-reference",
+                    "MODEL_GATEWAY_URL": "gateway-url-reference",
+                }
+            contract = contract.model_copy(update={"secrets": secrets})
             original_get = runtime_services.secrets.get
 
             async def read_secret(name: str) -> SecretValue:
-                if name == "test-key-reference":
-                    return "fake-sensitive-value"
+                values = {
+                    "test-key-reference": "fake-sensitive-value",
+                    "gateway-key-reference": "fake-static-value",
+                    "gateway-url-reference": "https://gateway.test",
+                }
+                if name in values:
+                    return values[name]
 
                 return await original_get(name)
 
             monkeypatch.setattr(runtime_services.secrets, "get", read_secret)
+        if secret_source == "gateway":
+            contract = contract.model_copy(update={"model": "openai/gpt-4o", "inference_settings_attested": True})
+
+            def gateway_response(request: httpx.Request) -> httpx.Response:
+                if request.url.path == "/service-auth":
+                    return httpx.Response(
+                        200,
+                        json={"token": "fake-sensitive-value", "lease_id": "test-lease", "expires_at": 1_800_000_000},
+                    )
+                assert request.url.path == "/service-auth/revoke"
+                return httpx.Response(200)
+
+            gateway_client = httpx.AsyncClient(transport=httpx.MockTransport(gateway_response))
+            # MockTransport has no network resources; the client is only used by this test.
+            monkeypatch.setattr(model_gateway, "_client", gateway_client)
         if secret_source == "provider":
             task_data = make_retrieve_task_response().model_copy(
                 update={"sandbox_secrets": {"OPENAI_API_KEY": "provider-key-reference"}}
@@ -833,6 +867,8 @@ class TestBenchmarkServiceFailures:
 
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Mock]:
+            if secret_source == "gateway":
+                assert _kwargs["env_vars"]["MODEL_GATEWAY_API_KEY"] == "fake-sensitive-value"
             sandbox = Mock()
             sandbox.id = "mock-sandbox-id"
             sandbox.name = "mock-sandbox"
@@ -885,7 +921,7 @@ class TestBenchmarkServiceFailures:
         expected_error = f"AgentRunFailedError: Sandbox error: {subject} failed with exit code 1"
         if secret_source == "none":
             expected_error += ": AgentError: model returned no patch"
-        elif secret_source == "contract":
+        elif secret_source in {"contract", "gateway"}:
             expected_error += ": AgentError: rejected [REDACTED]"
 
         assert error_result.error_message == expected_error
@@ -911,6 +947,69 @@ class TestBenchmarkServiceFailures:
 
         record = next(record for record in caplog.records if record.getMessage() == "Task execution failed")
         assert "fake-sensitive-value" not in JsonFormatter().format(record)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize("explicit_cause", [True, False])
+    async def test_wrapped_failure_preserves_diagnostic_traceback(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+        runtime_services: RuntimeServices,
+        caplog: pytest.LogCaptureFixture,
+        explicit_cause: bool,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract, database_session, harness_config
+        )
+
+        async def _failing_retrieve_task(*_args: Any, **_kwargs: Any) -> Never:
+            try:
+                raise ValueError("task input missing")
+            except ValueError as cause:
+                if explicit_cause:
+                    raise RuntimeError("retrieve failed") from cause
+                raise RuntimeError("retrieve failed")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _failing_retrieve_task)
+        events: list[Any] = []
+        with sentry_sdk.init(
+            dsn="https://public@example.com/1",
+            transport=events.append,
+            default_integrations=False,
+            include_local_variables=False,
+        ):
+            utils_module.logger.addHandler(caplog.handler)
+            try:
+                result = await run_process_task(
+                    start_benchmark_request, task_row, benchmark_id, runtime_services, authority
+                )
+            finally:
+                utils_module.logger.removeHandler(caplog.handler)
+
+        assert result == {"task_0": None}
+        relationship = "caused by" if explicit_cause else "during handling of"
+        expected = f"RuntimeError: retrieve failed ({relationship} ValueError: task input missing)"
+        assert self._latest_task_error(database_session, task_row) == expected
+        response = TestClient(app).get(f"/benchmarks/{benchmark_id}/tasks/{task_row.task_id}")
+        assert response.status_code == 200
+        assert response.json()["error_message"] == expected
+
+        event = next(event for event in events if "exception" in event)
+        exceptions = event["exception"]["values"]
+        assert [(exc["type"], exc["value"]) for exc in exceptions] == [
+            ("ValueError", "task input missing"),
+            ("RuntimeError", "retrieve failed"),
+        ]
+        for exc in exceptions:
+            assert any(frame["function"] == "_failing_retrieve_task" for frame in exc["stacktrace"]["frames"])
+        record = next(record for record in caplog.records if record.getMessage() == "Task execution failed")
+        structured = json.loads(JsonFormatter().format(record))
+        assert "ValueError: task input missing" in structured["exc_info"]
+        assert "RuntimeError: retrieve failed" in structured["exc_info"]
+        assert "_failing_retrieve_task" in structured["exc_info"]
+        assert "Traceback (most recent call last)" in structured["exc_info"]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_empty_network_error_stores_visible_message(
