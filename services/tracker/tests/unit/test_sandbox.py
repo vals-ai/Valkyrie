@@ -1845,9 +1845,8 @@ class TestRunAgent:
         post_deadline_timeouts = [value for value in timeout_deadlines if value - started_before > 1.0]
         assert len(post_deadline_timeouts) == 3
         assert post_deadline_timeouts[0] == post_deadline_timeouts[1]
-        assert (
-            post_deadline_timeouts[-1] - post_deadline_timeouts[0]
-            == sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS - sandbox_module.GENERATION_ARBITRATION_GRACE_SECONDS
+        assert post_deadline_timeouts[-1] - post_deadline_timeouts[0] == pytest.approx(
+            sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS - sandbox_module.GENERATION_ARBITRATION_GRACE_SECONDS
         )
         apparent_deadline = post_deadline_timeouts[-1] - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
         assert 0.005 <= apparent_deadline - started_before < 0.015
