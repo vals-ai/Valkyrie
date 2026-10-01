@@ -1,11 +1,12 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import re
 import shlex
 import time
 import uuid
 from asyncio import Semaphore
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
@@ -423,6 +424,8 @@ async def _install_agent_dependencies_once(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
+    *,
+    redact_error: Callable[[str], str] | None = None,
 ) -> None:
     """Run one bounded dependency installation attempt."""
     if not contract.install_cmd:
@@ -438,6 +441,7 @@ async def _install_agent_dependencies_once(
         f"cd {shlex.quote(str(contract_path))} && {install_cmd}",
         log_output,
         failure_subject=f"Dependency installation for contract {contract.name}",
+        redact_error=redact_error,
     )
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         raise SandboxError(
@@ -459,8 +463,10 @@ async def _install_agent_dependencies_with_retries(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
+    *,
+    redact_error: Callable[[str], str] | None = None,
 ) -> None:
-    await _install_agent_dependencies_once(sandbox, contract, log_output)
+    await _install_agent_dependencies_once(sandbox, contract, log_output, redact_error=redact_error)
 
 
 async def install_agent_dependencies(
@@ -468,14 +474,16 @@ async def install_agent_dependencies(
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
     mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
+    *,
+    redact_error: Callable[[str], str] | None = None,
 ) -> None:
     """Install dependencies using the policy selected for this sandbox."""
     if mode is DependencySetupMode.FINAL_FRESH_SANDBOX:
-        await _install_agent_dependencies_once(sandbox, contract, log_output)
+        await _install_agent_dependencies_once(sandbox, contract, log_output, redact_error=redact_error)
         return
 
     try:
-        await _install_agent_dependencies_with_retries(sandbox, contract, log_output)
+        await _install_agent_dependencies_with_retries(sandbox, contract, log_output, redact_error=redact_error)
     except SandboxError as error:
         raise DependencySetupExhaustedError(
             f"Dependency installation for contract {contract.name} failed after 4 attempts"
@@ -538,6 +546,7 @@ async def stream_command_output(
     on_output: Callable[[str], None],
     *,
     failure_subject: str = "Agent command",
+    redact_error: Callable[[str], str] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
@@ -584,7 +593,7 @@ async def stream_command_output(
 
         sentry_sdk.set_tag("agent_exit_code", str(exit_code))
         message = f"{failure_subject} failed with exit code {exit_code}"
-        reported_error = await _read_agent_error(sandbox, error_path)
+        reported_error = await _read_agent_error(sandbox, error_path, redact_error)
         if reported_error:
             message = f"{message}: {reported_error}"
         raise AgentRunFailedError(message)
@@ -617,10 +626,29 @@ async def _read_post_exit_file(sandbox: Sandbox, command: str) -> str | None:
     return result.output
 
 
-async def _read_agent_error(sandbox: Sandbox, error_path: str) -> str:
-    """Return the error the agent wrote to ``$VALKYRIE_ERROR_PATH``, or "" when absent or unreadable."""
-    content = await _read_post_exit_file(sandbox, f"head -c {_AGENT_ERROR_MAX_BYTES} {shlex.quote(error_path)}")
-    return "" if content is None else " ".join(content.split())
+def create_agent_error_redactor(secret_values: Iterable[str]) -> Callable[[str], str]:
+    """Mask literal configured values without putting them in caller-frame arguments."""
+    values = sorted({value for value in secret_values if value}, key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(value) for value in values)) if values else None
+
+    def redact(content: str) -> str:
+        return pattern.sub("[REDACTED]", content) if pattern else content
+
+    return redact
+
+
+async def _read_agent_error(sandbox: Sandbox, error_path: str, redact_error: Callable[[str], str] | None) -> str:
+    """Read a bounded Type: message report only when configured-secret redaction is available."""
+    if redact_error is None:
+        return ""
+    # An extra byte detects oversized reports; do not truncate through a secret.
+    content = await _read_post_exit_file(sandbox, f"head -c {_AGENT_ERROR_MAX_BYTES + 1} {shlex.quote(error_path)}")
+    if content is None or len(content.encode()) > _AGENT_ERROR_MAX_BYTES:
+        return ""
+    message = " ".join(redact_error(content).split())
+    if not message.isprintable() or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}: .+", message):
+        return ""
+    return message if len(message.encode()) <= _AGENT_ERROR_MAX_BYTES else ""
 
 
 async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:
@@ -861,6 +889,8 @@ async def run_agent(
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
     execution_is_current: Callable[[], bool] | None = None,
+    *,
+    redact_error: Callable[[str], str] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -961,6 +991,7 @@ async def run_agent(
             sandbox,
             f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
             log_output,
+            redact_error=redact_error,
         )
     except Exception:
         await upload_outputs(preserve_agent_error=True)

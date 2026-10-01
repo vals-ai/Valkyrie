@@ -43,6 +43,7 @@ from tests.unit.utils.task_execution_support import (
     bind_task_to_dispatch,
     create_task_environment,
     install_sqlite_evaluation_lock,
+    make_retrieve_task_response,
     run_process_task,
 )
 from tracker.runtime.services import RuntimeServices
@@ -765,6 +766,7 @@ class TestBenchmarkServiceFailures:
         assert "ProgramBench task container failed to start" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize("secret_source", ["none", "contract", "provider"])
     async def test_agent_reported_error_reaches_task_api(
         self,
         contract: AgentContractRequest,
@@ -772,22 +774,41 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
+        secret_source: str,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """An error the agent writes to $VALKYRIE_ERROR_PATH is what operators read back for the task."""
+        if secret_source == "contract":
+            contract = contract.model_copy(update={"secrets": {"OPENAI_API_KEY": "test-key-reference"}})
+            monkeypatch.setattr(
+                RuntimeServices, "resolve_secrets", AsyncMock(return_value={"OPENAI_API_KEY": "fake-sensitive-value"})
+            )
+        if secret_source == "provider":
+            task_data = make_retrieve_task_response().model_copy(
+                update={"sandbox_secrets": {"OPENAI_API_KEY": "provider-key-reference"}}
+            )
+            monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=task_data))
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract, database_session, harness_config
         )
         error_files: dict[str, str] = {}
+        error_reads: list[str] = []
+        logged_messages: list[str] = []
 
         async def _command(command: str) -> AsyncIterator[str]:
             match = re.search(r"export VALKYRIE_ERROR_PATH=([^;\s]+)", command)
             assert match is not None
-            error_files[match.group(1)] = "AgentError: model returned no patch\n"
+            error_files[match.group(1)] = (
+                "AgentError: model returned no patch\n"
+                if secret_source == "none"
+                else "AgentError: rejected fake-sensitive-value\n"
+            )
             yield "raw model output\n"
             raise ProviderSandboxCommandError(1)
 
         async def _exec(command: str) -> ExecResult:
             if command.startswith("head -c "):
+                error_reads.append(command)
                 path = command.rsplit(" ", 1)[1]
                 return (
                     ExecResult(exit_code=0, output=error_files[path])
@@ -815,15 +836,34 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+        def capture_log(_self: Any, _stream_key: str, message: str) -> None:
+            logged_messages.append(message)
+
+        monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", capture_log)
+        events: list[Any] = []
+        with sentry_sdk.init(
+            dsn="https://public@example.com/1",
+            transport=events.append,
+            default_integrations=False,
+        ):
+            utils_module.logger.addHandler(caplog.handler)
+            try:
+                result = await run_process_task(
+                    start_benchmark_request, task_row, benchmark_id, runtime_services, authority
+                )
+            finally:
+                utils_module.logger.removeHandler(caplog.handler)
 
         assert result == {"task_0": None}
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_result = self._latest_task_error_result(database_session, task_row)
-        assert error_result.error_message == (
-            "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: AgentError: model returned no patch"
-        )
+        expected_error = "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1"
+        if secret_source == "none":
+            expected_error += ": AgentError: model returned no patch"
+        elif secret_source == "contract":
+            expected_error += ": AgentError: rejected [REDACTED]"
+        assert error_result.error_message == expected_error
         assert error_result.error_type == "AgentRunFailedError"
         assert error_result.category == FailureCategory.AGENT
         assert error_files == {}
@@ -834,6 +874,15 @@ class TestBenchmarkServiceFailures:
         assert body["failure_category"] == "agent"
         assert body["error_message"] == error_result.error_message
         assert "raw model output" not in body["error_message"]
+        assert bool(error_reads) is (secret_source != "provider")
+        assert "fake-sensitive-value" not in json.dumps(body)
+        assert any(expected_error in message for message in logged_messages)
+        assert "fake-sensitive-value" not in "\n".join(logged_messages)
+        event = next(event for event in events if "exception" in event)
+        assert event["tags"]["failure_category"] == "agent"
+        assert "fake-sensitive-value" not in json.dumps(event)
+        record = next(record for record in caplog.records if record.getMessage() == "Task execution failed")
+        assert "fake-sensitive-value" not in JsonFormatter().format(record)
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_empty_network_error_stores_visible_message(

@@ -71,6 +71,7 @@ from tracker.observability.tracing import observability_span
 from tracker.sandbox import (
     DependencySetupMode,
     apply_egress_policy,
+    create_agent_error_redactor,
     create_sandbox,
     install_agent_dependencies,
     run_agent,
@@ -1064,6 +1065,13 @@ async def _process_task_attempt(
             ),
             **recovery_attempt.environment,
         }
+        # Opaque provider-managed secrets cannot be masked here. Do not export
+        # optional agent error text when those values are unavailable to Tracker.
+        redact_error = (
+            None
+            if task_data.sandbox_secrets
+            else create_agent_error_redactor(env_vars[name] for name in start_benchmark_request.contract.secrets)
+        )
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -1146,6 +1154,7 @@ async def _process_task_attempt(
                             start_benchmark_request.contract,
                             log_output,
                             dependency_setup_recovery.mode,
+                            redact_error=redact_error,
                         )
                     except DependencySetupExhaustedError:
                         dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
@@ -1207,6 +1216,7 @@ async def _process_task_attempt(
                     agent_timeout=task_data.agent_timeout,
                     benchmark_id=str(benchmark_id),
                     execution_is_current=execution_is_current,
+                    redact_error=redact_error,
                 )
                 logger.info(
                     "agent.run.complete",

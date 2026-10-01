@@ -866,7 +866,9 @@ class TestRunAgent:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            sandbox: Any, command: str, _log_output: Any, **_kwargs: Any
+        ) -> tuple[None, float]:
             observed_sandboxes.append(sandbox)
             assert command == "cd /workspace && PYTHONSAFEPATH=1 echo done"
             return None, 0.0
@@ -923,7 +925,9 @@ class TestRunAgent:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            _sandbox: Any, command: str, _log_output: Any, **_kwargs: Any
+        ) -> tuple[None, float]:
             observed_commands.append(command)
             return None, 0.0
 
@@ -1021,10 +1025,12 @@ class TestSandboxRetry:
         monkeypatch.setattr(sandbox_module, "stream_command_output", stream_command)
         monkeypatch.setattr(asyncio, "sleep", sleep)
 
-        await _install_agent_dependencies(Mock(), contract, _ignore_output)
+        redact_error = sandbox_module.create_agent_error_redactor(("fake-install-secret",))
+        await _install_agent_dependencies(Mock(), contract, _ignore_output, redact_error=redact_error)
 
         assert stream_command.await_count == 4
         assert [call.args[0] for call in sleep.await_args_list] == [0.0, 10.0, 60.0]
+        assert all(call.kwargs["redact_error"] is redact_error for call in stream_command.await_args_list)
 
     async def test_install_agent_dependencies_exhaustion_raises_and_final_mode_runs_once(
         self,
@@ -1050,6 +1056,7 @@ class TestSandboxRetry:
         stream_command.reset_mock()
         sleep.reset_mock()
         mode = getattr(sandbox_module, "DependencySetupMode")
+        redact_error = sandbox_module.create_agent_error_redactor(("fake-install-secret",))
 
         with pytest.raises(AgentRunFailedError):
             await _install_agent_dependencies(
@@ -1057,9 +1064,11 @@ class TestSandboxRetry:
                 contract,
                 _ignore_output,
                 mode=mode.FINAL_FRESH_SANDBOX,
+                redact_error=redact_error,
             )
 
         assert stream_command.await_count == 1
+        assert stream_command.call_args.kwargs["redact_error"] is redact_error
         sleep.assert_not_awaited()
 
 
@@ -1936,7 +1945,12 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _: None,
+                redact_error=sandbox_module.create_agent_error_redactor(()),
+            )
 
         assert isinstance(exc_info.value, SandboxError)
         assert not isinstance(exc_info.value, SandboxSetupError)
@@ -2007,7 +2021,12 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", _ignore_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _: None,
+                redact_error=sandbox_module.create_agent_error_redactor(()),
+            )
 
         assert (
             str(exc_info.value)
@@ -2035,7 +2054,12 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", _ignore_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _: None,
+                redact_error=sandbox_module.create_agent_error_redactor(()),
+            )
 
         assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 3"
 
@@ -2062,7 +2086,12 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", _ignore_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _: None,
+                redact_error=sandbox_module.create_agent_error_redactor(()),
+            )
 
         assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 4"
 
@@ -2087,7 +2116,12 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox._POST_EXIT_READ_TIMEOUT_SECONDS", 0.01)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _: None,
+                redact_error=sandbox_module.create_agent_error_redactor(()),
+            )
 
         assert str(exc_info.value) == "Sandbox error: Agent command failed with exit code 5"
 
@@ -2108,7 +2142,13 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox._POST_EXIT_READ_TIMEOUT_SECONDS", 0.01)
         with pytest.raises(AgentRunFailedError) as error:
             await asyncio.wait_for(
-                sandbox_module.stream_command_output(sandbox, "run-agent.sh", on_output=lambda _: None), timeout=1
+                sandbox_module.stream_command_output(
+                    sandbox,
+                    "run-agent.sh",
+                    on_output=lambda _: None,
+                    redact_error=sandbox_module.create_agent_error_redactor(()),
+                ),
+                timeout=1,
             )
         assert (
             str(error.value) == "Sandbox error: Agent command failed with exit code 1: TimeoutError: controlled timeout"
@@ -2134,7 +2174,12 @@ class TestStreamCommandOutputAgentFailure:
         contract = AgentContractRequest(name="my-agent", install_cmd="pip install -r requirements.txt", run_cmd="run")
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await _install_agent_dependencies_once(mock_sandbox, contract, _ignore_output)
+            await _install_agent_dependencies_once(
+                mock_sandbox,
+                contract,
+                _ignore_output,
+                redact_error=sandbox_module.create_agent_error_redactor(()),
+            )
 
         assert str(exc_info.value) == (
             "Sandbox error: Dependency installation for contract my-agent failed with exit code 2: "

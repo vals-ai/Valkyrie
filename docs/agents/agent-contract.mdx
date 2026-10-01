@@ -122,7 +122,11 @@ Shell command to run the agent on a task. Must contain the `{problem_statement_p
 run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
 ```
 
-For ordinary nonzero `run_cmd` exits, the task error records the exit code. Reserved timeout (124) and killed-process (137) exits keep their existing outcomes. To surface the original error, write a short `Type: message` (first 2048 bytes are read) to the file at `$VALKYRIE_ERROR_PATH` before exiting; Tracker does not automatically copy agent stdout/stderr into the error. The file is agent-controlled persisted data, not a redaction boundary; write an exception summary rather than raw prompts or model/tool output.
+For ordinary nonzero `run_cmd` exits, the task error records the exit code. Reserved timeout (124) and killed-process (137) exits keep their existing outcomes. To surface the original error, write a short `Type: message` to the file at `$VALKYRIE_ERROR_PATH` before exiting. Tracker does not automatically copy agent stdout/stderr into the error.
+
+The optional report must be at most 2048 bytes and contain a printable exception summary, for example `ValueError: model returned no patch`. Tracker normalizes whitespace and rejects malformed or oversized reports rather than truncating them. It replaces literal secret values resolved from the contract's `secrets` with `[REDACTED]` before storing the summary. When a task uses provider-managed `sandbox_secrets`, Tracker cannot read those secret values and omits the optional report entirely; the exit code and failure category remain available.
+
+This literal masking does not protect arbitrary customer data, transformed secrets, or secrets acquired by the agent itself. Write an exception summary rather than prompts, credentials, or model/tool output. Valid reports are persisted in task errors and can appear in logs and error monitoring.
 
 ```bash
 my_agent --task "{problem_statement_path}" || { echo "AgentError: model returned no patch" > "$VALKYRIE_ERROR_PATH"; exit 1; }
