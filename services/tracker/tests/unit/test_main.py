@@ -25,6 +25,7 @@ from benchmark_service.client import (
 )
 from benchmark_service.schemas import DatasetVersion, FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
+from descope.descope_client import DescopeClient
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -68,7 +69,6 @@ from tracker.database.models import (
 )
 from tracker.config import STABLE_QUEUE_NAME
 from tracker.exceptions import TrackerServiceError
-from descope.descope_client import DescopeClient
 from tracker.runtime.artifacts import copy_agent_to_benchmark as copy_agent_artifact_to_benchmark
 from tracker.types import (
     BenchmarkTableRow,
@@ -2936,7 +2936,12 @@ class TestTrackerAPI:
                 "customClaims": {"user_id": "U2abc"},
             },
         }
-        mock_client.mgmt.user.load_by_user_id.return_value = {"user": {"email": "alice@vals.ai", "name": "Alice"}}
+        mock_client.mgmt.user.load_by_user_id.return_value = {
+            "user": {
+                "email": "alice@vals.ai",
+                "displayName": "Alice",
+            },
+        }
         monkeypatch.setattr("tracker.auth._descope_client", mock_client)
 
         response = client.post("/init", headers={"X-Api-Key": "valid-key"})
