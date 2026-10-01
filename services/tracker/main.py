@@ -46,7 +46,7 @@ from tracker.auth import (
     forward_tracker_api_key,
     get_current_org,
     get_current_starter,
-    resolve_access_key_identity,
+    resolve_descope_identity,
 )
 from tracker.aws.managed_storage import (
     ManagedStorageError,
@@ -504,7 +504,7 @@ def init_org(
         raise HTTPException(status_code=405, detail="Init is only available in hosted mode")
 
     api_key = extract_api_key(request)
-    identity = resolve_access_key_identity(api_key, include_user_profile=True)
+    identity = resolve_descope_identity(api_key, include_user_profile=True)
 
     stmt = pg_insert(Org).values(name=identity.tenant_name).on_conflict_do_nothing(index_elements=["name"])
     result = session.exec(stmt)

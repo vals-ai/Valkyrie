@@ -1,9 +1,5 @@
 # pyright: reportPrivateUsage=false
 
-"""Tests for Tracker authentication boundaries.
-
-Run: uv run pytest tests/unit/test_auth_descope.py
-"""
 
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
@@ -24,10 +20,10 @@ from tracker.auth import (
     find_org_by_tenant,
     get_current_org,
     get_current_starter,
-    resolve_access_key_identity,
+    resolve_descope_identity,
 )
 from tracker.database.models import DEFAULT_ORG_NAME, Org
-from tracker.identity_provider import CredentialRejectedError, UserProfile
+from descope.exceptions import AuthException
 
 
 @pytest.fixture
@@ -49,7 +45,7 @@ def reset_access_key_state() -> Generator[None, None, None]:
 @pytest.fixture
 def mock_descope() -> Generator[MagicMock, None, None]:
     mock_client = MagicMock()
-    with patch("tracker.auth._identity_provider", mock_client):
+    with patch("tracker.auth._descope_client", mock_client):
         yield mock_client
 
 
@@ -88,12 +84,10 @@ def disable_auth_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestIdentityResolution:
-    """Hosted identity and organization resolution."""
-
     def test_valid_api_key_resolves_identity(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
 
-        identity = resolve_access_key_identity("valid-key")
+        identity = resolve_descope_identity("valid-key")
         assert identity.tenant_name == "test-tenant"
         assert identity.access_key_id == "K2abc"
 
@@ -102,20 +96,22 @@ class TestIdentityResolution:
     ) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
 
-        identity = resolve_access_key_identity("valid-key")
+        identity = resolve_descope_identity("valid-key")
         org = find_org_by_tenant(identity.tenant_name, empty_database_session)
         assert org is not None
         assert org.id == test_org.id
 
-    def test_resolve_access_key_identity_invalid_api_key_raises_401(
+    def test_resolve_descope_identity_invalid_api_key_raises_401(
         self, mock_descope: MagicMock, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         secret = "rejected-access-key-secret"
-        mock_descope.exchange_access_key.side_effect = CredentialRejectedError(f"Rejected {secret}")
+        mock_descope.exchange_access_key.side_effect = AuthException(
+            status_code=401, error_message=f"Rejected {secret}"
+        )
         monkeypatch.setattr(auth_module.logger, "handlers", [caplog.handler])
 
         with pytest.raises(HTTPException) as exc_info:
-            resolve_access_key_identity(secret)
+            resolve_descope_identity(secret)
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Invalid API key"
@@ -128,67 +124,67 @@ class TestIdentityResolution:
         org = find_org_by_tenant("nonexistent-org", empty_database_session)
         assert org is None
 
-    def test_resolve_access_key_identity_full_claims(self, mock_descope: MagicMock) -> None:
+    def test_resolve_descope_identity_full_claims(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response(
             email="Alice@Vals.AI",
             name="Alice Smith",
         )
 
-        identity = resolve_access_key_identity("valid-key")
+        identity = resolve_descope_identity("valid-key")
         assert identity.tenant_name == "test-tenant"
         assert identity.access_key_id == "K2abc"
         assert identity.email == "alice@vals.ai"
         assert identity.name == "Alice Smith"
-        mock_descope.load_user_profile.assert_not_called()
+        mock_descope.mgmt.user.load_by_user_id.assert_not_called()
 
-    def test_resolve_access_key_identity_loads_user_profile_when_requested(self, mock_descope: MagicMock) -> None:
+    def test_resolve_descope_identity_loads_user_profile_when_requested(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response(user_id="U2abc")
-        mock_descope.load_user_profile.return_value = UserProfile(email="alice@vals.ai", name="Alice Smith")
+        mock_descope.mgmt.user.load_by_user_id.return_value = {
+            "user": {"email": "alice@vals.ai", "name": "Alice Smith"}
+        }
 
-        identity = resolve_access_key_identity("valid-key", include_user_profile=True)
+        identity = resolve_descope_identity("valid-key", include_user_profile=True)
 
         assert identity.tenant_name == "test-tenant"
         assert identity.access_key_id == "K2abc"
         assert identity.email == "alice@vals.ai"
         assert identity.name == "Alice Smith"
-        mock_descope.load_user_profile.assert_called_once_with("U2abc")
+        mock_descope.mgmt.user.load_by_user_id.assert_called_once_with("U2abc")
 
-    def test_resolve_access_key_identity_skips_user_profile_lookup_by_default(self, mock_descope: MagicMock) -> None:
+    def test_resolve_descope_identity_skips_user_profile_lookup_by_default(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response(user_id="U2abc")
 
-        identity = resolve_access_key_identity("valid-key")
+        identity = resolve_descope_identity("valid-key")
 
         assert identity.access_key_id == "K2abc"
         assert identity.email is None
         assert identity.name is None
-        mock_descope.load_user_profile.assert_not_called()
+        mock_descope.mgmt.user.load_by_user_id.assert_not_called()
 
-    def test_resolve_access_key_identity_missing_email_returns_none(self, mock_descope: MagicMock) -> None:
+    def test_resolve_descope_identity_missing_email_returns_none(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
 
-        identity = resolve_access_key_identity("valid-key")
+        identity = resolve_descope_identity("valid-key")
         assert identity.access_key_id == "K2abc"
         assert identity.email is None
         assert identity.name is None
 
-    def test_resolve_access_key_identity_missing_name_returns_none(self, mock_descope: MagicMock) -> None:
+    def test_resolve_descope_identity_missing_name_returns_none(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response(email="alice@vals.ai")
 
-        identity = resolve_access_key_identity("valid-key")
+        identity = resolve_descope_identity("valid-key")
         assert identity.email == "alice@vals.ai"
         assert identity.name is None
 
-    def test_resolve_access_key_identity_whitespace_only_email_treated_as_missing(
-        self, mock_descope: MagicMock
-    ) -> None:
+    def test_resolve_descope_identity_whitespace_only_email_treated_as_missing(self, mock_descope: MagicMock) -> None:
         """A whitespace-only email claim is treated identically to a missing one."""
         mock_descope.exchange_access_key.return_value = descope_access_key_response(email="   ")
 
-        identity = resolve_access_key_identity("valid-key")
+        identity = resolve_descope_identity("valid-key")
         assert identity.email is None
 
     @pytest.mark.parametrize("tenants", [{}, {"a": {}, "b": {}}])
-    def test_resolve_access_key_identity_requires_one_tenant(
+    def test_resolve_descope_identity_requires_one_tenant(
         self, mock_descope: MagicMock, tenants: dict[str, dict[str, object]]
     ) -> None:
         mock_descope.exchange_access_key.return_value = {
@@ -198,11 +194,11 @@ class TestIdentityResolution:
         }
 
         with pytest.raises(HTTPException) as exc_info:
-            resolve_access_key_identity("invalid-tenant-key")
+            resolve_descope_identity("invalid-tenant-key")
 
         assert exc_info.value.status_code == 400
 
-    def test_resolve_access_key_identity_retries_read_timeout(
+    def test_resolve_descope_identity_retries_read_timeout(
         self, mock_descope: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Transient Descope timeouts must retry and return the eventual identity.
@@ -217,12 +213,12 @@ class TestIdentityResolution:
             descope_access_key_response(),
         ]
 
-        identity = resolve_access_key_identity("some-key")
+        identity = resolve_descope_identity("some-key")
 
         assert identity.tenant_name == "test-tenant"
         assert mock_descope.exchange_access_key.call_count == 2
 
-    def test_resolve_access_key_identity_returns_503_when_retries_exhausted(
+    def test_resolve_descope_identity_returns_503_when_retries_exhausted(
         self, mock_descope: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Exhausted Descope retries must return a stable service-unavailable error.
@@ -238,11 +234,11 @@ class TestIdentityResolution:
 
         with patch("tracker.auth.logger.warning") as log_warning:
             with pytest.raises(HTTPException) as exc_info:
-                resolve_access_key_identity("some-key")
+                resolve_descope_identity("some-key")
 
         assert exc_info.value.status_code == 503
         assert exc_info.value.detail == "Auth service unavailable"
-        log_warning.assert_called_once_with("API key validation failed because the provider is unavailable")
+        log_warning.assert_called_once_with("Descope API key validation failed because the provider is unavailable")
         assert mock_descope.exchange_access_key.call_count == 3
 
 
@@ -267,13 +263,13 @@ class TestAccessKeyCache:
         if expires_at is None:
             del response["sessionToken"]["exp"]  # type: ignore[index]
         mock_descope.exchange_access_key.return_value = response
-        resolve_access_key_identity("uncached-key")
-        resolve_access_key_identity("uncached-key")
+        resolve_descope_identity("uncached-key")
+        resolve_descope_identity("uncached-key")
         assert mock_descope.exchange_access_key.call_count == 2
 
     def test_warm_key_uses_one_exchange(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
-        assert resolve_access_key_identity("warm-key") == resolve_access_key_identity("warm-key")
+        assert resolve_descope_identity("warm-key") == resolve_descope_identity("warm-key")
         assert mock_descope.exchange_access_key.call_count == 1
 
     def test_concurrent_same_key_uses_one_exchange(self, mock_descope: MagicMock) -> None:
@@ -286,7 +282,7 @@ class TestAccessKeyCache:
 
         mock_descope.exchange_access_key.side_effect = exchange
         with ThreadPoolExecutor(max_workers=8) as pool:
-            results = [pool.submit(resolve_access_key_identity, "shared-key") for _ in range(8)]
+            results = [pool.submit(resolve_descope_identity, "shared-key") for _ in range(8)]
             assert started.wait(timeout=2)
             release.set()
             identities = [result.result(timeout=2) for result in results]
@@ -302,25 +298,25 @@ class TestAccessKeyCache:
 
         mock_descope.exchange_access_key.side_effect = exchange
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(resolve_access_key_identity, key) for key in ("a", "b")]
+            futures = [pool.submit(resolve_descope_identity, key) for key in ("a", "b")]
             identities = [future.result(timeout=2) for future in futures]
         assert {identity.access_key_id for identity in identities} == {"id-a", "id-b"}
 
     def test_failures_are_not_cached(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.side_effect = [
-            CredentialRejectedError("invalid"),
+            AuthException(status_code=401, error_message="invalid"),
             descope_access_key_response(),
         ]
         with pytest.raises(HTTPException) as exc_info:
-            resolve_access_key_identity("retry-key")
+            resolve_descope_identity("retry-key")
         assert exc_info.value.status_code == 401
-        assert resolve_access_key_identity("retry-key").access_key_id == "K2abc"
+        assert resolve_descope_identity("retry-key").access_key_id == "K2abc"
         assert mock_descope.exchange_access_key.call_count == 2
 
     def test_cache_keys_do_not_retain_raw_credentials(self, mock_descope: MagicMock) -> None:
         raw_key = "raw-access-key-secret"
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
-        resolve_access_key_identity(raw_key)
+        resolve_descope_identity(raw_key)
         assert raw_key not in repr(auth_module._access_key_cache)
         assert auth_module._access_key_digest(raw_key) != raw_key.encode()
 
@@ -376,7 +372,7 @@ class TestCurrentStarterResolution:
     ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         mock_descope.exchange_access_key.return_value = descope_access_key_response(user_id="U2abc")
-        mock_descope.load_user_profile.return_value = UserProfile(email="alice@vals.ai", name="Alice")
+        mock_descope.mgmt.user.load_by_user_id.return_value = {"user": {"email": "alice@vals.ai", "name": "Alice"}}
 
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}
@@ -404,4 +400,4 @@ class TestCurrentStarterResolution:
         org = get_current_org(mock_request, empty_database_session)
 
         assert org.id == test_org.id
-        mock_descope.load_user_profile.assert_not_called()
+        mock_descope.mgmt.user.load_by_user_id.assert_not_called()
