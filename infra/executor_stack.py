@@ -67,7 +67,7 @@ class ExecutorStack(Stack):
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         redis_url: str,
         bucket_name: str,
-        database: aws_rds.DatabaseInstance,
+        database_proxy: aws_rds.DatabaseProxy,
         db_credentials: aws_rds.DatabaseSecret,
         tracker_service: aws_ecs.FargateService,
         tracker_image: aws_ecs.ContainerImage,
@@ -125,8 +125,6 @@ class ExecutorStack(Stack):
         benchmark_service_url = benchmark_service_base_url(stage)
         bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
         shared_env = {
-            "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
-            "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
@@ -138,8 +136,8 @@ class ExecutorStack(Stack):
         }
 
         db_env = {
-            "DB_HOST": database.db_instance_endpoint_address,
-            "DB_PORT": database.db_instance_endpoint_port,
+            "DB_HOST": database_proxy.endpoint,
+            "DB_PORT": str(POSTGRES_PORT),
             "DB_NAME": POSTGRES_DB,
         }
 
@@ -248,7 +246,7 @@ class ExecutorStack(Stack):
             cluster=cluster,
             tracker_image=tracker_image,
             tracker_service=tracker_service,
-            database=database,
+            database_proxy=database_proxy,
             db_secret=db_credentials_secret,
         )
 
@@ -347,7 +345,7 @@ class ExecutorStack(Stack):
         cluster: aws_ecs.ICluster,
         tracker_image: aws_ecs.ContainerImage,
         tracker_service: aws_ecs.FargateService,
-        database: aws_rds.DatabaseInstance,
+        database_proxy: aws_rds.DatabaseProxy,
         db_secret: aws_secretsmanager.ISecret,
     ) -> None:
         control_security_group = aws_ec2.SecurityGroup(
@@ -360,7 +358,7 @@ class ExecutorStack(Stack):
         control_security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),
             aws_ec2.Port.tcp(POSTGRES_PORT),
-            "Tracker PostgreSQL",
+            "Tracker RDS proxy",
         )
         control_security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),
@@ -446,17 +444,13 @@ class ExecutorStack(Stack):
         task_definition.add_container(
             container_name,
             image=tracker_image,
-            environment={
-                "DATABASE_POOL_SIZE": str(stage_config.database.pool_size),
-                "DATABASE_MAX_OVERFLOW": str(stage_config.database.max_overflow),
-            },
             entry_point=[
                 "/app/.venv/bin/python",
                 "-m",
                 "tracker.executor.release_entrypoint",
                 db_secret.secret_arn,
-                database.db_instance_endpoint_address,
-                database.db_instance_endpoint_port,
+                database_proxy.endpoint,
+                str(POSTGRES_PORT),
                 POSTGRES_DB,
                 self.executor_release_bucket.bucket_name,
                 EXECUTOR_RELEASE_PREFIX,

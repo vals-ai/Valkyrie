@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!squid.conf
+!sni_acl.py
+!healthcheck.py
+!service-hosts.txt
+!view-hosts.txt

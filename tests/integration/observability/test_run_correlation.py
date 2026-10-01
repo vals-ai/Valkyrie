@@ -152,10 +152,11 @@ def _run_executor_host(dsn: str, input_path: str, output_path: str) -> None:
         _store: object,
         *,
         executor_dispatch_id: str,
+        keeper: object,
         dispatch: object,
         process_payload: ExecutorProcessPayload,
     ) -> None:
-        del _executor_supervisor, _store, executor_dispatch_id, dispatch
+        del _executor_supervisor, _store, executor_dispatch_id, keeper, dispatch
         logging.getLogger("executor-host.observability.smoke").info("ExecutorHost dispatched observability smoke run")
         Path(output_path).write_text(json.dumps(process_payload.arguments["telemetry_context_json"]))
         _capture_test_error("valkyrie-executor-host")

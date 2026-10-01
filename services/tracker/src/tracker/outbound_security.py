@@ -28,6 +28,7 @@ _FORBIDDEN_HEADER_NAMES = {
     "transfer-encoding",
     "upgrade",
     "x-api-key",
+    "x-benchmark-dataset-version",
     "x-real-ip",
 }
 _FORBIDDEN_HEADER_PREFIXES = ("forwarded", "proxy-", "sec-websocket-", "x-forwarded-")

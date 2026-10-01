@@ -5,7 +5,7 @@ from typing import cast
 
 import aws_cdk as cdk
 from aws_cdk import aws_ecr, aws_secretsmanager
-from constants import RELEASE_TEST_IMAGE_TAG_ENV
+from constants import POSTGRES_PORT, RELEASE_TEST_IMAGE_TAG_ENV
 from deployment_target import enforce_deployment_target
 from driver_stack import DriverStack
 from monitoring_stack import MonitoringStack
@@ -67,7 +67,7 @@ executor = ExecutorStack(
     namespace=shared.namespace,
     redis_url=shared.redis_url,
     bucket_name=shared.bucket_name,
-    database=tracker.database,
+    database_proxy=tracker.database_proxy,
     db_credentials=tracker.db_credentials,
     tracker_service=tracker.tracker_fargate_service,
     tracker_image=tracker.tracker_image,
@@ -88,8 +88,8 @@ if stage.is_release_test:
         bucket=shared.bucket,
         tracker_repository=tracker_repository,
         image_tag=release_test_image_tag,
-        db_host=tracker.database.db_instance_endpoint_address,
-        db_port=tracker.database.db_instance_endpoint_port,
+        db_host=tracker.database_proxy.endpoint,
+        db_port=str(POSTGRES_PORT),
         db_credentials=cast(aws_secretsmanager.ISecret, tracker.db_credentials),
         redis_url=shared.redis_url,
         redis_security_group=shared.redis_security_group,

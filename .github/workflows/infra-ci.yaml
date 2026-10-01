@@ -63,11 +63,34 @@ jobs:
         working-directory: infra
         run: make typecheck
 
+      - name: Synthesize standalone ValSmith stacks without AWS access
+        working-directory: infra
+        run: |
+          CDK_OUTDIR="$RUNNER_TEMP/valsmith-images" \
+            CDK_CONTEXT_JSON='{"component":"images","inputs":"valsmith_network_inputs.json"}' \
+            uv run python valsmith_network_app.py
+          CDK_OUTDIR="$RUNNER_TEMP/valsmith-network" \
+            CDK_CONTEXT_JSON='{"component":"network","inputs":"valsmith_network_inputs.json","proxy_image_uri":"629807611108.dkr.ecr.us-east-1.amazonaws.com/valsmith-outbound-proxy-prod@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+            uv run python valsmith_network_app.py
+
       - name: Enable ARM64 container builds
         uses: docker/setup-qemu-action@v4
 
       - name: Configure Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Qualify outbound TLS boundaries on AMD64 and ARM64
+        working-directory: infra
+        env:
+          VALSMITH_PROXY_TEST_IMAGE: valsmith-outbound-proxy:test
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            export DOCKER_DEFAULT_PLATFORM="$platform"
+            docker buildx build --platform "$platform" --load \
+              --tag "$VALSMITH_PROXY_TEST_IMAGE" outbound_proxy
+            uv run python -m unittest \
+              tests/test_outbound_proxy_acl.py tests/test_outbound_proxy_runtime.py -v
+          done
 
       - name: Build the cleanup Lambda image
         working-directory: services/tracker

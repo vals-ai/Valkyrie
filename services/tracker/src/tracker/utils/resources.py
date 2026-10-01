@@ -5,22 +5,21 @@ from uuid import UUID
 
 from benchmark_service import SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import DatasetVersion
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     Benchmark,
-    BenchmarkArguments,
     BenchmarkStatus,
     Org,
     Task,
+    benchmark_arguments_adapter,
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
-from tracker.runtime.secrets import AsyncSecretStore, SecretStore, sandbox_provider_config_from_secret
-from tracker.types import (
-    StartBenchmarkRequest,
-)
+from tracker.runtime.secrets import SecretStore, sandbox_provider_config_from_secret
+from tracker.types import RunExecutionRequest, StartBenchmarkRequest
 
 
 @dataclass(frozen=True)
@@ -30,45 +29,39 @@ class BenchmarkConcurrencyUpdate:
     concurrency: int
 
 
-def fetch_sandbox_provider_config(
+async def fetch_sandbox_provider_config(
     secret_name: str,
     secret_store: SecretStore,
     provider_type: str,
 ) -> SandboxProviderConfig:
-    """Resolve sandbox provider config from the selected provider type and secret."""
-    return sandbox_provider_config_from_secret(secret_store.get(secret_name), provider_type)
-
-
-async def fetch_sandbox_provider_config_async(
-    secret_name: str,
-    secret_store: AsyncSecretStore,
-    provider_type: str,
-) -> SandboxProviderConfig:
     """Resolve sandbox provider config without blocking the caller's event loop."""
-    return sandbox_provider_config_from_secret(await secret_store.get_async(secret_name), provider_type)
+    return sandbox_provider_config_from_secret(await secret_store.get(secret_name), provider_type)
 
 
 def create_benchmark_service_client(
     url: str,
     service_headers: dict[str, str] | None = None,
+    dataset_version: DatasetVersion | None = None,
 ) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient with benchmark-service headers."""
     url = validate_service_url_syntax(url)
     headers = dict(service_headers or {})
     validate_service_headers(headers)
 
-    return BenchmarkServiceClient(url=url, headers=headers)
+    return BenchmarkServiceClient(
+        url=url, headers=headers, dataset_version=dataset_version.id if dataset_version is not None else None
+    )
 
 
 def start_benchmark_request_to_benchmark(
-    request: StartBenchmarkRequest,
+    request: StartBenchmarkRequest | RunExecutionRequest,
     run_starter: RequestIdentity,
     *,
     aws_managed: bool,
     queue_pool_id: str | None = None,
 ) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
-    if aws_managed != (request.harness_config is None):
+    if request.environment == "aws" and aws_managed != (request.harness_config is None):
         raise ValueError("Benchmark AWS mode does not match the start request")
     provider_secret_name = request.sandbox_provider_secret_reference
     if aws_managed and (not request.sandbox_provider or not provider_secret_name):
@@ -82,19 +75,24 @@ def start_benchmark_request_to_benchmark(
         aws_managed=aws_managed,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
-        arguments=BenchmarkArguments(
-            environment=request.environment,
-            properties=request.properties,
-            contract=request.contract,
-            concurrency=request.concurrency,
-            priority=request.priority,
-            queue_pool_id=queue_pool_id,
-            task_ids=request.task_ids,
-            slice_str=request.slice_str,
-            lambda_function=request.lambda_function,
-            dataset=request.dataset,
-            sandbox_provider=request.sandbox_provider,
-            sandbox_provider_secret_name=provider_secret_name,
+        arguments=benchmark_arguments_adapter.validate_python(
+            {
+                "environment": request.environment,
+                "properties": request.properties,
+                "contract": request.contract,
+                "concurrency": request.concurrency,
+                "priority": request.priority,
+                "queue_pool_id": queue_pool_id,
+                "task_ids": request.task_ids,
+                "slice_str": request.slice_str,
+                "lambda_function": request.lambda_function,
+                "dataset": request.dataset,
+                "dataset_version": request.resolved_dataset_version
+                if isinstance(request, RunExecutionRequest)
+                else None,
+                "sandbox_provider": request.sandbox_provider,
+                "sandbox_provider_secret_name": provider_secret_name,
+            },
         ),
         started_by_id=run_starter.access_key_id,
         started_by_email=run_starter.email,

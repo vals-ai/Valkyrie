@@ -22,8 +22,8 @@ from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.runtime import AWSResources
 from tracker.database.models import (
     Benchmark,
+    AWSBenchmarkArguments,
     FailureCategory,
-    BenchmarkArguments,
     FinalEvaluation,
     Org,
     TaskStatus,
@@ -166,7 +166,7 @@ def test_single_benchmark_legacy_access_key_without_credentials_omits_storage_li
     example_benchmark_object: Benchmark,
 ) -> None:
     example_benchmark_object.aws_managed = False
-    example_benchmark_object.arguments = BenchmarkArguments(
+    example_benchmark_object.arguments = AWSBenchmarkArguments(
         contract=example_benchmark_object.arguments.contract,
         concurrency=1,
         properties=None,

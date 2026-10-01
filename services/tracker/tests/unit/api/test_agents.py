@@ -8,12 +8,18 @@ import stat
 import struct
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 from botocore.exceptions import ClientError
-from tracker import config
+from tracker import auth, config
+from tracker.auth import get_current_org
+from tracker.database.models import Org
+from tracker.local import config as local_config
+from tracker.local.resources import LocalResources
 from tracker.exceptions import S3Error
 
 import tracker.api.agents as agents_api
@@ -57,6 +63,19 @@ def _agent_archive(
 
 class TestAgentWrites:
     """Write validation and clean storage permission failures."""
+
+    def test_conditional_upload_returns_conflict(
+        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
+    ) -> None:
+        upload = AsyncMock(side_effect=FileExistsError("agents/demo.zip"))
+        monkeypatch.setattr(aws_s3, "upload_stream_to_s3", upload)
+        response = _client.put(
+            "/agents/demo?overwrite=false",
+            headers={**harness_headers, "Content-Type": "application/zip"},
+            content=_agent_archive(),
+        )
+        assert response.status_code == 409
+        assert upload.call_args.kwargs["overwrite"] is False
 
     @pytest.mark.parametrize(
         "member", ["../escape", "/escape", "demo/../escape", "other/file", "demo\\file", "demo/C:file"]
@@ -289,3 +308,42 @@ class TestAgentRoutes:
         assert response.status_code == 404
         assert response.json()["detail"] == "Agent 'missing' not found in S3"
         exists.assert_awaited_once_with("agents/missing.zip", aws_runtime)
+
+    def test_local_agent_download_is_scoped_and_requires_authentication(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Download local bundles through the authenticated organization-scoped route.
+
+        Test cases:
+        - Download links return agent bytes without requiring a shared filesystem.
+        - Other organizations and missing credentials cannot download the bundle.
+        - Invalid agent names and missing files cannot download.
+        """
+        org = app.dependency_overrides[get_current_org]()
+        monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+        local_client = TestClient(app, base_url="http://localhost")
+        archive = tmp_path / "orgs" / str(org.id) / "objects/agents/demo.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"agent bundle")
+
+        response = local_client.get("/agents/demo/download-url")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["expires_in"] == 0
+        download_url = response.json()["download_url"]
+        assert download_url.startswith("http://localhost/agents/demo/download-url?")
+        download = local_client.get(download_url)
+        assert download.status_code == 200
+        assert download.content == b"agent bundle"
+        assert local_client.get("/agents/invalid%3Aname/download-url", params={"download": "true"}).status_code == 400
+
+        with monkeypatch.context() as scoped:
+            scoped.setitem(app.dependency_overrides, get_current_org, lambda: Org(id=uuid4(), name="other"))
+            assert local_client.get(download_url).status_code == 404
+        with monkeypatch.context() as scoped:
+            scoped.delitem(app.dependency_overrides, get_current_org)
+            scoped.setattr(auth, "AUTH_REQUIRED", True)
+            assert local_client.get(download_url).status_code == 401
+
+        archive.unlink()
+        assert local_client.get(download_url).status_code == 404

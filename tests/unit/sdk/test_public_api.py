@@ -35,6 +35,7 @@ EXPECTED_ALL = [
     "BenchmarkStatus",
     "BenchmarkStatusEntry",
     "BenchmarkStatusResponse",
+    "DatasetVersion",
     "FailureCategory",
     "FetchBenchmarkResponse",
     "FetchBenchmarkMetadataResponse",
@@ -72,6 +73,8 @@ EXPECTED_ALL = [
     "ValkyrieAPIError",
     "ValkyrieClient",
     "ValkyrieConfig",
+    "AWSConfig",
+    "AWSAccessKeys",
     "ValkyrieConfigError",
     "ValkyrieRunAcceptedError",
     "ValkyrieRunError",
@@ -88,7 +91,7 @@ EXPECTED_SIGNATURES = {
     RunsResource.start: (
         "self, agent, benchmark, *, model=None, concurrency=5, priority=None, properties=None, "
         "managed_s3_bucket=None, task_ids=None, "
-        "slice_str=None, dataset=None, "
+        "slice_str=None, dataset=None, dataset_version=None, "
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
         "webhook_intervals=None, ignore_custom_services=False"
     ),
@@ -105,11 +108,11 @@ EXPECTED_SIGNATURES = {
     RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "update_agent=False, benchmark_url=None"
     ),
     RunsResource.retry: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "update_agent=False, benchmark_url=None"
     ),
     LogsResource.page_task: (
         "self, run_id, task_id, *, query=None, start_time=None, end_time=None, cursor=None, limit=1000"

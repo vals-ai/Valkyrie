@@ -1,0 +1,18 @@
+{
+  "account_id": "629807611108",
+  "region": "us-east-1",
+  "vpc_cidr": "10.64.0.0/20",
+  "availability_zones": ["us-east-1a", "us-east-1b"],
+  "caller_vpc_id": "vpc-0e1bfdbc090daa61a",
+  "caller_subnet_ids": ["subnet-057078f4f29580c2b", "subnet-0a7a9d472d4550108"],
+  "caller_subnet_cidrs": ["10.0.0.0/17", "10.0.128.0/17"],
+  "caller_route_table_ids": ["rtb-05eb22d76756f3f44", "rtb-062960dd432903259"],
+  "caller_security_group_id": "sg-036040bcf58e2d364",
+  "cluster_arn": "arn:aws:ecs:us-east-1:629807611108:cluster/AgenticHarnessCluster-prod",
+  "namespace_id": "ns-erq7ivv3x5ym4oco",
+  "namespace_name": "local-prod",
+  "namespace_hosted_zone_id": "Z04103512KCVYNNSTJ1Q2",
+  "service_image_digest": "sha256:424cc4fb4fd8fcf0395bc7cf20b697929adbd30e3629954f397297e1c46c0e64",
+  "s3_prefix_list_id": "pl-63a5400a",
+  "dynamodb_prefix_list_id": "pl-02cd2c6b"
+}

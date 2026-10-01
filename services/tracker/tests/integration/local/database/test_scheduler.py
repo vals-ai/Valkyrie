@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from benchmark_service import (
+    DaytonaProviderConfig,
     ImageSource,
     Resources,
     Sandbox,
@@ -42,7 +43,7 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     ExecutorAdmission,
     ExecutorDispatch,
     ExecutorRelease,
@@ -120,7 +121,7 @@ def _run(
     benchmark = Benchmark(
         org_id=org.id,
         name=f"run-{uuid4()}",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
             concurrency=concurrency,
             priority=priority,
@@ -1109,7 +1110,11 @@ async def test_setup_retry_reenters_fifo_before_competitor(
         retrying.task_id,
         runtime_services,
         org,
-        sandbox_provider_config=cast(SandboxProviderConfig, object()),
+        sandbox_provider_config=DaytonaProviderConfig(
+            DAYTONA_API_KEY="test-api-key",
+            DAYTONA_API_URL="http://localhost:8001",
+            DAYTONA_TARGET="us",
+        ),
         sandbox_provider=context.provider,
         creation_semaphore=Semaphore(1),
         authority=authority,

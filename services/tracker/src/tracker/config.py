@@ -102,6 +102,7 @@ AWS_DEPLOYMENT_S3_BUCKET = os.environ.get("AWS_DEPLOYMENT_S3_BUCKET")
 AWS_DEPLOYMENT_LOG_GROUP = os.environ.get("AWS_DEPLOYMENT_LOG_GROUP")
 AWS_DEPLOYMENT_LOG_RETENTION_DAYS = os.environ.get("AWS_DEPLOYMENT_LOG_RETENTION_DAYS")
 AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLED", "false").lower() == "true"
+DATASET_VERSION_PINNING_ENABLED = os.environ.get("DATASET_VERSION_PINNING_ENABLED", "false").lower() == "true"
 AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS = os.environ.get("AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS", "{}")
 AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED = (
     os.environ.get("AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", "false").lower() == "true"
@@ -131,10 +132,6 @@ def _build_database_url() -> str:
 
 
 DATABASE_URL = _build_database_url()
-DATABASE_POOL_SIZE = _positive_int_setting("DATABASE_POOL_SIZE", 50)
-DATABASE_MAX_OVERFLOW = int(os.environ.get("DATABASE_MAX_OVERFLOW", "10"))
-if DATABASE_MAX_OVERFLOW < 0:
-    raise ValueError("DATABASE_MAX_OVERFLOW must be a nonnegative integer")
 
 result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,

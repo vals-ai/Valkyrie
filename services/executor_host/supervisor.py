@@ -10,23 +10,26 @@ import os
 import signal
 import sys
 import tempfile
-import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, Unpack, cast
+from typing import Mapping, Protocol, TypeVar, Unpack, cast
+from urllib.parse import urlparse
 
 import boto3
+import httpx
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from redis.asyncio import Redis
 from taskiq import TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from executor_protocol import (
-    DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
+    DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS,
     DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
     DEFAULT_EXECUTOR_RELEASE_PREFIX,
     DEFAULT_STABLE_QUEUE_NAME,
+    EXECUTOR_ENTRYPOINT_MODULE,
     EXECUTOR_TASK_NAME,
     SUPPORTED_PROTOCOL_VERSIONS,
     ExecutorPayload,
@@ -35,6 +38,7 @@ from executor_protocol import (
     normalize_executor_telemetry_context,
     validate_executor_artifact_uri,
     validate_executor_digest,
+    validate_source_executor_artifact_uri,
 )
 from services.executor_host.observability import (
     capture_dispatch_error,
@@ -45,6 +49,7 @@ from services.executor_host.observability import (
 )
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
 ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
@@ -70,18 +75,13 @@ async def _set_task_protection(*, enabled: bool) -> bool:
     body: dict[str, object] = {"ProtectionEnabled": enabled}
     if enabled:
         body["ExpiresInMinutes"] = _PROTECTION_EXPIRY_MINUTES
-    request = urllib.request.Request(
-        f"{ECS_AGENT_URI}/task-protection/v1/state",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="PUT",
-    )
 
-    def update() -> None:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            response.read()
+    async def update() -> None:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.put(f"{ECS_AGENT_URI}/task-protection/v1/state", json=body)
+            response.raise_for_status()
 
-    update_task = asyncio.create_task(asyncio.to_thread(update))
+    update_task = asyncio.create_task(update())
     try:
         await asyncio.shield(update_task)
     except asyncio.CancelledError:
@@ -101,13 +101,8 @@ async def _renew_task_protection(delay_seconds: float) -> None:
 
 
 async def _await_task_cancellation(task: asyncio.Task[None]) -> None:
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            pass
     try:
-        await task
+        await _await_task_completion(task)
     except asyncio.CancelledError:
         pass
 
@@ -135,13 +130,13 @@ async def _release_task_protection() -> None:
             await _set_task_protection(enabled=False)
 
 
-async def _await_task_completion(task: asyncio.Task[None]) -> None:
+async def _await_task_completion(task: asyncio.Task[T]) -> T:
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             pass
-    await task
+    return await task
 
 
 class S3Client(Protocol):
@@ -232,6 +227,12 @@ def _payload_string(payload: Mapping[str, object], key: str) -> str:
     return str(value) if value else ""
 
 
+@dataclass(frozen=True)
+class RenewalResult:
+    renewed: bool
+    classification: tuple[bool, bool] | None  # (live, stopped); None if classification was unavailable
+
+
 class ExecutorDispatchStore(Protocol):
     async def claim(
         self,
@@ -240,9 +241,7 @@ class ExecutorDispatchStore(Protocol):
         dispatch: ArtifactDispatch,
     ) -> DispatchAuthority | None: ...
 
-    async def is_current(self, authority: DispatchAuthority) -> bool: ...
-
-    async def heartbeat(self, authority: DispatchAuthority) -> bool: ...
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]: ...
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
 
@@ -284,6 +283,7 @@ class PostgresExecutorDispatchStore:
             dbname=self.dbname,
             user=self.user,
             password=self.password,
+            connect_timeout=5,
         )
 
     async def claim(
@@ -344,44 +344,68 @@ class PostgresExecutorDispatchStore:
             )
             return cursor.fetchone() is not None
 
-    async def is_current(self, authority: DispatchAuthority) -> bool:
-        return await asyncio.to_thread(self._is_current, authority)
+    async def renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]:
+        return await asyncio.to_thread(self._renew, authorities)
 
-    def _is_current(self, authority: DispatchAuthority) -> bool:
+    def _renew(self, authorities: list[DispatchAuthority]) -> dict[tuple[str, str], RenewalResult]:
+        """Commit dispatch-only renewals before bounded benchmark classification."""
+        if not authorities:
+            return {}
+        dispatch_ids = [authority.dispatch_id for authority in authorities]
+        benchmark_ids = [authority.benchmark_id for authority in authorities]
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT dispatch.id
-                FROM executordispatch AS dispatch
-                JOIN benchmark ON benchmark.id = dispatch.benchmark_id
-                WHERE dispatch.id = %s::uuid
-                  AND benchmark.status != 'STOPPED'
-                  AND dispatch.status = 'RUNNING'
-                  AND dispatch.lease_expires_at > CURRENT_TIMESTAMP
-                """,
-                (authority.dispatch_id,),
-            )
-            return cursor.fetchone() is not None
-
-    async def heartbeat(self, authority: DispatchAuthority) -> bool:
-        return await asyncio.to_thread(self._heartbeat, authority)
-
-    def _heartbeat(self, authority: DispatchAuthority) -> bool:
-        with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE executordispatch
+                WITH requested AS (
+                    SELECT id, benchmark_id
+                    FROM unnest(%s::uuid[], %s::uuid[]) AS pair(id, benchmark_id)
+                ), lockable AS (
+                    SELECT d.id, d.benchmark_id
+                    FROM executordispatch AS d
+                    JOIN requested AS r ON r.id = d.id AND r.benchmark_id = d.benchmark_id
+                    WHERE d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP
+                    FOR UPDATE OF d SKIP LOCKED
+                )
+                UPDATE executordispatch AS d
                 SET heartbeat_at = CURRENT_TIMESTAMP,
                     lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
-                WHERE id = %s::uuid
-                  AND benchmark_id = %s::uuid
-                  AND status = 'RUNNING'
-                  AND lease_expires_at > CURRENT_TIMESTAMP
-                RETURNING id
+                FROM lockable AS l
+                WHERE d.id = l.id AND d.benchmark_id = l.benchmark_id
+                RETURNING d.id::text, d.benchmark_id::text
                 """,
-                (DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, authority.dispatch_id, authority.benchmark_id),
+                (dispatch_ids, benchmark_ids, DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS),
             )
-            return cursor.fetchone() is not None
+            renewed = set(cursor.fetchall())
+            connection.commit()  # A blocked benchmark read must never hold back a confirmed lease.
+            results = {
+                (authority.dispatch_id, authority.benchmark_id): RenewalResult(
+                    renewed=(authority.dispatch_id, authority.benchmark_id) in renewed, classification=None
+                )
+                for authority in authorities
+            }
+            try:
+                cursor.execute("SET LOCAL lock_timeout = '1s'")
+                cursor.execute(
+                    """
+                    WITH requested AS (
+                        SELECT id, benchmark_id
+                        FROM unnest(%s::uuid[], %s::uuid[]) AS pair(id, benchmark_id)
+                    )
+                    SELECT r.id::text, r.benchmark_id::text,
+                           COALESCE(d.status = 'RUNNING' AND d.lease_expires_at > CURRENT_TIMESTAMP, FALSE) AS live,
+                           COALESCE(b.status = 'STOPPED', FALSE) AS stopped
+                    FROM requested AS r
+                    LEFT JOIN executordispatch AS d ON d.id = r.id AND d.benchmark_id = r.benchmark_id
+                    LEFT JOIN benchmark AS b ON b.id = r.benchmark_id
+                    """,
+                    (dispatch_ids, benchmark_ids),
+                )
+                for dispatch_id, benchmark_id, live, stopped in cursor.fetchall():
+                    key = (dispatch_id, benchmark_id)
+                    results[key] = RenewalResult(renewed=results[key].renewed, classification=(live, stopped))
+            except psycopg2.OperationalError:
+                connection.rollback()  # The committed renewals survive a classification timeout.
+            return results
 
     async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
         return await asyncio.to_thread(self._terminalize, authority, task_ids)
@@ -529,11 +553,8 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
 
 
 def verify_file_digest(path: Path, expected_digest: str) -> None:
-    digest = hashlib.sha256()
     with path.open("rb") as artifact:
-        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
-            digest.update(chunk)
-    actual_digest = digest.hexdigest()
+        actual_digest = hashlib.file_digest(artifact, "sha256").hexdigest()
     if actual_digest != expected_digest:
         raise ValueError(f"Executor artifact digest mismatch: expected {expected_digest}, got {actual_digest}")
 
@@ -542,6 +563,7 @@ def verify_file_digest(path: Path, expected_digest: str) -> None:
 class _DispatchLease:
     last_confirmed_renewal_at: float
     lost: asyncio.Event
+    revoked: asyncio.Event
 
     def expires_in(self, now: float) -> float:
         return self.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS - now
@@ -549,6 +571,99 @@ class _DispatchLease:
 
 def _monotonic_time() -> float:
     return asyncio.get_running_loop().time()
+
+
+class _LeaseKeeper:
+    def __init__(
+        self, store: ExecutorDispatchStore, *, interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS
+    ) -> None:
+        self.store = store
+        self.interval_seconds = interval_seconds
+        self.leases: dict[str, tuple[DispatchAuthority, _DispatchLease, asyncio.TimerHandle]] = {}
+        self.task: asyncio.Task[None] | None = None
+
+    def register(self, authority: DispatchAuthority, confirmed_at: float) -> _DispatchLease:
+        lease = _DispatchLease(confirmed_at, asyncio.Event(), asyncio.Event())
+        timer = asyncio.get_running_loop().call_at(
+            confirmed_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, lease.lost.set
+        )
+        self.leases[authority.dispatch_id] = (authority, lease, timer)
+        if self.task is None:
+            self.task = asyncio.create_task(self._run())
+        return lease
+
+    async def unregister(self, authority: DispatchAuthority) -> None:
+        _, _, timer = self.leases.pop(authority.dispatch_id)
+        timer.cancel()
+
+    async def _run(self) -> None:
+        while True:
+            await asyncio.sleep(self.interval_seconds)
+            try:
+                await self.tick()
+            except Exception:
+                logger.exception("Lease keeper failed; stopping all registered dispatches")
+                for _, lease, _ in self.leases.values():
+                    lease.lost.set()
+                self.task = None
+                return
+
+    async def refresh(self, authority: DispatchAuthority) -> None:
+        current = self.leases.get(authority.dispatch_id)
+        if current is None:
+            return
+        checked_at = _monotonic_time()
+        try:
+            results = await self.store.renew([authority])
+        except Exception:
+            logger.exception("Failed to refresh executor dispatch authority; using local lease")
+            return
+        self._apply_renewal(
+            authority, current[1], results.get((authority.dispatch_id, authority.benchmark_id)), checked_at
+        )
+
+    async def tick(self) -> None:
+        if not self.leases:
+            return
+        tick_started_at = _monotonic_time()
+        active = {key: (authority, lease) for key, (authority, lease, _) in self.leases.items()}
+        try:
+            results = await self.store.renew([authority for authority, _ in active.values()])
+        except Exception:
+            logger.exception("Failed to renew executor dispatch leases; retrying")
+            return
+        for authority, lease in active.values():
+            self._apply_renewal(
+                authority, lease, results.get((authority.dispatch_id, authority.benchmark_id)), tick_started_at
+            )
+
+    def _apply_renewal(
+        self,
+        authority: DispatchAuthority,
+        lease: _DispatchLease,
+        outcome: RenewalResult | None,
+        checked_at: float,
+    ) -> None:
+        current = self.leases.get(authority.dispatch_id)
+        if current is None or current[1] is not lease or lease.lost.is_set():
+            return
+        if outcome is None:
+            lease.lost.set()
+            return
+        if outcome.renewed and checked_at > lease.last_confirmed_renewal_at and lease.expires_in(_monotonic_time()) > 0:
+            lease.last_confirmed_renewal_at = checked_at
+            current[2].cancel()
+            timer = asyncio.get_running_loop().call_at(
+                checked_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS, lease.lost.set
+            )
+            self.leases[authority.dispatch_id] = (authority, lease, timer)
+        if outcome.classification is None:
+            return
+        live, stopped = outcome.classification
+        if not live and not stopped:
+            lease.lost.set()
+        elif stopped:
+            lease.revoked.set()
 
 
 class DispatchAuthorityLostError(RuntimeError):
@@ -561,11 +676,10 @@ class ExecutorSupervisor:
         cache_dir: Path,
         *,
         s3_client: S3Client | None = None,
+        source_root: Path | None = None,
         python_executable: str = sys.executable,
         artifact_bucket: str | None = None,
         artifact_prefix: str | None = None,
-        authority_check_interval: float = 5,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.cache_dir = cache_dir
         self.s3_client = s3_client
@@ -575,10 +689,13 @@ class ExecutorSupervisor:
             "EXECUTOR_RELEASE_PREFIX",
             DEFAULT_EXECUTOR_RELEASE_PREFIX,
         )
-        self.authority_check_interval = authority_check_interval
-        self.sleep = sleep
+        if source_root is not None and not source_root.is_absolute():
+            raise ValueError("Executor source root must be absolute")
+        self.source_root = source_root.resolve() if source_root is not None else None
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        if urlparse(dispatch.artifact_uri).scheme == "source":
+            return await asyncio.to_thread(self._prepare_source_artifact, dispatch)
         bucket, key = validate_executor_artifact_uri(
             dispatch.artifact_uri,
             self.artifact_bucket,
@@ -618,6 +735,12 @@ class ExecutorSupervisor:
             raise
         return artifact_path
 
+    def _prepare_source_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        if self.source_root is None:
+            raise ValueError("Source executor releases require EXECUTOR_SOURCE_ROOT on this host")
+        # Source releases always run the current checkout; their digest names the checkout, not its contents.
+        return validate_source_executor_artifact_uri(dispatch.artifact_uri, self.source_root)
+
     async def run(
         self,
         artifact_path: Path,
@@ -625,17 +748,14 @@ class ExecutorSupervisor:
         *,
         process_payload: ExecutorProcessPayload,
         authority: DispatchAuthority,
-        is_current: Callable[[], Awaitable[bool]],
-        lease_lost: asyncio.Event,
+        lease: _DispatchLease,
     ) -> None:
-        if lease_lost.is_set():
+        if lease.lost.is_set() or lease.expires_in(_monotonic_time()) <= 0:
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} lease expired before spawn")
-        if not await is_current():
+        if lease.revoked.is_set():
             raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} was superseded before spawn")
-        if lease_lost.is_set():
-            raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} lease expired before spawn")
         payload = {**process_payload.arguments, "executor_dispatch_id": authority.dispatch_id}
-        with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
+        with tempfile.TemporaryDirectory(prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
             logger.info(
@@ -646,30 +766,40 @@ class ExecutorSupervisor:
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
             )
-            process = await asyncio.create_subprocess_exec(
-                self.python_executable,
-                str(artifact_path),
-                str(payload_path),
-                start_new_session=True,
-                env={**os.environ, "SENTRY_RELEASE": dispatch.release_id},
-            )
+            command, environment = self._executor_command(artifact_path, dispatch, payload_path)
+            process = await asyncio.create_subprocess_exec(*command, start_new_session=True, env=environment)
             try:
-                return_code = await self._wait_with_authority(process, is_current, lease_lost)
+                return_code = await self._wait_with_authority(process, lease)
             except BaseException:
                 await _terminate_process_group(process)
                 raise
             if return_code != 0:
                 raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
 
+    def _executor_command(
+        self,
+        artifact_path: Path,
+        dispatch: ArtifactDispatch,
+        payload_path: Path,
+    ) -> tuple[list[str], dict[str, str]]:
+        environment = {**os.environ, "SENTRY_RELEASE": dispatch.release_id}
+        if urlparse(dispatch.artifact_uri).scheme != "source":
+            return [self.python_executable, str(artifact_path), str(payload_path)], environment
+
+        existing_path = os.environ.get("PYTHONPATH")
+        environment["PYTHONPATH"] = (
+            f"{artifact_path}{os.pathsep}{existing_path}" if existing_path else str(artifact_path)
+        )
+        return [self.python_executable, "-m", EXECUTOR_ENTRYPOINT_MODULE, str(payload_path)], environment
+
     async def _wait_with_authority(
         self,
         process: asyncio.subprocess.Process,
-        is_current: Callable[[], Awaitable[bool]],
-        lease_lost: asyncio.Event,
+        lease: _DispatchLease,
     ) -> int:
         process_task = asyncio.create_task(process.wait())
-        authority_task = asyncio.create_task(self._wait_for_authority_loss(is_current))
-        lease_task = asyncio.create_task(lease_lost.wait())
+        authority_task = asyncio.create_task(lease.revoked.wait())
+        lease_task = asyncio.create_task(lease.lost.wait())
         tasks = (process_task, authority_task, lease_task)
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -680,12 +810,16 @@ class ExecutorSupervisor:
                 raise DispatchAuthorityLostError("Executor dispatch lease expired")
             if authority_task in done:
                 await authority_task
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(process_task),
-                        timeout=_AUTHORITY_LOSS_GRACE_SECONDS,
-                    )
-                except TimeoutError:
+                completed, _ = await asyncio.wait(
+                    (process_task, lease_task),
+                    timeout=_AUTHORITY_LOSS_GRACE_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if lease_task in completed:
+                    await _terminate_process_group(process)
+                    await process_task
+                    raise DispatchAuthorityLostError("Executor dispatch lease expired")
+                if process_task not in completed:
                     await _terminate_process_group(process)
                     await process_task
                 raise DispatchAuthorityLostError("Executor dispatch was superseded")
@@ -695,19 +829,6 @@ class ExecutorSupervisor:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _wait_for_authority_loss(self, is_current: Callable[[], Awaitable[bool]]) -> None:
-        while True:
-            await self.sleep(self.authority_check_interval)
-            try:
-                authority_is_current = await is_current()
-            except psycopg2.OperationalError:
-                logger.exception(
-                    "Failed to check executor dispatch authority; retrying",
-                )
-                continue
-            if not authority_is_current:
-                return
 
 
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
@@ -761,17 +882,46 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
     configure_observability()
 
 
-supervisor = ExecutorSupervisor(CACHE_DIR)
+supervisor = ExecutorSupervisor(
+    CACHE_DIR,
+    source_root=Path(os.environ["EXECUTOR_SOURCE_ROOT"]) if os.environ.get("EXECUTOR_SOURCE_ROOT") else None,
+)
 dispatch_store = PostgresExecutorDispatchStore.from_environment()
+
+
+lease_keeper = _LeaseKeeper(dispatch_store)
+
+
+_Result = TypeVar("_Result")
+_RETRY_INITIAL_SECONDS = 0.1
+_RETRY_MAX_SECONDS = 5.0
+
+
+async def _retry_operational_error(
+    operation: Callable[[], Awaitable[_Result]], expires_at: Callable[[], float]
+) -> _Result:
+    delay = _RETRY_INITIAL_SECONDS
+    while True:
+        try:
+            return await operation()
+        except psycopg2.OperationalError:
+            remaining = expires_at() - _monotonic_time()
+            if remaining <= 0:
+                raise
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, _RETRY_MAX_SECONDS)
+            if expires_at() <= _monotonic_time():
+                raise
 
 
 async def _terminalize_after_failure(
     store: ExecutorDispatchStore,
     authority: DispatchAuthority,
     task_ids: list[str],
+    expires_at: Callable[[], float],
 ) -> None:
     try:
-        if not await store.terminalize(authority, task_ids):
+        if not await _retry_operational_error(lambda: store.terminalize(authority, task_ids), expires_at):
             logger.warning(
                 "Executor dispatch %s no longer had terminalization authority",
                 authority.dispatch_id,
@@ -783,55 +933,14 @@ async def _terminalize_after_failure(
         )
 
 
-async def _heartbeat_loop(
-    store: ExecutorDispatchStore,
-    authority: DispatchAuthority,
-    lease: _DispatchLease,
-    *,
-    interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
-) -> None:
-    while True:
-        remaining_seconds = lease.expires_in(_monotonic_time())
-        if remaining_seconds <= 0:
-            lease.lost.set()
-            return
-        await asyncio.sleep(min(interval_seconds, remaining_seconds))
-        if lease.expires_in(_monotonic_time()) <= 0:
-            lease.lost.set()
-            return
-        renewal_started_at = _monotonic_time()
-        try:
-            renewed = await store.heartbeat(authority)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "Failed to heartbeat executor dispatch %s",
-                authority.dispatch_id,
-            )
-            continue
-        confirmed_at = _monotonic_time()
-        if lease.expires_in(confirmed_at) <= 0:
-            lease.lost.set()
-            return
-        if not renewed:
-            logger.warning(
-                "Executor dispatch %s lost heartbeat authority",
-                authority.dispatch_id,
-            )
-            lease.lost.set()
-            return
-        lease.last_confirmed_renewal_at = renewal_started_at
-
-
 async def run_executor_dispatch(
     executor_supervisor: ExecutorSupervisor,
     store: ExecutorDispatchStore,
     *,
+    keeper: _LeaseKeeper,
     executor_dispatch_id: str,
     dispatch: ArtifactDispatch,
     process_payload: ExecutorProcessPayload,
-    heartbeat_interval_seconds: float = DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS,
 ) -> None:
     protection_task = asyncio.create_task(_acquire_task_protection())
     try:
@@ -844,19 +953,34 @@ async def run_executor_dispatch(
 
     try:
         claim_started_at = _monotonic_time()
+        attempt_started_at = claim_started_at
+
+        def claim() -> Awaitable[DispatchAuthority | None]:
+            nonlocal attempt_started_at
+            attempt_started_at = _monotonic_time()
+            return store.claim(executor_dispatch_id, process_payload.benchmark_id, dispatch)
+
         claim_task = asyncio.create_task(
-            store.claim(
-                executor_dispatch_id,
-                process_payload.benchmark_id,
-                dispatch,
+            _retry_operational_error(
+                claim,
+                lambda: claim_started_at + DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
             )
         )
         try:
             authority = await asyncio.shield(claim_task)
         except asyncio.CancelledError:
-            authority = await claim_task
+            authority = await _await_task_completion(claim_task)
             if authority is not None:
-                await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+                await _await_task_completion(
+                    asyncio.create_task(
+                        _terminalize_after_failure(
+                            store,
+                            authority,
+                            process_payload.verified_task_ids,
+                            lambda: attempt_started_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+                        )
+                    )
+                )
             raise
 
         if authority is None:
@@ -866,42 +990,39 @@ async def run_executor_dispatch(
             )
             return
 
-        lease = _DispatchLease(
-            last_confirmed_renewal_at=claim_started_at,
-            lost=asyncio.Event(),
-        )
-        heartbeat_task = asyncio.create_task(
-            _heartbeat_loop(
-                store,
-                authority,
-                lease,
-                interval_seconds=heartbeat_interval_seconds,
-            )
-        )
+        lease = keeper.register(authority, attempt_started_at)
         try:
             artifact_path = await executor_supervisor.prepare_artifact(dispatch)
+            await keeper.refresh(authority)
             await executor_supervisor.run(
                 artifact_path,
                 dispatch,
                 process_payload=process_payload,
                 authority=authority,
-                is_current=lambda: store.is_current(authority),
-                lease_lost=lease.lost,
+                lease=lease,
             )
-            if not await store.finish(authority):
+            if not await _retry_operational_error(
+                lambda: store.finish(authority),
+                lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+            ):
                 logger.warning(
                     "Executor dispatch %s lost authority before successful finish",
                     authority.dispatch_id,
                 )
-        except asyncio.CancelledError:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
-            raise
         except BaseException:
-            await _terminalize_after_failure(store, authority, process_payload.verified_task_ids)
+            await _await_task_completion(
+                asyncio.create_task(
+                    _terminalize_after_failure(
+                        store,
+                        authority,
+                        process_payload.verified_task_ids,
+                        lambda: lease.last_confirmed_renewal_at + DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS,
+                    )
+                )
+            )
             raise
         finally:
-            heartbeat_task.cancel()
-            await _await_task_cancellation(heartbeat_task)
+            await keeper.unregister(authority)
     finally:
         release_task = asyncio.create_task(_release_task_protection())
         await _await_task_completion(release_task)
@@ -926,6 +1047,7 @@ async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
             await run_executor_dispatch(
                 supervisor,
                 dispatch_store,
+                keeper=lease_keeper,
                 executor_dispatch_id=dispatch_id,
                 dispatch=dispatch,
                 process_payload=process_payload,

@@ -20,7 +20,7 @@ from tracker.aws.resolver import (
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark
-from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
+from tracker.types import HarnessConfig, ManagedExecutionContext, RunExecutionRequest
 
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 _OTHER_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -296,7 +296,7 @@ def _mapping_keys(value: Any) -> Iterator[str]:
 
 
 def test_managed_execution_context_is_recursively_credential_free(harness_config: HarnessConfig) -> None:
-    request = StartBenchmarkRequest(
+    request = RunExecutionRequest(
         contract=AgentContractRequest(
             name="test-agent",
             install_cmd="echo install",

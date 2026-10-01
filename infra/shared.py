@@ -123,7 +123,10 @@ class SharedStack(Stack):
             object_ownership=None if self.stage.is_bench else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             versioned=None if self.stage.is_bench else True,
             lifecycle_rules=[
-                aws_s3.LifecycleRule(abort_incomplete_multipart_upload_after=cdk.Duration.days(1)),
+                aws_s3.LifecycleRule(
+                    abort_incomplete_multipart_upload_after=cdk.Duration.days(1),
+                    noncurrent_version_expiration=None if self.stage.is_bench else cdk.Duration.days(30),
+                ),
             ],
         )
 

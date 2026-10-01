@@ -1,0 +1,551 @@
+{
+  "s3": {
+    "arn:aws:iam::629807611108:role/ValSmithDatasetViewLambdaExecution": [
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/valsmith.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/agent_output.tar.gz",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/atif/trajectory.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/artifacts/model.patch"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/valsmith.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/agent_output.tar.gz",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/atif/trajectory.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/artifacts/model.patch"
+        ],
+        "Effect": "Deny"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::vs-prod-*",
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/*",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-dataset-views/*"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:PutObject",
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-dataset-views/*"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::vs-prod-*",
+        "Effect": "Deny"
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/*",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-dataset-views/*"
+        ],
+        "Effect": "Deny"
+      },
+      {
+        "Action": "s3:DeleteBucket",
+        "Resource": "arn:aws:s3:::vs-prod-*",
+        "Effect": "Deny"
+      },
+      {
+        "Action": [
+          "s3:DeleteObject",
+          "s3:DeleteObjectVersion"
+        ],
+        "Resource": "arn:aws:s3:::vs-prod-*/*",
+        "Effect": "Deny"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "613431292675"
+          }
+        },
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::agentic-harness",
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "613431292675"
+          }
+        },
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-datasets/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-dataset-views/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/valsmith.json",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/*/agent_output.tar.gz",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/*/atif/trajectory.json",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/*/artifacts/model.patch"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "613431292675"
+          }
+        },
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::agentic-harness",
+        "Effect": "Deny"
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "613431292675"
+          }
+        },
+        "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::agentic-harness/*",
+        "Effect": "Deny"
+      },
+      {
+        "Action": "s3:ListBucket",
+        "Effect": "Deny",
+        "NotResource": [
+          "arn:aws:s3:::vs-prod-*",
+          "arn:aws:s3:::agentic-harness"
+        ]
+      },
+      {
+        "Action": "s3:GetObject",
+        "Effect": "Deny",
+        "NotResource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/valsmith.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/agent_output.tar.gz",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/atif/trajectory.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/????????-????-????-????-????????????/*/artifacts/model.patch",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/*",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-dataset-views/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-datasets/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-dataset-views/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/valsmith.json",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/*/agent_output.tar.gz",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/*/atif/trajectory.json",
+          "arn:aws:s3:::agentic-harness/benchmarks/*/*/artifacts/model.patch"
+        ]
+      },
+      {
+        "Action": "s3:PutObject",
+        "Effect": "Deny",
+        "NotResource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-dataset-views/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-dataset-views/*"
+        ]
+      },
+      {
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/*/benchmarks/valsmith-datasets/*",
+          "arn:aws:s3:::vs-prod-*/*/benchmarks/valsmith-dataset-views/*",
+          "arn:aws:s3:::vs-prod-*/*/benchmarks/????????-????-????-????-????????????/valsmith.json",
+          "arn:aws:s3:::vs-prod-*/*/benchmarks/????????-????-????-????-????????????/*/agent_output.tar.gz",
+          "arn:aws:s3:::vs-prod-*/*/benchmarks/????????-????-????-????-????????????/*/atif/trajectory.json",
+          "arn:aws:s3:::vs-prod-*/*/benchmarks/????????-????-????-????-????????????/*/artifacts/model.patch"
+        ],
+        "Effect": "Deny"
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:PutObject",
+        "Resource": "arn:aws:s3:::agentic-harness/*",
+        "Effect": "Deny"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/ValSmithProdBucketProvisi-BucketPolicyExecutionRole-UIgIgtbzpKl3": [
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": [
+          "s3:GetBucketPolicy",
+          "s3:PutBucketPolicy",
+          "s3:GetLifecycleConfiguration",
+          "s3:PutLifecycleConfiguration"
+        ],
+        "Resource": "arn:aws:s3:::vs-prod-*",
+        "Effect": "Allow"
+      },
+      {
+        "Action": "s3:*",
+        "Effect": "Deny",
+        "NotResource": "arn:aws:s3:::vs-prod-*"
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:*",
+        "Resource": "arn:aws:s3:::vs-prod-*",
+        "Effect": "Deny"
+      },
+      {
+        "Resource": "arn:aws:s3:::vs-prod-*",
+        "Effect": "Deny",
+        "NotAction": [
+          "s3:GetBucketPolicy",
+          "s3:PutBucketPolicy",
+          "s3:GetLifecycleConfiguration",
+          "s3:PutLifecycleConfiguration"
+        ]
+      }
+    ],
+    "arn:aws:iam::629807611108:role/valsmith-generation-prod-task": [
+      {
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-manifests/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-repositories/temporary-snapshots/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-datasets/sources/*"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-manifests/*/manifest.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-repositories/temporary-snapshots/*",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/sources/*"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Action": "s3:GetObject*",
+        "Effect": "Deny",
+        "NotResource": [
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-manifests/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-repositories/temporary-snapshots/*",
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-datasets/sources/*",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-manifests/*/manifest.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-repositories/temporary-snapshots/*",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/sources/*"
+        ]
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:GetObject*",
+        "Resource": "arn:aws:s3:::vs-*/*",
+        "Effect": "Deny"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/valsmith-prod-task": [
+      {
+        "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::agentic-harness/benchmarks/valsmith-datasets/*",
+        "Effect": "Allow"
+      },
+      {
+        "Condition": {
+          "StringEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/*/manifest.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/sources/*"
+        ],
+        "Effect": "Allow"
+      },
+      {
+        "Action": "s3:GetObject*",
+        "Effect": "Deny",
+        "NotResource": [
+          "arn:aws:s3:::agentic-harness/benchmarks/valsmith-datasets/*",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/*/manifest.json",
+          "arn:aws:s3:::vs-prod-*/benchmarks/valsmith-datasets/sources/*"
+        ]
+      },
+      {
+        "Condition": {
+          "StringNotEquals": {
+            "s3:ResourceAccount": "629807611108"
+          }
+        },
+        "Action": "s3:GetObject*",
+        "Resource": "arn:aws:s3:::vs-*/*",
+        "Effect": "Deny"
+      },
+      {
+        "Condition": {
+          "StringLike": {
+            "s3:prefix": [
+              "benchmarks/valsmith-datasets/*"
+            ]
+          }
+        },
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::agentic-harness",
+        "Effect": "Allow"
+      }
+    ]
+  },
+  "dynamodb": {
+    "arn:aws:iam::629807611108:role/valsmith-generation-prod-task": [
+      {
+        "Action": "dynamodb:UpdateItem",
+        "Resource": "arn:aws:dynamodb:us-east-1:629807611108:table/Prod-valsmith-generationStack-valsmithgenerationEvaluationQuotaTable920F4AB1-13LL1IEF92M25",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/valsmith-prod-task": [
+      {
+        "Action": "dynamodb:UpdateItem",
+        "Resource": "arn:aws:dynamodb:us-east-1:629807611108:table/Prod-valsmithStack-valsmithEvaluationQuotaTableA4DC6856-PQS1865PH4M6",
+        "Effect": "Allow"
+      }
+    ]
+  },
+  "ecr": {
+    "arn:aws:iam::629807611108:role/Prod-valsmith-generationS-valsmithgenerationTaskDef-BUThfyDeujdy": [
+      {
+        "Action": [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ],
+        "Resource": "arn:aws:ecr:us-east-1:629807611108:repository/cdk-hnb659fds-container-assets-629807611108-us-east-1",
+        "Effect": "Allow"
+      },
+      {
+        "Action": "ecr:GetAuthorizationToken",
+        "Resource": "*",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/Prod-valsmithStack-valsmithTaskDefExecutionRole1AD4-BhTN1a8dQ2H1": [
+      {
+        "Action": [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ],
+        "Resource": "arn:aws:ecr:us-east-1:629807611108:repository/cdk-hnb659fds-container-assets-629807611108-us-east-1",
+        "Effect": "Allow"
+      },
+      {
+        "Action": "ecr:GetAuthorizationToken",
+        "Resource": "*",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/ValSmithProdProxyExecution": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ],
+        "Resource": "arn:aws:ecr:us-east-1:629807611108:repository/valsmith-outbound-proxy-prod"
+      },
+      {
+        "Effect": "Allow",
+        "Action": "ecr:GetAuthorizationToken",
+        "Resource": "*"
+      }
+    ]
+  },
+  "secretsmanager": {
+    "arn:aws:iam::629807611108:role/Prod-valsmith-generationS-valsmithgenerationTaskDef-BUThfyDeujdy": [
+      {
+        "Action": [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ],
+        "Resource": "arn:aws:secretsmanager:us-east-1:629807611108:secret:benchmark-services/sentry-dsn-??????",
+        "Effect": "Allow"
+      },
+      {
+        "Action": [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ],
+        "Resource": "arn:aws:secretsmanager:us-east-1:629807611108:secret:benchmark-services/valsmith-api-access-key-??????",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/Prod-valsmithStack-valsmithTaskDefExecutionRole1AD4-BhTN1a8dQ2H1": [
+      {
+        "Action": [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ],
+        "Resource": "arn:aws:secretsmanager:us-east-1:629807611108:secret:benchmark-services/sentry-dsn-??????",
+        "Effect": "Allow"
+      },
+      {
+        "Action": [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ],
+        "Resource": "arn:aws:secretsmanager:us-east-1:629807611108:secret:benchmark-services/valsmith-api-access-key-??????",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/ValSmithDatasetViewLambdaExecution": [
+      {
+        "Effect": "Allow",
+        "Action": "secretsmanager:GetSecretValue",
+        "Resource": "arn:aws:secretsmanager:us-east-1:629807611108:secret:prodModelGatewayClientConfig-*"
+      }
+    ]
+  },
+  "ssm": {
+    "arn:aws:iam::629807611108:role/Prod-valsmith-generationS-valsmithgenerationTaskDef-BUThfyDeujdy": [
+      {
+        "Action": [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ],
+        "Resource": "arn:aws:ssm:us-east-1:629807611108:parameter/benchmark-services/descope/project-id",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/Prod-valsmithStack-valsmithTaskDefExecutionRole1AD4-BhTN1a8dQ2H1": [
+      {
+        "Action": [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ],
+        "Resource": "arn:aws:ssm:us-east-1:629807611108:parameter/benchmark-services/descope/project-id",
+        "Effect": "Allow"
+      }
+    ]
+  },
+  "logs": {
+    "arn:aws:iam::629807611108:role/Prod-valsmith-generationS-valsmithgenerationTaskDef-BUThfyDeujdy": [
+      {
+        "Action": [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:us-east-1:629807611108:log-group:Prod-valsmith-generationStack-valsmithgenerationLogGroup6099D9FF-6kAT9c95tEKU:*",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/Prod-valsmithStack-valsmithTaskDefExecutionRole1AD4-BhTN1a8dQ2H1": [
+      {
+        "Action": [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:us-east-1:629807611108:log-group:Prod-valsmithStack-valsmithLogGroup891402E9-UEXTRQL37tTw:*",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/ValSmithDatasetViewLambdaExecution": [
+      {
+        "Action": [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:us-east-1:629807611108:log-group:/aws/lambda/valsmith-dataset-view-lambda:*",
+        "Effect": "Allow"
+      },
+      {
+        "Action": "logs:*",
+        "Effect": "Deny",
+        "NotResource": "arn:aws:logs:us-east-1:629807611108:log-group:/aws/lambda/valsmith-dataset-view-lambda:*"
+      },
+      {
+        "Action": "logs:CreateLogGroup",
+        "Resource": "*",
+        "Effect": "Deny"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/ValSmithProdBucketProvisi-BucketPolicyExecutionRole-UIgIgtbzpKl3": [
+      {
+        "Action": [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:us-east-1:629807611108:log-group:/aws/lambda/valsmith-owner-bucket-policy:*",
+        "Effect": "Allow"
+      }
+    ],
+    "arn:aws:iam::629807611108:role/ValSmithProdProxyExecution": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:us-east-1:629807611108:log-group:/vals/valsmith-prod/outbound-proxy:*"
+      }
+    ]
+  }
+}

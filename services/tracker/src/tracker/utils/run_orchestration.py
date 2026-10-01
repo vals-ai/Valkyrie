@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.executor.dependencies import get_execution_runtime
+from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.services import RuntimeServices
 from tracker.config import AUTH_REQUIRED, broker
 from tracker.database.models import (
@@ -47,7 +48,7 @@ from tracker.scheduler.admission import SandboxQueueContext, create_queue_contex
 from tracker.types import (
     FinalViewResponse,
     ManagedExecutionContext,
-    StartBenchmarkRequest,
+    RunExecutionRequest,
 )
 
 from tracker.utils.resources import (
@@ -69,7 +70,7 @@ async def _run_queued_tasks(
     *,
     benchmark_id: UUID,
     task_rows: Sequence[tuple[str, Task]],
-    start_benchmark_request: StartBenchmarkRequest,
+    start_benchmark_request: RunExecutionRequest,
     benchmark_service: BenchmarkServiceClient,
     runtime: RuntimeServices,
     org: Org,
@@ -546,11 +547,11 @@ async def finalize_all_error_run(
         return False
 
 
-def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkRequest:
+def _parse_start_benchmark_request(payload: dict[str, Any]) -> RunExecutionRequest:
     """Validate a queued request without serializing credential-bearing input in errors."""
-    request: StartBenchmarkRequest | None
+    request: RunExecutionRequest | None
     try:
-        request = StartBenchmarkRequest.model_validate(payload)
+        request = RunExecutionRequest.model_validate(payload)
     except ValidationError as exc:
         # Log field locations only; rendering the full error would expose input
         # values, which include AWS credentials on this payload.
@@ -566,7 +567,7 @@ def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkReq
 
 @dataclass(frozen=True)
 class _QueuedExecution:
-    request: StartBenchmarkRequest
+    request: RunExecutionRequest
     benchmark_id: UUID
     verified_task_ids: list[str]
     aws_managed: bool
@@ -583,7 +584,7 @@ def _parse_queued_execution(
         if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
             raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
         request = _parse_start_benchmark_request(start_benchmark_request_json)
-        if request.harness_config is None:
+        if request.environment == "aws" and request.harness_config is None:
             raise ValueError("Queued access-key benchmark request has no AWS configuration.")
 
         if request.managed_s3_bucket is not None:
@@ -736,6 +737,16 @@ async def _process_benchmark(
                 f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
             )
 
+        if start_benchmark_request.resolved_dataset_version != benchmark_row.arguments.dataset_version or (
+            benchmark_row.arguments.dataset_version is not None
+            and start_benchmark_request.dataset != benchmark_row.arguments.dataset
+        ):
+            raise TrackerServiceError("Queued dataset selection does not match the saved run")
+        if benchmark_row.arguments.dataset_version is not None and (
+            start_benchmark_request.custom_benchmark_service != benchmark_row.custom_benchmark_service
+        ):
+            raise TrackerServiceError("Queued benchmark service does not match the pinned run")
+
         if start_benchmark_request.custom_benchmark_service is not None:
             validate_custom_service_destination(
                 start_benchmark_request.custom_benchmark_service,
@@ -744,14 +755,16 @@ async def _process_benchmark(
             )
 
         runtime = await get_execution_runtime(
-            start_benchmark_request, benchmark_row, org, context_version=execution.context_version
+            start_benchmark_request,
+            benchmark_row,
+            org,
+            context_version=execution.context_version,
         )
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()
 
-        sandbox_provider = await runtime_stack.enter_async_context(
-            runtime.get_sandbox_provider(sandbox_provider_config)
-        )
+        sandbox_provider = sandbox_provider_config.create_provider()
+        runtime_stack.push_async_callback(lambda: finish_cleanup(asyncio.create_task(sandbox_provider.close())))
 
         if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
             notifier = SlackNotifier(
@@ -1195,9 +1208,7 @@ def catch_errors_during_cleanup(
         undetected_exit_tasks_query = undetected_exit_tasks_query.where(col(Task.task_id).in_(task_ids))
     undetected_exit_tasks = session.exec(undetected_exit_tasks_query).all()
 
-    # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
-    # helper uses try/finally so this only fires when the executor process was
-    # killed mid-invocation (no try/finally cleanup ran).
+    # Sweep stale RUNNING analyzer invocations to ERROR.
     if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
         benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
         session.add(benchmark_row)

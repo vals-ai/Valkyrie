@@ -125,6 +125,18 @@ class ValkyrieClient:
         detail = body.get("detail", body) if isinstance(body, dict) else body
         raise ValkyrieAPIError(response.status_code, detail)
 
+    def download_headers(self, url: str) -> dict[str, str]:
+        """Authenticate downloads only on this client's Tracker origin."""
+        target = httpx.URL(url)
+        tracker = self._client.base_url
+        if target.scheme in {"http", "https"} and (target.scheme, target.host, target.port) == (
+            tracker.scheme,
+            tracker.host,
+            tracker.port,
+        ):
+            return dict(self._client.headers)
+        return {}
+
     def stream_response(
         self,
         method: str,
