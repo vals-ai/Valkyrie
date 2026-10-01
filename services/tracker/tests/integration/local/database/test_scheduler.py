@@ -319,7 +319,7 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
         original_lock = tracker_main.lock_executor_admission
 
         def observed_recovery_lock(session: Session) -> object:
-            session.exec(text("SET LOCAL lock_timeout = '5s'"))
+            session.connection().execute(text("SET LOCAL lock_timeout = '5s'"))
             lock_entered.set()
             return original_lock(session)
 
@@ -331,7 +331,7 @@ async def test_http_admission_waits_for_real_postgres_row_lock_without_blocking_
 
         def observed_start_lock(session: Session, *, for_update: bool = False) -> ExecutorRelease:
             if for_update:
-                session.exec(text("SET LOCAL lock_timeout = '5s'"))
+                session.connection().execute(text("SET LOCAL lock_timeout = '5s'"))
                 lock_entered.set()
             return original_select_active_release(session, for_update=for_update)
 
@@ -1370,11 +1370,10 @@ async def test_cancellation_while_leaving_the_pool_lock_releases_the_build_lock(
             if _reservation_count(postgres_engine, context.pool_id) == 1:
                 raise asyncio.CancelledError
 
-    monkeypatch.setattr(
-        admission,
-        "queue_pool_lock",
-        lambda engine, pool_id: CancelledWhileReleasing(engine, resource_id=store.queue_pool_lock_id(pool_id)),
-    )
+    def cancelled_pool_lock(engine: Engine, pool_id: str) -> store.PostgresAdvisoryLock:
+        return CancelledWhileReleasing(engine, resource_id=store.queue_pool_lock_id(pool_id))
+
+    monkeypatch.setattr(admission, "queue_pool_lock", cancelled_pool_lock)
 
     async with AsyncExitStack() as stack:
         with pytest.raises(asyncio.CancelledError):
