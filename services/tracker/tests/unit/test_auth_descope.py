@@ -1,5 +1,9 @@
 # pyright: reportPrivateUsage=false
 
+"""Tests for Tracker Descope authentication boundaries.
+
+Run: uv run pytest tests/unit/test_auth_descope.py
+"""
 
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from descope.exceptions import AuthException
 from fastapi import HTTPException
 from requests.exceptions import ReadTimeout
 from sqlmodel import Session
@@ -23,7 +28,6 @@ from tracker.auth import (
     resolve_descope_identity,
 )
 from tracker.database.models import DEFAULT_ORG_NAME, Org
-from descope.exceptions import AuthException
 
 
 @pytest.fixture
@@ -83,7 +87,7 @@ def disable_auth_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(exchange_access_key.retry, "wait", wait_none())
 
 
-class TestIdentityResolution:
+class TestDescopeIdentityResolution:
     def test_valid_api_key_resolves_identity(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
 
@@ -140,7 +144,10 @@ class TestIdentityResolution:
     def test_resolve_descope_identity_loads_user_profile_when_requested(self, mock_descope: MagicMock) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response(user_id="U2abc")
         mock_descope.mgmt.user.load_by_user_id.return_value = {
-            "user": {"email": "alice@vals.ai", "name": "Alice Smith"}
+            "user": {
+                "email": "Alice@Vals.AI",
+                "displayName": "Alice Smith",
+            },
         }
 
         identity = resolve_descope_identity("valid-key", include_user_profile=True)
@@ -372,7 +379,12 @@ class TestCurrentStarterResolution:
     ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         mock_descope.exchange_access_key.return_value = descope_access_key_response(user_id="U2abc")
-        mock_descope.mgmt.user.load_by_user_id.return_value = {"user": {"email": "alice@vals.ai", "name": "Alice"}}
+        mock_descope.mgmt.user.load_by_user_id.return_value = {
+            "user": {
+                "email": "alice@vals.ai",
+                "displayName": "Alice",
+            },
+        }
 
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}

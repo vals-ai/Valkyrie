@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -13,7 +13,7 @@ import time
 from typing import Any, cast
 
 from cachetools import TLRUCache, cached
-from descope.descope_client import DescopeClient
+from descope import DescopeClient
 from descope.exceptions import AuthException
 from fastapi import Depends, HTTPException, Request
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -106,7 +106,7 @@ def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> o
     """Read a claim from the exchange response or its nested session token."""
     session_token = jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)
     if isinstance(session_token, Mapping) and claim_name in session_token:
-        return cast(Mapping[str, object], session_token).get(claim_name)
+        return session_token.get(claim_name)
 
     return jwt_response.get(claim_name)
 
@@ -140,11 +140,9 @@ def _get_descope_custom_string_claim(
         if not isinstance(claim_source, Mapping):
             continue
 
-        custom_claims = cast(Mapping[str, object], claim_source).get(DESCOPE_CUSTOM_CLAIMS_FIELD)
+        custom_claims = claim_source.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
         if isinstance(custom_claims, Mapping) and claim_name in custom_claims:
-            return _normalize_optional_string(
-                cast(Mapping[str, object], custom_claims).get(claim_name), lowercase=lowercase
-            )
+            return _normalize_optional_string(custom_claims.get(claim_name), lowercase=lowercase)
 
     return None
 
@@ -155,8 +153,7 @@ def _load_descope_user_profile(user_id: str) -> DescopeUserProfile:
         return DescopeUserProfile(email=None, name=None)
 
     try:
-        load_user = cast(Callable[[str], Mapping[str, object]], _descope_client.mgmt.user.load_by_user_id)
-        user_response = load_user(user_id)
+        user_response = _descope_client.mgmt.user.load_by_user_id(user_id)
     except Exception:
         logger.warning("Failed to load Descope user profile")
         return DescopeUserProfile(email=None, name=None)
@@ -166,9 +163,8 @@ def _load_descope_user_profile(user_id: str) -> DescopeUserProfile:
         logger.warning("Descope user profile response did not include a user object")
         return DescopeUserProfile(email=None, name=None)
 
-    profile = cast(Mapping[str, object], user)
-    email = _normalize_optional_string(profile.get("email"), lowercase=True)
-    name = _normalize_optional_string(profile.get("name") or profile.get("displayName"))
+    email = _normalize_optional_string(user.get("email"), lowercase=True)
+    name = _normalize_optional_string(user.get("name") or user.get("displayName"))
     return DescopeUserProfile(email=email, name=name)
 
 
@@ -200,8 +196,7 @@ def extract_api_key(request: Request) -> str:
 )
 def _exchange_access_key(api_key: str, descope_client: DescopeClient) -> dict[str, Any]:
     """Call Descope with retries on transient network errors."""
-    exchange = cast(Callable[[str], dict[str, Any]], descope_client.exchange_access_key)
-    return exchange(api_key)
+    return cast(dict[str, Any], descope_client.exchange_access_key(api_key))
 
 
 def _access_key_digest(api_key: str) -> bytes:
