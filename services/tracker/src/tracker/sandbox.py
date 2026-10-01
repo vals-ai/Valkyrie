@@ -648,7 +648,7 @@ async def _read_agent_error(sandbox: Sandbox, error_path: str, redact_error: Cal
     message = " ".join(redact_error(content).split())
     if not message.isprintable() or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}: .+", message):
         return ""
-    return message if len(message.encode()) <= _AGENT_ERROR_MAX_BYTES else ""
+    return message.encode()[:_AGENT_ERROR_MAX_BYTES].decode(errors="ignore")
 
 
 async def _read_sandbox_duration(sandbox: Sandbox, start_ns_path: str, end_ns_path: str, fallback: float) -> float:

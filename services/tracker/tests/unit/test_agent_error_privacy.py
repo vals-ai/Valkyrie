@@ -70,6 +70,23 @@ class TestAgentErrorPrivacy:
 
         assert message.endswith("ValueError: rejected [REDACTED]")
 
+    @pytest.mark.parametrize(("padding", "retained_characters"), [("x", 2025), ("é", 1012)])
+    async def test_masking_expansion_preserves_a_bounded_summary(self, padding: str, retained_characters: int) -> None:
+        prefix = "ValueError: API_KEY "
+        padding_bytes = 2048 - len(prefix.encode())
+        count, remainder = divmod(padding_bytes, len(padding.encode()))
+        content = prefix + padding * count + "x" * remainder
+
+        message, _ = await reported_failure(content, ("API_KEY",))
+
+        assert "ValueError: [REDACTED] " in message
+        assert "API_KEY" not in message
+
+        summary = message.split("exit code 1: ", 1)[1]
+        assert summary == "ValueError: [REDACTED] " + padding * retained_characters
+        assert len(summary.encode()) <= 2048
+        assert "\ufffd" not in summary
+
     @pytest.mark.parametrize("content", ["raw prompt or model output", "", "ValueError:", "ValueError: bad\x00text"])
     async def test_malformed_report_keeps_only_exit_code(self, content: str) -> None:
         message, _ = await reported_failure(content, ())
