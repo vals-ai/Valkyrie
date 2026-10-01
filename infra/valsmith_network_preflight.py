@@ -1,0 +1,541 @@
+"""Deployment preflight and guarded DNS verification for the dedicated network."""
+
+import argparse
+import ipaddress
+import json
+import subprocess
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
+
+from deployment_target import DeploymentTarget, validate_caller_identity
+from valsmith_network_config import (
+    ACCOUNT,
+    NETWORK_STACK,
+    REGION,
+    SERVICE_REPOSITORY,
+    JsonValue,
+    NetworkInputs,
+    NetworkInventory,
+    input_hash,
+    json_document,
+    load_inputs,
+    object_field,
+    object_list,
+    text_field,
+    validate_inventory,
+)
+from valsmith_network_dns import DNS_LOG_ARN, DNS_LOG_GROUP, dns_names
+
+
+class AwsReader:
+    def __init__(self, profile: str) -> None:
+        if not profile.strip():
+            raise ValueError("An explicit AWS profile is required")
+
+        self.profile = profile
+
+    def read(self, service: str, operation: str, *arguments: str) -> dict[str, JsonValue]:
+        return self._call(service, operation, *arguments)
+
+    def disable_dns_fail_open(self, vpc_id: str) -> None:
+        self._call(
+            "route53resolver", "update-firewall-config", "--resource-id", vpc_id, "--firewall-fail-open", "DISABLED"
+        )
+
+    def _call(self, service: str, operation: str, *arguments: str) -> dict[str, JsonValue]:
+        # AWS CLI auto-pagination is required. Never pass --no-paginate or --max-items.
+        result = subprocess.run(
+            [
+                "aws",
+                service,
+                operation,
+                *arguments,
+                "--profile",
+                self.profile,
+                "--region",
+                REGION,
+                "--output",
+                "json",
+                "--no-cli-pager",
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=90,
+        )
+        document = json_document(result.stdout)
+        if any(document.get(key) for key in ("NextToken", "nextToken", "NextMarker", "Marker", "IsTruncated")):
+            raise ValueError(f"AWS inventory is incomplete: {service} {operation}")
+
+        return document
+
+
+def _only(items: list[dict[str, JsonValue]], name: str) -> dict[str, JsonValue]:
+    if len(items) != 1:
+        raise ValueError(f"Expected exactly one {name}")
+
+    return items[0]
+
+
+def _owned_resources(reader: AwsReader) -> list[dict[str, JsonValue]]:
+    stacks = object_list(reader.read("cloudformation", "list-stacks"), "StackSummaries")
+    matching = [
+        item
+        for item in stacks
+        if item.get("StackName") == NETWORK_STACK and item.get("StackStatus") != "DELETE_COMPLETE"
+    ]
+    if not matching:
+        return []
+
+    stack = _only(matching, NETWORK_STACK)
+    stack_id = text_field(stack, "StackId")
+    if not stack_id.startswith(f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{NETWORK_STACK}/"):
+        raise ValueError("Network stack belongs to another account or Region")
+
+    if stack.get("StackStatus") not in (
+        "CREATE_COMPLETE",
+        "UPDATE_COMPLETE",
+        "UPDATE_ROLLBACK_COMPLETE",
+        "IMPORT_COMPLETE",
+    ):
+        raise ValueError("Network stack is not in a stable completed state")
+
+    return object_list(
+        reader.read("cloudformation", "list-stack-resources", "--stack-name", stack_id), "StackResourceSummaries"
+    )
+
+
+def collect_inventory(profile: str, inputs: NetworkInputs, *, reader: AwsReader | None = None) -> NetworkInventory:
+    reader = reader or AwsReader(profile)
+    observed_at = datetime.now(UTC)
+    identity = reader.read("sts", "get-caller-identity")
+    validate_caller_identity(DeploymentTarget("prod", ACCOUNT, REGION), identity)
+    owned = _owned_resources(reader)
+    owned_vpcs = [
+        text_field(item, "PhysicalResourceId") for item in owned if item.get("ResourceType") == "AWS::EC2::VPC"
+    ]
+    if len(owned_vpcs) > 1:
+        raise ValueError("Network stack must own exactly one VPC")
+
+    owned_vpc_id = owned_vpcs[0] if owned_vpcs else None
+    owned_peer_ids = {
+        text_field(item, "PhysicalResourceId")
+        for item in owned
+        if item.get("ResourceType") == "AWS::EC2::VPCPeeringConnection"
+    }
+    vpcs = object_list(reader.read("ec2", "describe-vpcs"), "Vpcs")
+    subnets = object_list(reader.read("ec2", "describe-subnets"), "Subnets")
+    route_tables = object_list(reader.read("ec2", "describe-route-tables"), "RouteTables")
+    occupied: set[str] = set()
+    for vpc in vpcs:
+        cidrs = {text_field(item, "CidrBlock") for item in object_list(vpc, "CidrBlockAssociationSet")}
+        if not cidrs:
+            raise ValueError("VPC CIDR inventory is empty")
+
+        if vpc.get("VpcId") == owned_vpc_id:
+            if cidrs != {inputs.vpc_cidr} or vpc.get("OwnerId") != ACCOUNT or vpc.get("State") != "available":
+                raise ValueError("Existing owned VPC does not match its pinned range and identity")
+
+            continue
+
+        occupied.update(cidrs)
+
+    if owned_vpc_id and not any(vpc.get("VpcId") == owned_vpc_id for vpc in vpcs):
+        raise ValueError("CloudFormation owned VPC is missing")
+
+    reservations: list[JsonValue] = []
+    for subnet in subnets:
+        reservation = reader.read("ec2", "get-subnet-cidr-reservations", "--subnet-id", text_field(subnet, "SubnetId"))
+        reservations.append(reservation)
+        if subnet.get("VpcId") != owned_vpc_id:
+            occupied.update(text_field(item, "Cidr") for item in object_list(reservation, "SubnetIpv4CidrReservations"))
+
+    peerings = object_list(reader.read("ec2", "describe-vpc-peering-connections"), "VpcPeeringConnections")
+    for peer_id in owned_peer_ids:
+        peer = _only([item for item in peerings if item.get("VpcPeeringConnectionId") == peer_id], "owned peering")
+        sides = [object_field(peer, side) for side in ("RequesterVpcInfo", "AccepterVpcInfo")]
+        if (
+            object_field(peer, "Status").get("Code") != "active"
+            or {text_field(side, "VpcId") for side in sides} != {owned_vpc_id, inputs.caller_vpc_id}
+            or any(side.get("OwnerId") != ACCOUNT for side in sides)
+        ):
+            raise ValueError("Owned peering no longer connects the reviewed VPCs")
+
+    for peering in peerings:
+        if object_field(peering, "Status").get("Code") in ("deleted", "rejected", "failed", "expired"):
+            continue
+
+        for side in ("RequesterVpcInfo", "AccepterVpcInfo"):
+            peer = object_field(peering, side)
+            peer_id = peering.get("VpcPeeringConnectionId")
+            if peer_id in owned_peer_ids and peer.get("VpcId") == owned_vpc_id:
+                continue
+
+            if "CidrBlockSet" in peer:
+                occupied.update(text_field(item, "CidrBlock") for item in object_list(peer, "CidrBlockSet"))
+            elif "CidrBlock" in peer:
+                occupied.add(text_field(peer, "CidrBlock"))
+            else:
+                raise ValueError("Cannot inventory a peer's address ranges")
+
+    owned_subnet_ids = {
+        text_field(item, "PhysicalResourceId") for item in owned if item.get("ResourceType") == "AWS::EC2::Subnet"
+    }
+    application_subnets = [
+        subnet
+        for subnet in subnets
+        if subnet.get("VpcId") == owned_vpc_id
+        and subnet.get("SubnetId") in owned_subnet_ids
+        and ipaddress.ip_network(text_field(subnet, "CidrBlock")).prefixlen == 24
+    ]
+    application_cidrs = {text_field(subnet, "CidrBlock") for subnet in application_subnets}
+    application_ids = {text_field(subnet, "SubnetId") for subnet in application_subnets}
+    if owned_peer_ids and len(application_subnets) != 2:
+        raise ValueError("Owned peering requires both reviewed application subnets")
+
+    for route_table in route_tables:
+        for route in object_list(route_table, "Routes"):
+            if not (route.get("VpcPeeringConnectionId") or route.get("TransitGatewayId")):
+                continue
+
+            if route.get("VpcPeeringConnectionId") in owned_peer_ids:
+                destination = route.get("DestinationCidrBlock")
+                caller_route = (
+                    route_table.get("RouteTableId") in inputs.caller_route_table_ids
+                    and destination in application_cidrs
+                )
+                application_route = (
+                    route_table.get("VpcId") == owned_vpc_id
+                    and destination in inputs.caller_subnet_cidrs
+                    and any(
+                        association.get("SubnetId") in application_ids
+                        for association in object_list(route_table, "Associations")
+                    )
+                )
+                if not caller_route and not application_route:
+                    raise ValueError("Unexpected route through the owned peering connection")
+
+                continue
+
+            destination = route.get("DestinationCidrBlock")
+            if isinstance(destination, str) and destination != "0.0.0.0/0":
+                occupied.add(destination)
+
+    transit = object_list(
+        reader.read("ec2", "describe-transit-gateway-vpc-attachments"), "TransitGatewayVpcAttachments"
+    )
+    if any(item.get("State") not in ("deleted", "failed", "rejected") for item in transit):
+        raise ValueError("Transit network ranges require a reviewed inventory before deployment")
+
+    pools = object_list(reader.read("ec2", "describe-ipam-pools"), "IpamPools")
+    pool_ranges: list[JsonValue] = []
+    for pool in pools:
+        response = reader.read("ec2", "get-ipam-pool-cidrs", "--ipam-pool-id", text_field(pool, "IpamPoolId"))
+        pool_ranges.append(response)
+        occupied.update(text_field(item, "Cidr") for item in object_list(response, "IpamPoolCidrs"))
+
+    resolver_associations = object_list(
+        reader.read("route53resolver", "list-resolver-rule-associations"), "ResolverRuleAssociations"
+    )
+    resolver_rules: list[JsonValue] = []
+    for association in resolver_associations:
+        if not owned_vpc_id or association.get("VPCId") != owned_vpc_id:
+            continue
+
+        rule_id = "rslvr-autodefined-rr-internet-resolver"
+        if association.get("ResolverRuleId") != rule_id or association.get("Status") != "COMPLETE":
+            raise ValueError("New VPC has an unreviewed Resolver forwarding association")
+
+        rule = object_field(
+            reader.read("route53resolver", "get-resolver-rule", "--resolver-rule-id", rule_id), "ResolverRule"
+        )
+        expected = {
+            "Id": rule_id,
+            "Arn": f"arn:aws:route53resolver:{REGION}::autodefined-rule/{rule_id}",
+            "OwnerId": "Route 53 Resolver",
+            "DomainName": ".",
+            "Status": "COMPLETE",
+            "RuleType": "RECURSIVE",
+        }
+        if (
+            any(rule.get(key) != value for key, value in expected.items())
+            or rule.get("ResolverEndpointId")
+            or rule.get("TargetIps")
+        ):
+            raise ValueError("New VPC has an unreviewed Resolver forwarding rule")
+
+        resolver_rules.append(rule)
+
+    groups = reader.read("ec2", "describe-security-groups", "--group-ids", inputs.caller_security_group_id)
+    clusters = reader.read("ecs", "describe-clusters", "--clusters", inputs.cluster_arn)
+    if clusters.get("failures"):
+        raise ValueError("ECS cluster inventory failed")
+
+    namespace = reader.read("servicediscovery", "get-namespace", "--id", inputs.namespace_id)
+    images = reader.read(
+        "ecr",
+        "describe-images",
+        "--repository-name",
+        SERVICE_REPOSITORY,
+        "--image-ids",
+        f"imageDigest={inputs.service_image_digest}",
+    )
+    resources: dict[str, JsonValue] = {
+        "prefix_lists": list(object_list(reader.read("ec2", "describe-prefix-lists"), "PrefixLists")),
+        "vpc": _only([vpc for vpc in vpcs if vpc.get("VpcId") == inputs.caller_vpc_id], "caller VPC"),
+        "subnets": [subnet for subnet in subnets if subnet.get("SubnetId") in inputs.caller_subnet_ids],
+        "route_tables": [table for table in route_tables if table.get("RouteTableId") in inputs.caller_route_table_ids],
+        "security_group": _only(object_list(groups, "SecurityGroups"), "caller security group"),
+        "cluster": _only(object_list(clusters, "clusters"), "caller cluster"),
+        "namespace": object_field(namespace, "Namespace"),
+        "service_image_digest": text_field(
+            _only(object_list(images, "imageDetails"), "qualified service image"), "imageDigest"
+        ),
+        "all_vpcs": list(vpcs),
+        "all_route_tables": list(route_tables),
+        "peerings": list(peerings),
+        "owned_resources": list(owned),
+        "reservations": reservations,
+        "ipam_ranges": pool_ranges,
+        "resolver_associations": list(resolver_associations),
+        "resolver_rules": resolver_rules,
+    }
+    inventory = NetworkInventory(ACCOUNT, REGION, observed_at, input_hash(inputs), tuple(sorted(occupied)), resources)
+    validate_inventory(inputs, inventory)
+    return inventory
+
+
+def _verify_dns_rules(
+    reader: AwsReader, owned: list[dict[str, JsonValue]], vpc_id: str, rule_group_id: str
+) -> dict[str, JsonValue]:
+    domain_lists = {
+        name: text_field(
+            _only(
+                [
+                    item
+                    for item in owned
+                    if item.get("ResourceType") == "AWS::Route53Resolver::FirewallDomainList"
+                    and item.get("LogicalResourceId") == name
+                ],
+                f"DNS domain list {name}",
+            ),
+            "PhysicalResourceId",
+        )
+        for name in ("DnsApprovedDomains", "DnsAllDomains")
+    }
+    load_balancer_arn = text_field(
+        _only(
+            [item for item in owned if item.get("ResourceType") == "AWS::ElasticLoadBalancingV2::LoadBalancer"],
+            "DNS proxy load balancer",
+        ),
+        "PhysicalResourceId",
+    )
+    load_balancer = _only(
+        object_list(
+            reader.read("elbv2", "describe-load-balancers", "--load-balancer-arns", load_balancer_arn), "LoadBalancers"
+        ),
+        "DNS proxy load balancer",
+    )
+    for key, value in {
+        "LoadBalancerArn": load_balancer_arn,
+        "VpcId": vpc_id,
+        "Scheme": "internal",
+        "Type": "network",
+    }.items():
+        if load_balancer.get(key) != value:
+            raise ValueError("DNS proxy load balancer does not match the network")
+
+    domains: dict[str, JsonValue] = {}
+    for name, expected in {
+        "DnsApprovedDomains": set(dns_names(text_field(load_balancer, "DNSName"))),
+        "DnsAllDomains": {"*"},
+    }.items():
+        response = reader.read(
+            "route53resolver", "list-firewall-domains", "--firewall-domain-list-id", domain_lists[name]
+        )
+        values = response.get("Domains")
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError("DNS domain list is incomplete")
+
+        actual = {value.lower().removesuffix(".") for value in values if isinstance(value, str)}
+        if actual != expected:
+            raise ValueError(f"DNS domain list {name} differs from the reviewed destinations")
+
+        domains[name] = values
+
+    rules = object_list(
+        reader.read("route53resolver", "list-firewall-rules", "--firewall-rule-group-id", rule_group_id),
+        "FirewallRules",
+    )
+    expected_rules: list[dict[str, JsonValue]] = [
+        {
+            "Priority": priority,
+            "Action": "ALLOW",
+            "Qtype": query_type,
+            "FirewallDomainListId": domain_lists["DnsApprovedDomains"],
+            "BlockResponse": None,
+        }
+        for priority, query_type in ((100, "A"), (200, "AAAA"))
+    ]
+    expected_rules.append(
+        {
+            "Priority": 9900,
+            "Action": "BLOCK",
+            "Qtype": None,
+            "FirewallDomainListId": domain_lists["DnsAllDomains"],
+            "BlockResponse": "NODATA",
+        }
+    )
+    if len(rules) != len(expected_rules):
+        raise ValueError("DNS rules must include exactly the two allows and catch-all block")
+
+    for expected in expected_rules:
+        rule = _only([rule for rule in rules if rule.get("Priority") == expected["Priority"]], "DNS rule priority")
+        expected.update(
+            {"FirewallRuleGroupId": rule_group_id, "FirewallDomainRedirectionAction": "INSPECT_REDIRECTION_DOMAIN"}
+        )
+        if any(rule.get(key) != value for key, value in expected.items()):
+            raise ValueError("DNS rules differ from the reviewed query and alias boundary")
+
+    return {"rules": list(rules), "domains": domains}
+
+
+def verify_dns(
+    profile: str, inputs: NetworkInputs, *, disable_fail_open: bool = False, reader: AwsReader | None = None
+) -> dict[str, JsonValue]:
+    reader = reader or AwsReader(profile)
+    inventory = collect_inventory(profile, inputs, reader=reader)
+    owned = object_list(inventory.resources, "owned_resources")
+    response = reader.read("cloudformation", "describe-stacks", "--stack-name", NETWORK_STACK)
+    stack = _only(object_list(response, "Stacks"), NETWORK_STACK)
+    if not text_field(stack, "StackId").startswith(f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{NETWORK_STACK}/"):
+        raise ValueError("DNS stack identity does not match Production")
+
+    outputs = {text_field(item, "OutputKey"): text_field(item, "OutputValue") for item in object_list(stack, "Outputs")}
+    for key, expected in {
+        "NetworkContractVersion": "1",
+        "NetworkAccount": ACCOUNT,
+        "NetworkRegion": REGION,
+        "ResolverLogGroupName": DNS_LOG_GROUP,
+    }.items():
+        if outputs.get(key) != expected:
+            raise ValueError(f"DNS output {key} does not match the network contract")
+
+    for key, resource_type in (
+        ("VpcId", "AWS::EC2::VPC"),
+        ("DnsFirewallRuleGroupId", "AWS::Route53Resolver::FirewallRuleGroup"),
+        ("DnsFirewallAssociationId", "AWS::Route53Resolver::FirewallRuleGroupAssociation"),
+        ("ResolverQueryLogConfigId", "AWS::Route53Resolver::ResolverQueryLoggingConfig"),
+        ("ResolverLogAssociationId", "AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation"),
+    ):
+        resource = _only([item for item in owned if item.get("ResourceType") == resource_type], key)
+        if outputs.get(key) != text_field(resource, "PhysicalResourceId"):
+            raise ValueError(f"DNS output {key} is not owned by the network stack")
+
+    vpc_id = outputs["VpcId"]
+    if vpc_id == inputs.caller_vpc_id:
+        raise ValueError("DNS operator must never modify the shared VPC")
+
+    firewall_associations = object_list(
+        reader.read("route53resolver", "list-firewall-rule-group-associations", "--vpc-id", vpc_id),
+        "FirewallRuleGroupAssociations",
+    )
+    association = _only(firewall_associations, "DNS firewall association")
+    for key, expected in {
+        "Id": outputs["DnsFirewallAssociationId"],
+        "VpcId": vpc_id,
+        "FirewallRuleGroupId": outputs["DnsFirewallRuleGroupId"],
+        "Status": "COMPLETE",
+        "Priority": 101,
+    }.items():
+        if association.get(key) != expected:
+            raise ValueError(f"DNS firewall association {key} does not match")
+
+    boundary = _verify_dns_rules(reader, owned, vpc_id, outputs["DnsFirewallRuleGroupId"])
+
+    log_associations = object_list(
+        reader.read("route53resolver", "list-resolver-query-log-config-associations"),
+        "ResolverQueryLogConfigAssociations",
+    )
+    log_association = _only(
+        [item for item in log_associations if item.get("ResourceId") == vpc_id], "Resolver log association"
+    )
+    for key, expected in {
+        "Id": outputs["ResolverLogAssociationId"],
+        "ResolverQueryLogConfigId": outputs["ResolverQueryLogConfigId"],
+        "Status": "ACTIVE",
+    }.items():
+        if log_association.get(key) != expected:
+            raise ValueError(f"Resolver log association {key} does not match")
+
+    if log_association.get("Error") not in (None, "NONE"):
+        raise ValueError("Resolver log delivery has an error")
+
+    log_config = object_field(
+        reader.read(
+            "route53resolver",
+            "get-resolver-query-log-config",
+            "--resolver-query-log-config-id",
+            outputs["ResolverQueryLogConfigId"],
+        ),
+        "ResolverQueryLogConfig",
+    )
+    if (
+        log_config.get("DestinationArn") != DNS_LOG_ARN
+        or log_config.get("OwnerId") != ACCOUNT
+        or log_config.get("Status") != "CREATED"
+    ):
+        raise ValueError("Resolver logs are not active at the reviewed destination")
+
+    if disable_fail_open:
+        reader.disable_dns_fail_open(vpc_id)
+
+    firewall = object_field(
+        reader.read("route53resolver", "get-firewall-config", "--resource-id", vpc_id), "FirewallConfig"
+    )
+    if (
+        firewall.get("ResourceId") != vpc_id
+        or firewall.get("OwnerId") != ACCOUNT
+        or firewall.get("FirewallFailOpen") != "DISABLED"
+    ):
+        raise ValueError("DNS Firewall must fail closed on the new VPC")
+
+    return {
+        "stack_id": text_field(stack, "StackId"),
+        "vpc_id": vpc_id,
+        "firewall": firewall,
+        "association": association,
+        "boundary": boundary,
+        "log_association": log_association,
+        "verified_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["preflight", "verify-dns"])
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--inputs", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--stack", choices=[NETWORK_STACK], default=NETWORK_STACK)
+    parser.add_argument("--disable-fail-open", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.command == "verify-dns":
+        report = verify_dns(
+            arguments.profile, load_inputs(arguments.inputs), disable_fail_open=arguments.disable_fail_open
+        )
+        arguments.output.write_text(json.dumps(report, indent=2) + "\n")
+        print("Verified the dedicated network DNS firewall and log associations")
+        return
+
+    if arguments.disable_fail_open:
+        parser.error("--disable-fail-open requires verify-dns")
+
+    inventory = collect_inventory(arguments.profile, load_inputs(arguments.inputs))
+    arguments.output.write_text(json.dumps(asdict(inventory), default=str, indent=2) + "\n")
+    print(f"Verified {inventory.account_id}/{inventory.region}; input SHA256 {inventory.input_sha256}")
+
+
+if __name__ == "__main__":
+    main()

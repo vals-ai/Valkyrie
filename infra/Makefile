@@ -104,3 +104,58 @@ hotswap: preflight
 destroy: preflight
 	@read -r -p "Destroy all $(STAGE) stacks? [y/N] " confirm && [ "$$confirm" = "y" ]
 	uv run cdk destroy --all $(CDK_CTX) $(CDK_PROFILE)
+
+# This app never instantiates shared, Tracker, or executor stacks.
+NETWORK_INPUTS ?= valsmith_network_inputs.json
+PROXY_IMAGE_URI ?=
+PREFLIGHT_OUTPUT ?=
+DNS_VERIFY_OUTPUT ?=
+VALSMITH_APP = --app "uv run python valsmith_network_app.py"
+VALSMITH_CDK = npx --yes --package aws-cdk@2.1132.0 cdk
+VALSMITH_ASSEMBLY = --output cdk.out/valsmith
+VALSMITH_CONTEXT = -c inputs="$(NETWORK_INPUTS)"
+VALSMITH_CHECKED_CONTEXT = $(VALSMITH_CONTEXT) -c profile="$(PROFILE)" -c preflight_path="$(PREFLIGHT_OUTPUT)"
+
+.PHONY: valsmith-cloud-inputs valsmith-image-input valsmith-dns-output valsmith-network-preflight \
+	valsmith-images-synth valsmith-images-diff valsmith-images-deploy \
+	valsmith-network-synth valsmith-network-diff valsmith-network-deploy
+
+valsmith-cloud-inputs:
+	@test -n "$(PROFILE)" && test -n "$(PREFLIGHT_OUTPUT)" || \
+		{ echo "Set PROFILE and a local PREFLIGHT_OUTPUT path." >&2; exit 1; }
+
+valsmith-image-input:
+	@test -n "$(PROXY_IMAGE_URI)" || { echo "Set an immutable PROXY_IMAGE_URI." >&2; exit 1; }
+
+valsmith-dns-output:
+	@test -n "$(DNS_VERIFY_OUTPUT)" || { echo "Set a local DNS_VERIFY_OUTPUT path." >&2; exit 1; }
+
+valsmith-network-preflight: valsmith-cloud-inputs venv_check
+	uv run python valsmith_network_preflight.py preflight --profile "$(PROFILE)" \
+		--inputs "$(NETWORK_INPUTS)" --output "$(PREFLIGHT_OUTPUT)"
+
+valsmith-images-synth: venv_check
+	$(VALSMITH_CDK) synth ValSmithProdProxyImages $(VALSMITH_APP) $(VALSMITH_ASSEMBLY) $(VALSMITH_CONTEXT) -c component=images
+
+valsmith-images-diff: valsmith-network-preflight
+	$(VALSMITH_CDK) diff ValSmithProdProxyImages $(VALSMITH_APP) $(VALSMITH_ASSEMBLY) $(VALSMITH_CHECKED_CONTEXT) \
+		-c component=images --profile "$(PROFILE)"
+
+valsmith-images-deploy: valsmith-network-preflight
+	$(VALSMITH_CDK) deploy ValSmithProdProxyImages $(VALSMITH_APP) $(VALSMITH_ASSEMBLY) $(VALSMITH_CHECKED_CONTEXT) \
+		-c component=images --profile "$(PROFILE)" --exclusively --require-approval never
+
+valsmith-network-synth: valsmith-image-input venv_check
+	$(VALSMITH_CDK) synth ValSmithProdNetwork $(VALSMITH_APP) $(VALSMITH_ASSEMBLY) $(VALSMITH_CONTEXT) \
+		-c component=network -c proxy_image_uri="$(PROXY_IMAGE_URI)"
+
+valsmith-network-diff: valsmith-image-input valsmith-network-preflight
+	$(VALSMITH_CDK) diff ValSmithProdNetwork $(VALSMITH_APP) $(VALSMITH_ASSEMBLY) $(VALSMITH_CHECKED_CONTEXT) \
+		-c component=network -c proxy_image_uri="$(PROXY_IMAGE_URI)" --profile "$(PROFILE)"
+
+valsmith-network-deploy: valsmith-image-input valsmith-dns-output valsmith-network-preflight
+	$(VALSMITH_CDK) deploy ValSmithProdNetwork $(VALSMITH_APP) $(VALSMITH_ASSEMBLY) $(VALSMITH_CHECKED_CONTEXT) \
+		-c component=network -c proxy_image_uri="$(PROXY_IMAGE_URI)" --profile "$(PROFILE)" \
+		--exclusively --require-approval never
+	uv run python valsmith_network_preflight.py verify-dns --profile "$(PROFILE)" \
+		--inputs "$(NETWORK_INPUTS)" --stack ValSmithProdNetwork --disable-fail-open --output "$(DNS_VERIFY_OUTPUT)"
