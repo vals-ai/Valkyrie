@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from benchmark_service import SandboxSource, TargetedSnapshotSource
+from benchmark_service import CreditedGeneration, SandboxSource, TargetedSnapshotSource
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlalchemy.engine import Engine
@@ -285,7 +285,7 @@ class TestProcessTaskEnvironment:
         task_response = make_retrieve_task_response().model_copy(
             update={
                 "agent_timeout": 10.0,
-                "credited_generation": True,
+                "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
             }
         )
         captured_env_vars: list[dict[str, str]] = []
@@ -469,7 +469,7 @@ class TestProcessTaskEnvironment:
         task_response = make_retrieve_task_response().model_copy(
             update={
                 "agent_timeout": 10.0,
-                "credited_generation": True,
+                "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
             }
         )
         persistence_error = RuntimeError("summary persistence failed")
@@ -555,7 +555,7 @@ class TestProcessTaskEnvironment:
         monkeypatch: pytest.MonkeyPatch,
         gateway_url: str | None,
         task_enabled: bool,
-        timeout: float | None,
+        timeout: float,
         base_only: bool,
     ) -> None:
         create_session = AsyncMock()
@@ -564,7 +564,8 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module.ExternalServiceGatewayClient, "create_session", create_session)
 
         deadline = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
-            contract, task_enabled, timeout
+            contract,
+            CreditedGeneration(allowance_seconds=timeout, stage_protocol=None) if task_enabled else None,
         )
 
         if base_only:
@@ -594,10 +595,10 @@ class TestProcessTaskEnvironment:
             database_session.add(task_row)
             database_session.commit()
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": True}
+            update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
         )
         create_session = AsyncMock()
-        observed: list[tuple[bool, Any]] = []
+        observed: list[tuple[CreditedGeneration, Any]] = []
 
         async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return task_response
@@ -617,7 +618,7 @@ class TestProcessTaskEnvironment:
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(observed) == 1
         opted_in, deadline = observed[0]
-        assert opted_in is True
+        assert opted_in == CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)
         assert deadline is not None
         assert deadline.base_allowance_seconds == 10.0
         assert deadline.client is None
@@ -638,7 +639,7 @@ class TestProcessTaskEnvironment:
     ) -> None:
         contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
         request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
-        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": True})
+        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)})
         teardown_complete = asyncio.Event()
 
         @asynccontextmanager
@@ -704,10 +705,10 @@ class TestProcessTaskEnvironment:
         )
 
         first = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
-            selected_contract, True, 10.0
+            selected_contract, CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)
         )
         second = await utils_module._create_external_service_deadline(  # pyright: ignore[reportPrivateUsage]
-            selected_contract, True, 10.0
+            selected_contract, CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)
         )
 
         assert first is not None
@@ -739,7 +740,7 @@ class TestProcessTaskEnvironment:
             contract, database_session, harness_config
         )
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": True}
+            update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
         )
         create_session = AsyncMock()
         create_sandbox = Mock()
@@ -783,7 +784,7 @@ class TestProcessTaskEnvironment:
             contract, database_session, harness_config
         )
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": True}
+            update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
         )
         create_sandbox = Mock()
         create_session = AsyncMock(

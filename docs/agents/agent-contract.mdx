@@ -122,6 +122,8 @@ Shell command to run the agent on a task. Must contain the `{problem_statement_p
 run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
 ```
 
+For benchmark tasks opting into `credited_generation` with `stage_protocol: "valkyrie-stage/1"`, Tracker still invokes `run_cmd` exactly once after setup. Benchmark-owned orchestration within that command reports BEGIN and END for every model-capable generation interval; the agent does not report stages and does not declare timing or containment in `contract.yaml`. The benchmark receives `VALKYRIE_STAGE_DIR=/run/valkyrie-stage` in the outer command, signs reports with the private `key` in that directory, and waits for `ack/<seq>` before launching a generation container or starting evaluation/non-generation work after its confirmed stop. Keep the key and acknowledgement directory out of model-capable containers and their environments. A command without staged reports uses `stage_protocol: null` and remains a single generation interval.
+
 ## Optional fields
 
 ### `final_output: path`
@@ -285,9 +287,11 @@ valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swe
 
 ### Companion models
 Tracker mints a native task-scoped Model Gateway bearer token for the run's model when the Gateway is
-configured and the model is attested. A benchmark task (not an agent contract) may opt in to
-`credited_generation: true` with a finite positive `agent_timeout`. The effective sandbox provider
-must support `linux_pid_namespace` version 1 and stop/confirm absence of its workload; without an
+configured and the model is attested. A benchmark task (not an agent contract) opts in with
+`credited_generation: { allowance_seconds: B, stage_protocol: "valkyrie-stage/1" }`; use
+`stage_protocol: null` for a single whole-command interval. The positive generation-only allowance
+is independent of the published `agent_timeout` envelope. The effective sandbox provider must
+support `linux_pid_namespace` version 1 and stop/confirm absence of its workload; without an
 attested model, the task still receives its base cumulative active-generation allowance but no SSP
 credit. Setup, evaluation, and pauses between active generation intervals do not consume it.
 

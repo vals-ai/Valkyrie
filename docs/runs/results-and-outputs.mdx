@@ -25,22 +25,13 @@ The results file holds the scores and the per-task evaluation. Without `--path`,
 
 ### Credited-generation timeout accounting (local MVP)
 
-The benchmark task alone opts in with `credited_generation: true` (default `false`) and a finite,
-positive `agent_timeout`. Agents do not declare containment in their contract. An unselected task,
-including one with `agent_timeout: null`, keeps the legacy timeout path. A selected task requires
-an effective sandbox provider that supports `linux_pid_namespace` version 1 and can stop its
-generation workload and confirm absence; Tracker rejects it if that provider capability is unavailable.
-The selected task's base allowance is its `agent_timeout`, whether or not SSP credit is configured.
-Setup and evaluation are outside the generation allowance.
+The benchmark task opts in with `credited_generation: { allowance_seconds: B, stage_protocol: "valkyrie-stage/1" }`. `allowance_seconds` is a finite positive generation-only budget, independent of the published `agent_timeout` envelope. Set `stage_protocol: null` to treat the whole agent command as one generation interval; omit `credited_generation` for the legacy `agent_timeout` path. Agents do not declare containment in their contract. An opted-in task requires an effective sandbox provider with `linux_pid_namespace` version 1 and confirmed workload termination.
 
-Generation time is the cumulative duration of active workload intervals, from each successful start
-to its matching stop. Pauses between intervals do not consume the base allowance; resumed intervals
-continue the same cumulative budget. At an apparent deadline, gateway arbitration has a shared 10
-seconds; any required kill must confirm generation absence by the absolute deadline plus 20 seconds,
-not 20 seconds after arbitration. A sealed accounting summary is recorded only after absence is
-confirmed; unconfirmed termination does not proceed to grading. Stopping a generation workload is
-provider-specific: the local MVP uses direct Daytona `linux_pid_namespace` version 1. This is a
-capability of the effective sandbox, not an agent contract field.
+After `setup_task`, Tracker creates `/run/valkyrie-stage/key` and `/run/valkyrie-stage/ack/`, then sets `VALKYRIE_STAGE_DIR` on the one outer agent command. A staged benchmark reports each generation interval on that command's stdout with authenticated `VALKYRIE-STAGE/1` frames. The signing key and acknowledgements must be readable only by the benchmark orchestration process, never passed or mounted into the model-capable container. Tracker filters valid frames out of the task log and writes `ack/<seq>` only after applying the corresponding transition. The benchmark must await BEGIN acknowledgement before launching its model-capable container and END acknowledgement before starting non-generation work; END follows confirmed nested-container absence. Duplicate retransmission of the last accepted frame is acknowledged again; missing, reordered or conflicting authenticated frames fail closed.
+
+One task has one cumulative allowance. Generation is charged from each acknowledged BEGIN until Tracker receives the matching END; setup, evaluation, and gaps between intervals are free. The clock stops before Gateway END round-trip and remains stopped between intervals. Tracker alone decides exhaustion against `B` plus capped accepted SSP overhead. If an active interval times out or the outer command ends before END, Tracker stops and confirms absence of the named nested Docker container before sealing or grading. Failed confirmation prevents a sealed accounting claim and grading. Completion between intervals seals the session once. A separate persisted 166-hour task wall deadline bounds every phase and is not extended by credit.
+
+At an apparent deadline, Gateway arbitration has a shared 10 seconds; any required kill must confirm generation absence by the absolute deadline plus 20 seconds, not 20 seconds after arbitration. Stopping the outer workload remains provider-specific; the local MVP uses effective `linux_pid_namespace` version 1 containment.
 
 Optional SSP credit requires a locally configured External Service Gateway URL and cumulative credit
 cap, a working native Model Gateway URL and credential, and an attested agent model. Only an attested
@@ -70,12 +61,12 @@ tasks still use the native Gateway mint route with a seven-day token lease where
 
 SSP reports cumulative accepted neutral external-service overhead for active intervals. Applied
 credit is capped by the configured cumulative cap, so the effective generation allowance is the
-base task timeout plus capped credit. An acknowledged `RESUME` establishes a new generation deadline,
+benchmark's `allowance_seconds` plus capped credit. An acknowledged `RESUME` establishes a new generation deadline,
 never a new task wall deadline.
 
 Selected tasks expose seven nullable fields in each per-task `task_breakdown`:
 `accounting_session_id` identifies the accounting session, not a bearer credential;
-`base_generation_allowance_seconds` is the benchmark timeout;
+`base_generation_allowance_seconds` is the benchmark's `allowance_seconds`;
 `cumulative_time_credit_cap_seconds` is the credit limit;
 `external_service_overhead_seconds` is accepted cumulative overhead;
 `external_service_credit_applied_seconds` is the capped credit;

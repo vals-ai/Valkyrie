@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    CreditedGeneration,
     ComposeSource,
     Sandbox,
     SandboxNotFoundError,
@@ -83,7 +84,6 @@ from tracker.observability.sentry import capture_exception, clear_sandbox_contex
 from tracker.observability.tracing import observability_span
 from tracker.sandbox import (
     DependencySetupMode,
-    _controlled_generation_selected,  # pyright: ignore[reportPrivateUsage]
     apply_egress_policy,
     create_sandbox,
     install_agent_dependencies,
@@ -577,15 +577,14 @@ def commit_task_status_transition(
 
 async def _create_external_service_deadline(
     contract: AgentContractRequest,
-    task_credited_generation: bool,
-    agent_timeout: float | None,
+    credited_generation: CreditedGeneration | None,
 ) -> ExternalServiceDeadlineController | None:
-    if not _controlled_generation_selected(task_credited_generation, agent_timeout):
+    if credited_generation is None:
         return None
 
-    assert agent_timeout is not None
+    allowance = credited_generation.allowance_seconds
     if EXTERNAL_SERVICE_GATEWAY_URL is None:
-        return ExternalServiceDeadlineController(base_allowance_seconds=agent_timeout)
+        return ExternalServiceDeadlineController(base_allowance_seconds=allowance)
 
     if not contract.inference_settings_attested or not contract.model or not contract.model.strip():
         raise TrackerServiceError("Gateway credit requires an attested agent model")
@@ -599,7 +598,7 @@ async def _create_external_service_deadline(
     return ExternalServiceDeadlineController(
         client=client,
         snapshot=snapshot,
-        base_allowance_seconds=agent_timeout,
+        base_allowance_seconds=allowance,
         credit_cap_seconds=EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
     )
 
@@ -794,6 +793,7 @@ async def _process_task_attempt(
 
     evaluation_lock: PostgresAdvisoryLock | None = None
     evaluation_lock_acquired = False
+    credited_agent_attempt_started = False
 
     def wall_seconds_remaining(deadline_at: datetime) -> float:
         if deadline_at.tzinfo is None:
@@ -1157,14 +1157,12 @@ async def _process_task_attempt(
         if sandbox_provider is None:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
-        task_credited_generation = bool(getattr(task_data, "credited_generation", False)) or (
-            task_row.credited_wall_deadline_at is not None
-        )
+        credited_generation = task_data.credited_generation
+        task_credited_generation = credited_generation is not None
         async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
             external_service_deadline = await _create_external_service_deadline(
                 start_benchmark_request.contract,
-                task_credited_generation,
-                task_data.agent_timeout,
+                credited_generation,
             )
 
         # Labels that show up in the UI we can use to filter sandboxes.
@@ -1405,6 +1403,7 @@ async def _process_task_attempt(
 
                 if not unrestricted_docker:
                     await apply_egress_policy(agent_sandbox, run_egress_policy)
+                credited_agent_attempt_started = credited_generation is not None
                 exit_reason, agent_run_time = await run_agent(
                     agent_sandbox,
                     start_benchmark_request.contract,
@@ -1415,7 +1414,7 @@ async def _process_task_attempt(
                     object_store=object_store,
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
-                    task_credited_generation=task_credited_generation,
+                    task_credited_generation=credited_generation,
                     benchmark_id=str(benchmark_id),
                     execution_is_current=execution_is_current,
                     external_service_deadline=external_service_deadline,
@@ -1540,6 +1539,15 @@ async def _process_task_attempt(
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
+        if credited_agent_attempt_started:
+            error_message = _exception_message(e)
+            log_output(f"\n[ERROR] {error_message}")
+            return commit_terminal_error(
+                e,
+                error_message,
+                producer="sandbox_provider",
+                operation="sandbox_recovery",
+            )
         if not return_queued_task_to_pending():
             return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
@@ -1547,7 +1555,7 @@ async def _process_task_attempt(
     except SandboxNotFoundError as e:
         if task_is_stopped():
             return {task_id: None}
-        if recovery_attempt.sandbox_loss_retry_available:
+        if recovery_attempt.sandbox_loss_retry_available and not credited_agent_attempt_started:
             message = (
                 "Sandbox disappeared; restoring the task from its durable volume "
                 f"(attempt {recovery_attempt.number + 1}/{recovery_attempt.max_attempts})"
@@ -1664,7 +1672,7 @@ async def _process_task_attempt(
         error_message = _exception_message(e)
         # This is necessary because Daytona routes tasks to bad nodes. We should
         # remove this when Daytona fixes their infrastructure.
-        if "docker daemon is not ready inside the sandbox" in error_message:
+        if "docker daemon is not ready inside the sandbox" in error_message and not credited_agent_attempt_started:
             if not return_queued_task_to_pending():
                 return {task_id: None}
             log_output(f"\n[ERROR] {error_message}")

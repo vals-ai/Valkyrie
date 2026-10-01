@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from benchmark_service import (
+    CreditedGeneration,
     ComposeSandbox,
     ComposeSource,
     ExecResult,
@@ -60,7 +61,6 @@ from tracker.exceptions import (
 from tracker.sandbox import (
     OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
     _controlled_completion_precedes_deadline,  # pyright: ignore[reportPrivateUsage]
-    _controlled_generation_selected,  # pyright: ignore[reportPrivateUsage]
     _stream_controlled_output,  # pyright: ignore[reportPrivateUsage]
     create_sandbox,
     run_agent,
@@ -1159,19 +1159,10 @@ class TestRunAgent:
             "/workspace",
             object_store=_mock_object_store(),
             agent_timeout=None,
-            task_credited_generation=False,
+            task_credited_generation=None,
         )
 
         legacy_stream.assert_awaited_once()
-
-    @pytest.mark.parametrize(
-        ("credited_generation", "timeout", "expected"),
-        [(False, 10.0, False), (False, None, False), (True, 10.0, True)],
-    )
-    def test_controlled_generation_requires_task_opt_in_and_finite_timeout(
-        self, credited_generation: bool, timeout: float | None, expected: bool
-    ) -> None:
-        assert _controlled_generation_selected(credited_generation, timeout) is expected
 
     async def test_unselected_task_preserves_legacy_timeout_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         legacy_stream = AsyncMock(return_value=(AgentCausedExitReason.TIMEOUT, 2.5))
@@ -1191,21 +1182,13 @@ class TestRunAgent:
             "/workspace",
             object_store=_mock_object_store(),
             agent_timeout=2.5,
-            task_credited_generation=False,
+            task_credited_generation=None,
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
         controlled_stream.assert_not_awaited()
         assert legacy_stream.await_args is not None
         assert "timeout 2.5 sh -c" in legacy_stream.await_args.args[1]
-
-    @pytest.mark.parametrize("timeout", [None, 0.0, -1.0, float("inf"), float("nan")])
-    def test_controlled_generation_rejects_invalid_matched_timeout(self, timeout: float | None) -> None:
-        with pytest.raises(InvalidSandboxConfigurationError, match="positive finite"):
-            _controlled_generation_selected(
-                True,
-                timeout,
-            )
 
     async def test_run_agent_selects_supported_controlled_workload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         workload = _FakeControlledWorkload()
@@ -1222,7 +1205,7 @@ class TestRunAgent:
             "/workspace",
             object_store=_mock_object_store(),
             agent_timeout=10.0,
-            task_credited_generation=True,
+            task_credited_generation=CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
         )
 
         assert reason is None
@@ -1264,7 +1247,7 @@ class TestRunAgent:
             object_store=_mock_object_store(),
             agent_output_s3_key="benchmarks/run/task/output.tar.gz",
             agent_timeout=0.001,
-            task_credited_generation=True,
+            task_credited_generation=CreditedGeneration(allowance_seconds=0.001, stage_protocol=None),
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
@@ -1302,7 +1285,7 @@ class TestRunAgent:
                 object_store=_mock_object_store(),
                 agent_output_s3_key="benchmarks/run/task/output.tar.gz",
                 agent_timeout=0.001,
-                task_credited_generation=True,
+                task_credited_generation=CreditedGeneration(allowance_seconds=0.001, stage_protocol=None),
             )
 
         archive.assert_not_awaited()
@@ -1414,7 +1397,7 @@ class TestRunAgent:
                 agent_output_s3_key="benchmarks/run/task/output.tar.gz",
                 benchmark_id="benchmark-123",
                 agent_timeout=10.0,
-                task_credited_generation=True,
+                task_credited_generation=CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
                 external_service_deadline=controller,
                 on_external_service_sealed=save_summary,
             )
@@ -1460,7 +1443,7 @@ class TestRunAgent:
                 object_store=_mock_object_store(),
                 agent_output_s3_key="benchmarks/run/task/output.tar.gz",
                 agent_timeout=10.0,
-                task_credited_generation=True,
+                task_credited_generation=CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
                 external_service_deadline=controller,
                 on_external_service_sealed=fail_persistence,
             )
@@ -1485,7 +1468,7 @@ class TestRunAgent:
                 "/workspace",
                 object_store=_mock_object_store(),
                 agent_timeout=10.0,
-                task_credited_generation=True,
+                task_credited_generation=CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
             )
 
         assert sandbox.controlled_calls == []
@@ -1508,7 +1491,7 @@ class TestRunAgent:
                 "/workspace",
                 object_store=_mock_object_store(),
                 agent_timeout=10.0,
-                task_credited_generation=True,
+                task_credited_generation=CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
             )
 
         assert sandbox.controlled_calls == []

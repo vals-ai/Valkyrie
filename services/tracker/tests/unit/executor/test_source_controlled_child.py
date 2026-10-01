@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from benchmark_service import ExecResult
+from benchmark_service import CreditedGeneration, ExecResult
 from tracker.database.models import AgentContractRequest, GenerationContainment
 from tracker.sandbox import run_agent
 import tracker.utils.run_orchestration as orchestration
@@ -89,7 +89,7 @@ async def controlled_probe(*, benchmark_id_str, executor_dispatch_id, **_kwargs)
         "/workspace",
         object_store=None,
         agent_timeout=0.05,
-        task_credited_generation=True,
+        task_credited_generation=CreditedGeneration(allowance_seconds=0.05, stage_protocol=None),
     )
     Path(os.environ["CONTROLLED_PROBE_RESULT"]).write_text(json.dumps({
         "benchmark_id": benchmark_id_str,
@@ -152,4 +152,3 @@ async def test_source_release_child_enforces_selected_generation_deadline(
     assert observed["duration"] >= 0.05
     assert "PYTHONSAFEPATH=1 echo task" in observed["controlled_command"]
     assert "timeout " not in observed["controlled_command"]
-    assert any("designated timeout" in message for message in observed["messages"])

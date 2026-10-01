@@ -14,6 +14,7 @@ from uuid import UUID
 
 import pytest
 from benchmark_service import (
+    CreditedGeneration,
     ComposeSource,
     DockerProviderConfig,
     ImageSource,
@@ -871,7 +872,7 @@ class TestTaskExecutionRetry:
     ) -> None:
         contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
         request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
-        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": True})
+        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)})
         saved_state = {"artifact_prefix": "s3://bucket/run"}
         resume_started = asyncio.Event()
 
@@ -936,7 +937,7 @@ class TestTaskExecutionRetry:
             contract, database_session, harness_config
         )
         sandbox_entries = 0
-        observed_task_opt_in: list[bool] = []
+        observed_task_opt_in: list[CreditedGeneration] = []
 
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
@@ -953,7 +954,7 @@ class TestTaskExecutionRetry:
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             response = make_retrieve_task_response(problem_path="/tmp/problem.txt").model_copy(
-                update={"agent_timeout": 10.0, "credited_generation": True}
+                update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
             )
             response.sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=3)
             return response
@@ -971,7 +972,7 @@ class TestTaskExecutionRetry:
 
         assert result == {"task_0": None}
         assert sandbox_entries == 1
-        assert observed_task_opt_in == [True]
+        assert observed_task_opt_in == [CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)]
         evaluate_instance.assert_not_awaited()
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
