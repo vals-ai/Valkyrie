@@ -6,6 +6,8 @@ from typing import Any, cast
 
 import yaml
 
+from valkyrie.sdk.config import TRACKER_URLS
+
 BENCH_ENVIRONMENT = "bench"
 PRODUCTION_ENVIRONMENT = "prod"
 DEV_ENVIRONMENT = "dev"
@@ -15,18 +17,12 @@ TRACKER_SERVICE_URL_ENV_VAR = "TRACKER_SERVICE_URL"
 VALKYRIE_CONFIG_PATH_ENV_VAR = "VALKYRIE_CONFIG_PATH"
 ENVIRONMENT_CONFIG_KEY = "environment"
 
-BENCH_TRACKER_URL = "https://benchmark-tracker.vals.ai"
-PRODUCTION_TRACKER_URL = "https://benchmark-tracker-prod.vals.ai"
-DEV_TRACKER_URL = "https://benchmark-tracker-dev.vals.ai"
+BENCH_TRACKER_URL = TRACKER_URLS[BENCH_ENVIRONMENT]
+PRODUCTION_TRACKER_URL = TRACKER_URLS[PRODUCTION_ENVIRONMENT]
+DEV_TRACKER_URL = TRACKER_URLS[DEV_ENVIRONMENT]
 
 HOSTED_CONFIG_PATH = Path("~/.config/valkyrie/valkyrie.yaml")
 DEV_CONFIG_PATH = Path("~/.config/valkyrie/dev.yaml")
-
-_TRACKER_URLS = {
-    BENCH_ENVIRONMENT: BENCH_TRACKER_URL,
-    PRODUCTION_ENVIRONMENT: PRODUCTION_TRACKER_URL,
-    DEV_ENVIRONMENT: DEV_TRACKER_URL,
-}
 _ENVIRONMENT_OVERRIDES = {
     "bench": BENCH_ENVIRONMENT,
     "dev": DEV_ENVIRONMENT,
@@ -38,7 +34,7 @@ _ENVIRONMENT_OVERRIDES = {
 
 def tracker_url_for_environment(environment: str) -> str:
     """Return the Tracker URL for a validated runtime environment."""
-    return _TRACKER_URLS[environment]
+    return TRACKER_URLS[environment]
 
 
 def _environment_from_override(selector: str) -> str:
@@ -63,8 +59,8 @@ def selected_environment() -> str:
     else:
         environment = _environment_from_override(environment_override)
     environment = environment.lower()
-    if environment not in _TRACKER_URLS:
-        valid_environments = ", ".join(sorted(_TRACKER_URLS))
+    if environment not in TRACKER_URLS:
+        valid_environments = ", ".join(sorted(TRACKER_URLS))
         raise ValueError(f"Config key {ENVIRONMENT_CONFIG_KEY!r} must be one of: {valid_environments}")
 
     return environment
@@ -79,7 +75,7 @@ def tracker_service_url() -> str:
     config = cast(dict[str, Any], (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {})
     if url := config.get("tracker_url"):
         return str(url).rstrip("/")
-    return _TRACKER_URLS[selected_environment()]
+    return TRACKER_URLS[selected_environment()]
 
 
 def config_location() -> Path:

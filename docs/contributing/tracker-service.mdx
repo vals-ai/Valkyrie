@@ -13,6 +13,14 @@ Runs currently support `environment: "aws"` only. Optional `properties` sets the
 
 New runs retain these locations for retries, resumes, and artifact reads. Older runs without saved properties use the current settings.
 
+## Request authentication
+
+`AUTH_REQUIRED` selects the mode. When `false` (self-hosted), requests resolve to a default organization and carry no caller identity. When `true` (hosted), the tracker requires an access key in `x-api-key` and exchanges it through the configured identity provider for the caller's tenant and attribution identity. Access keys must be scoped to exactly one tenant.
+
+The provider seam lives in `tracker/identity_provider.py`: an `IdentityProvider` protocol with `exchange_access_key` and `load_user_profile`. `IDENTITY_PROVIDER` selects the implementation (`descope` today), and provider credentials come from deployment configuration (`DESCOPE_PROJECT_ID`, `DESCOPE_MANAGEMENT_KEY` for user-profile lookups). Provider methods return provider-native claims; the tracker interprets the claim shape in `tracker/auth.py`. Deployments set `OPERATOR_TENANT` and `OPERATOR_DOMAIN` to name the implicitly trusted organization and the DNS suffix reserved to it for caller-supplied benchmark destinations.
+
+A missing key, or a credential the provider rejects, returns HTTP 401. An unreachable provider returns HTTP 503.
+
 ## Benchmark-service authentication
 
 The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).

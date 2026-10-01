@@ -73,28 +73,9 @@ def local_app(
 
 
 @pytest.fixture
-def bearer_auth(local_app: FastAPI) -> Generator[None, None, None]:
-    """Accept any bearer token as the default-tenant caller."""
-    with patch.object(auth_module, "_descope_client") as mock_client:
-        mock_client.validate_session.return_value = {
-            "tenants": {"default": {}},
-            "userId": "U_caller",
-            "user": {"email": "caller@example.com"},
-        }
-        yield
-
-
-@pytest.fixture
-def client(local_app: FastAPI, bearer_auth: None) -> Generator[TestClient, None, None]:
-    """Use bearer authentication with the local tracker app."""
-    with TestClient(local_app) as test_client:
-        yield test_client
-
-
-@pytest.fixture
-def access_key_client(local_app: FastAPI) -> Generator[TestClient, None, None]:
-    """Use access-key authentication with the local tracker app."""
-    with patch.object(auth_module, "_descope_client") as mock_client:
+def access_key_auth(local_app: FastAPI) -> Generator[None, None, None]:
+    """Accept any x-api-key as the default-tenant caller."""
+    with patch.object(auth_module, "_identity_provider") as mock_client:
         mock_client.exchange_access_key.return_value = {
             "tenants": {"default": {}},
             "keyId": "K_caller",
@@ -103,5 +84,17 @@ def access_key_client(local_app: FastAPI) -> Generator[TestClient, None, None]:
             "user_id": "U_caller",
             "email": "caller@example.com",
         }
-        with TestClient(local_app) as test_client:
-            yield test_client
+        yield
+
+
+@pytest.fixture
+def access_key_client(access_key_auth: None, local_app: FastAPI) -> Generator[TestClient, None, None]:
+    """Use access-key authentication with the local tracker app."""
+    with TestClient(local_app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def client(access_key_client: TestClient) -> Generator[TestClient, None, None]:
+    """Use access-key authentication with the local tracker app."""
+    yield access_key_client

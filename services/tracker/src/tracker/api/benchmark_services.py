@@ -103,7 +103,7 @@ async def list_benchmark_services(
                 service.url,
                 org_name=org.name,
                 auth_required=AUTH_REQUIRED,
-                restrict_vals_hosts=False,
+                restrict_operator_hosts=False,
             )
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

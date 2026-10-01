@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from ipaddress import ip_address
+import os
 import re
 from socket import inet_aton
 from urllib.parse import urlsplit
+
+from dotenv import load_dotenv
 
 _BENCHMARK_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _HEADER_NAME_RE = re.compile(r"[-!#$%&'*+.^_`|~0-9A-Za-z]+")
@@ -32,10 +35,19 @@ _FORBIDDEN_HEADER_NAMES = {
     "x-real-ip",
 }
 _FORBIDDEN_HEADER_PREFIXES = ("forwarded", "proxy-", "sec-websocket-", "x-forwarded-")
-_VALS_TENANT_ID = "vals.ai"
+# Tenant implicitly trusted to use private/custom destinations, and the DNS suffix
+# reserved to it. Both are deployment-owned; internal deployments keep the Vals
+# defaults via environment configuration. This module may load before config's
+# own load_dotenv() call, so it loads .env itself for dotenv-only deployments.
+load_dotenv()
+_IDNA_SEPARATOR_TRANSLATION = str.maketrans({"。": ".", "．": ".", "｡": "."})
+_OPERATOR_TENANT = os.environ.get("OPERATOR_TENANT") or "vals.ai"
+# Normalized like request hostnames so the reservation holds regardless of config casing/dots.
+_OPERATOR_DOMAIN = (
+    (os.environ.get("OPERATOR_DOMAIN") or "vals.ai").translate(_IDNA_SEPARATOR_TRANSLATION).lower().rstrip(".")
+)
 _RESTRICTED_HOSTNAMES = {"internal", "local", "localhost"}
 _RESTRICTED_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal")
-_IDNA_SEPARATOR_TRANSLATION = str.maketrans({"。": ".", "．": ".", "｡": "."})
 _CUSTOM_DESTINATION_DENIED = "Custom benchmark destination is not allowed"
 
 
@@ -64,18 +76,18 @@ def validate_custom_service_destination(
     *,
     org_name: str,
     auth_required: bool,
-    restrict_vals_hosts: bool = True,
+    restrict_operator_hosts: bool = True,
 ) -> None:
-    """Keep private and optionally Vals-owned custom destinations limited to trusted callers."""
-    if not auth_required or org_name == _VALS_TENANT_ID:
+    """Keep private and operator-owned custom destinations limited to trusted callers."""
+    if not auth_required or org_name == _OPERATOR_TENANT:
         return
 
     hostname = urlsplit(value).hostname
     assert hostname is not None
     normalized_host = hostname.translate(_IDNA_SEPARATOR_TRANSLATION).lower().rstrip(".")
     if (
-        (restrict_vals_hosts and normalized_host == _VALS_TENANT_ID)
-        or (restrict_vals_hosts and normalized_host.endswith(f".{_VALS_TENANT_ID}"))
+        (restrict_operator_hosts and normalized_host == _OPERATOR_DOMAIN)
+        or (restrict_operator_hosts and normalized_host.endswith(f".{_OPERATOR_DOMAIN}"))
         or normalized_host in _RESTRICTED_HOSTNAMES
         or normalized_host.endswith(_RESTRICTED_HOSTNAME_SUFFIXES)
     ):

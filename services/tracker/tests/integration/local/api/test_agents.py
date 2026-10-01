@@ -15,7 +15,7 @@ def test_agents_empty_when_bucket_empty(client: TestClient, monkeypatch: MonkeyP
 
     response = client.get(
         "/agents",
-        headers={"Authorization": "Bearer fake"},
+        headers={"X-Api-Key": "fake"},
     )
 
     assert response.status_code == 200

@@ -59,7 +59,7 @@ def test_saved_location_survives_new_request_and_default_change(
 
     monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
     for endpoint in [f"benchmarks/{run_id}", f"fetch-benchmark-metadata/{run_id}"]:
-        response = client.get(f"/{endpoint}", headers={"Authorization": "Bearer fake"})
+        response = client.get(f"/{endpoint}", headers={"X-Api-Key": "fake"})
         assert response.status_code == 200, response.text
         assert response.json()["storage_bucket"] == "vs-dev-acme-123"
 

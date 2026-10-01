@@ -261,6 +261,9 @@ class TrackerStack(Stack):
                 "AUTH_REQUIRED": auth_required,
                 "BENCHMARK_CATALOG_URL": benchmark_catalog_url,
                 "DESCOPE_PROJECT_ID": descope_project_id,
+                "IDENTITY_PROVIDER": os.environ.get("IDENTITY_PROVIDER", "descope"),
+                "OPERATOR_TENANT": os.environ.get("OPERATOR_TENANT", "vals.ai"),
+                "OPERATOR_DOMAIN": os.environ.get("OPERATOR_DOMAIN", "vals.ai"),
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={
