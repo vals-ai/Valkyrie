@@ -3,7 +3,7 @@ title: Choose a hosting mode
 description: Compare hosted and self-hosted Valkyrie deployments.
 ---
 
-There are two separate choices here. Hosted or self-hosted decides who operates the tracker and executor host, while managed or access-key AWS decides which AWS account and credentials a run uses. Hosted mode works with either AWS execution mode: eligible organizations start on managed AWS, and can add access keys later to run against their own AWS resources instead.
+There are two separate choices here. Hosted or self-hosted decides who operates Tracker and its per-dispatch runner tasks, while managed or access-key AWS decides which AWS account and credentials a run uses. Hosted mode works with either AWS execution mode: eligible organizations start on managed AWS, and can add access keys later to run against their own AWS resources instead.
 
 ## Hosted mode
 
@@ -38,8 +38,8 @@ The AWS credential fields in the selected config decide how new runs execute.
 
 | Configured fields | Run execution mode |
 | --- | --- |
-| Neither `AWS_ACCESS_KEY_ID` nor `AWS_SECRET_ACCESS_KEY` | Managed AWS. The tracker and executor host use deployment task roles. |
-| Both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` | Access-key AWS. The tracker receives the configured AWS resources and credentials. |
+| No `aws.credentials` object | Managed AWS. The tracker and runner tasks use deployment task roles. |
+| `aws.credentials` with both access keys | Access-key AWS. The tracker receives the configured AWS resources and credentials. |
 | Only one access-key field | Invalid. Valkyrie stops before sending the request. |
 
 Managed execution still leaves local AWS operations to you: agent uploads and artifact downloads go through the local AWS SDK credential chain.

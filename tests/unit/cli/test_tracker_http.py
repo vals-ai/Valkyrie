@@ -69,6 +69,7 @@ def _metadata_payload() -> dict[str, object]:
         "benchmark_id": str(_RUN_ID),
         "benchmark_name": "swebench",
         "benchmark_arguments": {
+            "environment": "aws",
             "contract": {"name": "agent", "install_cmd": "true", "run_cmd": "true"},
             "concurrency": 2,
             "dataset": "verified",

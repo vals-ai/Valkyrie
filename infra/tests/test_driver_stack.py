@@ -46,7 +46,6 @@ def driver_template() -> Iterator[assertions.Template]:
         bucket = aws_s3.Bucket(dependencies, "Bucket")
         tracker_repository = aws_ecr.Repository(dependencies, "TrackerRepository")
         db_credentials = aws_secretsmanager.Secret(dependencies, "DbCredentials")
-        redis_security_group = aws_ec2.SecurityGroup(dependencies, "RedisSecurityGroup", vpc=vpc)
         stage = Stage(RELEASE_TEST)
         stack = DriverStack(
             app,
@@ -60,8 +59,6 @@ def driver_template() -> Iterator[assertions.Template]:
             db_host="tracker-proxy.internal",
             db_port="5432",
             db_credentials=cast(aws_secretsmanager.ISecret, db_credentials),
-            redis_url="redis://redis.internal:6379",
-            redis_security_group=redis_security_group,
             env=TEST_ENV,
         )
         yield assertions.Template.from_stack(stack)
@@ -86,7 +83,6 @@ class DriverStackTest(unittest.TestCase):
             bucket = aws_s3.Bucket(dependencies, "Bucket")
             tracker_repository = aws_ecr.Repository(dependencies, "TrackerRepository")
             db_credentials = aws_secretsmanager.Secret(dependencies, "DbCredentials")
-            redis_security_group = aws_ec2.SecurityGroup(dependencies, "RedisSecurityGroup", vpc=vpc)
 
             with self.assertRaisesRegex(ValueError, "release-test"):
                 DriverStack(
@@ -101,44 +97,15 @@ class DriverStackTest(unittest.TestCase):
                     db_host="tracker-db.internal",
                     db_port="5432",
                     db_credentials=cast(aws_secretsmanager.ISecret, db_credentials),
-                    redis_url="redis://redis.internal:6379",
-                    redis_security_group=redis_security_group,
                     env=TEST_ENV,
                 )
 
-    def test_driver_is_one_task_definition_with_source_sg_redis_ingress(self) -> None:
+    def test_driver_is_one_task_definition_with_no_ingress(self) -> None:
         with driver_template() as template:
             template.resource_count_is("AWS::ECS::TaskDefinition", 1)
             template.resource_count_is("AWS::ECS::Service", 0)
             template.resource_count_is("AWS::EC2::SecurityGroup", 1)
-            driver_security_group_id = next(
-                logical_id
-                for logical_id, resource in template.find_resources("AWS::EC2::SecurityGroup").items()
-                if resource["Properties"]["GroupDescription"]
-                == "No-ingress security group for the release-test Package R driver"
-            )
-            redis_ingress = [
-                resource["Properties"]
-                for resource in template.find_resources("AWS::EC2::SecurityGroupIngress").values()
-                if resource["Properties"].get("FromPort") == 6379 or resource["Properties"].get("ToPort") == 6379
-            ]
-            self.assertEqual(len(redis_ingress), 1)
-            ingress = redis_ingress[0]
-            self.assertEqual(
-                {key: ingress[key] for key in ("Description", "FromPort", "IpProtocol", "ToPort")},
-                {
-                    "Description": "Allow release-test Driver to connect to Redis",
-                    "FromPort": 6379,
-                    "IpProtocol": "tcp",
-                    "ToPort": 6379,
-                },
-            )
-            self.assertNotIn("CidrIp", ingress)
-            self.assertIn("RedisSecurityGroup", ingress["GroupId"]["Fn::ImportValue"])
-            self.assertEqual(
-                ingress["SourceSecurityGroupId"],
-                {"Fn::GetAtt": [driver_security_group_id, "GroupId"]},
-            )
+            self.assertFalse(template.find_resources("AWS::EC2::SecurityGroupIngress"))
             template.has_resource_properties(
                 "AWS::ECS::TaskDefinition",
                 {
@@ -207,8 +174,6 @@ class DriverStackTest(unittest.TestCase):
                 namespace=shared.namespace,
                 hosted_zone=shared.hosted_zone,
                 bucket_name=shared.bucket_name,
-                redis_url=shared.redis_url,
-                redis_security_group=shared.redis_security_group,
                 tracker_repository=repository,
                 image_tag="package-r-test",
                 env=TEST_ENV,
@@ -225,8 +190,6 @@ class DriverStackTest(unittest.TestCase):
                 db_host=tracker.database_proxy.endpoint,
                 db_port="5432",
                 db_credentials=cast(aws_secretsmanager.ISecret, tracker.db_credentials),
-                redis_url=shared.redis_url,
-                redis_security_group=shared.redis_security_group,
                 env=TEST_ENV,
             )
 
@@ -236,6 +199,11 @@ class DriverStackTest(unittest.TestCase):
             logical_id
             for logical_id, resource in tracker_template["Resources"].items()
             if resource["Type"] == "AWS::RDS::DBProxy"
+        )
+        # Release-test shares the dev account, where proxy names must be unique.
+        self.assertEqual(
+            tracker_template["Resources"][proxy_id]["Properties"]["DBProxyName"],
+            "TrackerDatabaseProxy-release-test",
         )
         endpoint_export = next(
             output["Export"]["Name"]

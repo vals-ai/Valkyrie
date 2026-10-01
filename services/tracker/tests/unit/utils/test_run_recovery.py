@@ -33,7 +33,7 @@ from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 import tracker.utils as tracker_utils
 from tests.factories import make_benchmark, make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import (
-    MockKicker,
+    MockLauncher,
     bind_task_to_dispatch as _bind_task_to_dispatch,
     install_sqlite_evaluation_lock,
     make_retrieve_task_response,
@@ -42,7 +42,7 @@ from tests.utils import TEST_ORG_ID
 from tracker import config
 from tracker.auth import RequestIdentity
 from tracker.aws.resolver import deployment_aws_runtime
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
@@ -55,6 +55,7 @@ from tracker.database.models import (
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
+    ExecutorDispatchPayload,
     ExecutorRelease,
     ExecutorReleaseStatus,
     FinalEvaluation,
@@ -64,6 +65,8 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
+from tracker.executor.dispatch_payload import SealedPayload, open_payload
+from tracker.exceptions import S3Error
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import ReleaseControlError, promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
@@ -157,6 +160,15 @@ class MockSubsetSandboxProvider:
     async def delete_sandbox(self, sandbox_id: str) -> None:
         self.deleted_sandbox_ids.append(sandbox_id)
 
+    async def close(self) -> None:
+        return None
+
+    async def __aenter__(self) -> "MockSubsetSandboxProvider":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
+
 
 class MockReleasingSandboxProvider:
     """Expose one benchmark sandbox until the executor's own teardown removes it."""
@@ -179,6 +191,15 @@ class MockReleasingSandboxProvider:
 
     async def delete_sandbox(self, sandbox_id: str) -> None:
         self.deleted_sandbox_ids.append(sandbox_id)
+
+    async def close(self) -> None:
+        return None
+
+    async def __aenter__(self) -> "MockReleasingSandboxProvider":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
 
 
 class TestRunRecovery:
@@ -373,7 +394,7 @@ class TestRunRecovery:
         def get_sandbox_provider(*_args: object, **_kwargs: object) -> MockSubsetSandboxProvider:
             return provider
 
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", get_sandbox_provider)
 
         graceful_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=false",
@@ -509,7 +530,7 @@ class TestRunRecovery:
         def resumed_attempt_time(_timezone: object) -> datetime:
             return _RESUMED_ATTEMPT_AT
 
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", get_sandbox_provider)
         monkeypatch.setattr(
             "tracker.utils.run_control.datetime",
             SimpleNamespace(now=resumed_attempt_time),
@@ -618,7 +639,7 @@ class TestRunRecovery:
         ]
         captured_lambda_payloads: list[dict[str, Any]] = []
 
-        def _capture_lambda_payload(
+        async def _capture_lambda_payload(
             _client: Any,
             _function_name: str,
             payload: dict[str, Any],
@@ -1438,12 +1459,16 @@ class TestRunRecovery:
         database_session.commit()
         monkeypatch.setattr(main_module, "AUTH_REQUIRED", True)
 
+        copy = AsyncMock()
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
+
         response = client.post(
-            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true",
             json={"task_ids": [], "service_headers": {}},
             headers=harness_headers,
         )
 
+        copy.assert_not_awaited()
         assert response.status_code == 403
         assert response.json() == {"detail": "Custom benchmark destination is not allowed"}
 
@@ -1453,7 +1478,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -1484,7 +1509,7 @@ class TestRunRecovery:
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
 
-        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        queued_request = mock_launcher.queued_calls[0]["start_benchmark_request_json"]
         assert queued_request["priority"] == 0
         assert queued_request["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
 
@@ -1493,7 +1518,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        mock_kicker: Any,
+        mock_launcher: Any,
         harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -1518,7 +1543,7 @@ class TestRunRecovery:
 
         assert response.status_code == 200
         assert "X-Descope-Api-Key" not in observed_headers
-        admitted_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        admitted_request = mock_launcher.queued_calls[0]["start_benchmark_request_json"]
         assert "X-Descope-Api-Key" not in admitted_request["service_headers"]
 
     async def test_force_stop_uses_stored_provider_secret(
@@ -1556,15 +1581,13 @@ class TestRunRecovery:
 
         async def _mock_force_stop_sandboxes(
             _benchmark_row: Benchmark,
-            sandbox_provider_secret_name: str,
-            _aws: Any,
+            runtime: RuntimeServices,
             _org: Org,
             *,
-            sandbox_provider: str,
             task_ids: list[str] | None = None,
         ) -> None:
-            captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
-            captured["sandbox_provider"] = sandbox_provider
+            captured["sandbox_provider_secret_name"] = runtime.sandbox_provider_secret_name
+            captured["sandbox_provider"] = runtime.sandbox_provider
             captured["task_ids"] = task_ids
 
         monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
@@ -1626,13 +1649,188 @@ class TestRunRecovery:
         assert stored_task.status == TaskStatus.PENDING
         force_stop.assert_not_awaited()
 
+    @pytest.mark.parametrize("agent_exists", [True, False])
+    async def test_retry_or_resume_updates_agent_before_dispatch(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_launcher: MockLauncher,
+        agent_exists: bool,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+        saved_contract = benchmark_row.arguments.contract.model_dump(mode="json")
+        exists = AsyncMock(return_value=agent_exists)
+
+        async def copy_bundle(source_key: str, destination_key: str) -> None:
+            assert not mock_launcher.queued_calls
+            with Session(database_session.get_bind()) as session:
+                stored_benchmark = session.get(Benchmark, benchmark_row.id)
+                assert stored_benchmark is not None
+                assert stored_benchmark.status == BenchmarkStatus.IN_PROGRESS
+
+        copy = AsyncMock(side_effect=copy_bundle)
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", exists)
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true",
+            json={"task_ids": ["task_0"]},
+            headers=harness_headers,
+        )
+
+        exists.assert_awaited_once_with(main_module.agent_bundle_key(saved_contract["name"]))
+        if not agent_exists:
+            assert response.status_code == 404
+            assert "Push the agent" in response.json()["detail"]
+            copy.assert_not_awaited()
+            assert not mock_launcher.queued_calls
+            database_session.refresh(benchmark_row)
+            assert benchmark_row.status == BenchmarkStatus.STOPPED
+            return
+
+        assert response.status_code == 200
+        copy.assert_awaited_once_with(
+            main_module.agent_bundle_key(saved_contract["name"]),
+            main_module.benchmark_agent_bundle_key(str(benchmark_row.id), saved_contract["name"]),
+        )
+        admitted_request = mock_launcher.queued_calls[0]["start_benchmark_request_json"]
+        assert admitted_request["contract"] == saved_contract
+
+    @pytest.mark.parametrize("query", ["", "&concurrency=3", "&retry=true"])
+    async def test_retry_or_resume_rejects_agent_update_on_an_in_progress_run(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_launcher: MockLauncher,
+        query: str,
+    ) -> None:
+        """
+        An in-progress run keeps its bundle, because its running tasks would otherwise mix agents.
+
+        Test cases:
+        - A plain resume only updates stored arguments.
+        - A concurrency change only updates the running dispatch.
+        - A retry of failed tasks would admit a dispatch beside the running one.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add_all(
+            [
+                benchmark_row,
+                Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            ]
+        )
+        database_session.commit()
+        copy = AsyncMock()
+        monkeypatch.setattr(
+            BenchmarkServiceClient,
+            "verify_task_ids",
+            AsyncMock(return_value=VerifyTaskIdsResponse(task_ids=["task_0"])),
+        )
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true{query}",
+            json={},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 409, response.text
+        assert "stopping the run first" in response.json()["detail"]
+        copy.assert_not_awaited()
+        assert not mock_launcher.queued_calls
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.arguments.concurrency == 5
+
+    async def test_retry_or_resume_keeps_agent_when_a_concurrent_stop_rejects_recovery(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_launcher: MockLauncher,
+    ) -> None:
+        """A recovery rejected at admission leaves the run's agent bundle unchanged."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        async def stop_during_verification(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            with Session(database_session.get_bind()) as session:
+                stored_benchmark = session.get(Benchmark, benchmark_row.id)
+                assert stored_benchmark is not None
+                stored_benchmark.status = BenchmarkStatus.STOPPING
+                session.add(stored_benchmark)
+                session.commit()
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        copy = AsyncMock()
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", stop_during_verification)
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", copy)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true",
+            json={"task_ids": ["task_0"]},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 400, response.text
+        assert "stopping" in response.json()["detail"]
+        copy.assert_not_awaited()
+        assert not mock_launcher.queued_calls
+
+    async def test_retry_or_resume_fails_the_admitted_dispatch_when_agent_refresh_fails(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
+        mock_launcher: MockLauncher,
+    ) -> None:
+        """A failed bundle copy after admission fails the dispatch instead of running the old agent."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+        monkeypatch.setattr(main_module.S3ObjectStore, "exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(main_module.S3ObjectStore, "copy", AsyncMock(side_effect=S3Error("copy failed")))
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?update_agent=true",
+            json={"task_ids": ["task_0"]},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 503, response.text
+        assert "use Retry" in response.json()["detail"]["message"]
+        assert not mock_launcher.queued_calls
+        database_session.expire_all()
+        dispatch = database_session.exec(
+            select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark_row.id)
+        ).one()
+        assert dispatch.status == ExecutorDispatchStatus.FAILED
+        stored_benchmark = database_session.get(Benchmark, benchmark_row.id)
+        assert stored_benchmark is not None
+        assert stored_benchmark.status == BenchmarkStatus.ERROR
+
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         """Resume secrets should update the contract used by resumed tasks.
 
@@ -1669,7 +1867,7 @@ class TestRunRecovery:
 
         assert response.status_code == 200
 
-        admitted_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        admitted_request = mock_launcher.queued_calls[0]["start_benchmark_request_json"]
         assert admitted_request["contract"]["secrets"] == {
             "ANTHROPIC_API_KEY": "new-secret",
             "OPENAI_API_KEY": "openai-secret",
@@ -1683,7 +1881,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
         harness_headers: dict[str, str],
     ) -> None:
         """A retry URL override should be validated, normalized, and persisted.
@@ -1747,7 +1945,7 @@ class TestRunRecovery:
 
         assert invalid_response.status_code == 400
         assert invalid_response.json() == {"detail": "Invalid benchmark service URL"}
-        assert mock_kicker.queued_calls == []
+        assert mock_launcher.queued_calls == []
         database_session.refresh(benchmark_row)
         database_session.refresh(task_row)
         assert benchmark_row.custom_benchmark_service == "https://old.example"
@@ -1767,7 +1965,7 @@ class TestRunRecovery:
         assert verified_urls == ["https://new.example"]
         assert "X-Descope-Api-Key" not in verified_headers[0]
 
-        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        queued_request = mock_launcher.queued_calls[0]["start_benchmark_request_json"]
         assert queued_request["custom_benchmark_service"] == "https://new.example"
         assert "X-Descope-Api-Key" not in queued_request["service_headers"]
 
@@ -1785,7 +1983,7 @@ class TestRunRecovery:
         )
 
         assert active_response.status_code == 200
-        assert len(mock_kicker.queued_calls) == 1
+        assert len(mock_launcher.queued_calls) == 1
         database_session.refresh(benchmark_row)
         assert benchmark_row.custom_benchmark_service == "https://active.example"
         assert benchmark_row.arguments.contract.secrets == {"EXISTING_API_KEY": "existing-secret"}
@@ -1816,7 +2014,7 @@ class TestRunRecovery:
         )
 
         assert active_retry_response.status_code == 200
-        assert len(mock_kicker.queued_calls) == 1
+        assert len(mock_launcher.queued_calls) == 1
         database_session.refresh(benchmark_row)
         assert benchmark_row.custom_benchmark_service == "https://active-retry.example"
         assert benchmark_row.arguments.concurrency == 10
@@ -1831,7 +2029,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -1861,7 +2059,7 @@ class TestRunRecovery:
         )
 
         assert response.status_code == 200
-        admitted_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        admitted_request = mock_launcher.queued_calls[0]["start_benchmark_request_json"]
         assert admitted_request["concurrency"] == 9
         assert admitted_request["contract"]["secrets"] == {"ANTHROPIC_API_KEY": "new-secret"}
 
@@ -1886,10 +2084,10 @@ class TestRunRecovery:
         )
         database_session.commit()
 
-        def _unexpected_kicker() -> None:
-            raise AssertionError("running retry without error tasks should not enqueue work")
+        async def unexpected_launch(_dispatch: ExecutorDispatch) -> None:
+            raise AssertionError("running retry without error tasks should not launch work")
 
-        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+        monkeypatch.setattr("main.launch_dispatch", unexpected_launch)
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&concurrency=7",
@@ -1911,7 +2109,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -1933,7 +2131,7 @@ class TestRunRecovery:
 
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
-        assert mock_kicker.queued_calls == []
+        assert mock_launcher.queued_calls == []
 
         task_row = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
         assert task_row.status == TaskStatus.ERROR
@@ -1987,7 +2185,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: Any,
+        mock_launcher: Any,
         task_specs: list[tuple[str, TaskStatus, dict[str, str] | None, int]],
         expected_status: int,
         expected_task_ids: list[str] | None,
@@ -2032,10 +2230,10 @@ class TestRunRecovery:
             assert response.json() == {
                 "detail": "Run has active tasks that cannot be resumed safely; stop the run before resuming"
             }
-            assert mock_kicker.queued_calls == []
+            assert mock_launcher.queued_calls == []
         else:
             assert response.json() == {"status": "success"}
-            assert mock_kicker.queued_calls[0]["verified_task_ids"] == expected_task_ids
+            assert mock_launcher.queued_calls[0]["verified_task_ids"] == expected_task_ids
 
         database_session.expire_all()
         persisted_tasks = database_session.exec(
@@ -2062,7 +2260,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -2076,7 +2274,7 @@ class TestRunRecovery:
 
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
-        assert mock_kicker.queued_calls == []
+        assert mock_launcher.queued_calls == []
         database_session.expire_all()
         persisted = database_session.get(Benchmark, benchmark_row.id)
         assert persisted is not None
@@ -2088,7 +2286,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -2142,7 +2340,7 @@ class TestRunRecovery:
         )
 
         assert response.status_code == 200
-        admitted_payload = mock_kicker.queued_calls[0]
+        admitted_payload = mock_launcher.queued_calls[0]
         assert benchmark_row.arguments.lambda_function == "vals-format-lambda"
         assert admitted_payload["start_benchmark_request_json"]["lambda_function"] == "vals-format-lambda"
         assert admitted_payload["verified_task_ids"] == ["task_error"]
@@ -2177,7 +2375,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         """Per-task stops leave the run IN_PROGRESS; those STOPPED tasks must be retryable in place."""
         benchmark_row = example_benchmark_object
@@ -2218,7 +2416,7 @@ class TestRunRecovery:
         )
 
         assert response.status_code == 200, response.text
-        admitted_payload = mock_kicker.queued_calls[0]
+        admitted_payload = mock_launcher.queued_calls[0]
         assert sorted(admitted_payload["verified_task_ids"]) == ["task_stopped", "task_stopped_graded"]
 
         database_session.expire_all()
@@ -2323,7 +2521,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        mock_kicker: Any,
+        mock_launcher: Any,
         harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -2350,7 +2548,7 @@ class TestRunRecovery:
 
         assert response.status_code == 200
 
-        dispatch_id = UUID(mock_kicker.queued_calls[0]["executor_dispatch_id"])
+        dispatch_id = UUID(mock_launcher.queued_calls[0]["executor_dispatch_id"])
 
         with Session(bind=database_session.get_bind()) as fresh_session:
             persisted_benchmark = fresh_session.get(Benchmark, benchmark_row.id)
@@ -2369,7 +2567,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.ERROR
@@ -2393,7 +2591,7 @@ class TestRunRecovery:
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}", headers=harness_headers)
 
         assert response.status_code == 200
-        assert mock_kicker.queued_calls[0]["verified_task_ids"] == []
+        assert mock_launcher.queued_calls[0]["verified_task_ids"] == []
 
         database_session.expire_all()
         persisted_benchmark = database_session.get(Benchmark, benchmark_row.id)
@@ -2458,7 +2656,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        mock_kicker: Any,
+        mock_launcher: Any,
         harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -2490,7 +2688,7 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.executor_release_id == "test-release"
         assert benchmark_row.current_execution_release_id == release.id
-        first_payload = mock_kicker.queued_calls[0]
+        first_payload = mock_launcher.queued_calls[0]
         dispatch = database_session.get(ExecutorDispatch, UUID(first_payload["executor_dispatch_id"]))
         assert dispatch is not None
         assert dispatch.kind == ExecutorDispatchKind.RESUME
@@ -2522,7 +2720,7 @@ class TestRunRecovery:
         assert benchmark_row.current_execution_release_id == release.id
         second_dispatch = database_session.get(
             ExecutorDispatch,
-            UUID(mock_kicker.queued_calls[1]["executor_dispatch_id"]),
+            UUID(mock_launcher.queued_calls[1]["executor_dispatch_id"]),
         )
         assert second_dispatch is not None
         assert second_dispatch.executor_release_id == release.id
@@ -2541,7 +2739,7 @@ class TestRunRecovery:
         assert benchmark_row.current_execution_release_id == latest_release.id
         dispatches = [
             database_session.get(ExecutorDispatch, UUID(payload["executor_dispatch_id"]))
-            for payload in mock_kicker.queued_calls
+            for payload in mock_launcher.queued_calls
         ]
         assert all(dispatch is not None for dispatch in dispatches)
         assert [dispatch.executor_release_id for dispatch in dispatches if dispatch is not None] == [
@@ -2550,12 +2748,12 @@ class TestRunRecovery:
             latest_release.id,
         ]
 
-    async def test_retry_succeeds_after_durable_intent_without_broker_access(
+    async def test_retry_succeeds_after_durable_intent_without_launcher_access(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        mock_kicker: Any,
+        mock_launcher: Any,
         harness_headers: dict[str, str],
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -2590,7 +2788,7 @@ class TestRunRecovery:
         assert dispatches[0].kind == ExecutorDispatchKind.RETRY
         assert dispatches[0].status == ExecutorDispatchStatus.QUEUED
         assert dispatches[0].executor_release_id == "test-release"
-        assert mock_kicker.queued_calls[0]["verified_task_ids"] == ["task_error"]
+        assert mock_launcher.queued_calls[0]["verified_task_ids"] == ["task_error"]
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(
@@ -2601,7 +2799,7 @@ class TestRunRecovery:
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
         harness_headers: dict[str, str],
-        mock_kicker: MockKicker,
+        mock_launcher: MockLauncher,
         executor_authority_kwargs: Any,
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -2671,7 +2869,7 @@ class TestRunRecovery:
 
         assert response.status_code == 200
 
-        queued_task_ids = mock_kicker.queued_calls[0]["verified_task_ids"]
+        queued_task_ids = mock_launcher.queued_calls[0]["verified_task_ids"]
         assert queued_task_ids == ["task_retry"]
         database_session.refresh(benchmark_row)
         retry_dispatch = database_session.exec(
@@ -2706,7 +2904,7 @@ class TestRunRecovery:
         assert set(final_score_inputs[-1]) == {"task_retry", "task_original"}
         assert benchmark_row.final_evaluation is not None
 
-    async def test_running_retry_enqueue_failure_keeps_original_execution_active(
+    async def test_running_retry_launch_failure_keeps_original_execution_active(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
@@ -2737,15 +2935,11 @@ class TestRunRecovery:
         async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
-        class FailingKicker:
-            def with_labels(self, **_labels: str) -> "FailingKicker":
-                return self
-
-            async def kiq(self, **_kwargs: Any) -> None:
-                raise RuntimeError("redis unavailable")
+        async def fail_launch(_dispatch: ExecutorDispatch) -> None:
+            raise RuntimeError("ECS unavailable")
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: FailingKicker())
+        monkeypatch.setattr("main.launch_dispatch", fail_launch)
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true", headers=harness_headers)
 
@@ -2965,21 +3159,14 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
         provider = MockReleasingSandboxProvider(_NEVER_RELEASED)
-        monkeypatch.setattr(
-            run_control_module,
-            "fetch_sandbox_provider_config",
-            Mock(
-                return_value=DaytonaProviderConfig(
-                    DAYTONA_API_KEY="key", DAYTONA_API_URL="url", DAYTONA_TARGET="target"
-                )
-            ),
-        )
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=provider))
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
 
         await force_stop_sandboxes(
             benchmark_row,
-            harness_config.sandbox_provider_secret_name,
-            AWSRuntime.from_harness_config(harness_config),
+            CloudRuntimeFactory.create_runtime(
+                AWSRuntime.from_harness_config(harness_config),
+                sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
+            ),
             self._test_org,
         )
 
@@ -3001,22 +3188,15 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
         provider = MockReleasingSandboxProvider(_NEVER_RELEASED)
-        monkeypatch.setattr(
-            run_control_module,
-            "fetch_sandbox_provider_config",
-            Mock(
-                return_value=DaytonaProviderConfig(
-                    DAYTONA_API_KEY="key", DAYTONA_API_URL="url", DAYTONA_TARGET="target"
-                )
-            ),
-        )
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=provider))
+        monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
         monkeypatch.setattr(run_control_module, "delete_sandbox", AsyncMock(side_effect=RuntimeError("unavailable")))
 
         await force_stop_sandboxes(
             benchmark_row,
-            harness_config.sandbox_provider_secret_name,
-            AWSRuntime.from_harness_config(harness_config),
+            CloudRuntimeFactory.create_runtime(
+                AWSRuntime.from_harness_config(harness_config),
+                sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
+            ),
             self._test_org,
         )
 
@@ -3109,14 +3289,19 @@ async def test_recovery_pins_resources_under_lock_and_execution_uses_saved_bucke
     enqueue = AsyncMock()
     monkeypatch.setattr(main_module, "fetch_benchmark_row", fetch_locked)
     monkeypatch.setattr(main_module, "_process_benchmark_kwargs", build_payload)
-    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", enqueue)
 
     response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}")
 
     assert response.status_code == 200, response.text
     database_session.refresh(benchmark)
     assert benchmark.arguments.properties == resources
-    context = enqueue.call_args.kwargs["payload"]["execution_context_json"]
+    dispatch = enqueue.call_args.args[0]
+    sealed = database_session.get(ExecutorDispatchPayload, dispatch.id)
+    assert sealed is not None
+    context = open_payload(dispatch.id, SealedPayload(sealed.ciphertext, sealed.encrypted_data_key, sealed.nonce))[
+        "execution_context_json"
+    ]
     assert context["version"] == 3
     request = StartBenchmarkRequest.model_validate(context["start_benchmark_request"])
     assert request.properties == resources
@@ -3128,6 +3313,7 @@ async def test_recovery_pins_resources_under_lock_and_execution_uses_saved_bucke
     create_runtime = Mock(return_value=runtime)
     monkeypatch.setattr(CloudRuntimeFactory, "create_runtime", create_runtime)
 
+    assert isinstance(benchmark.arguments.properties, AWSResources)
     await CloudRuntimeFactory.create_execution_runtime(
         request, benchmark.org_id, benchmark.id, properties=benchmark.arguments.properties
     )
@@ -3155,7 +3341,7 @@ def test_recovery_does_not_overwrite_resources_changed_during_verification(
 
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", change_saved_resources)
     enqueue = AsyncMock()
-    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", enqueue)
 
     response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}")
 
@@ -3193,7 +3379,7 @@ def test_in_progress_v2_recovery_keeps_release_and_arguments(
     database_session.commit()
     original_arguments = benchmark.arguments.model_dump(mode="json")
     enqueue = AsyncMock()
-    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", enqueue)
 
     response = client.post(
         f"/retry-or-resume-benchmark/{benchmark.id}?retry=true", json={"secrets": {"TOKEN": "new-secret"}}
@@ -3230,7 +3416,7 @@ def test_owner_recovery_revalidates_saved_org_and_location_before_task_verificat
     enqueue = AsyncMock()
     monkeypatch.setattr(main_module, "http_validate_saved_managed_storage_runtime", validation)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
-    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", enqueue)
 
     response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}")
 
@@ -3242,3 +3428,57 @@ def test_owner_recovery_revalidates_saved_org_and_location_before_task_verificat
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.STOPPED
     assert benchmark.arguments.properties == resources
+
+
+@pytest.mark.parametrize("send_caller_aws_headers", [False, True])
+def test_owner_recovery_updates_agent_from_the_deployment_library(
+    send_caller_aws_headers: bool,
+    managed_recovery_run: Benchmark,
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+    harness_headers: dict[str, str],
+) -> None:
+    """Refresh a managed-storage run's bundle from the deployment library, whatever AWS headers the caller sends."""
+    benchmark = managed_recovery_run
+    resources = replace(deployment_aws_runtime(benchmark.org_id).resources, s3_bucket="vs-dev-owner-42")
+    benchmark.arguments = benchmark.arguments.model_copy(update={"properties": resources})
+    database_session.add(benchmark)
+    database_session.commit()
+    agent_name = benchmark.arguments.contract.name
+    checked: list[tuple[str, str]] = []
+    copied: list[tuple[str, str, str, str]] = []
+
+    async def exists(store: Any, key: str) -> bool:
+        checked.append((store._runtime.resources.s3_bucket, key))
+        return True
+
+    async def copy(copier: Any, source_key: str, destination_key: str) -> None:
+        copied.append(
+            (
+                copier._source.resources.s3_bucket,
+                copier._destination.resources.s3_bucket,
+                source_key,
+                destination_key,
+            )
+        )
+
+    monkeypatch.setattr(main_module, "http_validate_saved_managed_storage_runtime", AsyncMock())
+    monkeypatch.setattr(main_module.S3ObjectStore, "exists", exists)
+    monkeypatch.setattr(main_module.S3ObjectCopier, "copy", copy)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", AsyncMock())
+
+    response = client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}?update_agent=true",
+        headers=harness_headers if send_caller_aws_headers else None,
+    )
+
+    assert response.status_code == 200, response.text
+    assert checked == [("legacy-bucket", main_module.agent_bundle_key(agent_name))]
+    assert copied == [
+        (
+            "legacy-bucket",
+            "vs-dev-owner-42",
+            main_module.agent_bundle_key(agent_name),
+            main_module.benchmark_agent_bundle_key(str(benchmark.id), agent_name),
+        )
+    ]

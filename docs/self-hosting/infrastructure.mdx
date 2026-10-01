@@ -7,12 +7,12 @@ Valkyrie ships an AWS CDK application under `infra/` that creates everything a d
 
 ## Architecture
 
-- **Shared stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
-- **Tracker stack**: public API, load balancer, PostgreSQL, and an RDS Proxy for database clients
-- **Executor stack**: stable ExecutorHost, executor release storage, release control, and retained worker logs
-- **Monitoring stack**: tracker, load balancer, database, and Redis alarms
+- **Shared stack**: VPC, ECS cluster, service discovery, and benchmark storage
+- **Tracker stack**: public API, load balancer, PostgreSQL, RDS Proxy, KMS payload key, and a per-dispatch Fargate runner task definition with its own log group
+- **Executor stack**: immutable executor release storage and release control
+- **Monitoring stack**: tracker, load balancer, and database alarms
 
-The Python construct is named `ExecutorStack`, but its CloudFormation name is still `WorkerStack` so that existing deployments update their retained resources in place rather than replacing them.
+Tracker seals each dispatch's execution inputs with a per-dispatch AES-256-GCM key wrapped by KMS and stores the ciphertext in PostgreSQL. Each runner claims and deletes the payload inside one transaction, decrypts it, verifies the pinned release artifact, then executes it. Deploying a new runner task-definition revision does not replace running tasks; AWS Fargate platform retirement is an independent interruption.
 
 ## Prerequisites
 

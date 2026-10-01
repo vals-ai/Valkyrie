@@ -21,7 +21,7 @@ from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ExecutorRelease,
     ExecutorReleaseStatus,
@@ -43,9 +43,15 @@ _TASK_LISTING_PREDECESSOR = "1c2d3e4f5a6b"
 
 
 def test_migration_graph_has_single_head() -> None:
-    heads = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()
+    scripts = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI)))
+    heads = scripts.get_heads()
 
     assert len(heads) == 1, f"Expected one Alembic head, found {heads}"
+    merge = scripts.get_revision(heads[0])
+    assert set(merge.down_revision) == {"3e4f5a6b7c8d", "8d9e0f1a2b3c"}
+    assert scripts.get_revision("3e4f5a6b7c8d").down_revision == _TASK_LISTING_REVISION
+    assert scripts.get_revision("8d9e0f1a2b3c").down_revision == "7b8c9d0e1f2a"
+    assert scripts.get_revision("7b8c9d0e1f2a").down_revision == _TASK_LISTING_REVISION
 
 
 def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: str) -> None:
@@ -589,7 +595,7 @@ def test_current_execution_ownership_migration_rejects_downgrade(
         session.commit()
         # Insert with explicit columns: the schema is pinned at the ownership
         # revision, which predates columns the current ORM model would include.
-        arguments = BenchmarkArguments(
+        arguments = AWSBenchmarkArguments(
             contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         )

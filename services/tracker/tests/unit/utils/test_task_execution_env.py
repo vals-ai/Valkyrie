@@ -198,7 +198,7 @@ class TestProcessTaskEnvironment:
         minted: list[dict[str, Any]] = []
         _install_gateway(monkeypatch, minted)
 
-        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
                 "RUN_ID": "secret-run-id",
                 "TASK_ID": "secret-task-id",
@@ -210,7 +210,7 @@ class TestProcessTaskEnvironment:
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -298,7 +298,7 @@ class TestProcessTaskEnvironment:
         async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return task_response
 
-        def resolve_secrets(references: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def resolve_secrets(references: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
             resolved_references.append(references)
             return {
                 "MODEL_GATEWAY_URL": "https://gateway.example.test",
@@ -338,7 +338,7 @@ class TestProcessTaskEnvironment:
             )
         )
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", resolve_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -478,7 +478,7 @@ class TestProcessTaskEnvironment:
         async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return task_response
 
-        def resolve_native_gateway(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def resolve_native_gateway(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {"MODEL_GATEWAY_URL": "https://gateway.example.test", "MODEL_GATEWAY_API_KEY": "gateway-key"}
 
         async def fail_during_agent(
@@ -503,7 +503,7 @@ class TestProcessTaskEnvironment:
         _install_gateway(monkeypatch, [])
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate_instance)
         monkeypatch.setattr(
-            "tracker.runtime.services.resolve_secrets",
+            "tracker.utils.task_execution.resolve_secrets",
             resolve_native_gateway,
         )
         monkeypatch.setattr(utils_module, "run_agent", fail_during_agent)
@@ -807,7 +807,7 @@ class TestProcessTaskEnvironment:
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_URL", "http://local-gateway")
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", "tracker-control")
         monkeypatch.setattr(utils_module, "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", 5.0)
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", AsyncMock(return_value={}))
 
         result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
 
@@ -843,7 +843,7 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", AsyncMock(return_value={}))
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -886,14 +886,14 @@ class TestProcessTaskEnvironment:
         minted: list[dict[str, Any]] = []
         _install_gateway(monkeypatch, minted)
 
-        def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
                 "VALKYRIE_AGENT_MODEL": "anthropic/claude-4-opus",
                 "MODEL_GATEWAY_URL": "https://gateway.example.test",
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -922,10 +922,10 @@ class TestProcessTaskEnvironment:
         )
         captured_env_vars: list[dict[str, str]] = []
 
-        def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {}
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_no_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_no_secrets)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -964,7 +964,7 @@ class TestProcessTaskEnvironment:
         captured: dict[str, dict[str, str]] = {}
         resolved_inputs: list[dict[str, str]] = []
 
-        def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        async def _mock_resolve_secrets(secrets: dict[str, str], *_args: Any, **_kwargs: Any) -> dict[str, str]:
             resolved_inputs.append(secrets)
             return {"LEGACY_API_KEY": "legacy-value"}
 
@@ -979,7 +979,7 @@ class TestProcessTaskEnvironment:
             response.sandbox_secrets = {"TAVILY_API_KEY": "daytona-tavily"}
             return response
 
-        monkeypatch.setattr("tracker.runtime.services.resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr("tracker.utils.task_execution.resolve_secrets", _mock_resolve_secrets)
         monkeypatch.setattr(utils_module, "create_sandbox", _capture_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
 

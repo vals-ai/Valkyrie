@@ -1,7 +1,4 @@
-"""Tests for Taskiq executor payload producers.
-
-Run: uv run pytest tests/unit/test_taskiq_producers.py
-"""
+"""Tests for encrypted executor dispatch admission payloads."""
 
 import json
 import io
@@ -26,10 +23,12 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     ExecutorDispatch,
+    ExecutorDispatchPayload,
     ExecutorRelease,
     Task,
     TaskStatus,
 )
+from tracker.executor.dispatch_payload import SealedPayload, open_payload
 from tracker.executor.release_control import promote_release
 from tracker.runtime.storage import ObjectStore
 from tracker.types import HarnessConfig, StartBenchmarkRequest
@@ -37,7 +36,7 @@ from tracker.types import HarnessConfig, StartBenchmarkRequest
 
 client = TestClient(app)
 
-_DISPATCH_TASK_KWARGS = {
+_DISPATCH_ENVELOPE_KEYS = {
     "telemetry_context_json",
     "executor_dispatch_id",
     "executor_release_id",
@@ -45,12 +44,12 @@ _DISPATCH_TASK_KWARGS = {
     "executor_artifact_digest",
     "executor_protocol_version",
 }
-_ACCESS_KEY_TASK_KWARGS = {
+_ACCESS_KEY_ENVELOPE_KEYS = {
     "start_benchmark_request_json",
     "benchmark_id_str",
     "verified_task_ids",
-} | _DISPATCH_TASK_KWARGS
-_MANAGED_TASK_KWARGS = {"execution_context_json"} | _DISPATCH_TASK_KWARGS
+} | _DISPATCH_ENVELOPE_KEYS
+_MANAGED_ENVELOPE_KEYS = {"execution_context_json"} | _DISPATCH_ENVELOPE_KEYS
 _CALLER_AWS_HEADERS = {
     "x-harness-aws-access-key-id": "caller-access-key",
     "x-harness-aws-secret-access-key": "caller-secret-key",
@@ -71,14 +70,24 @@ def _configure_managed_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", True)
 
 
-def _capture_task_payloads(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+def _capture_dispatch_payloads(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
 
-    class CapturingKicker:
-        async def kiq(self, **kwargs: Any) -> None:
-            payloads.append(kwargs)
+    async def capture(dispatch: ExecutorDispatch) -> None:
+        with Session(database_session.get_bind()) as session:
+            row = session.get(ExecutorDispatchPayload, dispatch.id)
+            assert row is not None
+            payload = open_payload(dispatch.id, SealedPayload(row.ciphertext, row.encrypted_data_key, row.nonce))
+            payload.update(
+                executor_dispatch_id=str(dispatch.id),
+                executor_release_id=dispatch.executor_release_id,
+                executor_artifact_uri=dispatch.executor_artifact_uri,
+                executor_artifact_digest=dispatch.executor_artifact_digest,
+                executor_protocol_version=dispatch.executor_protocol_version,
+            )
+            payloads.append(payload)
 
-    monkeypatch.setattr("main.process_benchmark.kicker", lambda: CapturingKicker())
+    monkeypatch.setattr("main.launch_dispatch", capture)
     return payloads
 
 
@@ -137,7 +146,7 @@ def test_managed_start_and_resume_emit_credential_free_v3(
 ) -> None:
     _configure_managed_runtime(monkeypatch)
     _promote_test_release(database_session)
-    payloads = _capture_task_payloads(monkeypatch)
+    payloads = _capture_dispatch_payloads(monkeypatch, database_session)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=["task-1"])
@@ -158,7 +167,7 @@ def test_managed_start_and_resume_emit_credential_free_v3(
     assert benchmark is not None
     assert benchmark.aws_managed is True
     assert len(payloads) == 1
-    assert set(payloads[0]) == _MANAGED_TASK_KWARGS
+    assert set(payloads[0]) == _MANAGED_ENVELOPE_KEYS
     start_context = payloads[0]["execution_context_json"]
     assert start_context["version"] == 3
     assert start_context["start_benchmark_request"]["harness_config"] is None
@@ -176,7 +185,7 @@ def test_managed_start_and_resume_emit_credential_free_v3(
 
     assert response.status_code == 200
     assert len(payloads) == 1
-    assert set(payloads[0]) == _MANAGED_TASK_KWARGS
+    assert set(payloads[0]) == _MANAGED_ENVELOPE_KEYS
     resume_context = payloads[0]["execution_context_json"]
     assert resume_context["version"] == 3
     assert resume_context["benchmark_id"] == str(benchmark.id)
@@ -204,12 +213,16 @@ async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
     contract: AgentContractRequest,
 ) -> None:
     """Rebuilding from the bundle is what makes the settings trustworthy."""
+    contract = contract.model_copy(
+        update={"model": "test-model", "kwargs": {"variant": "custom"}, "secrets": {"API_KEY": "override"}}
+    )
     object_store = AsyncMock()
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr(
             "dummy/contract.yaml",
             "name: declared-name\ninstall_cmd: 'true'\nrun_cmd: 'echo {problem_statement_path} {variant}'\n"
+            "secrets:\n  API_KEY: default\n  EXTRA_KEY: extra\n"
             "kwargs:\n  variant:\n    type: str\n    default: max\n    required: false\n",
         )
     object_store.get_bytes.return_value = archive.getvalue()
@@ -218,7 +231,9 @@ async def test_resolving_a_contract_from_s3_attests_its_inference_settings(
 
     assert resolved.inference_settings_attested is True
     assert resolved.name == "dummy"
-    assert resolved.kwargs == {"variant": "max"}
+    assert resolved.model == "test-model"
+    assert resolved.kwargs == {"variant": "custom"}
+    assert resolved.secrets == {"API_KEY": "override", "EXTRA_KEY": "extra"}
     object_store.get_bytes.assert_awaited_once_with("agents/dummy.zip")
 
 
@@ -230,7 +245,7 @@ def test_start_clears_a_caller_asserted_attestation(
     """A caller cannot mark its own inference settings tracker-attested."""
     _configure_managed_runtime(monkeypatch)
     _promote_test_release(database_session)
-    payloads = _capture_task_payloads(monkeypatch)
+    payloads = _capture_dispatch_payloads(monkeypatch, database_session)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=["task-1"])
@@ -273,7 +288,7 @@ def test_managed_start_rejects_aws_authority_before_persistence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_managed_runtime(monkeypatch)
-    payloads = _capture_task_payloads(monkeypatch)
+    payloads = _capture_dispatch_payloads(monkeypatch, database_session)
 
     async def agent_exists(*_args: Any, **_kwargs: Any) -> bool:
         raise AssertionError("invalid managed requests must be rejected before checking S3")
@@ -298,7 +313,7 @@ def test_managed_start_rejects_aws_authority_from_resolved_contract(
 ) -> None:
     _configure_managed_runtime(monkeypatch)
     _promote_test_release(database_session)
-    payloads = _capture_task_payloads(monkeypatch)
+    payloads = _capture_dispatch_payloads(monkeypatch, database_session)
     request = _start_request(contract.model_copy(update={"install_cmd": "", "run_cmd": ""}), None)
     resolved_contract = contract.model_copy(update={"secrets": {"aws_profile": "credential"}})
     monkeypatch.setattr("main._resolve_contract_from_s3", AsyncMock(return_value=resolved_contract))
@@ -350,7 +365,7 @@ def test_managed_resume_rolls_back_when_the_active_release_is_incompatible(
 ) -> None:
     _configure_managed_runtime(monkeypatch)
     _promote_test_release(database_session)
-    payloads = _capture_task_payloads(monkeypatch)
+    payloads = _capture_dispatch_payloads(monkeypatch, database_session)
     monkeypatch.setattr(
         BenchmarkServiceClient,
         "verify_task_ids",
@@ -393,7 +408,7 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
 ) -> None:
     _configure_managed_runtime(monkeypatch)
     _promote_test_release(database_session)
-    payloads = _capture_task_payloads(monkeypatch)
+    payloads = _capture_dispatch_payloads(monkeypatch, database_session)
     monkeypatch.setattr(
         BenchmarkServiceClient,
         "verify_task_ids",
@@ -448,7 +463,7 @@ def test_managed_resume_payload_failure_rolls_back_recovery_state(
     assert payloads == []
 
 
-def test_access_key_start_and_resume_keep_v1_task_kwargs(
+def test_access_key_start_and_resume_keep_v1_execution_inputs(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
@@ -456,7 +471,7 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _promote_test_release(database_session, protocol_version="1")
-    payloads = _capture_task_payloads(monkeypatch)
+    payloads = _capture_dispatch_payloads(monkeypatch, database_session)
 
     async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=["task-1"])
@@ -478,7 +493,7 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
     assert benchmark is not None
     assert benchmark.aws_managed is False
     assert len(payloads) == 1
-    assert set(payloads[0]) == _ACCESS_KEY_TASK_KWARGS
+    assert set(payloads[0]) == _ACCESS_KEY_ENVELOPE_KEYS
     assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None
 
     _stop_benchmark(benchmark, database_session)
@@ -491,5 +506,5 @@ def test_access_key_start_and_resume_keep_v1_task_kwargs(
 
     assert response.status_code == 200
     assert len(payloads) == 1
-    assert set(payloads[0]) == _ACCESS_KEY_TASK_KWARGS
+    assert set(payloads[0]) == _ACCESS_KEY_ENVELOPE_KEYS
     assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None

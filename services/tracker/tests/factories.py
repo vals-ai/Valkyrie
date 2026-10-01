@@ -11,7 +11,7 @@ from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
@@ -63,7 +63,7 @@ def make_benchmark(
         label=label,
         started_by_id=started_by_id,
         started_by_email=started_by_email,
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=contract or AgentContractRequest(name=agent_name, model=model, install_cmd="i", run_cmd="r"),
             dataset=dataset,
             concurrency=concurrency,

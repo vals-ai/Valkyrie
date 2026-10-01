@@ -5,7 +5,6 @@ Run: uv run pytest tests/integration/observability/test_run_correlation.py
 
 from __future__ import annotations
 
-import asyncio
 import gzip
 import json
 import logging
@@ -23,9 +22,9 @@ import logfire
 import sentry_sdk
 from sentry_sdk.envelope import Envelope, Item
 
-from services.executor_host import supervisor as host_supervisor
-from services.executor_host import observability as host_observability
-from services.executor_host.supervisor import ExecutorProcessPayload
+from executor_protocol import normalize_executor_telemetry_context
+from tracker.executor.runner import ExecutorProcessPayload
+from tracker.executor import runner_observability
 from services.tracker import main as tracker_main
 from tracker.executor.entrypoint import _executor_context
 from tracker.logging import benchmark_id_var, configure_logging, request_id_var, task_id_var
@@ -141,28 +140,24 @@ def _run_tracker(dsn: str, context_path: str) -> None:
         _flush_telemetry()
 
 
-def _run_executor_host(dsn: str, input_path: str, output_path: str) -> None:
+def _run_executor_runner(dsn: str, input_path: str, output_path: str) -> None:
     _set_sentry_environment(dsn)
     os.environ["ENVIRONMENT"] = _ENVIRONMENT
-    host_observability.configure_observability()
+    runner_observability.configure_observability()
     payload = cast(dict[str, Any], json.loads(Path(input_path).read_text()))
-
-    async def capture_dispatch(
-        _executor_supervisor: object,
-        _store: object,
-        *,
-        executor_dispatch_id: str,
-        keeper: object,
-        dispatch: object,
-        process_payload: ExecutorProcessPayload,
-    ) -> None:
-        del _executor_supervisor, _store, executor_dispatch_id, keeper, dispatch
-        logging.getLogger("executor-host.observability.smoke").info("ExecutorHost dispatched observability smoke run")
+    with runner_observability.dispatch_observability_context(
+        _RUN_ID,
+        _DISPATCH_ID,
+        _RELEASE_ID,
+        normalize_executor_telemetry_context(payload["telemetry_context_json"]),
+    ) as child_context:
+        process_payload = ExecutorProcessPayload.from_payload(payload, telemetry_context=child_context)
+        logging.getLogger("executor-runner.observability.smoke").info(
+            "ExecutorRunner dispatched observability smoke run"
+        )
         Path(output_path).write_text(json.dumps(process_payload.arguments["telemetry_context_json"]))
-        _capture_test_error("valkyrie-executor-host")
-
-    host_supervisor.run_executor_dispatch = capture_dispatch
-    asyncio.run(host_supervisor.launch_executor.original_func(**payload))
+        _capture_test_error("valkyrie-executor-runner")
+        runner_observability.record_dispatch_completion(child_context)
     _flush_telemetry()
 
 
@@ -261,7 +256,7 @@ def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Pat
 
     with _local_sentry_receiver() as (dsn, server):
         _run_process(_run_tracker, dsn, str(tracker_context))
-        _run_process(_run_executor_host, dsn, str(tracker_context), str(executor_context))
+        _run_process(_run_executor_runner, dsn, str(tracker_context), str(executor_context))
         _run_process(_run_executor, dsn, str(executor_context))
         items = _items(server)
 
@@ -272,7 +267,7 @@ def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Pat
 
     assert {event["server_name"] for event in events} == {
         "valkyrie-tracker",
-        "valkyrie-executor-host",
+        "valkyrie-executor-runner",
         "valkyrie-executor",
     }
     assert all(event["tags"]["benchmark_id"] == _RUN_ID for event in events)
@@ -287,7 +282,7 @@ def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Pat
     assert len(correlated_logs) >= 3
     assert {_attribute_value(entry, "server.address") for entry in correlated_logs} == {
         "valkyrie-tracker",
-        "valkyrie-executor-host",
+        "valkyrie-executor-runner",
         "valkyrie-executor",
     }
 

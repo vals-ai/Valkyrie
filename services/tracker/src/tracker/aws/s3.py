@@ -13,7 +13,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
-from tracker.runtime.storage import ArtifactLocations, ObjectReadSession, StoredObject, StoredObjectCopy
+from tracker.runtime.storage import ArtifactLocations, StoredObject, StoredObjectCopy
 
 logger = get_logger(__name__)
 
@@ -107,6 +107,8 @@ async def upload_stream_to_s3(
     s3_key: str,
     runtime: AWSRuntime,
     should_continue: Callable[[], bool] | None = None,
+    *,
+    overwrite: bool = True,
 ) -> int:
     """
     Upload a byte stream to S3 via multipart upload, buffering at most one part in memory.
@@ -160,13 +162,23 @@ async def upload_stream_to_s3(
             if should_continue is not None and not should_continue():
                 raise S3Error("S3 stream upload authority was revoked")
 
-            await client.complete_multipart_upload(
-                Bucket=s3_bucket,
-                Key=s3_key,
-                UploadId=upload_id,
-                MultipartUpload={"Parts": parts},
-                **owner_arguments,
-            )
+            try:
+                await client.complete_multipart_upload(
+                    Bucket=s3_bucket,
+                    Key=s3_key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                    **owner_arguments,
+                    **({} if overwrite else {"IfNoneMatch": "*"}),
+                )
+            except ClientError as error:
+                status_code = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                if not overwrite and status_code == 412:
+                    raise FileExistsError(s3_key) from error
+                # A concurrent conditional write returns 409; the key exists when that write won.
+                if not overwrite and status_code == 409 and await s3_object_exists(s3_key, runtime):
+                    raise FileExistsError(s3_key) from error
+                raise
         except BaseException:
             with suppress(Exception):
                 await client.abort_multipart_upload(
@@ -519,7 +531,9 @@ class _S3ObjectReadSession:
                 for stored_object in page.get("Contents", []):
                     key = stored_object.get("Key")
                     if key is not None:
-                        yield StoredObject(key=key, last_modified=stored_object.get("LastModified"))
+                        yield StoredObject(
+                            key=key, last_modified=stored_object.get("LastModified"), size=stored_object["Size"]
+                        )
         except (ClientError, BotoCoreError) as error:
             raise S3Error(f"Failed to list objects from S3: {error}") from error
 
@@ -531,7 +545,7 @@ class S3ObjectStore:
         self._runtime = runtime
 
     @asynccontextmanager
-    async def read_session(self) -> AsyncGenerator[ObjectReadSession, None]:
+    async def read_session(self) -> AsyncGenerator[_S3ObjectReadSession, None]:
         async with self._runtime.clients.s3_client() as client:
             yield _S3ObjectReadSession(
                 client,
@@ -548,8 +562,11 @@ class S3ObjectStore:
         chunks: AsyncIterable[bytes],
         *,
         should_continue: Callable[[], bool] | None = None,
+        overwrite: bool = True,
     ) -> int:
-        return await upload_stream_to_s3(chunks, key, self._runtime, should_continue=should_continue)
+        return await upload_stream_to_s3(
+            chunks, key, self._runtime, should_continue=should_continue, overwrite=overwrite
+        )
 
     async def get_bytes(self, key: str) -> bytes:
         async with self.read_session() as reader:
@@ -583,6 +600,29 @@ class S3ObjectStore:
         async with self.read_session() as reader:
             async for stored_object in reader.list_objects(prefix):
                 yield stored_object
+
+    async def stat(self, key: str) -> StoredObject:
+        async with self._runtime.clients.s3_client() as client:
+            response = await client.head_object(
+                Bucket=self._runtime.resources.s3_bucket,
+                Key=key,
+                **s3_owner_arguments(self._runtime),
+            )
+        return StoredObject(key, response.get("LastModified"), size=response["ContentLength"])
+
+    async def list_objects_page(
+        self, prefix: str, *, cursor: str | None, limit: int
+    ) -> tuple[list[StoredObject], str | None]:
+        arguments: dict[str, Any] = {"Bucket": self._runtime.resources.s3_bucket, "Prefix": prefix, "MaxKeys": limit}
+        arguments.update(s3_owner_arguments(self._runtime))
+        if cursor is not None:
+            arguments["ContinuationToken"] = cursor
+        async with self._runtime.clients.s3_client() as client:
+            response = await client.list_objects_v2(**arguments)
+        return [
+            StoredObject(item["Key"], item.get("LastModified"), size=item["Size"])
+            for item in response.get("Contents", [])
+        ], response.get("NextContinuationToken")
 
     async def temporary_download_url(self, key: str, *, expires_in: int) -> str:
         return await create_presigned_url(key, self._runtime, expiration=expires_in)

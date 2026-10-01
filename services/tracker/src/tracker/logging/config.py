@@ -97,7 +97,6 @@ def configure_logging() -> None:
                 "uvicorn": {"handlers": ["console"], "level": "INFO", "propagate": False},
                 "uvicorn.access": {"handlers": ["console"], "level": "INFO", "propagate": False},
                 "uvicorn.error": {"handlers": ["console"], "level": "INFO", "propagate": False},
-                "taskiq": {"handlers": ["console"], "level": log_level, "propagate": False},
             },
         }
     )

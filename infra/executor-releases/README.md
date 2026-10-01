@@ -14,8 +14,8 @@ stores the release and artifact selected for that invocation.
    recovery select the `ACTIVE` release.
 3. Benchmark admission stores immutable initial ownership and mutable current
    execution ownership before Tracker creates the immutable queued dispatch.
-   ExecutorHost atomically claims that dispatch before launching the subprocess
-   and marks it terminal after the subprocess exits.
+   Tracker launches one runner task for that dispatch. The task atomically claims
+   the dispatch and consumes its encrypted payload before starting the subprocess.
 4. The previous active release becomes `DRAINING`. It receives no new benchmark
    starts or terminal restarts, but active executions that it owns continue using
    it.
@@ -57,9 +57,10 @@ A release becoming `DRAINING` never rewrites queued or running dispatches.
 
 ![Dispatch ownership and pinned artifact flow](diagrams/valkyrie-dispatch-ownership.png)
 
-Start admission atomically persists benchmark ownership and its queued `START`
-dispatch before enqueueing Redis. The transaction sets both immutable initial
-ownership and current execution ownership to the locked `ACTIVE` release and
+Start admission atomically persists benchmark ownership, its queued `START`
+dispatch, and its AES-256-GCM encrypted payload. Tracker launches one ECS runner
+task per dispatch with only the dispatch ID in its command. The transaction sets
+both immutable initial ownership and current execution ownership to the locked `ACTIVE` release and
 snapshots that release into the dispatch. If A becomes `DRAINING` after the
 transaction commits, the admitted benchmark and dispatch remain on A and block
 its retirement until their active work becomes terminal.
@@ -144,15 +145,16 @@ retirement. After it becomes terminal, retry or resume may establish the
 
 An invalid or missing persisted owner for in-progress recovery is a `409`
 conflict. Terminal recovery without a valid `ACTIVE` release is a `503` service
-availability failure. After retrying a failed enqueue acknowledgement, Tracker
+availability failure. After bounded retries of a failed task launch, Tracker
 keeps a dispatch that was already claimed, rejects one superseded by newer work,
 or marks a still-unclaimed dispatch `FAILED`. That failure errors only eligible
-task attempts selected for that enqueue, errors the benchmark only when no active
+task attempts selected for that launch, errors the benchmark only when no active
 sibling remains, and returns a `503` with the benchmark and dispatch IDs so Retry
 can continue the run.
 
-Tracker and ExecutorHost keep their normal ECS deployment circuit breakers, and
-failed infrastructure updates retain normal CloudFormation rollback. Executor
+Tracker keeps its normal ECS deployment circuit breaker; failed infrastructure
+updates retain normal CloudFormation rollback. Running runner tasks keep their pinned
+task-definition revisions when a new revision is deployed. Executor
 activation runs only after that deployment succeeds. Once an executor release is
 active, it is never rolled back or reactivated after draining; fix executor
 failures by deploying a new release.
@@ -164,48 +166,32 @@ Package-R Tracker image: its migration history cannot resolve `e9f0a1b2c3d4` and
 its runtime does not maintain current ownership. Fix Tracker failures forward;
 database restoration is a separately approved disaster-recovery operation.
 
-### First executor-dispatch cutover
+### One-time runner cutover
 
-The first deployment from the legacy three-field Taskiq message contract is a
-manual outage. Perform these steps in order:
+This PR follows the existing CI-gated maintenance path: close admission, stop
+active runs, wait until all old executor tasks have stopped, deploy the stacks and
+activate the release, then reopen admission. There is no transition window or
+parallel dispatch lifecycle. The removal of the historical executor service
+triggers maintenance for this cutover; subsequent runner revisions do not stop
+running tasks. The physical `WorkerStack` still owns release control.
 
-1. From the new release source, deploy the stage's `MonitoringStack` target with
-   CDK `--exclusively` and verify that it no longer imports the legacy Worker
-   service. Do not deploy `WorkerStack` or use all-stack scope in this step. This
-   releases the cross-stack export before the later Worker deletion.
-2. Force-stop any run that cannot drain normally.
-3. Suspend Tracker scaling, set its desired count to zero, and verify that no
-   Tracker task remains. This stops new legacy messages from being admitted.
-4. Keep legacy Workers running until every benchmark is terminal and the Redis
-   `taskiq` consumer group reports both zero pending messages and zero lag. Stream
-   key existence alone is not proof that the queue drained.
-5. Suspend legacy Worker scaling, set its desired count to zero, and verify that
-   no Worker task remains.
-6. With separate approval for this live AWS mutation, run `make deploy` with
-   `SCOPE=executor` from the new source. The Python `ExecutorStack` updates the
-   physical `WorkerStack` in place, deletes the drained legacy service, and
-   retains `/valkyrie/worker` log history. This CDK-only bootstrap does not
-   publish or activate an executor release.
-7. Verify that `/valkyrie/<stage>/executor-release/launch-config` exists in SSM.
-   Automated executor deployment fails closed until this parameter exists.
-8. Rerun the branch deployment. It closes admission through the sealed control
-   task, deploys the core migration, activates the immutable executor release,
-   and restores Tracker only after successful completion. Do not deploy a pre-
-   Package-R Tracker image after the migrations commit.
-
-This procedure is operational only; the migrations contain no cutover state or
-compatibility branch. It applies once, to the first executor-dispatch rollout.
-The manual physical `WorkerStack` update is a separate protected action, not an
-automatic bootstrap path.
+The unused Redis cluster and its security group remain in SharedStack for this
+one deploy, along with their endpoint address, endpoint port, security group ID,
+and cluster-reference CloudFormation exports. TrackerStack also retains the
+Tracker service security group ID export while WorkerStack drops its old import.
+Release-test additionally retains the unused executor-host ECR repository and
+its ARN and name exports. Core stacks deploy before WorkerStack; delete these
+resources and exports in the follow-up cleanup PR together with the host-removal
+classifier rule, not during this cutover. Monitoring no longer has Redis widgets.
 
 ## Automated deployment
 
 Core and executor deployment use separate jobs and one non-cancelling deployment
 mutex per stage. Every `dev` or `prod` push may deploy the Shared, Tracker, and
 Monitoring stacks, but a core-only change never builds an executor artifact,
-deploys the physical `WorkerStack`, activates a release, or enters executor
-maintenance. Executor work runs only when the trusted classifier reports an
-executor release, an `ExecutorStack` change, or an incompatible migration. After
+updates the physical `WorkerStack`, or activates a release. Executor work runs
+only when the trusted classifier reports an executor release, an `ExecutorStack`
+change, or an incompatible migration. After
 acquiring the mutex, an executor job compares its SHA with the current branch
 head and exits before AWS credentials or mutations when it is stale.
 
@@ -242,17 +228,13 @@ the pull request uses the normal merge path. Rejection keeps the check failed, a
 synthesis, artifact-validation, or classifier infrastructure errors cannot be
 approved.
 
-For an approved maintenance deployment, the existing sealed release task closes
+For an approved maintenance deployment, the sealed release control task closes
 admission, marks active benchmarks and tasks `STOPPED`, fails queued or running
-dispatches, removes ExecutorHost task protection, and sends `StopTask`. It does
-not wait for provider cleanup before deployment. Tracker is stopped before the
-stack update, and admission reopens only after every required stack update and
-executor activation succeeds. A failure leaves the fence closed for a retry of
-the same commit.
-
-Automated executor deployment never skips maintenance. Before the one-time manual
-cutover creates sealed control, the workflow fails because the stage launch-config
-SSM parameter is absent and points operators to the cutover procedure above.
+dispatches, sends `StopTask` to active executor tasks, and waits until every
+executor task is `STOPPED` before updating the stacks. Tracker is stopped before
+the stack update, and admission reopens only after the required updates and
+executor activation succeed. A failure leaves the fence closed for retry of
+the same commit. Unsafe database migrations continue to require maintenance.
 Later `ExecutorStack` changes use the normal maintenance flow. Manual workflow
 dispatch remains limited to credential validation and planning; deployments come
 from branch pushes.
@@ -260,10 +242,11 @@ from branch pushes.
 Start, Retry, Resume, and concurrency changes return `503` while the fence is
 held. Nothing is replayed automatically. Alembic startup upgrades use one
 PostgreSQL advisory lock so rolling Tracker tasks cannot race migrations.
-ExecutorHost runs one Taskiq worker process with up to 100 concurrent async tasks,
-so its in-memory active count owns the whole ECS task. It renews a 120-minute ECS
-protection lease every 30 minutes while work remains and cancels any in-flight
-renewal before disabling protection.
+Each dispatch gets one Fargate runner task using a pinned task-definition revision.
+The runner claims its dispatch, decrypts the transactionally deleted payload, and
+exits after its child process completes. Ordinary runner deployments register a
+new revision without stopping tasks already running. AWS Fargate platform
+retirement is a separate interruption, not a deployment drain.
 
 Tracker retires blocker-free draining releases automatically; artifact deletion
 remains separate.
@@ -284,22 +267,32 @@ release has no active current owner or queued/running dispatch, and no
 unattributed active benchmark exists. The current code exposes the deletion
 guard; it does not run an automatic cleanup job.
 
-An uncertain dispatch fails closed. A broker acknowledgement loss or ExecutorHost
-crash can leave a nonterminal dispatch that blocks retirement until an operator
-investigates it. A producer error does not prove that Redis rejected the append;
-missing stream evidence does not prove non-delivery. Tracker returns and logs the
-immutable dispatch ID for correlation.
+An uncertain dispatch fails closed. A launch acknowledgement loss or runner
+interruption may leave a nonterminal dispatch that blocks retirement until an
+operator investigates it. Tracker returns and logs the immutable dispatch ID.
 
-Use this bounded investigation sequence:
+### Investigate or stop an authoritative runner
 
-1. Inspect the PostgreSQL dispatch row by immutable ID.
-2. If it is `RUNNING` or terminal, do not replay it. A broker redelivery of that
-   same ID cannot claim `RUNNING` again and the host skips executor side effects.
-3. If it is `QUEUED`, inspect Redis stream/pending state and correlated logs only
-   for evidence that append occurred. Absence is never proof of non-delivery.
-4. Leave an unresolved row fail-closed. Replay or terminalization requires a
-   separately approved and audited operator action that first resolves the
-   execution outcome.
+1. Query `executor_dispatch` by immutable dispatch ID, checking `status`,
+   `ecs_task_arn`, claim deadline, lease, and pinned release identity. For an
+   admitted dispatch, its `executor_dispatch_payload` row exists only while
+   queued; the runner deletes it as part of its guarded claim transaction.
+2. Use the recorded `ecs_task_arn` to inspect the task in the stage cluster.
+   Its task-definition family is stage-specific `ExecutorRunner`; find correlated
+   logs in the retained stage-specific `/valkyrie/executor-runner` log group.
+   Correlate the dispatch ID and task ARN, never
+   dump payload ciphertext, data keys, service headers, or credentials. A missing
+   ARN after a launch timeout does not prove no task was launched; inspect ECS
+   tasks and dispatch-correlated logs before taking action.
+3. If `RUNNING` and hung but still authoritative, authorize interruption and
+   call `aws ecs stop-task --cluster <stage-cluster> --task <ecs-task-arn>`.
+   Confirm ECS reports `STOPPED`, then let lease expiry and normal reconciliation
+   resolve the dispatch; do not launch a duplicate task or directly rewrite its
+   status. For a `QUEUED` dispatch, do not replay without resolving whether
+   the original launch was accepted.
+4. Leave unresolved work fail-closed. Replay or terminalization requires a
+   separately approved and audited operator action that resolves the execution
+   outcome first.
 
 The retirement reconciler changes release metadata only. It does not schedule,
 replay, requeue, repair, or delete executor work or artifacts.
@@ -321,7 +314,7 @@ release-test bucket and creates no GitHub OIDC release role; an explicitly
 authorized release-test operator may use it for live deployment proof.
 
 The Package R driver is a static Fargate task definition, not a service. It has a
-no-ingress security group, explicit VPC/database/Redis/DNS/HTTPS egress, retained
+no-ingress security group, explicit VPC/database/DNS/HTTPS egress, retained
 logs, named secret references, and separate execution, task, and operator roles.
 The operator role can run only that task definition and pass only its two roles.
 Public IP assignment is a launch-time requirement because the stage has public
@@ -363,12 +356,12 @@ that the Driver task role may read. The driver secret must contain exactly
 database credentials from Secrets Manager. Never put secret values in task
 command or environment overrides.
 
-Release-test owns immutable `valkyrie/release-test/tracker` and
-`valkyrie/release-test/executor-host` ECR repositories. This avoids mutating the
-account-wide CDK bootstrap repository. Deploy Shared first when creating those
-repositories, build and push both ARM64 images with the same new immutable tag,
-then synthesize and deploy the dependent stacks with that tag. Dev, bench, and
-prod keep the existing CDK asset path.
+Release-test owns an immutable `valkyrie/release-test/tracker` ECR repository;
+the unused executor-host image repository and its CloudFormation exports remain for this deployment so WorkerStack can drop its imports. Remove them in the follow-up cleanup PR with the host-removal classifier rule. This avoids mutating the
+account-wide CDK bootstrap repository. Deploy Shared first when creating the
+repository, build and push the ARM64 Tracker image with a new immutable tag,
+then synthesize and deploy dependent stacks with that tag. The runner uses the
+Tracker image. Dev, bench, and prod keep the existing CDK asset path.
 
 Review all stacks and the driver separately before deployment. Release-test
 forces authentication on, so synthesis needs the Descope project ID and
@@ -403,9 +396,7 @@ default.
 The stage connects to `benchmarks.vals.ai`. Local clients outside the VPC cannot
 call the internal Tracker directly; use the driver for HTTP and database proof.
 
-After the one-time cutover, no legacy Worker or `taskiq` consumer is deployed.
-Every message on `valkyrie-stable` must include an executor dispatch ID and
-immutable artifact identity; ExecutorHost claims the matching PostgreSQL dispatch
-before downloading or executing the artifact. Drain `taskiq` manually during the
-cutover above; following deployments require no compatibility branch or
-queue-drain sequence.
+Each admitted dispatch launches a standalone runner task with the dispatch ID
+only in its command; the artifact identity comes from the PostgreSQL dispatch
+row and execution inputs from the encrypted payload row. No queue drain or
+service replacement occurs on subsequent runner task-definition revisions.

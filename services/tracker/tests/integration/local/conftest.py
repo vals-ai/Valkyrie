@@ -1,5 +1,6 @@
 """Fixtures for local tracker API integration tests."""
 
+import base64
 import importlib
 from collections.abc import Generator
 from unittest.mock import patch
@@ -30,6 +31,13 @@ def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
         log_retention_policy=30,
         sandbox_provider_secret_name="test-daytona-secret",
     )
+
+
+@pytest.fixture(autouse=True)
+def local_executor_payload_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
+    monkeypatch.delenv("EXECUTOR_PAYLOAD_KMS_KEY_ID", raising=False)
 
 
 @pytest.fixture(autouse=True)

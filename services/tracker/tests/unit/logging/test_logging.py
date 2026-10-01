@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/logging/test_logging.py
 
 import json
 import logging
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
@@ -22,7 +22,6 @@ from tracker.logging import (
     task_id_var,
 )
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
-from tracker.middleware import LoggingContextMiddleware
 from tracker.types import AWSCredentials, HarnessConfig
 
 
@@ -272,67 +271,6 @@ class TestDevelopmentFormatter:
 
         assert "no ctx" in plain_output
         assert " [" not in plain_output
-
-
-class TestLoggingContextMiddleware:
-    """Benchmark logging context setup and cleanup."""
-
-    async def test_logging_context_middleware_pre_execute(self) -> None:
-        """Taskiq middleware binds benchmark_id and request_id from message."""
-        middleware = LoggingContextMiddleware()
-
-        message = MagicMock()
-        message.kwargs = {"benchmark_id_str": "bench-123"}
-        message.labels = {"request_id": "req-456"}
-
-        result = await middleware.pre_execute(message)
-
-        assert benchmark_id_var.get() == "bench-123"
-        assert request_id_var.get() == "req-456"
-        assert result is message
-
-    async def test_logging_context_middleware_reads_v2_benchmark_id(self) -> None:
-        """Taskiq middleware binds the benchmark ID nested in a V2 execution context."""
-        middleware = LoggingContextMiddleware()
-
-        message = MagicMock()
-        message.kwargs = {
-            "execution_context_json": {
-                "version": 2,
-                "benchmark_id": "bench-v2",
-                "verified_task_ids": ["task-1"],
-                "start_benchmark_request": {},
-            }
-        }
-        message.labels = {"request_id": "req-v2"}
-
-        result = await middleware.pre_execute(message)
-
-        assert benchmark_id_var.get() == "bench-v2"
-        assert request_id_var.get() == "req-v2"
-        assert result is message
-
-    async def test_logging_context_middleware_post_execute_clears(self) -> None:
-        """post_execute clears all context vars."""
-        middleware = LoggingContextMiddleware()
-        benchmark_id_var.set("leftover")
-        request_id_var.set("leftover")
-        task_id_var.set("leftover")
-
-        await middleware.post_execute(MagicMock(), MagicMock())
-
-        assert benchmark_id_var.get() == ""
-        assert request_id_var.get() == ""
-        assert task_id_var.get() == ""
-
-    async def test_logging_context_middleware_on_error_clears(self) -> None:
-        """on_error clears context vars so failed jobs don't leak."""
-        middleware = LoggingContextMiddleware()
-        benchmark_id_var.set("leaked")
-
-        await middleware.on_error(MagicMock(), MagicMock(), RuntimeError("boom"))
-
-        assert benchmark_id_var.get() == ""
 
 
 async def test_request_context_middleware_sets_request_id(monkeypatch: pytest.MonkeyPatch) -> None:

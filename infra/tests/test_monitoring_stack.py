@@ -16,7 +16,6 @@ from aws_cdk import (
     aws_ec2,
     aws_ecr,
     aws_ecs,
-    aws_elasticache,
     aws_elasticloadbalancingv2 as aws_elb,
     aws_rds,
 )
@@ -31,7 +30,7 @@ from constants import (
     TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
     VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
-    WORKER_LOG_GROUP_NAME,
+    EXECUTOR_RUNNER_LOG_GROUP_NAME,
     get_slack_notification_config,
 )
 from monitoring_stack import MonitoringStack
@@ -151,13 +150,6 @@ def _monitoring_template(stage_name: str = BENCH) -> assertions.Template:
         credentials=aws_rds.Credentials.from_generated_secret("tracker"),
         allocated_storage=20,
     )
-    redis_cluster = aws_elasticache.CfnCacheCluster(
-        resources,
-        "RedisCluster",
-        cache_node_type="cache.t4g.micro",
-        engine="redis",
-        num_cache_nodes=1,
-    )
     with mock.patch.dict(os.environ, _stage_environment(stage_name), clear=False):
         monitoring = MonitoringStack(
             app,
@@ -168,14 +160,13 @@ def _monitoring_template(stage_name: str = BENCH) -> assertions.Template:
             load_balancer=load_balancer,
             target_group=target_group,
             database=database,
-            redis_cluster=redis_cluster,
             env=cdk.Environment(account="123456789012", region="us-west-2"),
         )
 
     return assertions.Template.from_stack(monitoring)
 
 
-def _shared_template(stage_name: str = BENCH) -> assertions.Template:
+def shared_template(stage_name: str = BENCH) -> assertions.Template:
     app = cdk.App(context=SHARED_STACK_CONTEXT)
     stage = Stage(stage_name)
     shared = SharedStack(
@@ -196,9 +187,6 @@ def service_templates(
     env = cdk.Environment(account=TEST_AWS_ACCOUNT, region=TEST_AWS_REGION)
     shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=env)
     tracker_repository = cast(aws_ecr.IRepository, shared.tracker_repository) if stage.is_release_test else None
-    executor_host_repository = (
-        cast(aws_ecr.IRepository, shared.executor_host_repository) if stage.is_release_test else None
-    )
     image_tag = "package-r-test" if stage.is_release_test else None
     tracker = TrackerStack(
         app,
@@ -209,8 +197,6 @@ def service_templates(
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
         bucket_name=shared.bucket_name,
-        redis_url=shared.redis_url,
-        redis_security_group=shared.redis_security_group,
         tracker_repository=tracker_repository,
         image_tag=image_tag,
         env=env,
@@ -221,15 +207,10 @@ def service_templates(
         stage=stage,
         vpc=shared.vpc,
         cluster=shared.cluster,
-        namespace=shared.namespace,
-        redis_url=shared.redis_url,
-        bucket_name=shared.bucket_name,
         database_proxy=tracker.database_proxy,
         db_credentials=tracker.db_credentials,
         tracker_service=tracker.tracker_fargate_service,
         tracker_image=tracker.tracker_image,
-        executor_host_repository=executor_host_repository,
-        image_tag=image_tag,
         env=env,
     )
     monitoring = MonitoringStack(
@@ -241,7 +222,6 @@ def service_templates(
         load_balancer=tracker.service.load_balancer,
         target_group=tracker.service.target_group,
         database=tracker.database,
-        redis_cluster=shared.redis_cluster,
         env=env,
     )
     monitoring.add_dependency(tracker)
@@ -396,7 +376,7 @@ class MonitoringStackTest(unittest.TestCase):
 
         shared_parameter_names = {
             resource["Properties"]["Name"]
-            for resource in _shared_template(PROD).find_resources("AWS::SSM::Parameter").values()
+            for resource in shared_template(PROD).find_resources("AWS::SSM::Parameter").values()
         }
         self.assertIn("/valkyrie/prod/shared/vpc-id", shared_parameter_names)
 
@@ -414,9 +394,9 @@ class MonitoringStackTest(unittest.TestCase):
             "repo:vals-ai/Valkyrie:environment:prod-external",
             json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"]),
         )
-        executor_template.has_resource_properties(
+        tracker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
-            {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-prod", "RetentionInDays": 365},
+            {"LogGroupName": f"{EXECUTOR_RUNNER_LOG_GROUP_NAME}-prod", "RetentionInDays": 365},
         )
         executor_template.resource_count_is("AWS::Scheduler::Schedule", 1)
 
@@ -661,124 +641,18 @@ class MonitoringStackTest(unittest.TestCase):
         attributes = load_balancer["Properties"].get("LoadBalancerAttributes", [])
         self.assertNotIn("access_logs.s3.enabled", {attribute["Key"] for attribute in attributes})
 
-    def test_redis_ingress_is_limited_to_tracker_and_executor_host(self) -> None:
-        for stage_name, environment in (
-            (BENCH, TEST_BENCH_ENV),
-            (DEV, TEST_DEV_ENV),
-            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
-        ):
-            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
-                shared_template = _shared_template(stage_name)
-                shared_security_groups = shared_template.find_resources("AWS::EC2::SecurityGroup")
-                redis_security_group = next(
-                    resource
-                    for resource in shared_security_groups.values()
-                    if resource["Properties"]["GroupDescription"] == "Security group for ElastiCache Redis"
-                )
-                self.assertNotIn("SecurityGroupIngress", redis_security_group["Properties"])
-                self.assertFalse(shared_template.find_resources("AWS::EC2::SecurityGroupIngress"))
-
-                tracker_template, executor_template, _ = service_templates(stage_name)
-                tracker_security_groups = tracker_template.find_resources("AWS::EC2::SecurityGroup")
-                tracker_security_group_id = next(
-                    logical_id
-                    for logical_id, resource in tracker_security_groups.items()
-                    if resource["Properties"]["GroupDescription"].endswith("TrackerService/Service/SecurityGroup")
-                )
-                redis_ingress = [
-                    resource["Properties"]
-                    for resource in tracker_template.find_resources("AWS::EC2::SecurityGroupIngress").values()
-                    if resource["Properties"].get("FromPort") == 6379 or resource["Properties"].get("ToPort") == 6379
-                ]
-                self.assertEqual(len(redis_ingress), 1)
-                ingress = redis_ingress[0]
-                self.assertEqual(
-                    {key: ingress[key] for key in ("Description", "FromPort", "IpProtocol", "ToPort")},
-                    {
-                        "Description": "Allow Tracker and ExecutorHost to connect to Redis",
-                        "FromPort": 6379,
-                        "IpProtocol": "tcp",
-                        "ToPort": 6379,
-                    },
-                )
-                self.assertNotIn("CidrIp", ingress)
-                self.assertIn("RedisSG", ingress["GroupId"]["Fn::ImportValue"])
-                self.assertEqual(
-                    ingress["SourceSecurityGroupId"],
-                    {"Fn::GetAtt": [tracker_security_group_id, "GroupId"]},
-                )
-
-                executor_service = next(iter(executor_template.find_resources("AWS::ECS::Service").values()))
-                executor_security_groups = executor_service["Properties"]["NetworkConfiguration"][
-                    "AwsvpcConfiguration"
-                ]["SecurityGroups"]
-                self.assertEqual(len(executor_security_groups), 1)
-                self.assertIn(tracker_security_group_id, json.dumps(executor_security_groups))
-
-                executor_security_groups_by_id = executor_template.find_resources("AWS::EC2::SecurityGroup")
-                control_security_group_id, control_security_group = next(
-                    (logical_id, resource)
-                    for logical_id, resource in executor_security_groups_by_id.items()
-                    if resource["Properties"]["GroupDescription"]
-                    == "No-ingress security group for executor-release control tasks"
-                )
-                self.assertNotEqual(control_security_group_id, tracker_security_group_id)
-                self.assertNotIn("SecurityGroupIngress", control_security_group["Properties"])
-                self.assertEqual(
-                    control_security_group["Properties"]["SecurityGroupEgress"],
-                    [
-                        {
-                            "CidrIp": "10.0.0.0/16",
-                            "Description": "Tracker RDS proxy",
-                            "FromPort": 5432,
-                            "IpProtocol": "tcp",
-                            "ToPort": 5432,
-                        },
-                        {
-                            "CidrIp": "10.0.0.0/16",
-                            "Description": "VPC DNS UDP",
-                            "FromPort": 53,
-                            "IpProtocol": "udp",
-                            "ToPort": 53,
-                        },
-                        {
-                            "CidrIp": "10.0.0.0/16",
-                            "Description": "VPC DNS TCP",
-                            "FromPort": 53,
-                            "IpProtocol": "tcp",
-                            "ToPort": 53,
-                        },
-                        {
-                            "CidrIp": "0.0.0.0/0",
-                            "Description": "AWS API endpoints",
-                            "FromPort": 443,
-                            "IpProtocol": "tcp",
-                            "ToPort": 443,
-                        },
-                    ],
-                )
-                self.assertNotIn("6379", json.dumps(control_security_group["Properties"]))
-
-                launch_parameter = next(
-                    resource
-                    for resource in executor_template.find_resources("AWS::SSM::Parameter").values()
-                    if resource["Properties"]["Name"].endswith("/executor-release/launch-config")
-                )
-                launch_config = json.dumps(launch_parameter["Properties"]["Value"])
-                self.assertIn(control_security_group_id, launch_config)
-                self.assertNotIn(tracker_security_group_id, launch_config)
-
     def test_release_test_owns_immutable_service_image_repositories(self) -> None:
-        release_template = _shared_template(RELEASE_TEST)
+        release_template = shared_template(RELEASE_TEST)
         repositories = release_template.find_resources("AWS::ECR::Repository")
         self.assertEqual(
             {resource["Properties"]["RepositoryName"] for resource in repositories.values()},
+            # The executor-host repository is retained for one deploy; see infra/shared.py.
             {"valkyrie/release-test/tracker", "valkyrie/release-test/executor-host"},
         )
         self.assertTrue(
             all(resource["Properties"]["ImageTagMutability"] == "IMMUTABLE" for resource in repositories.values())
         )
-        self.assertFalse(_shared_template(DEV).find_resources("AWS::ECR::Repository"))
+        self.assertFalse(shared_template(DEV).find_resources("AWS::ECR::Repository"))
 
     def test_release_roles_are_bound_to_stage_environments(self) -> None:
         for stage, role_name, expected_subject in (
@@ -799,7 +673,7 @@ class MonitoringStackTest(unittest.TestCase):
         with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=False):
             synthesized = json.dumps(service_templates(BENCH)[1].to_json())
         self.assertIn("tracker.executor.release_entrypoint", synthesized)
-        self.assertIn("ecs:UpdateTaskProtection", synthesized)
+        self.assertNotIn("ecs:UpdateTaskProtection", synthesized)
         self.assertIn("ecs:StopTask", synthesized)
         self.assertIn("ecs:UpdateService", synthesized)
 
@@ -838,116 +712,73 @@ class MonitoringStackTest(unittest.TestCase):
                 for environment in container.get("Environment", [])
             )
         )
-        self.assertTrue(
-            any(
-                resource["Properties"]["ServiceName"].endswith("-release-test")
-                for resource in executor_template.find_resources("AWS::ECS::Service").values()
-            )
-        )
+        self.assertFalse(executor_template.find_resources("AWS::ECS::Service"))
 
-    def test_release_test_managed_submissions_and_secret_access_match_dev(self) -> None:
-        with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(RELEASE_TEST)
+    def test_release_test_gateway_reaches_tracker_and_dispatch_runner_without_plaintext_token(self) -> None:
+        gateway_url = "https://gateway-canary.example"
+        secret_name = "valkyrie/release-test/gateway-control"
+        with mock.patch.dict(
+            os.environ,
+            {
+                **TEST_RELEASE_TEST_ENV,
+                "EXTERNAL_SERVICE_GATEWAY_URL": gateway_url,
+                "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS": "37",
+                "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN_SECRET_NAME": secret_name,
+            },
+            clear=True,
+        ):
+            tracker_template, _, _ = service_templates(RELEASE_TEST)
 
-        expected_environment = assertions.Match.array_with(
-            [
-                {"Name": "AWS_DEPLOYMENT_ROLE_ORG_IDS", "Value": TEST_MANAGED_ORG_ID},
-                {"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"},
-            ]
-        )
-        for template in (tracker_template, executor_template):
-            template.has_resource_properties(
-                "AWS::ECS::TaskDefinition",
-                {
-                    "ContainerDefinitions": assertions.Match.array_with(
-                        [assertions.Match.object_like({"Environment": expected_environment})]
-                    )
-                },
-            )
-
-        tracker_role_id = next(
-            logical_id
-            for logical_id, role in tracker_template.find_resources("AWS::IAM::Role").items()
-            if role["Properties"].get("RoleName") == "ValkyrieTrackerTaskRole-release-test"
-        )
-        tracker_secret_resources = [
-            statement["Resource"]
-            for policy in tracker_template.find_resources("AWS::IAM::Policy").values()
-            if {"Ref": tracker_role_id} in policy["Properties"].get("Roles", [])
-            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
-            if statement.get("Action") == "secretsmanager:GetSecretValue"
-        ]
-        self.assertTrue(
-            any(
-                f"secret:{TEST_TRACKER_SECRET_NAME_PREFIX}*" in json.dumps(resource)
-                for resource in tracker_secret_resources
-            )
-        )
-        self.assertFalse(any("secret:*" in json.dumps(resource) for resource in tracker_secret_resources))
-
-        executor_role_id = next(
-            logical_id
-            for logical_id, role in executor_template.find_resources("AWS::IAM::Role").items()
-            if role["Properties"].get("RoleName") == "ValkyrieExecutorTaskRole-release-test"
-        )
-        executor_secret_resources = [
-            statement["Resource"]
-            for policy in executor_template.find_resources("AWS::IAM::Policy").values()
-            if {"Ref": executor_role_id} in policy["Properties"].get("Roles", [])
-            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
-            if statement.get("Action") == "secretsmanager:GetSecretValue"
-        ]
-        self.assertTrue(
-            any(
-                f":{TEST_AWS_REGION}:{TEST_AWS_ACCOUNT}:secret:*" in json.dumps(resource)
-                for resource in executor_secret_resources
-            )
-        )
-
-    def test_executor_stack_owns_the_host_and_release_control(self) -> None:
-        with mock.patch.dict(os.environ, TEST_BENCH_ENV, clear=False):
-            _, executor_template, monitoring_template = service_templates(BENCH)
-        services = executor_template.find_resources("AWS::ECS::Service")
-        task_definitions = executor_template.find_resources("AWS::ECS::TaskDefinition")
-        scalable_targets = executor_template.find_resources("AWS::ApplicationAutoScaling::ScalableTarget")
-
-        self.assertEqual(len(services), 1)
+        task_definitions = tracker_template.find_resources("AWS::ECS::TaskDefinition")
         self.assertEqual(len(task_definitions), 2)
-        self.assertEqual(len(scalable_targets), 1)
-        executor_template.has_resource_properties(
-            "AWS::ECS::Service",
-            {"ServiceName": "ExecutorHost"},
-        )
-        executor_template.has_resource_properties(
-            "AWS::ECS::TaskDefinition",
-            {"Family": "ValkyrieExecutorRelease"},
-        )
+        for task in task_definitions.values():
+            container = task["Properties"]["ContainerDefinitions"][0]
+            environment = {entry["Name"]: entry["Value"] for entry in container["Environment"]}
+            self.assertEqual(environment["EXTERNAL_SERVICE_GATEWAY_URL"], gateway_url)
+            self.assertEqual(environment["EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS"], "37")
+            self.assertNotIn("EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", environment)
+            secrets = {entry["Name"]: entry["ValueFrom"] for entry in container["Secrets"]}
+            self.assertIn(secret_name, json.dumps(secrets["EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN"]))
+            execution_role_id = task["Properties"]["ExecutionRoleArn"]["Fn::GetAtt"][0]
+            policies = [
+                policy["Properties"]["PolicyDocument"]["Statement"]
+                for policy in tracker_template.find_resources("AWS::IAM::Policy").values()
+                if {"Ref": execution_role_id} in policy["Properties"].get("Roles", [])
+            ]
+            self.assertTrue(
+                any(
+                    secret_name in json.dumps(statement.get("Resource"))
+                    for statements in policies
+                    for statement in statements
+                    if "secretsmanager:GetSecretValue" in json.dumps(statement.get("Action"))
+                )
+            )
 
-        synthesized = json.dumps(executor_template.to_json())
-        self.assertIn('"STABLE_QUEUE_NAME", "Value": "valkyrie-stable"', synthesized)
-        self.assertNotIn("taskiq", synthesized)
-        self.assertNotIn("WorkerTaskDef", synthesized)
-        self.assertNotIn("WorkerService", synthesized)
-        self.assertNotIn("WorkerCpuScaling", synthesized)
-        protection_policies = [
-            policy
-            for policy in executor_template.find_resources("AWS::IAM::Policy").values()
-            if "ecs:UpdateTaskProtection" in json.dumps(policy)
-        ]
-        self.assertEqual(len(protection_policies), 2)
-
-        worker_log_group = executor_template.to_json()["Resources"]["WorkerLogGroup31FDBE4A"]
-        self.assertEqual(worker_log_group["DeletionPolicy"], "Retain")
-        self.assertEqual(worker_log_group["UpdateReplacePolicy"], "Retain")
-        self.assertNotIn("WorkerStack", json.dumps(monitoring_template.to_json()))
-
-    def test_monitoring_has_no_legacy_worker_alarm_or_widgets(self) -> None:
-        synthesized = json.dumps(_monitoring_template().to_json())
-
-        self.assertNotIn("WorkerServiceDownAlarm", synthesized)
-        self.assertNotIn("Valkyrie-Worker", synthesized)
-        self.assertNotIn("Worker Running Tasks", synthesized)
-        self.assertNotIn("Worker CPU / Memory", synthesized)
+    def test_gateway_settings_remain_absent_outside_configured_release_test(self) -> None:
+        for stage, stage_environment in (
+            (DEV, TEST_DEV_ENV),
+            (BENCH, TEST_BENCH_ENV),
+            (PROD, TEST_PROD_ENV),
+            (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
+        ):
+            with self.subTest(stage=stage), mock.patch.dict(
+                os.environ,
+                {
+                    **stage_environment,
+                    **({} if stage == RELEASE_TEST else {"EXTERNAL_SERVICE_GATEWAY_URL": "https://gateway-canary.example"}),
+                    "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS": "37",
+                    "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN_SECRET_NAME": "valkyrie/release-test/gateway-control",
+                },
+                clear=True,
+            ):
+                tracker_template, _, _ = service_templates(stage)
+            for task in tracker_template.find_resources("AWS::ECS::TaskDefinition").values():
+                container = task["Properties"]["ContainerDefinitions"][0]
+                environment_names = {entry["Name"] for entry in container["Environment"]}
+                secret_names = {entry["Name"] for entry in container["Secrets"]}
+                self.assertNotIn("EXTERNAL_SERVICE_GATEWAY_URL", environment_names)
+                self.assertNotIn("EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS", environment_names)
+                self.assertNotIn("EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN", secret_names)
 
     def test_alerts_topic_is_wired_to_slack(self) -> None:
         with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
@@ -967,7 +798,7 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_deployment_notifications_are_wired_to_deployment_slack_channel(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEPLOYMENT_SLACK_ENV, clear=True):
-            template = _shared_template()
+            template = shared_template()
 
         template.has_resource_properties(
             "AWS::Chatbot::SlackChannelConfiguration",
@@ -1004,7 +835,7 @@ class MonitoringStackTest(unittest.TestCase):
     def test_missing_slack_environment_skips_deployment_notification_resources(self) -> None:
         for env in ({}, {SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE"}, TEST_ALERTS_SLACK_ENV):
             with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
-                template = _shared_template()
+                template = shared_template()
 
                 self.assertFalse(
                     _has_resource_property(
@@ -1061,7 +892,7 @@ class MonitoringStackTest(unittest.TestCase):
 
     def test_dev_stage_wires_stage_config_to_resources(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
-            tracker_template, executor_template, _ = service_templates(DEV)
+            tracker_template, _, _ = service_templates(DEV)
         with mock.patch.dict(os.environ, {**TEST_DEV_ENV, **TEST_ALERTS_SLACK_ENV}, clear=True):
             monitoring_template = _monitoring_template(DEV)
 
@@ -1077,33 +908,6 @@ class MonitoringStackTest(unittest.TestCase):
             "AWS::ApplicationAutoScaling::ScalableTarget",
             {"MinCapacity": DEV_CONFIG.tracker.min_tasks, "MaxCapacity": DEV_CONFIG.tracker.max_tasks},
         )
-        executor_template.has_resource_properties(
-            "AWS::ECS::Service",
-            {"DesiredCount": DEV_CONFIG.worker.min_tasks},
-        )
-        executor_template.has_resource_properties(
-            "AWS::ApplicationAutoScaling::ScalableTarget",
-            {"MinCapacity": DEV_CONFIG.worker.min_tasks, "MaxCapacity": DEV_CONFIG.worker.max_tasks},
-        )
-        executor_template.has_resource_properties(
-            "AWS::Logs::LogGroup",
-            {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-dev", "RetentionInDays": 7},
-        )
-        worker_log_group = executor_template.to_json()["Resources"]["WorkerLogGroup31FDBE4A"]
-        self.assertEqual(worker_log_group["DeletionPolicy"], "Retain")
-        self.assertEqual(worker_log_group["UpdateReplacePolicy"], "Retain")
-        worker_policies = executor_template.find_resources("AWS::IAM::Policy")
-        executor_host_policies = [
-            policy
-            for logical_id, policy in worker_policies.items()
-            if logical_id.startswith("ExecutorTaskRoleDefaultPolicy")
-        ]
-        self.assertEqual(len(executor_host_policies), 1)
-        executor_host_policy = json.dumps(executor_host_policies[0])
-        self.assertIn("s3:GetObject", executor_host_policy)
-        self.assertIn("releases/*", executor_host_policy)
-        for forbidden_action in ("s3:GetObject*", "s3:GetBucket*", "s3:List*"):
-            self.assertNotIn(forbidden_action, executor_host_policy)
         monitoring_template.has_resource_properties(
             "AWS::CloudWatch::Alarm",
             {"AlarmName": "Valkyrie-DB-Connections-High-dev", "Threshold": 65},
@@ -1138,10 +942,9 @@ class MonitoringStackTest(unittest.TestCase):
         ):
             environment = _stage_environment(stage_name)
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
-                tracker_template, executor_template, _ = service_templates(stage_name)
+                tracker_template, _, _ = service_templates(stage_name)
 
                 expected_env = [
-                    {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
                     {"Name": "ENVIRONMENT", "Value": expected_environment},
                     {"Name": "SENTRY_ENVIRONMENT", "Value": expected_sentry_environment},
                     {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
@@ -1149,7 +952,7 @@ class MonitoringStackTest(unittest.TestCase):
                 tracker_env = assertions.Match.array_with(
                     [*expected_env, {"Name": "SANDBOX_QUEUE_ENABLED", "Value": "false"}]
                 )
-                worker_env = assertions.Match.array_with(expected_env)
+                runner_env = assertions.Match.array_with(expected_env)
                 tracker_template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
                     {
@@ -1158,12 +961,13 @@ class MonitoringStackTest(unittest.TestCase):
                         )
                     },
                 )
-                executor_template.has_resource_properties(
+                tracker_template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
                     {
+                        "Family": Stage(stage_name).phys("ExecutorRunner"),
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": worker_env})]
-                        )
+                            [assertions.Match.object_like({"Environment": runner_env})]
+                        ),
                     },
                 )
 
@@ -1334,9 +1138,9 @@ class MonitoringStackTest(unittest.TestCase):
             "SENTRY_RELEASE": "deployment-sha",
         }
         with mock.patch.dict(os.environ, sentry_environment, clear=True):
-            tracker_template, executor_template, _ = service_templates(DEV)
+            tracker_template, _, _ = service_templates(DEV)
 
-        for template in (tracker_template, executor_template):
+        for template in (tracker_template,):
             template.has_resource_properties(
                 "AWS::ECS::TaskDefinition",
                 {
@@ -1373,32 +1177,9 @@ class MonitoringStackTest(unittest.TestCase):
                 )
             },
         )
-        executor_template.has_resource_properties(
-            "AWS::ECS::TaskDefinition",
-            {
-                "ContainerDefinitions": assertions.Match.array_with(
-                    [
-                        assertions.Match.object_like(
-                            {
-                                "Environment": assertions.Match.array_with(
-                                    [
-                                        assertions.Match.object_like(
-                                            {
-                                                "Name": "SENTRY_RELEASE",
-                                                "Value": assertions.Match.string_like_regexp("executor-host@.+"),
-                                            }
-                                        )
-                                    ]
-                                )
-                            }
-                        )
-                    ]
-                )
-            },
-        )
         sentry_value_from = [
             secret["ValueFrom"]
-            for template in (tracker_template, executor_template)
+            for template in (tracker_template,)
             for task_definition in template.find_resources("AWS::ECS::TaskDefinition").values()
             for container in task_definition["Properties"]["ContainerDefinitions"]
             for secret in container.get("Secrets", [])

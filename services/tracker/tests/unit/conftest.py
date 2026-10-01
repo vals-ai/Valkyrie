@@ -1,5 +1,6 @@
 """Shared fixtures for tracker unit tests."""
 
+import base64
 import os
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
@@ -18,11 +19,12 @@ from benchmark_service.schemas import (
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
-from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
+from tests.unit.utils.task_execution_support import MockLauncher, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
-from tracker.database.models import Org
+from tracker.database.models import ExecutorDispatch, ExecutorDispatchPayload, Org
 from tracker.database.session import get_session
+from tracker.executor.dispatch_payload import SealedPayload, open_payload
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
@@ -173,7 +175,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
     if cast(ModuleType, request.module).__name__ == "tests.unit.aws.test_clients":
         return
 
-    def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     def _mock_write(*_args: Any, **_kwargs: Any) -> None:
@@ -187,7 +189,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
 
 @pytest.fixture(autouse=True)
 def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    def get(_self: object, _name: str) -> dict[str, str]:
+    async def get(_self: object, _name: str) -> dict[str, str]:
         return {
             "DAYTONA_API_KEY": "test-key",
             "DAYTONA_API_URL": "http://localhost:8001",
@@ -196,13 +198,6 @@ def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get)
-
-    async def get_async(self: object, name: str) -> object:
-        from tracker.aws.secrets import SecretsManagerStore
-
-        return SecretsManagerStore.get(cast(SecretsManagerStore, self), name)
-
-    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get_async", get_async)
 
 
 @pytest.fixture(autouse=True)
@@ -222,11 +217,32 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_kicker(monkeypatch: pytest.MonkeyPatch) -> MockKicker:
-    """Record queued benchmark work without starting the broker."""
-    kicker = MockKicker()
-    monkeypatch.setattr("main.process_benchmark.kicker", lambda: kicker)
-    return kicker
+def mock_launcher(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> MockLauncher:
+    """Capture committed dispatch inputs without starting a runner."""
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
+    monkeypatch.delenv("EXECUTOR_PAYLOAD_KMS_KEY_ID", raising=False)
+    launcher = MockLauncher()
+
+    async def launch(dispatch: ExecutorDispatch) -> None:
+        with Session(database_session.get_bind()) as session:
+            row = session.get(ExecutorDispatchPayload, dispatch.id)
+            assert row is not None
+            payload = open_payload(
+                dispatch.id,
+                SealedPayload(row.ciphertext, row.encrypted_data_key, row.nonce),
+            )
+            payload.update(
+                executor_dispatch_id=str(dispatch.id),
+                executor_release_id=dispatch.executor_release_id,
+                executor_artifact_uri=dispatch.executor_artifact_uri,
+                executor_artifact_digest=dispatch.executor_artifact_digest,
+                executor_protocol_version=dispatch.executor_protocol_version,
+            )
+            launcher.record(payload)
+
+    monkeypatch.setattr("main.launch_dispatch", launch)
+    return launcher
 
 
 @pytest.fixture

@@ -16,6 +16,7 @@ import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID, random_task_id
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import SecretsManagerStore
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
@@ -138,7 +139,7 @@ class TestForceStop:
             org=Org(id=TEST_ORG_ID, name="default"),
         )
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(
+        provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
         provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -157,10 +158,12 @@ class TestForceStop:
             try:
                 await force_stop_sandboxes(
                     example_benchmark_object,
-                    daytona_secret_name,
-                    aws_runtime,
+                    CloudRuntimeFactory.create_runtime(
+                        aws_runtime,
+                        sandbox_provider="daytona",
+                        sandbox_provider_secret_name=daytona_secret_name,
+                    ),
                     Org(id=TEST_ORG_ID, name="default"),
-                    sandbox_provider="daytona",
                 )
             finally:
                 release_sandbox.set()
@@ -220,7 +223,7 @@ class TestForceStop:
         database_session.add(example_benchmark_object)
         database_session.commit()
         aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(
+        provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
         provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -279,10 +282,12 @@ class TestForceStop:
             await _wait_for_sandbox_setup(all_sandboxes_created, sandbox_creation_failed)
             await force_stop_sandboxes(
                 example_benchmark_object,
-                daytona_secret_name,
-                aws_runtime,
+                CloudRuntimeFactory.create_runtime(
+                    aws_runtime,
+                    sandbox_provider="daytona",
+                    sandbox_provider_secret_name=daytona_secret_name,
+                ),
                 Org(id=TEST_ORG_ID, name="default"),
-                sandbox_provider="daytona",
             )
         finally:
             release_sandboxes.set()
@@ -349,7 +354,7 @@ class TestForceStop:
                 )
             )
 
-            provider_config = fetch_sandbox_provider_config(
+            provider_config = await fetch_sandbox_provider_config(
                 daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
             )
             provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -402,10 +407,12 @@ class TestForceStop:
                 if provider is not None and await _sandboxes_for_benchmark(example_benchmark_object, provider):
                     await force_stop_sandboxes(
                         example_benchmark_object,
-                        daytona_secret_name,
-                        aws_runtime,
+                        CloudRuntimeFactory.create_runtime(
+                            aws_runtime,
+                            sandbox_provider="daytona",
+                            sandbox_provider_secret_name=daytona_secret_name,
+                        ),
                         Org(id=TEST_ORG_ID, name="default"),
-                        sandbox_provider="daytona",
                     )
                     await _wait_until_no_sandboxes(example_benchmark_object, provider)
             finally:

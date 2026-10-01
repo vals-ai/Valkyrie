@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 
 import main as main_module
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
-from tests.unit.utils.task_execution_support import MockKicker
+from tests.unit.utils.task_execution_support import MockLauncher
 from tests.utils import TEST_ORG_ID
 from tracker.auth import get_current_org
 from tracker.database.models import (
@@ -103,7 +103,7 @@ async def test_verification_releases_transactions_and_admission_for_other_reques
     monkeypatch: pytest.MonkeyPatch,
     harness_headers: dict[str, str],
     harness_config: HarnessConfig,
-    mock_kicker: MockKicker,
+    mock_launcher: MockLauncher,
 ) -> None:
     benchmark, _ = recovery_run
     url = f"/retry-or-resume-benchmark/{benchmark.id}"
@@ -140,7 +140,7 @@ async def test_verification_releases_transactions_and_admission_for_other_reques
         response = responses[0]
         assert isinstance(response, httpx.Response)
         assert response.status_code == (409 if contender == "retry" else 200), response.text
-        assert len(mock_kicker.queued_calls) == (1 if contender == "retry" else 2)
+        assert len(mock_launcher.queued_calls) == (1 if contender == "retry" else 2)
         assert all(not session.in_transaction() for session, _ in observed_sessions)
 
 
@@ -152,7 +152,7 @@ async def test_blocking_admission_wait_does_not_block_health(
     monkeypatch: pytest.MonkeyPatch,
     harness_headers: dict[str, str],
     harness_config: HarnessConfig,
-    mock_kicker: MockKicker,
+    mock_launcher: MockLauncher,
 ) -> None:
     benchmark, _ = recovery_run
     entered, release = threading.Event(), threading.Event()
@@ -187,7 +187,7 @@ async def test_blocking_admission_wait_does_not_block_health(
         response = responses[0]
         assert isinstance(response, httpx.Response)
         assert response.status_code == 200, response.text
-        assert len(mock_kicker.queued_calls) == 1
+        assert len(mock_launcher.queued_calls) == 1
         assert all(not session.in_transaction() for session, _ in observed_sessions)
 
 
@@ -235,7 +235,7 @@ async def test_cancellation_during_commit_observes_outcome_before_propagating(
 
     monkeypatch.setattr(main_module, commit_name, blocked_commit)
     monkeypatch.setattr(main_module, "_rollback_failed_start_admission", cleanup_failed_start)
-    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
     body = {} if operation == "retry" else _start_body(benchmark, harness_config)
@@ -299,7 +299,7 @@ async def test_start_cancellation_enqueues_after_bind_failure_and_chains_cause(
     monkeypatch.setattr(main_module, "_commit_start", blocked_commit)
     monkeypatch.setattr(main_module, "bind_benchmark_id", fail_bind)
     monkeypatch.setattr(main_module.logger, "exception", bind_failure_log)
-    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     body = _start_body(benchmark, harness_config)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main_module.app), base_url="http://test") as client:
@@ -345,7 +345,7 @@ async def test_cancellation_during_enqueue_waits_for_completion(
     async def verify(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=["task_0"])
 
-    monkeypatch.setattr(main_module, "_enqueue_executor_dispatch", enqueue)
+    monkeypatch.setattr(main_module, "_launch_executor_dispatch", enqueue)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify)
     url = f"/retry-or-resume-benchmark/{benchmark.id}" if operation == "retry" else "/start-benchmark"
     body = {} if operation == "retry" else _start_body(benchmark, harness_config)
@@ -372,7 +372,7 @@ async def test_recovery_rechecks_verified_state_before_mutating_or_dispatching(
     observed_sessions: list[tuple[Session, int]],
     monkeypatch: pytest.MonkeyPatch,
     harness_headers: dict[str, str],
-    mock_kicker: MockKicker,
+    mock_launcher: MockLauncher,
 ) -> None:
     benchmark, task = recovery_run
     benchmark_id, task_id = benchmark.id, task.id
@@ -457,14 +457,14 @@ async def test_recovery_rechecks_verified_state_before_mutating_or_dispatching(
                     "REQUEST_SECRET": "new",
                 }
                 assert persisted_run.label == "concurrent-label"
-                payload = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+                payload = mock_launcher.queued_calls[0]["start_benchmark_request_json"]
                 assert payload["concurrency"] == 9
                 assert payload["contract"]["secrets"] == persisted_run.arguments.contract.secrets
-                assert len(mock_kicker.queued_calls) == 1
+                assert len(mock_launcher.queued_calls) == 1
             else:
                 assert persisted_run.model_dump(mode="json") == expected_run
                 assert persisted_task.model_dump(mode="json") == expected_task
                 assert [
                     row.model_dump(mode="json") for row in checked.exec(select(ExecutorDispatch)).all()
                 ] == expected_dispatches
-                assert mock_kicker.queued_calls == []
+                assert mock_launcher.queued_calls == []
