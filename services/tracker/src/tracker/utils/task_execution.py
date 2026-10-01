@@ -78,6 +78,7 @@ from tracker.sandbox import (
     runtime_sandbox,
     upload_agent_artifacts,
 )
+from tracker.conversation import companion_turn, run_conversation
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
 from tracker.scheduler.store import PostgresAdvisoryLock, task_evaluation_lock
 from tracker.types import (
@@ -1200,19 +1201,47 @@ async def _process_task_attempt(
 
                 if not unrestricted_docker:
                     await apply_egress_policy(agent_sandbox, run_egress_policy)
-                exit_reason, agent_run_time = await run_agent(
-                    agent_sandbox,
-                    start_benchmark_request.contract,
-                    task_data.problem_path,
-                    task_id,
-                    log_output,
-                    task_data.cwd,
-                    object_store=object_store,
-                    agent_output_s3_key=agent_output_s3_key,
-                    agent_timeout=task_data.agent_timeout,
-                    benchmark_id=str(benchmark_id),
-                    execution_is_current=execution_is_current,
-                )
+                async def run_one_turn(timeout: float | None) -> tuple[AgentCausedExitReason | None, float]:
+                    return await run_agent(
+                        agent_sandbox,
+                        start_benchmark_request.contract,
+                        task_data.problem_path,
+                        task_id,
+                        log_output,
+                        task_data.cwd,
+                        object_store=object_store,
+                        agent_output_s3_key=agent_output_s3_key,
+                        agent_timeout=timeout,
+                        benchmark_id=str(benchmark_id),
+                        execution_is_current=execution_is_current,
+                    )
+
+                conversation = start_benchmark_request.contract.conversation
+                if conversation is None:
+                    exit_reason, agent_run_time = await run_one_turn(task_data.agent_timeout)
+                else:
+                    # The same sandbox and installed agent own all turns. Final
+                    # grading below remains the benchmark's ordinary verifier.
+                    async def next_user(payload: dict[str, Any]):
+                        return await companion_turn(benchmark_service, payload)
+
+                    if task_data.agent_timeout is not None:
+                        conversation = conversation.model_copy(update={
+                            "timeout_seconds": min(conversation.timeout_seconds, task_data.agent_timeout),
+                        })
+                    exit_reason, agent_run_time = await run_conversation(
+                        sandbox=agent_sandbox, config=conversation,
+                        problem_path=task_data.problem_path,
+                        context={
+                            "run_id": str(benchmark_id), "task_id": task_row.task_id,
+                            "dataset": start_benchmark_request.dataset,
+                            "sandbox_id": sandbox.id,
+                        },
+                        store=object_store,
+                        artifact_prefix=task_artifact_key(str(benchmark_id), task_id, "conversation"),
+                        next_user=next_user, agent_turn=run_one_turn,
+                        execution_is_current=execution_is_current,
+                    )
                 logger.info(
                     "agent.run.complete",
                     extra={

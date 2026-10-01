@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError, create_model, field_validator, 
 
 from tracker.database.models import OutputArtifact, OutputArtifactSpec
 from tracker.egress import EgressPolicy
+from tracker.conversation import ConversationConfig
 from tracker.exceptions import ContractValidationError
 
 
@@ -64,6 +65,7 @@ class AgentContract(BaseModel):
     """Declarative YAML agent contract."""
 
     name: str
+    conversation: ConversationConfig | None = None
     install_cmd: str
     final_output: Path | None = None
     output_artifacts: list[OutputArtifactSpec] = []

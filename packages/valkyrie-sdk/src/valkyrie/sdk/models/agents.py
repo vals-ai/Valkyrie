@@ -55,10 +55,18 @@ OutputArtifactSpec = str | OutputArtifact
 EgressPolicy = Literal["*"] | list[str]
 
 
+class ConversationConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+    protocol: Literal["valkyrie.conversation.v1"] = "valkyrie.conversation.v1"
+    max_turns: int = Field(default=3, ge=1, le=20)
+    timeout_seconds: int = Field(default=1800, ge=1, le=14400)
+
+
 class AgentContractRequest(BaseModel):
     """Agent definition submitted when starting a run."""
 
     name: str
+    conversation: ConversationConfig | None = None
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""

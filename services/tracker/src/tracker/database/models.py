@@ -37,6 +37,7 @@ from tracker.aws.runtime import AWSResources
 from tracker.local.resources import LocalResources
 from tracker.database.utils import has_field_changed
 from tracker.egress import EgressPolicy
+from tracker.conversation import ConversationConfig
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
 if TYPE_CHECKING:
@@ -157,6 +158,7 @@ OutputArtifactSpec = str | OutputArtifact
 
 class AgentContractRequest(BaseModel):
     name: str
+    conversation: ConversationConfig | None = None
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""

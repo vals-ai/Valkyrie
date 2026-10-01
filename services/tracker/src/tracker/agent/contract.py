@@ -76,6 +76,7 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
 
         return AgentContractRequest(
             name=agent_contract.name,
+            conversation=agent_contract.conversation,
             model=agent_config.model,
             # Preserve the validated values independently of the rendered
             # command. Trusted benchmark setup may need selected non-secret
