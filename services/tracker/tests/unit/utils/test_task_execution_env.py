@@ -595,7 +595,10 @@ class TestProcessTaskEnvironment:
             database_session.add(task_row)
             database_session.commit()
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
+            update={
+                "agent_timeout": 10.0,
+                "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
+            }
         )
         create_session = AsyncMock()
         observed: list[tuple[CreditedGeneration, Any]] = []
@@ -639,7 +642,12 @@ class TestProcessTaskEnvironment:
     ) -> None:
         contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
         request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
-        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)})
+        response = make_retrieve_task_response().model_copy(
+            update={
+                "agent_timeout": 10.0,
+                "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
+            }
+        )
         teardown_complete = asyncio.Event()
 
         @asynccontextmanager
@@ -740,7 +748,10 @@ class TestProcessTaskEnvironment:
             contract, database_session, harness_config
         )
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
+            update={
+                "agent_timeout": 10.0,
+                "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
+            }
         )
         create_session = AsyncMock()
         create_sandbox = Mock()
@@ -784,7 +795,10 @@ class TestProcessTaskEnvironment:
             contract, database_session, harness_config
         )
         task_response = make_retrieve_task_response().model_copy(
-            update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
+            update={
+                "agent_timeout": 10.0,
+                "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
+            }
         )
         create_sandbox = Mock()
         create_session = AsyncMock(

@@ -128,7 +128,9 @@ async def test_source_release_child_enforces_selected_generation_deadline(
     monkeypatch.setenv("CONTROLLED_PROBE_RESULT", str(result_path))
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(probe_dir), str(source_root))))
     monkeypatch.setenv("SENTRY_DSN", "")
-    supervisor = runner.ExecutorSupervisor(tmp_path / "cache", source_root=source_root, python_executable=sys.executable)
+    supervisor = runner.ExecutorSupervisor(
+        tmp_path / "cache", source_root=source_root, python_executable=sys.executable
+    )
     artifact = await supervisor.prepare_artifact(dispatch)
     assert artifact == source_root
 

@@ -761,15 +761,22 @@ class MonitoringStackTest(unittest.TestCase):
             (PROD, TEST_PROD_ENV),
             (RELEASE_TEST, TEST_RELEASE_TEST_ENV),
         ):
-            with self.subTest(stage=stage), mock.patch.dict(
-                os.environ,
-                {
-                    **stage_environment,
-                    **({} if stage == RELEASE_TEST else {"EXTERNAL_SERVICE_GATEWAY_URL": "https://gateway-canary.example"}),
-                    "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS": "37",
-                    "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN_SECRET_NAME": "valkyrie/release-test/gateway-control",
-                },
-                clear=True,
+            with (
+                self.subTest(stage=stage),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        **stage_environment,
+                        **(
+                            {}
+                            if stage == RELEASE_TEST
+                            else {"EXTERNAL_SERVICE_GATEWAY_URL": "https://gateway-canary.example"}
+                        ),
+                        "EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS": "37",
+                        "EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN_SECRET_NAME": "valkyrie/release-test/gateway-control",
+                    },
+                    clear=True,
+                ),
             ):
                 tracker_template, _, _ = service_templates(stage)
             for task in tracker_template.find_resources("AWS::ECS::TaskDefinition").values():

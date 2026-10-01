@@ -872,7 +872,12 @@ class TestTaskExecutionRetry:
     ) -> None:
         contract = contract.model_copy(update={"model": None, "inference_settings_attested": False})
         request, task_row, benchmark_id, authority = create_task_environment(contract, database_session, harness_config)
-        response = make_retrieve_task_response().model_copy(update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)})
+        response = make_retrieve_task_response().model_copy(
+            update={
+                "agent_timeout": 10.0,
+                "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
+            }
+        )
         saved_state = {"artifact_prefix": "s3://bucket/run"}
         resume_started = asyncio.Event()
 
@@ -954,7 +959,10 @@ class TestTaskExecutionRetry:
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             response = make_retrieve_task_response(problem_path="/tmp/problem.txt").model_copy(
-                update={"agent_timeout": 10.0, "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None)}
+                update={
+                    "agent_timeout": 10.0,
+                    "credited_generation": CreditedGeneration(allowance_seconds=10.0, stage_protocol=None),
+                }
             )
             response.sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=3)
             return response

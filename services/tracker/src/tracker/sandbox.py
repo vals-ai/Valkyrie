@@ -148,8 +148,12 @@ class _StageOutput:
             try:
                 message = json.loads(payload)
                 seq, event, container = message["seq"], message["event"], message["container"]
-                if (type(seq) is not int or seq < 1 or event not in ("begin", "end")
-                    or (container is not None and not isinstance(container, str))):
+                if (
+                    type(seq) is not int
+                    or seq < 1
+                    or event not in ("begin", "end")
+                    or (container is not None and not isinstance(container, str))
+                ):
                     raise ValueError("Invalid stage frame")
             except (ValueError, KeyError, TypeError) as error:
                 raise ControlledGenerationError("Invalid authenticated stage frame") from error
@@ -944,7 +948,12 @@ async def _stream_controlled_output(
                     await disarm()
                     await finish_output()
                     continue
-            if wait_task.done() and output_task.done() and not pending_acks and (stage is None or (stage.frames.empty() and event_task is not None and not event_task.done())):
+            if (
+                wait_task.done()
+                and output_task.done()
+                and not pending_acks
+                and (stage is None or (stage.frames.empty() and event_task is not None and not event_task.done()))
+            ):
                 completed = await completed_result()
                 await finish_output()
                 await disarm()
@@ -988,10 +997,12 @@ async def _stream_controlled_output(
                 await finish_output()
             if stage is None and wait_task.done() and output_task.done():
                 continue
-            if event_task is not None and event_task in done and not (
-                deadline_task is not None
-                and deadline_task in done
-                and event_task.result().received_at > deadline
+            if (
+                event_task is not None
+                and event_task in done
+                and not (
+                    deadline_task is not None and deadline_task in done and event_task.result().received_at > deadline
+                )
             ):
                 frame = event_task.result()
                 assert stage is not None
@@ -1042,7 +1053,9 @@ async def _stream_controlled_output(
                         frozen = await controller.begin_arbitration()
                     if stage is None and wait_task.done():
                         completed = await completed_result()
-                        if controller.elapsed_seconds(completed.absence_confirmed_at) < controller.effective_allowance_seconds(frozen):
+                        if controller.elapsed_seconds(
+                            completed.absence_confirmed_at
+                        ) < controller.effective_allowance_seconds(frozen):
                             async with asyncio.timeout_at(arbitration_deadline):
                                 await controller.resolve(ArbitrationDecision.SEAL)
                             arbitration_pending = False
@@ -1493,7 +1506,9 @@ async def run_agent(
         raise
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
-        timeout_limit = task_credited_generation.allowance_seconds if task_credited_generation is not None else agent_timeout
+        timeout_limit = (
+            task_credited_generation.allowance_seconds if task_credited_generation is not None else agent_timeout
+        )
         log_output(
             f"[WARNING]:`{contract.name}` has reached the designated generation allowance for this task: `{timeout_limit}`. The process has been terminated and evaluation will proceed."
         )

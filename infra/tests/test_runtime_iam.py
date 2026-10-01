@@ -635,7 +635,6 @@ class RuntimeIamTest(unittest.TestCase):
                         ],
                     )
 
-
     def test_release_test_preserves_managed_runtime_and_runner_account_secret_access(self) -> None:
         with mock.patch.dict(os.environ, TEST_RELEASE_TEST_ENV, clear=True):
             tracker_template, _, _ = service_templates(RELEASE_TEST)
@@ -648,17 +647,25 @@ class RuntimeIamTest(unittest.TestCase):
                     {
                         "TaskRoleArn": {"Fn::GetAtt": [role_id, "Arn"]},
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": assertions.Match.array_with(
-                                [{"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"}]
-                            )})]
+                            [
+                                assertions.Match.object_like(
+                                    {
+                                        "Environment": assertions.Match.array_with(
+                                            [{"Name": "AWS_MANAGED_SUBMISSIONS_ENABLED", "Value": "true"}]
+                                        )
+                                    }
+                                )
+                            ]
                         ),
                     },
                 )
-                secret_resources = json.dumps([
-                    statement["Resource"]
-                    for statement in _role_policy_statements(tracker_template, role_id)
-                    if _statement_actions(statement) == {"secretsmanager:GetSecretValue"}
-                ])
+                secret_resources = json.dumps(
+                    [
+                        statement["Resource"]
+                        for statement in _role_policy_statements(tracker_template, role_id)
+                        if _statement_actions(statement) == {"secretsmanager:GetSecretValue"}
+                    ]
+                )
                 if role_name.startswith("ValkyrieExecutor"):
                     self.assertIn(f":{TEST_AWS_REGION}:{TEST_AWS_ACCOUNT}:secret:*", secret_resources)
                 else:
