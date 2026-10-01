@@ -262,16 +262,13 @@ class ExecutorStack(Stack):
         stage: Stage,
         log_retention: aws_logs.RetentionDays,
     ) -> None:
+        # The schedule deploys disabled unless the SANDBOX_CLEANUP_ENABLED variable is exactly "true".
         cleanup_enabled = os.environ.get("SANDBOX_CLEANUP_ENABLED") == "true"
         cleanup_provider = os.environ.get("SANDBOX_CLEANUP_PROVIDER") or "daytona"
         configured_cleanup_secret_name = os.environ.get("SANDBOX_CLEANUP_SECRET_NAME") or ""
         if cleanup_enabled and not configured_cleanup_secret_name:
             raise ValueError("Sandbox cleanup requires SANDBOX_CLEANUP_SECRET_NAME.")
         cleanup_secret_name = configured_cleanup_secret_name or SANDBOX_CLEANUP_SECRET_NAME
-        # SANDBOX_CLEANUP_SECRET_NAME may list several provider secrets, one per sandbox account, separated by commas.
-        cleanup_secret_names = list(
-            dict.fromkeys(name.strip() for name in cleanup_secret_name.split(",") if name.strip())
-        )
 
         cleanup_log_group = aws_logs.LogGroup(
             self,
@@ -280,14 +277,11 @@ class ExecutorStack(Stack):
             retention=log_retention,
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
-        cleanup_credentials = [
-            aws_secretsmanager.Secret.from_secret_name_v2(
-                self,
-                "SandboxCleanupCredentials" if index == 0 else f"SandboxCleanupCredentials{index + 1}",
-                secret_name,
-            )
-            for index, secret_name in enumerate(cleanup_secret_names)
-        ]
+        cleanup_credentials = aws_secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "SandboxCleanupCredentials",
+            cleanup_secret_name,
+        )
         cleanup_dlq = aws_sqs.Queue(
             self,
             "SandboxCleanupDlq",
@@ -325,8 +319,7 @@ class ExecutorStack(Stack):
                 aws_lambda_destinations.SqsDestination(cleanup_dlq),
             ),
         )
-        for credentials in cleanup_credentials:
-            credentials.grant_read(cleanup_function)
+        cleanup_credentials.grant_read(cleanup_function)
 
         cleanup_target = aws_scheduler_targets.LambdaInvoke(
             cast(aws_lambda.IFunction, cleanup_function),
