@@ -1,3 +1,5 @@
+"""Behavioral tests for provider-neutral artifact policy."""
+
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast

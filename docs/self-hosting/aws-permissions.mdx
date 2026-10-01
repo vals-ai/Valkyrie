@@ -13,5 +13,3 @@ Tracker and executor processes use their server IAM roles for artifact storage, 
 | Lambda (optional) | `lambda:InvokeFunction` | Configured post-run functions |
 
 Scope each server role to its configured buckets, log groups, functions, and secret names. The default sandbox-provider secret must match an allowed Tracker secret-name prefix.
-
-Commands that access S3 locally use the local AWS SDK default credential chain. Scope that local identity to the configured bucket; an AWS SSO profile can be selected with `AWS_PROFILE`.

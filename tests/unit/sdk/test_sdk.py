@@ -44,14 +44,14 @@ def load_sdk_fixture(name: str) -> dict[str, Any]:
 def test_config_loads_api_key_and_provider_defaults(tmp_path: Path) -> None:
     config_path = tmp_path / "valkyrie.yaml"
     config_path.write_text(
-        "api_key: vals-key\nsandbox_providers:\n  modal: ModalSecrets\ndefault_sandbox_provider: modal\n",
+        "api_key: vals-key\nsandbox_providers:\n  daytona: DaytonaSecret\ndefault_sandbox_provider: daytona\n",
         encoding="utf-8",
     )
 
     config = ValkyrieConfig.from_yaml(config_path)
 
     assert config.request_headers() == {"X-Api-Key": "vals-key"}
-    assert config.resolve_sandbox_provider() == ("modal", "ModalSecrets")
+    assert config.resolve_sandbox_provider() == ("daytona", "DaytonaSecret")
 
 
 def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_config) -> None:
@@ -74,7 +74,7 @@ api_key: vals-key
         sdk_config(environment="staging")
 
 
-def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config: SDKConfigFactory) -> None:
+def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> None:
     config = sdk_config()
 
     rendered_config = f"{config!r}\n{config.model_dump_json(by_alias=True)}"
@@ -244,8 +244,8 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert body["custom_benchmark_service"] == "https://local.swebench"
     assert body["service_headers"] == {"Authorization": "benchmark-token", "X-Custom": "explicit"}
     assert "harness_config" not in body
-    assert "sandbox_provider" not in body
-    assert "sandbox_provider_secret_name" not in body
+    assert body["sandbox_provider"] == "modal"
+    assert body["sandbox_provider_secret_name"] == "ModalSecret"
 
 
 async def test_start_uses_api_key_without_local_resources(make_client, sdk_config) -> None:
@@ -267,7 +267,7 @@ async def test_start_uses_api_key_without_local_resources(make_client, sdk_confi
             },
         )
 
-    config = sdk_config()
+    config = sdk_config(sandbox_providers={}, default_sandbox_provider=None)
     client = make_client(handler, config=config)
     async with client:
         await client.runs.start("sweagent", "swebench", ignore_custom_services=True)

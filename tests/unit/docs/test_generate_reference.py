@@ -55,13 +55,13 @@ _EXPECTED_CLI_PATHS = (
     "config init",
     "config set",
     "config remove",
-    "config service set",
-    "config service remove",
-    "config service list",
     "config provider set",
     "config provider default",
     "config provider remove",
     "config provider list",
+    "config service set",
+    "config service remove",
+    "config service list",
     "queue status",
 )
 _EXPECTED_RESOURCES = {

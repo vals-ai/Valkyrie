@@ -129,73 +129,6 @@ Task guidance: [Config guides](/get-started/configuration).
 
 ---
 
-## `valkyrie config service set` {#service-set}
-
-Set a custom URL for a benchmark service (creates or updates).
-
-```bash Syntax
-valkyrie config service set \
-  <NAME> \
-  <URL>
-```
-
-```bash Example
-# Example only, review before running
-valkyrie config service set \
-  swebench \
-  https://my-tunnel.ngrok.io
-```
-
-**Arguments**
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"NAME"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · <code>{"text"}</code></span></div>
-</div>
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"URL"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · <code>{"text"}</code></span></div>
-</div>
-
-Task guidance: [Config guides](/get-started/configuration).
-
----
-
-## `valkyrie config service remove` {#service-remove}
-
-Remove a custom URL override for a benchmark service.
-
-```bash Syntax
-valkyrie config service remove \
-  <NAME>
-```
-
-```bash Example
-# Example only, review before running
-valkyrie config service remove swebench
-```
-
-**Arguments**
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"NAME"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · <code>{"text"}</code></span></div>
-</div>
-
-Task guidance: [Config guides](/get-started/configuration).
-
----
-
-## `valkyrie config service list` {#service-list}
-
-List hosted and custom benchmark services.
-
-```bash Syntax
-valkyrie config service list
-```
-
-Task guidance: [Config guides](/get-started/configuration).
-
----
-
 ## `valkyrie config provider set` {#provider-set}
 
 Set a named sandbox provider secret.
@@ -281,6 +214,73 @@ List all configured sandbox providers.
 
 ```bash Syntax
 valkyrie config provider list
+```
+
+Task guidance: [Config guides](/get-started/configuration).
+
+---
+
+## `valkyrie config service set` {#service-set}
+
+Set a custom URL for a benchmark service (creates or updates).
+
+```bash Syntax
+valkyrie config service set \
+  <NAME> \
+  <URL>
+```
+
+```bash Example
+# Example only, review before running
+valkyrie config service set \
+  swebench \
+  https://my-tunnel.ngrok.io
+```
+
+**Arguments**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"NAME"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · <code>{"text"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"URL"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · <code>{"text"}</code></span></div>
+</div>
+
+Task guidance: [Config guides](/get-started/configuration).
+
+---
+
+## `valkyrie config service remove` {#service-remove}
+
+Remove a custom URL override for a benchmark service.
+
+```bash Syntax
+valkyrie config service remove \
+  <NAME>
+```
+
+```bash Example
+# Example only, review before running
+valkyrie config service remove swebench
+```
+
+**Arguments**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"NAME"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · <code>{"text"}</code></span></div>
+</div>
+
+Task guidance: [Config guides](/get-started/configuration).
+
+---
+
+## `valkyrie config service list` {#service-list}
+
+List hosted and custom benchmark services.
+
+```bash Syntax
+valkyrie config service list
 ```
 
 Task guidance: [Config guides](/get-started/configuration).

@@ -299,8 +299,8 @@ def start(
 
     try:
         TrackerService.validate_sandbox_provider(provider)
-    except TrackerServiceError as error:
-        raise click.ClickException(str(error)) from error
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
 
     service_headers = benchmark_service_headers(benchmark, headers)
 

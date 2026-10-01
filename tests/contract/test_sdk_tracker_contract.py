@@ -310,13 +310,13 @@ def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) 
     for priority in range(5):
         accepted = cast(
             StartBenchmarkRequest | SDKStartBenchmarkRequest,
-            model.model_validate({**payload, "priority": priority}),
+            model.model_validate({**payload, "sandbox_provider": "modal", "priority": priority}),
         )
         assert accepted.priority == priority
 
     for invalid in (False, True, "1", -1, 5):
         with pytest.raises(ValidationError):
-            model.model_validate({**payload, "priority": invalid})
+            model.model_validate({**payload, "sandbox_provider": "modal", "priority": invalid})
 
 
 async def test_sdk_start_matches_tracker_api_key_contract() -> None:

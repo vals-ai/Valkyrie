@@ -263,7 +263,7 @@ def test_cli_exports_tracker_results_without_private_contract_values(
 
 
 async def test_sdk_updates_persisted_concurrency(
-    seeded_runs: tuple[Benchmark, Benchmark], database_session: Session, local_tracker_app: FastAPI
+    seeded_runs: tuple[Benchmark, Benchmark], database_session: Session, local_tracker_app
 ) -> None:
     import httpx
     from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
@@ -281,11 +281,7 @@ async def test_sdk_updates_persisted_concurrency(
 
 
 def test_cli_downloads_run_artifacts_through_tracker(
-    cli_runner: CliRunner,
-    seeded_runs: tuple[Benchmark, Benchmark],
-    local_tracker_app: FastAPI,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark], local_tracker_app, monkeypatch, tmp_path: Path
 ) -> None:
     import httpx
     from unittest.mock import AsyncMock
@@ -298,10 +294,7 @@ def test_cli_downloads_run_artifacts_through_tracker(
     client.head_object.return_value = {"ContentLength": 6}
     client.generate_presigned_url.return_value = "https://download.test/artifact"
 
-    def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
-        return client
-
-    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+    monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", lambda _: client)
 
     async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         if request.url.host == "download.test":

@@ -128,18 +128,6 @@
     "destination": "/reference/cli/config#remove"
   },
   {
-    "source": "/reference/cli/config/service/set",
-    "destination": "/reference/cli/config#service-set"
-  },
-  {
-    "source": "/reference/cli/config/service/remove",
-    "destination": "/reference/cli/config#service-remove"
-  },
-  {
-    "source": "/reference/cli/config/service/list",
-    "destination": "/reference/cli/config#service-list"
-  },
-  {
     "source": "/reference/cli/config/provider/set",
     "destination": "/reference/cli/config#provider-set"
   },
@@ -154,6 +142,18 @@
   {
     "source": "/reference/cli/config/provider/list",
     "destination": "/reference/cli/config#provider-list"
+  },
+  {
+    "source": "/reference/cli/config/service/set",
+    "destination": "/reference/cli/config#service-set"
+  },
+  {
+    "source": "/reference/cli/config/service/remove",
+    "destination": "/reference/cli/config#service-remove"
+  },
+  {
+    "source": "/reference/cli/config/service/list",
+    "destination": "/reference/cli/config#service-list"
   },
   {
     "source": "/reference/cli/queue/status",

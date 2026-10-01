@@ -30,7 +30,7 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
-from tracker.types import RunExecutionRequest, StartBenchmarkRequest
+from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import start_benchmark_request_to_benchmark
 
 process_benchmark = getattr(tracker_utils, "process_benchmark")
@@ -89,6 +89,15 @@ async def _create_benchmark(
     return benchmark, benchmark.managed_start_benchmark_request(service_headers)
 
 
+def _execution_context(request: RunExecutionRequest, benchmark: Benchmark, task_ids: list[str]) -> dict[str, Any]:
+    return ManagedExecutionContext(
+        version=3,
+        benchmark_id=benchmark.id,
+        verified_task_ids=task_ids,
+        start_benchmark_request=request,
+    ).model_dump(mode="json")
+
+
 def _task_rows(benchmark: Benchmark, session: Session) -> list[Task]:
     return list(session.exec(select(Task).where(Task.benchmark == benchmark.id)).all())
 
@@ -132,7 +141,9 @@ class TestProcessBenchmark:
         )
 
         authority_kwargs = executor_authority_kwargs(benchmark)
-        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS, **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, _TASK_IDS), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED
@@ -191,7 +202,9 @@ class TestProcessBenchmark:
         authority_kwargs = executor_authority_kwargs(benchmark)
         monkeypatch.setattr(Session, "commit", failing_commit)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, [_TASK_ID]), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -250,7 +263,9 @@ class TestProcessBenchmark:
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task_with_failure)
         authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, task_ids), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
@@ -302,7 +317,9 @@ class TestProcessBenchmark:
         )
         authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, [_TASK_ID]), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -352,9 +369,7 @@ class TestProcessBenchmark:
         await gather(
             *[
                 process_benchmark(
-                    request.model_dump(),
-                    str(benchmark.id),
-                    [_TASK_ID],
+                    execution_context_json=_execution_context(request, benchmark, [_TASK_ID]),
                     **authority_by_benchmark[benchmark.id],
                 )
                 for benchmark, request in benchmark_requests

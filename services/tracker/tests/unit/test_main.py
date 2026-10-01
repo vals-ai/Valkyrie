@@ -3343,7 +3343,6 @@ class TestTrackerAPI:
 
         assert response.status_code == 400
         assert "no deployment-managed AWS runtime" in response.json()["detail"]
-        assert "no deployment-managed AWS runtime" in response.json()["detail"]
 
 
 async def test_owner_storage_lifecycle_keeps_saved_bucket_and_logs(

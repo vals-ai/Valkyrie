@@ -150,9 +150,9 @@ class TrackerService:
             return None
 
         with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
+            harness_config = yaml.safe_load(f) or {}
 
-        services = config.get("custom_benchmark_services") or {}
+        services = harness_config.get("custom_benchmark_services") or {}
         return services.get(benchmark_name)
 
     @staticmethod
@@ -171,9 +171,9 @@ class TrackerService:
             return None
 
         with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
+            harness_config = yaml.safe_load(f) or {}
 
-        auth = config.get("benchmark_auth") or {}
+        auth = harness_config.get("benchmark_auth") or {}
         return auth.get(benchmark_name)
 
     @staticmethod

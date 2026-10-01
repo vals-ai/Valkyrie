@@ -21,6 +21,8 @@ def config_values() -> ConfigValuesFactory:
     def factory(**overrides: object) -> dict[str, object]:
         values: dict[str, object] = {
             "api_key": "vals-key",
+            "sandbox_providers": {"modal": "ModalSecret", "daytona": "DaytonaSecret"},
+            "default_sandbox_provider": "modal",
             "custom_benchmark_services": {"swebench": "https://local.swebench/"},
             "benchmark_auth": {"swebench": "benchmark-token"},
         }

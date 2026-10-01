@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from services.tracker import main as tracker_main
 from tracker.auth import get_current_org
-from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tracker.database.models import (
     DEFAULT_ORG_NAME,
     AgentContractRequest,
@@ -55,7 +55,7 @@ def database_session() -> Generator[Session, None, None]:
                 id="cli-test-release",
                 artifact_uri="s3://test-artifacts/cli-test-release.pex",
                 artifact_digest="a" * 64,
-                protocol_version=MANAGED_EXECUTION_PROTOCOL_VERSION,
+                protocol_version=SUPPORTED_PROTOCOL_VERSION,
                 status=ExecutorReleaseStatus.ACTIVE,
                 readiness_verified=True,
             )

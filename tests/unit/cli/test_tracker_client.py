@@ -661,6 +661,78 @@ def test_retry_or_resume_sends_retry_mode(
     assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0, "update_agent": False}
 
 
+@pytest.mark.parametrize(
+    ("config_overrides", "runtime_provider", "expected_provider", "expected_secret"),
+    [
+        pytest.param(
+            {"sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}},
+            None,
+            "daytona",
+            "DaytonaSecrets",
+            id="first-named-provider",
+        ),
+        pytest.param(
+            {
+                "sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
+                "default_sandbox_provider": "modal",
+            },
+            None,
+            "modal",
+            "ModalSecrets",
+            id="configured-default",
+        ),
+        pytest.param(
+            {"sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}},
+            "modal",
+            "modal",
+            "ModalSecrets",
+            id="runtime-override",
+        ),
+        pytest.param(
+            {"sandbox_providers": {"future": "FutureSecrets"}},
+            "future",
+            "future",
+            "FutureSecrets",
+            id="provider-not-in-tracker-enum",
+        ),
+    ],
+)
+def test_start_benchmark_resolves_provider_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_client: MockClient,
+    config_overrides: dict[str, object],
+    runtime_provider: str | None,
+    expected_provider: str,
+    expected_secret: str,
+) -> None:
+    """Start requests must resolve every supported provider configuration into the API payload.
+
+    Test cases:
+    - First-named, configured-default, and runtime-selected providers resolve their secrets.
+    - A newly configured provider name is forwarded without a tracker enum change.
+    """
+    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml", **config_overrides)
+
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+        provider=runtime_provider,
+    )
+
+    assert mock_client.json is not None
+    assert mock_client.json["sandbox_provider"] == expected_provider
+    assert mock_client.json["sandbox_provider_secret_name"] == expected_secret
+
+
 @pytest.mark.parametrize("ignore_custom_services", [False, True])
 @pytest.mark.parametrize("default_provider", [None, "modal"])
 def test_start_benchmark_sends_application_identity(
@@ -1012,3 +1084,29 @@ def test_service_list_merges_hosted_and_custom_services(
     assert by_name["swebench"].url == "http://local-swebench"
     assert by_name["fab"].url == "https://fab.benchmarks.vals.ai"
     assert by_name["custombench"].url == "http://custombench"
+
+
+@pytest.mark.parametrize(
+    ("providers", "provider", "expected"),
+    [
+        ({"daytona": "DaytonaSecrets"}, None, ("daytona", "DaytonaSecrets")),
+        ({}, "docker", ("docker", None)),
+        ({"daytona": "DaytonaSecrets"}, "missing", None),
+    ],
+)
+def test_validate_provider_reads_config_and_reports_unknown_choices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    providers: dict[str, str],
+    provider: str | None,
+    expected: tuple[str, str | None] | None,
+) -> None:
+    configuration = tmp_path / "providers.yaml"
+    configuration.write_text(yaml.safe_dump({"sandbox_providers": providers}))
+    monkeypatch.setattr("valkyrie.cli.tracker_client.config_location", lambda: configuration)
+
+    if expected is None:
+        with pytest.raises(TrackerServiceError, match="Unknown sandbox provider.*Configured providers: daytona"):
+            TrackerService.validate_sandbox_provider(provider)
+    else:
+        assert TrackerService.validate_sandbox_provider(provider) == expected

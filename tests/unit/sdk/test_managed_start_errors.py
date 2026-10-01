@@ -1,3 +1,5 @@
+"""Recover accepted managed starts without treating ordinary API failures as runs."""
+
 from uuid import UUID
 
 import httpx
