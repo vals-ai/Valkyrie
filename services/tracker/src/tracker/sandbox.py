@@ -17,11 +17,13 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, AsyncGenerator, Literal, Never, Protocol, assert_never, cast
+from typing import Any, AsyncGenerator, Literal, Never, assert_never, cast
 
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    ControlledWorkload,
+    ControlledWorkloadResult,
     CreditedGeneration,
     ComposeSandbox,
     ComposeSource,
@@ -56,7 +58,6 @@ from tracker.runtime.artifacts import benchmark_agent_bundle_key, task_artifact_
 from tracker.runtime.storage import ObjectStore
 from tracker.egress import EgressPolicy
 from tracker.external_service_gateway import (
-    AccountingSessionState,
     ArbitrationDecision,
     ExternalServiceAccountingSummary,
     ExternalServiceDeadlineController,
@@ -65,7 +66,6 @@ from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
     AgentContractRequest,
-    GenerationContainment,
     OutputArtifactSpec,
 )
 from tracker.exceptions import (
@@ -191,28 +191,6 @@ async def _confirm_inner_stopped(sandbox: Sandbox, container: str | None) -> Non
     listed = await _exec(sandbox, "docker container ls -a --format '{{.Names}}'")
     if listed.exit_code != 0 or container in listed.output.splitlines():
         raise ControlledGenerationTerminationUnconfirmedError("Nested generation container absence is unconfirmed")
-
-
-class _ControlledWorkloadResult(Protocol):
-    result: ExecResult
-    absence_confirmed_at: float
-
-
-class _ControlledWorkload(Protocol):
-    def output(self) -> AsyncGenerator[str, None]: ...
-
-    async def wait(self) -> _ControlledWorkloadResult: ...
-
-    async def kill(self) -> None: ...
-
-
-class _ControlledSandbox(Protocol):
-    @property
-    def generation_containment(self) -> GenerationContainment | None: ...
-
-    async def probe_generation_containment(self) -> None: ...
-
-    def controlled_workload(self, command: str, *, cwd: str | None = None) -> _ControlledWorkload: ...
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -724,14 +702,14 @@ async def stream_command_output(
             pass
 
 
-def _controlled_completion_precedes_deadline(result: _ControlledWorkloadResult, deadline: float) -> bool:
+def _controlled_completion_precedes_deadline(result: ControlledWorkloadResult, deadline: float) -> bool:
     return result.absence_confirmed_at < deadline
 
 
 def _controlled_result_outcome(
-    completed: _ControlledWorkloadResult, started_at: float
+    completed: ControlledWorkloadResult, started_at: float
 ) -> tuple[AgentCausedExitReason | None, float]:
-    duration = max(0.0, completed.absence_confirmed_at - started_at)
+    duration = completed.absence_confirmed_at - started_at
     exit_code = completed.result.exit_code
     if exit_code == _SUCCESS_EXIT_CODE:
         return None, duration
@@ -741,7 +719,7 @@ def _controlled_result_outcome(
     raise AgentRunFailedError(f"Agent command failed with exit code {exit_code}")
 
 
-async def _raise_controlled_failure_after_close(workload: _ControlledWorkload, error: BaseException) -> Never:
+async def _raise_controlled_failure_after_close(workload: ControlledWorkload, error: BaseException) -> Never:
     try:
         await workload.kill()
     except BaseException as kill_error:
@@ -751,7 +729,7 @@ async def _raise_controlled_failure_after_close(workload: _ControlledWorkload, e
     raise ControlledGenerationError("Controlled generation failed after workload construction") from error
 
 
-async def _finish_controlled_output(workload: _ControlledWorkload, output_task: asyncio.Task[None]) -> None:
+async def _finish_controlled_output(workload: ControlledWorkload, output_task: asyncio.Task[None]) -> None:
     try:
         # A naturally completed producer has a finite buffered tail to drain.
         await output_task
@@ -760,8 +738,8 @@ async def _finish_controlled_output(workload: _ControlledWorkload, output_task: 
 
 
 async def _controlled_wait_result(
-    workload: _ControlledWorkload, wait_task: asyncio.Task[_ControlledWorkloadResult]
-) -> _ControlledWorkloadResult:
+    workload: ControlledWorkload, wait_task: asyncio.Task[ControlledWorkloadResult]
+) -> ControlledWorkloadResult:
     try:
         return wait_task.result()
     except BaseException as error:
@@ -791,13 +769,13 @@ async def _stream_controlled_output(
     stage = _StageOutput(stage_key, on_output) if stage_key is not None else None
     try:
         if stage is None:
-            await controller.begin_generation()
+            await controller.begin_generation(now=loop.time())
         started_at = loop.time()
-        workload = cast(_ControlledSandbox, sandbox).controlled_workload(command, cwd=cwd)
+        workload = sandbox.controlled_workload(command, cwd=cwd)
     except BaseException as original:
         try:
             if controller.client is not None:
-                snapshot = await controller.seal_after_confirmed_stop()
+                snapshot = await controller.seal_after_confirmed_stop(loop.time())
                 assert on_accounting_sealed is not None
                 await on_accounting_sealed(controller.summary(snapshot))
             elif controller.active_since is not None:
@@ -827,8 +805,8 @@ async def _stream_controlled_output(
     last_frame: _StageFrame | None = None
     outer_stopped = False
     inner_stopped = False
+    absence_confirmed_at: float | None = None
     sealed_once = False
-    arbitration_pending = False
 
     async def wait_deadline() -> None:
         nonlocal deadline
@@ -862,7 +840,7 @@ async def _stream_controlled_output(
             deadline_task = None
 
     async def stop(termination_deadline: float | None = None) -> None:
-        nonlocal outer_stopped, inner_stopped
+        nonlocal outer_stopped, inner_stopped, absence_confirmed_at
         try:
             async with asyncio.timeout_at(termination_deadline or loop.time() + GENERATION_TERMINATION_GRACE_SECONDS):
                 if not outer_stopped:
@@ -871,6 +849,7 @@ async def _stream_controlled_output(
                 if not inner_stopped:
                     await _confirm_inner_stopped(sandbox, active_container)
                     inner_stopped = True
+                absence_confirmed_at = loop.time()
         except asyncio.CancelledError:
             raise
         except BaseException as error:
@@ -880,22 +859,27 @@ async def _stream_controlled_output(
                 ) from error
             raise
 
-    async def completed_result() -> _ControlledWorkloadResult:
-        nonlocal outer_stopped
+    async def completed_result() -> ControlledWorkloadResult:
+        nonlocal outer_stopped, absence_confirmed_at
         try:
-            return await _controlled_wait_result(workload, wait_task)
+            completed = await _controlled_wait_result(workload, wait_task)
+            outer_stopped = True
+            absence_confirmed_at = completed.absence_confirmed_at
+            return completed
         except ControlledGenerationError as error:
             if not isinstance(error, ControlledGenerationTerminationUnconfirmedError):
                 outer_stopped = True
+                absence_confirmed_at = loop.time()
             raise
 
     async def finish_output() -> None:
-        nonlocal outer_stopped
+        nonlocal outer_stopped, absence_confirmed_at
         try:
             await _finish_controlled_output(workload, output_task)
         except ControlledGenerationError as error:
             if not isinstance(error, ControlledGenerationTerminationUnconfirmedError):
                 outer_stopped = True
+                absence_confirmed_at = loop.time()
             raise
 
     async def seal() -> None:
@@ -903,36 +887,28 @@ async def _stream_controlled_output(
         if sealed_once:
             return
         if controller.client is not None:
-            assert controller.snapshot is not None
-            if controller.snapshot.state == AccountingSessionState.OPEN:
-                await controller.begin_arbitration()
-            if controller.snapshot.state == AccountingSessionState.ARBITRATING:
-                snapshot = await controller.resolve(ArbitrationDecision.SEAL)
-            else:
-                snapshot = controller.snapshot
+            assert absence_confirmed_at is not None
+            snapshot = await controller.seal_after_confirmed_stop(absence_confirmed_at)
+            sealed_once = True
             assert on_accounting_sealed is not None
             await on_accounting_sealed(controller.summary(snapshot))
-        elif controller.active_since is not None:
-            await controller.end_generation()
-        sealed_once = True
+        else:
+            if controller.active_since is not None:
+                assert absence_confirmed_at is not None
+                await controller.end_generation(now=absence_confirmed_at)
+            sealed_once = True
 
     async def exhausted_at(ended_at: float) -> bool:
-        nonlocal stop_at, arbitration_pending
         if controller.elapsed_seconds(ended_at) < controller.effective_allowance_seconds():
             return False
         stop_at = deadline + GENERATION_TERMINATION_GRACE_SECONDS
         if controller.client is not None:
-            arbitration_pending = True
             async with asyncio.timeout_at(deadline + GENERATION_ARBITRATION_GRACE_SECONDS):
                 frozen = await controller.begin_arbitration()
                 if controller.elapsed_seconds(ended_at) < controller.effective_allowance_seconds(frozen):
                     await controller.resolve(ArbitrationDecision.RESUME)
-                    arbitration_pending = False
                     stop_at = None
                     return False
-                if stage is None:
-                    await controller.resolve(ArbitrationDecision.SEAL)
-                    arbitration_pending = False
         return True
 
     async def acknowledge(seq: int) -> None:
@@ -951,12 +927,13 @@ async def _stream_controlled_output(
             if (
                 wait_task.done()
                 and output_task.done()
-                and not pending_acks
                 and (stage is None or (stage.frames.empty() and event_task is not None and not event_task.done()))
             ):
                 completed = await completed_result()
                 await finish_output()
                 await disarm()
+                await _cancel_and_join_controlled_tasks(*pending_acks)
+                pending_acks.clear()
                 exhausted = False
                 if controller.active_since is not None:
                     ended_at = completed.absence_confirmed_at
@@ -970,6 +947,7 @@ async def _stream_controlled_output(
                             ) from error
                         inner_stopped = True
                         ended_at = loop.time()
+                        absence_confirmed_at = ended_at
                     await controller.end_generation(now=ended_at)
                     exhausted = await exhausted_at(ended_at)
                     if stage is None and controller.client is None:
@@ -990,11 +968,12 @@ async def _stream_controlled_output(
             if deadline_task is not None:
                 watched.add(deadline_task)
             done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
-            for ack_task in done & pending_acks:
-                pending_acks.remove(ack_task)
-                await ack_task
             if output_task in done:
                 await finish_output()
+            if not (wait_task.done() and output_task.done()):
+                for ack_task in done & pending_acks:
+                    pending_acks.remove(ack_task)
+                    await ack_task
             if stage is None and wait_task.done() and output_task.done():
                 continue
             if (
@@ -1008,7 +987,6 @@ async def _stream_controlled_output(
                 assert stage is not None
                 event_task = asyncio.create_task(stage.frames.get())
                 if last_frame is not None and frame.wire == last_frame.wire:
-                    pending_acks.add(asyncio.create_task(acknowledge(frame.seq)))
                     continue
                 if frame.seq != (last_frame.seq + 1 if last_frame else 1):
                     raise ControlledGenerationError("Stage frames arrived out of order")
@@ -1019,7 +997,7 @@ async def _stream_controlled_output(
                         await stop()
                         await seal()
                         return AgentCausedExitReason.TIMEOUT, controller.effective_allowance_seconds()
-                    await controller.begin_generation()
+                    await controller.begin_generation(now=frame.received_at)
                     active_container = frame.container
                     deadline = controller.deadline(controller.active_since)
                     deadline_task = asyncio.create_task(wait_deadline())
@@ -1048,7 +1026,6 @@ async def _stream_controlled_output(
                 await deadline_task
                 if controller.client is not None:
                     arbitration_deadline = apparent_deadline + GENERATION_ARBITRATION_GRACE_SECONDS
-                    arbitration_pending = True
                     async with asyncio.timeout_at(arbitration_deadline):
                         frozen = await controller.begin_arbitration()
                     if stage is None and wait_task.done():
@@ -1056,9 +1033,6 @@ async def _stream_controlled_output(
                         if controller.elapsed_seconds(
                             completed.absence_confirmed_at
                         ) < controller.effective_allowance_seconds(frozen):
-                            async with asyncio.timeout_at(arbitration_deadline):
-                                await controller.resolve(ArbitrationDecision.SEAL)
-                            arbitration_pending = False
                             await controller.end_generation(now=completed.absence_confirmed_at)
                             await finish_output()
                             await seal()
@@ -1066,17 +1040,12 @@ async def _stream_controlled_output(
                     if controller.deadline(loop.time(), frozen) > loop.time():
                         async with asyncio.timeout_at(arbitration_deadline):
                             await controller.resolve(ArbitrationDecision.RESUME)
-                        arbitration_pending = False
                         deadline = controller.deadline(loop.time(), frozen)
                         stop_at = None
                         deadline_task = asyncio.create_task(wait_deadline())
                         continue
-                    if stage is None:
-                        async with asyncio.timeout_at(arbitration_deadline):
-                            await controller.resolve(ArbitrationDecision.SEAL)
-                        arbitration_pending = False
                 await stop(stop_at)
-                await asyncio.gather(wait_task, return_exceptions=True)
+                await _cancel_and_join_controlled_tasks(wait_task)
                 await finish_output()
                 await seal()
                 return AgentCausedExitReason.TIMEOUT, controller.effective_allowance_seconds()
@@ -1087,14 +1056,17 @@ async def _stream_controlled_output(
         try:
             if not (wait_task.done() and not wait_task.cancelled() and wait_task.exception() is None):
                 await stop(stop_at)
-            elif controller.active_since is not None and not inner_stopped:
-                await _confirm_inner_stopped(sandbox, active_container)
-                inner_stopped = True
+            else:
+                await completed_result()
+                if controller.active_since is not None and not inner_stopped:
+                    await _confirm_inner_stopped(sandbox, active_container)
+                    inner_stopped = True
+                    absence_confirmed_at = loop.time()
         except BaseException as stop_error:
             raise ControlledGenerationTerminationUnconfirmedError(
                 "Controlled generation failed without confirmed nested and outer workload absence"
             ) from stop_error
-        if not isinstance(error, ControlledGenerationError) and not arbitration_pending:
+        if not isinstance(error, ControlledGenerationError):
             try:
                 await seal()
             except BaseException as seal_error:
@@ -1383,7 +1355,7 @@ async def run_agent(
         )
 
     if controlled_generation:
-        controlled_sandbox = cast(_ControlledSandbox, sandbox)
+        controlled_sandbox = sandbox
         runtime_containment = controlled_sandbox.generation_containment
         if (
             runtime_containment is None

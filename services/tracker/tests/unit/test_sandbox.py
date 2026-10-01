@@ -756,6 +756,7 @@ class _FakeAccountingClient:
         self.overhead_ms = overhead_ms
         self.begin_overhead_ms = begin_overhead_ms
         self.read_error = read_error
+        self.state = AccountingSessionState.OPEN
         self.decisions: list[str] = []
         self.read_calls = 0
         self.begin_calls = 0
@@ -773,10 +774,11 @@ class _FakeAccountingClient:
         self.read_calls += 1
         if self.read_error is not None:
             raise self.read_error
-        return _accounting_snapshot(overhead_ms=self.overhead_ms, revision=1)
+        return _accounting_snapshot(state=self.state, overhead_ms=self.overhead_ms, revision=1)
 
     async def begin_arbitration(self, _session_id: str) -> AccountingSessionSnapshot:
         self.begin_calls += 1
+        self.state = AccountingSessionState.ARBITRATING
         if self.begin_overhead_ms is not None:
             self.overhead_ms = self.begin_overhead_ms
             self.begin_overhead_ms = None
@@ -789,9 +791,9 @@ class _FakeAccountingClient:
 
     async def resolve_arbitration(self, _session_id: str, decision: Any) -> AccountingSessionSnapshot:
         self.decisions.append(str(decision))
-        state = AccountingSessionState.OPEN if str(decision) == "RESUME" else AccountingSessionState.SEALED
+        self.state = AccountingSessionState.OPEN if str(decision) == "RESUME" else AccountingSessionState.SEALED
         return _accounting_snapshot(
-            state=state,
+            state=self.state,
             overhead_ms=self.overhead_ms,
             revision=1,
             epoch=1,
@@ -1518,7 +1520,6 @@ class TestRunAgent:
 
         assert reason == AgentCausedExitReason.TIMEOUT
         assert duration == 1.0
-        assert workload.kill_calls == 1
 
     async def test_controlled_delayed_arbitration_uses_recorded_confirmation(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1592,7 +1593,6 @@ class TestRunAgent:
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
-        assert workload.kill_calls == 1
 
     async def test_natural_completion_drains_buffered_tail_output(self) -> None:
         class CompletedProducerWithTail(_FakeControlledWorkload):
@@ -1795,16 +1795,10 @@ class TestRunAgent:
         workload = OrderedWorkload(wait_release=asyncio.Event(), natural=False)
 
         class DelayedCreditClient(_FakeAccountingClient):
-            async def begin_arbitration(self, _session_id: str) -> AccountingSessionSnapshot:
-                self.begin_calls += 1
+            async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
                 await asyncio.sleep(0.02)
                 self.overhead_ms = 10
-                return _accounting_snapshot(
-                    state=AccountingSessionState.ARBITRATING,
-                    overhead_ms=10,
-                    revision=1,
-                    epoch=1,
-                )
+                return await super().begin_arbitration(session_id)
 
             async def resolve_arbitration(self, session_id: str, decision: Any) -> AccountingSessionSnapshot:
                 events.append(str(decision))
@@ -1841,17 +1835,16 @@ class TestRunAgent:
         assert reason == AgentCausedExitReason.TIMEOUT
         assert abs(duration - 0.015) < 1e-9
         assert client.decisions == ["SEAL"]
-        assert events == ["SEAL", "kill"]
+        assert events == ["kill", "SEAL"]
         post_deadline_timeouts = [value for value in timeout_deadlines if value - started_before > 1.0]
-        assert len(post_deadline_timeouts) == 3
-        assert post_deadline_timeouts[0] == post_deadline_timeouts[1]
+        assert len(post_deadline_timeouts) == 2
         assert post_deadline_timeouts[-1] - post_deadline_timeouts[0] == pytest.approx(
             sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS - sandbox_module.GENERATION_ARBITRATION_GRACE_SECONDS
         )
         apparent_deadline = post_deadline_timeouts[-1] - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
         assert 0.005 <= apparent_deadline - started_before < 0.015
 
-    async def test_eight_second_arbitration_seals_then_confirms_absence_within_absolute_window(self) -> None:
+    async def test_eight_second_arbitration_confirms_absence_then_seals_within_absolute_window(self) -> None:
         class DelayedAccountingClient(_FakeAccountingClient):
             async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
                 await asyncio.sleep(3.9)
@@ -1895,9 +1888,7 @@ class TestRunAgent:
         assert workload.output_finished.is_set()
         persist.assert_awaited_once()
 
-    async def test_shared_arbitration_budget_exhaustion_kills_without_grading(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_shared_arbitration_budget_exhaustion_stops_then_seals(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class SlowResolutionClient(_FakeAccountingClient):
             async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
                 await asyncio.sleep(0.04)
@@ -1919,22 +1910,23 @@ class TestRunAgent:
         )
         persist = AsyncMock()
 
-        with pytest.raises(TimeoutError):
-            await _stream_controlled_output(
-                cast(Any, _FakeControlledSandbox(workload)),
-                "echo done",
-                "/workspace",
-                _ignore_output,
-                0.001,
-                controller,
-                persist,
-            )
+        reason, duration = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            0.001,
+            controller,
+            persist,
+        )
 
-        assert client.decisions == []
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration == 0.001
+        assert client.decisions == ["SEAL"]
         assert workload.closed.is_set()
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
-        persist.assert_not_awaited()
+        persist.assert_awaited_once()
 
     async def test_failed_resume_keeps_original_absolute_termination_deadline(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1977,11 +1969,11 @@ class TestRunAgent:
                 persist,
             )
 
-        assert client.decisions == []
+        assert client.decisions == ["SEAL"]
         assert workload.closed.is_set()
         assert workload.wait_finished.is_set()
         assert any(0.001 <= deadline - 0.2 - started_before < 0.02 for deadline in timeout_deadlines)
-        persist.assert_not_awaited()
+        persist.assert_awaited_once()
 
     async def test_refresh_credit_extends_from_immutable_start(self) -> None:
         workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
@@ -2016,7 +2008,7 @@ class TestRunAgent:
                 self.read_calls += 1
                 if self.read_calls == 1:
                     raise RuntimeError("transient refresh")
-                return _accounting_snapshot(revision=1)
+                return _accounting_snapshot(state=self.state, revision=1)
 
         client = TransientRefreshClient()
         controller = ExternalServiceDeadlineController(
@@ -2038,7 +2030,7 @@ class TestRunAgent:
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
-        assert client.read_calls == 2
+        assert client.read_calls == 4
         assert client.begin_calls == 1
 
     async def test_exhausted_refresh_window_proceeds_to_arbitration(self) -> None:
@@ -2046,9 +2038,10 @@ class TestRunAgent:
 
         class BlockingRefreshClient(_FakeAccountingClient):
             async def read_session(self, _session_id: str) -> AccountingSessionSnapshot:
-                self.read_calls += 1
-                await asyncio.Event().wait()
-                raise AssertionError("unreachable")
+                if self.read_calls == 0:
+                    self.read_calls += 1
+                    await asyncio.Event().wait()
+                return await super().read_session(_session_id)
 
         client = BlockingRefreshClient()
         controller = ExternalServiceDeadlineController(
@@ -2069,14 +2062,22 @@ class TestRunAgent:
         )
 
         assert reason == AgentCausedExitReason.TIMEOUT
-        assert client.read_calls == 1
+        assert client.read_calls == 3
         assert client.begin_calls == 1
         assert client.decisions == ["SEAL"]
         assert workload.kill_calls == 1
 
     async def test_failed_refresh_task_cannot_defeat_natural_completion(self) -> None:
         workload = _FakeControlledWorkload()
-        client = _FakeAccountingClient(read_error=asyncio.CancelledError())
+
+        class CancelledRefreshClient(_FakeAccountingClient):
+            async def read_session(self, session_id: str) -> AccountingSessionSnapshot:
+                if self.read_calls == 0:
+                    self.read_calls += 1
+                    raise asyncio.CancelledError()
+                return await super().read_session(session_id)
+
+        client = CancelledRefreshClient()
         controller = ExternalServiceDeadlineController(
             client=cast(Any, client),
             snapshot=_accounting_snapshot(),
@@ -2105,19 +2106,13 @@ class TestRunAgent:
         workload = _FakeControlledWorkload(wait_release=wait_release, natural=False)
 
         class CompletingArbitrationClient(_FakeAccountingClient):
-            async def begin_arbitration(self, _session_id: str) -> AccountingSessionSnapshot:
-                self.begin_calls += 1
+            async def begin_arbitration(self, session_id: str) -> AccountingSessionSnapshot:
                 self.overhead_ms = 20
                 wait_release.set()
                 workload.closed.set()
                 await asyncio.sleep(0)
                 await asyncio.sleep(0)
-                return _accounting_snapshot(
-                    state=AccountingSessionState.ARBITRATING,
-                    overhead_ms=20,
-                    revision=1,
-                    epoch=1,
-                )
+                return await super().begin_arbitration(session_id)
 
         client = CompletingArbitrationClient()
         controller = ExternalServiceDeadlineController(

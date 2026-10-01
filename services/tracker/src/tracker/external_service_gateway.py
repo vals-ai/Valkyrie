@@ -163,12 +163,10 @@ class ExternalServiceDeadlineController:
         return self.base_allowance_seconds + self.applied_credit_seconds(snapshot)
 
     def elapsed_seconds(self, now: float) -> float:
-        return self.active_elapsed_seconds + (
-            max(0.0, now - self.active_since) if self.active_since is not None else 0.0
-        )
+        return self.active_elapsed_seconds + (now - self.active_since if self.active_since is not None else 0.0)
 
     def deadline(self, now: float, snapshot: AccountingSessionSnapshot | None = None) -> float:
-        return now + max(0.0, self.effective_allowance_seconds(snapshot) - self.elapsed_seconds(now))
+        return now + self.effective_allowance_seconds(snapshot) - self.elapsed_seconds(now)
 
     async def begin_generation(self, now: float | None = None) -> None:
         if self.active_since is not None:
@@ -183,7 +181,7 @@ class ExternalServiceDeadlineController:
         if self.active_since is None:
             raise ValueError("No generation interval is active")
         ended_at = time.monotonic() if now is None else now
-        self.active_elapsed_seconds += max(0.0, ended_at - self.active_since)
+        self.active_elapsed_seconds += ended_at - self.active_since
         self.active_since = None
         if (
             self.client is not None
@@ -208,7 +206,7 @@ class ExternalServiceDeadlineController:
             raise ValueError("No gateway accounting session is configured")
         return self._accept(await self.client.begin_arbitration(self.session_id))
 
-    async def seal_after_confirmed_stop(self) -> AccountingSessionSnapshot:
+    async def seal_after_confirmed_stop(self, absence_confirmed_at: float) -> AccountingSessionSnapshot:
         """Read authoritative phase after response loss, then fence and seal it."""
         if self.client is None:
             raise ValueError("No gateway accounting session is configured")
@@ -218,7 +216,7 @@ class ExternalServiceDeadlineController:
                 observed = await self.refresh()
                 if observed.state == AccountingSessionState.SEALED:
                     if self.active_since is not None:
-                        await self.end_generation()
+                        await self.end_generation(now=absence_confirmed_at)
                     return observed
                 if observed.state == AccountingSessionState.OPEN:
                     await self.begin_arbitration()
