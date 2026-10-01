@@ -305,7 +305,7 @@ def test_set_aws_resources_and_remove_optional_key_preserves_config(config_path:
     assert configured.aws.s3_bucket == "local-client-bucket"
 
 
-@pytest.mark.parametrize("source", ["environment", "config"])
+@pytest.mark.parametrize("source", ["environment", "config", "field_names"])
 def test_init_self_hosted_uses_local_resource_settings(
     source: str,
     config_path: Path,
@@ -322,8 +322,9 @@ def test_init_self_hosted_uses_local_resource_settings(
         monkeypatch.delenv(key, raising=False)
         if source == "environment":
             monkeypatch.setenv(key, value)
-    if source == "config":
-        config_path.write_text(yaml.safe_dump({"aws": resources}))
+    if source in {"config", "field_names"}:
+        configured = {key.lower() if source == "field_names" else key: value for key, value in resources.items()}
+        config_path.write_text(yaml.safe_dump({"aws": configured}))
 
     result = cli_runner.invoke(settings.init, input="self-hosted\n")
 

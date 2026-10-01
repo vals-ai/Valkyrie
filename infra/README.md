@@ -137,7 +137,7 @@ export DESCOPE_PROJECT_ID="dev-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
 export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
 export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
-export AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME="dev-provider-secret"
+export AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME="benchmark-services/dev-provider"
 ```
 
    Use the target stage's values. Bench and production also require their

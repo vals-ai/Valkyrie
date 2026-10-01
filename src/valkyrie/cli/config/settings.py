@@ -59,11 +59,17 @@ def init() -> None:
         except Exception:
             pass
 
-    config_keys = {field.alias or name for name, field in ValkyrieConfig.model_fields.items()}
-    current_config = {key: value for key, value in current_config.items() if key in config_keys}
+    current_config = {
+        field.alias or name: current_config.get(field.alias or name, current_config.get(name))
+        for name, field in ValkyrieConfig.model_fields.items()
+        if (field.alias or name) in current_config or name in current_config
+    }
     if aws_config := current_config.get("aws"):
-        resource_keys = {field.alias or name for name, field in AWSConfig.model_fields.items()}
-        current_config["aws"] = {key: value for key, value in aws_config.items() if key in resource_keys}
+        current_config["aws"] = {
+            field.alias or name: aws_config.get(field.alias or name, aws_config.get(name))
+            for name, field in AWSConfig.model_fields.items()
+            if (field.alias or name) in aws_config or name in aws_config
+        }
 
     mode = click.prompt(
         "Setup mode",
