@@ -228,6 +228,17 @@ def test_init_whitespace_only_required_value_aborts(monkeypatch: pytest.MonkeyPa
     assert "AWS_DEFAULT_REGION is required" in result.output
 
 
+def test_set_unknown_key_preserves_config(config_path: Path) -> None:
+    saved = {"api_key": "test-key"}
+    config_path.write_text(yaml.safe_dump(saved))
+
+    result = CliRunner().invoke(settings.set, ["unknown-key", "new-value"])
+
+    assert result.exit_code != 0
+    assert "not a valid config key" in result.output
+    assert yaml.safe_load(config_path.read_text()) == saved
+
+
 def test_set_api_key_rotates_matching_benchmark_auth(config_path: Path) -> None:
     config_path.write_text(
         yaml.safe_dump(

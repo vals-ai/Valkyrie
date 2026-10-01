@@ -29,7 +29,6 @@ def config_values() -> ConfigValuesFactory:
             },
             "custom_benchmark_services": {"swebench": "https://local.swebench/"},
             "benchmark_auth": {"swebench": "benchmark-token"},
-            "webhook": "SlackWebhook",
         }
         values.update(overrides)
         return values

@@ -381,8 +381,6 @@ class Benchmark(SQLModel, table=True):
     executor_protocol_version: str | None = None
 
     error_message: str | None = Field(default=None)
-    webhook_secret_name: str | None = Field(default=None)
-    webhook_intervals: list[int] | None = Field(default=None, sa_column=Column(JSON))
     custom_benchmark_service: str | None = Field(default=None)
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
@@ -459,8 +457,6 @@ class Benchmark(SQLModel, table=True):
             sandbox_provider=self.arguments.sandbox_provider,
             sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
-            webhook_secret_name=self.webhook_secret_name,
-            webhook_intervals=self.webhook_intervals,
             service_headers=service_headers or {},
         )
 

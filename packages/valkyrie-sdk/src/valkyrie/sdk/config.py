@@ -51,7 +51,6 @@ class ValkyrieConfig(BaseModel):
     aws: AWSConfig | None = None
     custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
     benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
-    webhook: str | None = Field(default=None, repr=False)
 
     @property
     def tracker_url(self) -> str:

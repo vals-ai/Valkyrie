@@ -91,7 +91,7 @@ EXPECTED_SIGNATURES = {
         "managed_s3_bucket=None, task_ids=None, "
         "slice_str=None, dataset=None, dataset_version=None, "
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
-        "webhook_intervals=None, ignore_custom_services=False"
+        "ignore_custom_services=False"
     ),
     RunsResource.filter_options: "self",
     RunsResource.fetch: "self, run_id",

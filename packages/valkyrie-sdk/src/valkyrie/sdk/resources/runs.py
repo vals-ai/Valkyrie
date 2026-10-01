@@ -13,7 +13,6 @@ from uuid import UUID
 from valkyrie.sdk.output_archive import extract_output_archive
 from valkyrie.sdk.errors import (
     ValkyrieAPIError,
-    ValkyrieConfigError,
     ValkyrieRunAcceptedError,
     ValkyrieRunError,
     ValkyrieStreamError,
@@ -98,7 +97,6 @@ class RunsResource:
         agent_kwargs: Mapping[str, str] | None = None,
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
-        webhook_intervals: Sequence[int] | None = None,
         ignore_custom_services: bool = False,
     ) -> StartBenchmarkResponse:
         """Start a run from an uploaded agent name or complete contract."""
@@ -114,7 +112,6 @@ class RunsResource:
             raise ValkyrieRunError("managed_s3_bucket and properties are mutually exclusive")
 
         contract = self._normalize_contract(agent, model=model, agent_kwargs=agent_kwargs, secrets=secrets)
-        intervals = self._resolve_webhook_intervals(webhook_intervals)
         effective_service_headers = self._service_headers(benchmark, service_headers)
 
         payload = StartBenchmarkRequest(
@@ -135,8 +132,6 @@ class RunsResource:
             ),
             service_headers=effective_service_headers,
             sandbox_provider=provider,
-            webhook_secret_name=self._sdk.config.webhook if intervals else None,
-            webhook_intervals=intervals,
         )
         try:
             response = await self._sdk.request_model(
@@ -587,19 +582,6 @@ class RunsResource:
             headers["Authorization"] = credential.get_secret_value()
         headers.update(explicit_headers or {})
         return headers
-
-    def _resolve_webhook_intervals(self, intervals: Sequence[int] | None) -> list[int] | None:
-        """Resolve and validate webhook intervals."""
-        if intervals and not self._sdk.config.webhook:
-            raise ValkyrieConfigError("webhook_intervals require a webhook secret in ValkyrieConfig")
-        resolved = list(intervals) if intervals else ([100] if self._sdk.config.webhook else None)
-        if resolved is None:
-            return None
-        if len(resolved) > 3:
-            raise ValkyrieRunError("a maximum of 3 webhook intervals is allowed")
-        if any(value < 5 or value > 100 or value % 5 != 0 for value in resolved):
-            raise ValkyrieRunError("webhook intervals must be divisible by 5 and between 5 and 100")
-        return resolved
 
     @staticmethod
     def _normalize_contract(

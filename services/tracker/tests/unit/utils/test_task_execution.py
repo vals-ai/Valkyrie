@@ -6,17 +6,16 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 import asyncio
 from datetime import timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import OperationalError
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, ExecutorDispatch, ExecutorDispatchStatus, Org, Task, TaskStatus
 from tracker.executor.execution_authority import ExecutionAuthority
-from tracker.notifications import NotificationContext
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 from tracker.utils import task_execution
 
@@ -185,7 +184,6 @@ class TestTaskExecution:
         monkeypatch: pytest.MonkeyPatch,
         *,
         status: TaskStatus,
-        notifier: Any = None,
     ) -> tuple[TaskMonitor, TrackedTask, Mock, ExecutionAuthority]:
         database_session.add(benchmark_row)
         database_session.commit()
@@ -205,12 +203,11 @@ class TestTaskExecution:
             org=self._test_org,
             limiter=None,
             authority=authority,
-            notifier=notifier,
         )
 
         return monitor, tracked, cancellation, authority
 
-    @pytest.mark.parametrize("failure_stage", ["authority", "state", "notifications"])
+    @pytest.mark.parametrize("failure_stage", ["authority", "state"])
     async def test_task_monitor_retries_operational_error_without_cancelling(
         self,
         failure_stage: str,
@@ -219,21 +216,15 @@ class TestTaskExecution:
         executor_authority: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        notifier = Mock(check_and_notify=AsyncMock()) if failure_stage == "notifications" else None
         monitor, tracked, cancellation, _authority = self._monitor_for_task(
             database_session,
             example_benchmark_object,
             executor_authority,
             monkeypatch,
-            status=TaskStatus.IN_PROGRESS if failure_stage == "notifications" else TaskStatus.STOPPED,
-            notifier=notifier,
+            status=TaskStatus.STOPPED,
         )
-        if failure_stage == "notifications":
-            owner: Any = NotificationContext
-            name = "from_benchmark"
-        else:
-            owner = task_execution
-            name = "lock_execution_authority" if failure_stage == "authority" else "fetch_benchmark_row"
+        owner: Any = task_execution
+        name = "lock_execution_authority" if failure_stage == "authority" else "fetch_benchmark_row"
         original = getattr(owner, name)
         failed = False
 
@@ -253,11 +244,6 @@ class TestTaskExecution:
             sleep_count += 1
             if sleep_count == 1:
                 cancellation.assert_not_called()
-                if failure_stage == "notifications":
-                    task_row = database_session.exec(select(Task).where(Task.task_id == "monitored")).one()
-                    task_row.status = TaskStatus.STOPPED
-                    database_session.add(task_row)
-                    database_session.commit()
             elif sleep_count == 2:
                 cancellation.assert_called_once()
                 setattr(tracked, "_status", TrackedTaskStatus.DONE)

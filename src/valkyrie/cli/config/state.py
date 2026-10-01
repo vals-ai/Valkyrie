@@ -11,7 +11,6 @@ from valkyrie.cli.runtime_config import config_location
 
 class ConfigValue(str, Enum):
     API_KEY = "api_key"
-    SLACK_WEBHOOK_SECRET = "webhook"
     AWS_DEFAULT_REGION = "AWS_DEFAULT_REGION"
     S3_BUCKET = "S3_BUCKET"
     LOG_GROUP = "LOG_GROUP"

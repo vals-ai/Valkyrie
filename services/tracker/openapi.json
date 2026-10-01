@@ -1887,31 +1887,6 @@
               }
             ],
             "title": "Task Ids"
-          },
-          "webhook_intervals": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Intervals"
-          },
-          "webhook_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Secret Name"
           }
         },
         "required": [
@@ -2911,31 +2886,6 @@
               }
             ],
             "title": "Task Ids"
-          },
-          "webhook_intervals": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Intervals"
-          },
-          "webhook_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Secret Name"
           }
         },
         "required": [

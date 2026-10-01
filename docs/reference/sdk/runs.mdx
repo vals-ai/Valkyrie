@@ -31,7 +31,6 @@ async def start(
     agent_kwargs: Mapping[str, str] | None = None,
     secrets: Mapping[str, str] | None = None,
     service_headers: Mapping[str, str] | None = None,
-    webhook_intervals: Sequence[int] | None = None,
     ignore_custom_services: bool = False,
 ) -> StartBenchmarkResponse
 ```
@@ -104,10 +103,6 @@ async def start(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"service_headers"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Mapping[str, str] | None · default: <code>{"None"}</code></span></div>
-</div>
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"webhook_intervals"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Sequence[int] | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

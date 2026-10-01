@@ -64,8 +64,6 @@ def format_agent_start_details(
     secrets: tuple[tuple[str, str], ...],
     kwargs: tuple[tuple[str, str], ...],
     service_headers: dict[str, str],
-    webhook_secret: str | None,
-    webhook_intervals: list[int] | None,
 ) -> None:
     """Format and display the start details of an agent."""
     click.echo("┌─ Agent " + "─" * 71)
@@ -82,8 +80,6 @@ def format_agent_start_details(
         click.echo(row("Kwargs:", ", ".join(f"{key}={value}" for key, value in kwargs)))
     if service_headers:
         click.echo(row("Headers:", ", ".join(service_headers.keys())))
-    if webhook_secret and webhook_intervals:
-        click.echo(row("Notify at:", ", ".join(f"{interval}%" for interval in webhook_intervals)))
     click.echo("└" + "─" * 79)
     click.echo()
 
@@ -132,42 +128,6 @@ def format_confirmed_start_summary(run_ids: list[UUID], count: int) -> None:
 
     joined_run_ids = ",".join(str(run_id) for run_id in run_ids)
     click.echo(f"Track progress: valkyrie run status --ids {joined_run_ids}")
-
-
-def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
-    """Validate notification interval values."""
-    interval_list = list(intervals)
-    if len(interval_list) > 3:
-        raise click.UsageError("Maximum of 3 intervals allowed.")
-    for interval in interval_list:
-        if interval < 5 or interval > 100:
-            raise click.UsageError(f"Interval {interval} out of range. Must be between 5 and 100.")
-        if interval % 5 != 0:
-            raise click.UsageError(f"Interval {interval} must be divisible by 5.")
-    return interval_list
-
-
-def resolve_webhook_config(
-    intervals: tuple[int, ...], webhook_secret: str | None
-) -> tuple[str | None, list[int] | None]:
-    """Resolve webhook secret and intervals for a benchmark run."""
-    if intervals and not webhook_secret:
-        click.echo(
-            click.style(
-                "  Warning: --interval specified but no webhook secret configured. "
-                "Run `valkyrie config set webhook <secret-name>` first. Ignoring intervals.",
-                fg="yellow",
-            )
-        )
-        return None, None
-
-    if intervals:
-        return webhook_secret, validate_intervals(intervals)
-
-    if webhook_secret:
-        return webhook_secret, [100]
-
-    return None, None
 
 
 @click.command(
@@ -286,14 +246,6 @@ def resolve_webhook_config(
     help="Custom header for benchmark service requests (e.g., -H Authorization my-credential)",
 )
 @click.option(
-    "--interval",
-    "-i",
-    "intervals",
-    multiple=True,
-    type=int,
-    help="Progress percentage threshold for Slack notification (e.g., -i 25 -i 75). Max 3, must be divisible by 5, range 5-100.",
-)
-@click.option(
     "--ignore-custom-services",
     "--ics",
     is_flag=True,
@@ -330,7 +282,6 @@ def start(
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
     headers: tuple[tuple[str, str]],
-    intervals: tuple[int, ...],
     ignore_custom_services: bool,
     connect: bool,
     count: int,
@@ -348,13 +299,10 @@ def start(
 
     service_headers = benchmark_service_headers(benchmark, headers)
 
-    # Webhook notification setup (may print a warning before the boxes)
-    webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
-
     task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
     format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display, priority)
 
-    format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
+    format_agent_start_details(agent, model, secrets, kwargs, service_headers)
 
     try:
         # Build agent config
@@ -417,8 +365,6 @@ def start(
                         priority=priority,
                         service_headers=service_headers or None,
                         provider=provider,
-                        webhook_secret_name=webhook_secret if webhook_intervals else None,
-                        webhook_intervals=webhook_intervals,
                     )
                 except TrackerServiceError as error:
                     click.echo("\r\033[K", nl=False)

@@ -65,7 +65,6 @@ from tracker.exceptions import (
 from tracker.egress import combine_run_egress_policies
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger
-from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
 from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
@@ -321,7 +320,6 @@ class TrackedTask:
 class TaskMonitor:
     _benchmark_id: UUID
     _task_tracking: dict[str, TrackedTask]
-    _notifier: SlackNotifier | None
     _org: Org
     _limiter: ResizableLimiter | None
     _coordinator_done: asyncio.Event | None
@@ -337,13 +335,11 @@ class TaskMonitor:
         limiter: ResizableLimiter | None,
         *,
         authority: ExecutionAuthority,
-        notifier: SlackNotifier | None = None,
         coordinator_done: asyncio.Event | None = None,
     ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
         self._org = org
-        self._notifier = notifier
         self._limiter = limiter
         self._coordinator_done = coordinator_done
         self._cancellation_requested = set()
@@ -384,15 +380,6 @@ class TaskMonitor:
                 return authority_current, benchmark_row, task_states
 
         return authority_current, None, {}
-
-    async def _check_notifications(self, benchmark_row: Benchmark) -> None:
-        """Check notification thresholds using DB task counts."""
-        if not self._notifier:
-            return
-
-        with Session(bind=engine) as session:
-            notification_context = NotificationContext.from_benchmark(benchmark_row, session, self._org)
-            await self._notifier.check_and_notify(notification_context)
 
     async def track_tasks(self) -> None:
         """
@@ -441,10 +428,6 @@ class TaskMonitor:
                     self._cancellation_requested.add(task_id)
                     task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
-            try:
-                await self._check_notifications(benchmark_row)
-            except OperationalError:
-                logger.warning("Task monitor notification read failed; retrying next tick", exc_info=True)
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 

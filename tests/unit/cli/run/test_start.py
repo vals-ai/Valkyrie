@@ -56,7 +56,6 @@ class StartTestbed:
         self.tracker.__enter__.return_value = self.tracker
         self.tracker_factory = MagicMock(return_value=self.tracker)
         self.tracker_factory.validate_sandbox_provider.return_value = ("daytona", "DaytonaSecrets")
-        self.tracker_factory.get_webhook_secret.return_value = None
         self.publish_local_agent = AsyncMock(return_value=True)
         self.resolve_tasks = MagicMock(return_value=None)
         self.resolve_headers = MagicMock(return_value={})
@@ -86,7 +85,6 @@ class StartTestbed:
             for boundary in (
                 self.tracker_factory,
                 self.tracker_factory.validate_sandbox_provider,
-                self.tracker_factory.get_webhook_secret,
                 self.resolve_tasks,
                 self.resolve_headers,
             )

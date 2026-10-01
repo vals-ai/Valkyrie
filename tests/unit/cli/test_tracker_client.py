@@ -131,10 +131,6 @@ class MockTrackerService:
     def get_benchmark_auth(_benchmark_name: str) -> None:
         return None
 
-    @staticmethod
-    def get_webhook_secret() -> None:
-        return None
-
     def __enter__(self) -> "MockTrackerService":
         return self
 

@@ -44,7 +44,6 @@ from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.dispatch_control import admit_recovery_dispatch, terminalize_active_dispatches
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
-from tracker.notifications import SlackNotifier
 from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
@@ -559,7 +558,6 @@ class TestRunFinalization:
         side_effects: dict[str, dict[str, int | bool]] = {
             "upload": {"calls": 0, "lock_held": False},
             "lambda": {"calls": 0, "lock_held": False},
-            "notification": {"calls": 0, "lock_held": False},
         }
         lambda_configs: list[Config] = []
 
@@ -583,14 +581,6 @@ class TestRunFinalization:
             assert isinstance(callback_config, Config)
             lambda_configs.append(callback_config)
 
-        async def assert_notification_lock_held(
-            _notifier: SlackNotifier,
-            _context: Any,
-            **_kwargs: Any,
-        ) -> None:
-            side_effects["notification"]["calls"] += 1
-            side_effects["notification"]["lock_held"] = assert_lock_held(benchmark.id)
-
         async def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
 
@@ -609,7 +599,6 @@ class TestRunFinalization:
         monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", assert_upload_lock_held)
         monkeypatch.setattr("tracker.aws.services.invoke_lambda", assert_lambda_lock_held)
-        monkeypatch.setattr(SlackNotifier, "send_terminal_notification", assert_notification_lock_held)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
         # Release the fixture connection so separate probe sessions can contend for the row lock.
         postgres_session.close()
@@ -622,7 +611,6 @@ class TestRunFinalization:
         assert side_effects == {
             "upload": {"calls": 1, "lock_held": True},
             "lambda": {"calls": 1, "lock_held": True},
-            "notification": {"calls": 1, "lock_held": True},
         }
         assert lambda_configs[0].read_timeout == 60
         assert lambda_configs[0].retries == {"total_max_attempts": 1}

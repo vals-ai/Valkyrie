@@ -176,24 +176,6 @@ class TrackerService:
         auth = config.get("benchmark_auth") or {}
         return auth.get(benchmark_name)
 
-    @staticmethod
-    def get_webhook_secret() -> str | None:
-        """
-        Get Slack webhook secret name from config if it exists.
-
-        Returns:
-            Webhook secret name if configured, None otherwise
-        """
-        config_path = config_location()
-        if not config_path.exists():
-            return None
-
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
-
-        secret_name = config.get("webhook")
-        return secret_name if secret_name else None
-
     def health_check(self) -> Response:
         """
         Check tracker service health.
@@ -298,8 +280,6 @@ class TrackerService:
         priority: int | None = None,
         service_headers: dict[str, str] | None = None,
         provider: str | None = None,
-        webhook_secret_name: str | None = None,
-        webhook_intervals: list[int] | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -336,8 +316,6 @@ class TrackerService:
                 else None,
                 service_headers=service_headers or {},
                 sandbox_provider=provider,
-                webhook_secret_name=webhook_secret_name,
-                webhook_intervals=webhook_intervals,
             )
 
             body = payload.model_dump(

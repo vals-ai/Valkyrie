@@ -395,11 +395,7 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _managed_request(contract.model_copy(update={"secrets": {"AGENT_TOKEN": "agent-secret"}})).model_copy(
-        update={
-            "webhook_secret_name": "webhook-secret",
-            "webhook_intervals": [10],
-            "lambda_function": "result-handler",
-        }
+        update={"lambda_function": "result-handler"}
     )
 
     benchmark_id = uuid4()
@@ -418,17 +414,12 @@ async def test_managed_execution_preflight_checks_aws_dependencies_in_order(
         calls.append("agent_secrets")
         return {"AGENT_TOKEN": "resolved"}
 
-    async def get_webhook_secret(_store: object, _name: str) -> dict[str, str]:
-        calls.append("webhook_secret")
-        return {"url": "https://example.com"}
-
     async def dry_run(*_args: Any, **_kwargs: Any) -> None:
         calls.append("lambda")
 
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", create_log_group)
     monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", fetch_provider)
     monkeypatch.setattr("tracker.aws.services.resolve_secrets", resolve_agent_secrets)
-    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get_webhook_secret)
     monkeypatch.setattr("tracker.aws.services.dry_run_lambda", dry_run)
 
     runtime = CloudRuntimeFactory.create_runtime(
