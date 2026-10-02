@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, AsyncGenerator, Literal, Never, assert_never, cast
+from typing import Any, AsyncGenerator, Literal, Never, assert_never
 
 import logfire
 import sentry_sdk
@@ -932,25 +932,59 @@ async def _stream_controlled_output(
             ):
                 completed = await completed_result()
                 await finish_output()
-                await disarm()
                 await _cancel_and_join_controlled_tasks(*pending_acks)
                 pending_acks.clear()
                 exhausted = False
                 if controller.active_since is not None:
                     ended_at = completed.absence_confirmed_at
                     if active_container is not None:
+                        nested_task = asyncio.create_task(_confirm_inner_stopped(sandbox, active_container))
                         try:
-                            async with asyncio.timeout_at(deadline + GENERATION_TERMINATION_GRACE_SECONDS):
-                                await _confirm_inner_stopped(sandbox, active_container)
+                            while True:
+                                assert deadline_task is not None
+                                if not nested_task.done() and not deadline_task.done():
+                                    await asyncio.wait(
+                                        {nested_task, deadline_task}, return_when=asyncio.FIRST_COMPLETED
+                                    )
+                                if not deadline_task.done():
+                                    await nested_task
+                                    break
+                                apparent_deadline = deadline
+                                stop_at = apparent_deadline + GENERATION_TERMINATION_GRACE_SECONDS
+                                await deadline_task
+                                if controller.client is not None:
+                                    arbitration_deadline = apparent_deadline + GENERATION_ARBITRATION_GRACE_SECONDS
+                                    async with asyncio.timeout_at(arbitration_deadline):
+                                        frozen = await controller.begin_arbitration()
+                                        if controller.deadline(loop.time(), frozen) > loop.time():
+                                            if nested_task.done():
+                                                await nested_task
+                                            await controller.resolve(ArbitrationDecision.RESUME)
+                                            deadline = controller.deadline(loop.time(), frozen)
+                                            stop_at = None
+                                            deadline_task = asyncio.create_task(wait_deadline())
+                                            continue
+                                async with asyncio.timeout_at(stop_at):
+                                    await nested_task
+                                inner_stopped = True
+                                absence_confirmed_at = loop.time()
+                                await seal()
+                                return AgentCausedExitReason.TIMEOUT, controller.effective_allowance_seconds()
                         except TimeoutError as error:
                             raise ControlledGenerationTerminationUnconfirmedError(
                                 "Nested generation container absence was not confirmed by the stop deadline"
                             ) from error
+                        finally:
+                            await _cancel_and_join_controlled_tasks(nested_task)
                         inner_stopped = True
                         ended_at = loop.time()
                         absence_confirmed_at = ended_at
-                    await controller.end_generation(now=ended_at)
-                    exhausted = await exhausted_at(ended_at)
+                        exhausted = await exhausted_at(ended_at)
+                    await disarm()
+                    if not exhausted:
+                        await controller.end_generation(now=ended_at)
+                        if active_container is None:
+                            exhausted = await exhausted_at(ended_at)
                     if stage is None and controller.client is None:
                         exhausted = not _controlled_completion_precedes_deadline(completed, deadline)
                 if exhausted and stage is None:
@@ -998,7 +1032,7 @@ async def _stream_controlled_output(
                         await stop()
                         await seal()
                         return AgentCausedExitReason.TIMEOUT, controller.effective_allowance_seconds()
-                    await controller.begin_generation(now=frame.received_at)
+                    await controller.begin_generation()
                     active_container = frame.container
                     deadline = controller.deadline(controller.active_since)
                     deadline_task = asyncio.create_task(wait_deadline())
@@ -1356,15 +1390,14 @@ async def run_agent(
         )
 
     if controlled_generation:
-        controlled_sandbox = sandbox
-        runtime_containment = controlled_sandbox.generation_containment
+        runtime_containment = sandbox.generation_containment
         if (
             runtime_containment is None
             or runtime_containment.type != "linux_pid_namespace"
             or runtime_containment.version != 1
         ):
             raise InvalidSandboxConfigurationError("Effective sandbox does not support linux_pid_namespace v1")
-        await controlled_sandbox.probe_generation_containment()
+        await sandbox.probe_generation_containment()
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
