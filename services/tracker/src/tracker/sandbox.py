@@ -938,7 +938,12 @@ async def _stream_controlled_output(
                 if controller.active_since is not None:
                     ended_at = completed.absence_confirmed_at
                     if active_container is not None:
-                        nested_task = asyncio.create_task(_confirm_inner_stopped(sandbox, active_container))
+
+                        async def confirm_nested() -> float:
+                            await _confirm_inner_stopped(sandbox, active_container)
+                            return loop.time()
+
+                        nested_task = asyncio.create_task(confirm_nested())
                         try:
                             while True:
                                 assert deadline_task is not None
@@ -956,18 +961,23 @@ async def _stream_controlled_output(
                                     arbitration_deadline = apparent_deadline + GENERATION_ARBITRATION_GRACE_SECONDS
                                     async with asyncio.timeout_at(arbitration_deadline):
                                         frozen = await controller.begin_arbitration()
-                                        if controller.deadline(loop.time(), frozen) > loop.time():
-                                            if nested_task.done():
-                                                await nested_task
+                                        if nested_task.done():
+                                            confirmed_at = await nested_task
+                                            can_resume = controller.elapsed_seconds(
+                                                confirmed_at
+                                            ) < controller.effective_allowance_seconds(frozen)
+                                        else:
+                                            can_resume = controller.deadline(loop.time(), frozen) > loop.time()
+                                        if can_resume:
                                             await controller.resolve(ArbitrationDecision.RESUME)
                                             deadline = controller.deadline(loop.time(), frozen)
                                             stop_at = None
                                             deadline_task = asyncio.create_task(wait_deadline())
                                             continue
                                 async with asyncio.timeout_at(stop_at):
-                                    await nested_task
+                                    ended_at = await nested_task
                                 inner_stopped = True
-                                absence_confirmed_at = loop.time()
+                                absence_confirmed_at = ended_at
                                 await seal()
                                 return AgentCausedExitReason.TIMEOUT, controller.effective_allowance_seconds()
                         except TimeoutError as error:
@@ -977,7 +987,7 @@ async def _stream_controlled_output(
                         finally:
                             await _cancel_and_join_controlled_tasks(nested_task)
                         inner_stopped = True
-                        ended_at = loop.time()
+                        ended_at = nested_task.result()
                         absence_confirmed_at = ended_at
                         exhausted = await exhausted_at(ended_at)
                     await disarm()
