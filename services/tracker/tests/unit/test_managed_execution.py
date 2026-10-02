@@ -144,7 +144,7 @@ def test_benchmark_creation_rejects_inconsistent_managed_inputs(
         _persist_benchmark(database_session, invalid_managed_request, aws_managed=True)
 
 
-def test_taskiq_adapter_rejects_access_key_shape(contract: AgentContractRequest) -> None:
+def test_taskiq_adapter_requires_execution_context(contract: AgentContractRequest) -> None:
     request = RunExecutionRequest(
         contract=contract,
         benchmark_name="test-benchmark",

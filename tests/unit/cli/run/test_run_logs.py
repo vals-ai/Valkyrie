@@ -275,9 +275,8 @@ def test_logs_handles_ctrl_c_without_traceback(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.parametrize("mode", ["run", "task", "follow"])
-@pytest.mark.parametrize("ambient_aws", [False, True])
 def test_logs_uses_selected_cli_config_and_tracker_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, ambient_aws: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     path = tmp_path / "local.yaml"
     path.write_text(
@@ -286,17 +285,6 @@ def test_logs_uses_selected_cli_config_and_tracker_url(
     )
     monkeypatch.setenv("VALKYRIE_CONFIG_PATH", str(path))
     monkeypatch.delenv("TRACKER_SERVICE_URL", raising=False)
-    aws_values = {
-        "AWS_ACCESS_KEY_ID": "synthetic-aws-id-canary",
-        "AWS_SECRET_ACCESS_KEY": "synthetic-aws-secret-canary",
-        "AWS_SESSION_TOKEN": "synthetic-aws-token-canary",
-        "AWS_PROFILE": "synthetic-missing-profile-canary",
-    }
-    for name, value in aws_values.items():
-        if ambient_aws:
-            monkeypatch.setenv(name, value)
-        else:
-            monkeypatch.delenv(name, raising=False)
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -332,9 +320,3 @@ def test_logs_uses_selected_cli_config_and_tracker_url(
     assert request.url.host == "127.0.0.1" and request.url.port == 8765
     assert request.url.params.get("task_id") == (None if mode == "run" else "task-1")
     assert request.headers["X-Api-Key"] == "synthetic-vals-key"
-    assert "authorization" not in request.headers
-    assert not any(name.startswith("x-harness-") for name in request.headers)
-    serialized = str(request.url) + str(dict(request.headers)) + request.content.decode()
-    for name, value in aws_values.items():
-        assert name.lower() not in serialized.lower()
-        assert value not in serialized

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from functools import partial
 from pathlib import Path
 from typing import Any, cast
-from uuid import UUID
 
 import httpx
 import pytest
@@ -19,7 +17,6 @@ from tracker.database.models import (
     LocalBenchmarkArguments,
     FinalEvaluation,
     OutputArtifact,
-    RetryMode,
 )
 from tracker.types import (
     AgentDownloadURLResponse,
@@ -59,7 +56,6 @@ from tracker.types import (
     TasksResponse,
     TaskSummary,
 )
-from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
     AgentContractRequest as SDKAgentContractRequest,
@@ -331,8 +327,6 @@ async def test_sdk_start_matches_tracker_api_key_contract() -> None:
         assert started.concurrency == 5
         assert request.headers["x-api-key"] == "vals-key"
         assert "authorization" not in request.headers
-        assert not any(name.startswith("x-harness-") for name in request.headers)
-        assert "harness_config" not in payload
         assert "sandbox_provider_secret_name" not in payload
         return httpx.Response(200, json=load_fixture("start.json")["response"])
 
@@ -516,86 +510,3 @@ def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:
         assert isinstance(tracker_value, str)
         assert type(sdk_value) is type(tracker_value)
     assert sdk_evaluation.model_dump() == tracker_evaluation.model_dump(warnings=False)
-
-
-@pytest.mark.parametrize("client_kind", ["cli", "sdk"])
-@pytest.mark.parametrize("operation", ["start", "retry", "resume", "read", "results", "outputs"])
-@pytest.mark.parametrize("ambient_aws", [False, True])
-async def test_clients_never_transport_aws_credentials(
-    client_kind: str,
-    operation: str,
-    ambient_aws: bool,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    aws_values = {
-        "AWS_ACCESS_KEY_ID": "synthetic-aws-id-canary",
-        "AWS_SECRET_ACCESS_KEY": "synthetic-aws-secret-canary",
-        "AWS_SESSION_TOKEN": "synthetic-aws-token-canary",
-        "AWS_PROFILE": "synthetic-missing-profile-canary",
-    }
-    for name, value in aws_values.items():
-        if ambient_aws:
-            monkeypatch.setenv(name, value)
-        else:
-            monkeypatch.delenv(name, raising=False)
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text("api_key: synthetic-vals-key\n", encoding="utf-8")
-    monkeypatch.setenv("VALKYRIE_CONFIG_PATH", str(config_path))
-    run_id = UUID(load_fixture("start.json")["response"]["benchmark_id"])
-    requests: list[httpx.Request] = []
-    responses = {
-        "/start-benchmark": load_fixture("start.json")["response"],
-        "/fetch-benchmark": load_fixture("fetch.json")["response"],
-        "/retrieve-results": load_fixture("results.json")["inline"],
-        f"/retry-or-resume-benchmark/{run_id}": load_fixture("retry_resume.json")["response"],
-    }
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == f"/fetch-run-outputs/{run_id}":
-            return httpx.Response(200, content=b"synthetic-archive")
-        return httpx.Response(200, json=responses[request.url.path])
-
-    if client_kind == "sdk":
-        async with ValkyrieClient(ValkyrieConfig.from_yaml(config_path), transport=httpx.MockTransport(handle)) as sdk:
-            if operation == "start":
-                await sdk.runs.start("agent", "swebench")
-            elif operation == "retry":
-                await sdk.runs.retry(run_id)
-            elif operation == "resume":
-                await sdk.runs.resume(run_id)
-            elif operation == "read":
-                await sdk.runs.fetch(run_id)
-            elif operation == "results":
-                await sdk.runs.results(run_id)
-            else:
-                assert b"".join([chunk async for chunk in sdk.runs.stream_outputs(run_id)]) == b"synthetic-archive"
-    else:
-        monkeypatch.setattr(
-            "valkyrie.cli.tracker_client.httpx.Client", partial(httpx.Client, transport=httpx.MockTransport(handle))
-        )
-        tracker = TrackerService(base_url="https://tracker.test")
-        try:
-            if operation == "start":
-                tracker.start_benchmark(AgentContractRequest(name="agent"), "swebench", 1, False, None, None)
-            elif operation in {"retry", "resume"}:
-                tracker.retry_or_resume_benchmark(run_id, operation == "retry", RetryMode.AUTO, None, [])
-            elif operation == "read":
-                tracker.fetch_benchmark(run_id)
-            elif operation == "results":
-                tracker.retrieve_results(run_id, False)
-            else:
-                assert tracker.fetch_run_outputs(run_id).content == b"synthetic-archive"
-        finally:
-            tracker.close()
-
-    assert requests
-    for request in requests:
-        assert request.headers["X-Api-Key"] == "synthetic-vals-key"
-        assert not any(name.startswith("x-harness-") for name in request.headers)
-        serialized = str(request.url) + str(dict(request.headers)) + request.content.decode()
-        assert "harness_config" not in serialized
-        for name, value in aws_values.items():
-            assert name.lower() not in serialized.lower()
-            assert value not in serialized

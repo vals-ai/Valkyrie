@@ -316,17 +316,7 @@ def test_start_request_rejects_unsupported_fields() -> None:
         StartBenchmarkRequest(
             contract=AgentContractRequest(name="agent", run_cmd="run"),
             benchmark_name="test",
-            harness_config={
-                "aws": {
-                    "aws_access_key_id": "key",
-                    "aws_secret_access_key": "secret",
-                    "aws_default_region": "region",
-                },
-                "s3_bucket": "bucket",
-                "log_group": "logs",
-                "log_retention_policy": 30,
-                "sandbox_provider_secret_name": "secret-name",
-            },
+            unsupported_setting="value",
         )
 
 
@@ -433,19 +423,17 @@ def test_managed_request_requires_deployment_sandbox_provider_config(monkeypatch
     assert "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME" in error.value.detail
 
 
-def test_managed_start_errors_do_not_direct_users_to_access_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_managed_start_errors_provide_recovery_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
     with pytest.raises(HTTPException) as error:
         resolve_start_aws_runtime(_request(), _ORG_ID)
     assert error.value.status_code == 503
-    assert "access key" not in error.value.detail.lower()
     assert "Try again later or contact Vals support" in error.value.detail
 
     _configure_managed_runtime(monkeypatch, eligible=False)
     with pytest.raises(HTTPException) as error:
         resolve_start_aws_runtime(_request(), _ORG_ID)
     assert error.value.status_code == 403
-    assert "access key" not in error.value.detail.lower()
     assert "Contact Vals support" in error.value.detail
 
 

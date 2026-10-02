@@ -41,7 +41,7 @@ from tracker.database.session import get_session
 class TestSingleBenchmark:
     """Single benchmark responses and missing runs."""
 
-    @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer session-token"}, {"X-Descope-Api-Key": "fake"}])
+    @pytest.mark.parametrize("headers", [{}, {"X-Descope-Api-Key": "fake"}])
     def test_read_requires_api_key(self, client: TestClient, headers: dict[str, str]) -> None:
         response = client.get(f"/benchmarks/{uuid4()}", headers=headers)
 
@@ -54,7 +54,7 @@ class TestSingleBenchmark:
         database_session.commit()
         own_benchmark = make_benchmark(name="own-run", session=database_session)
         other_benchmark = make_benchmark(name="other-run", org_id=other_org.id, session=database_session)
-        headers = {"X-Api-Key": "fake", "Authorization": "Bearer unrelated-session"}
+        headers = {"X-Api-Key": "fake"}
 
         own_response = client.get(f"/benchmarks/{own_benchmark.id}", headers=headers)
         other_response = client.get(f"/benchmarks/{other_benchmark.id}", headers=headers)

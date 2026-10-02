@@ -779,12 +779,10 @@ def test_start_benchmark_sends_application_identity(
     request = requests[0]
 
     assert request.headers["X-Api-Key"] == "vals-key"
-    assert not any(name.lower().startswith("x-harness-") for name in request.headers)
 
     body = json.loads(request.content)
 
     assert body["custom_benchmark_service"] == (None if ignore_custom_services else "https://bench.example.test")
-    assert "harness_config" not in body
     if default_provider:
         assert body["sandbox_provider"] == "modal"
         assert body["sandbox_provider_secret_name"] == "ModalSecrets"

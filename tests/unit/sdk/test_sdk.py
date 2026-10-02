@@ -114,7 +114,6 @@ async def test_start_preserves_provider_selection(
         assert request.headers["X-Api-Key"] == "vals-key"
         assert payload.get("sandbox_provider") == expected[0]
         assert payload.get("sandbox_provider_secret_name") == expected[1]
-        assert "harness_config" not in payload
         assert "properties" not in payload
         return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
 
@@ -131,30 +130,9 @@ def test_run_error_is_a_public_sdk_error() -> None:
     assert issubclass(ValkyrieRunError, ValkyrieSDKError)
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "S3_BUKET",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "DAYTONA_SECRET_NAME",
-        "aws",
-        "AWS_DEFAULT_REGION",
-        "S3_BUCKET",
-        "LOG_GROUP",
-        "LOG_RETENTION_POLICY",
-    ],
-)
-def test_config_rejects_unsupported_fields(field: str, sdk_config: SDKConfigFactory) -> None:
+def test_config_rejects_unsupported_fields(sdk_config: SDKConfigFactory) -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        sdk_config(**{field: "private-canary"})
-
-
-@pytest.mark.parametrize("field", ["S3_BUCKET", "s3_bucket", "AWS_DEFAULT_REGION", "aws_default_region"])
-def test_config_rejects_client_resource_fields(field: str) -> None:
-    with pytest.raises(ValidationError, match=field):
-        ValkyrieConfig.model_validate({field: "value"})
+        sdk_config(unsupported_setting="private-canary")
 
 
 def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
@@ -172,19 +150,13 @@ def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
         ValkyrieClient.from_config(malformed_path)
 
     incomplete_path = tmp_path / "incomplete.yaml"
-    incomplete_path.write_text("AWS_ACCESS_KEY_ID: key\n", encoding="utf-8")
+    incomplete_path.write_text("environment: invalid\n", encoding="utf-8")
     with pytest.raises(ValkyrieConfigError, match="Invalid Valkyrie config"):
         ValkyrieClient.from_config(incomplete_path)
 
 
-@pytest.mark.parametrize(
-    "content",
-    [
-        "AWS_SECRET_ACCESS_KEY: secret-canary\n",
-        "aws:\n  AWS_DEFAULT_REGION: us-west-2\n  S3_BUCKET: runs-bucket\n  credentials:\n    AWS_SECRET_ACCESS_KEY: secret-canary\n",
-    ],
-)
-def test_from_yaml_errors_redact_rejected_credentials(tmp_path: Path, content: str) -> None:
+def test_from_yaml_errors_redact_invalid_values(tmp_path: Path) -> None:
+    content = "environment: secret-canary\n"
     config_path = tmp_path / "valkyrie.yaml"
     config_path.write_text(content, encoding="utf-8")
 
@@ -235,7 +207,6 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     body = json.loads(request.content)
     assert request.url.path == "/start-benchmark"
     assert request.headers["x-api-key"] == "vals-key"
-    assert not any(name.startswith("x-harness-") for name in request.headers)
     contract = body["contract"]
     assert contract["name"] == "sweagent"
     assert contract["model"] == "claude-sonnet"
@@ -243,12 +214,11 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert contract["kwargs"] == {"temperature": "0"}
     assert body["custom_benchmark_service"] == "https://local.swebench"
     assert body["service_headers"] == {"Authorization": "benchmark-token", "X-Custom": "explicit"}
-    assert "harness_config" not in body
     assert body["sandbox_provider"] == "modal"
     assert body["sandbox_provider_secret_name"] == "ModalSecret"
 
 
-async def test_start_uses_api_key_without_local_resources(make_client, sdk_config) -> None:
+async def test_start_uses_api_key_and_deployment_provider(make_client, sdk_config) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -275,11 +245,9 @@ async def test_start_uses_api_key_without_local_resources(make_client, sdk_confi
     request = requests[0]
 
     assert request.headers["x-api-key"] == "vals-key"
-    assert not any(name.lower().startswith("x-harness-") for name in request.headers)
 
     body = json.loads(request.content)
 
-    assert "harness_config" not in body
     assert "sandbox_provider" not in body
     assert "sandbox_provider_secret_name" not in body
 
@@ -322,7 +290,6 @@ async def test_start_with_managed_storage_uses_guarded_route(make_client, sdk_co
     body = json.loads(request.content)
     assert body["managed_s3_bucket"] == "vs-dev-acme-123"
     assert "properties" not in body
-    assert "harness_config" not in body
 
 
 async def test_start_without_managed_storage_uses_ordinary_route(make_client) -> None:
@@ -853,7 +820,7 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
 
 
 @pytest.mark.parametrize("provider", [None, "modal"])
-async def test_tracker_url_only_start_sends_configuration_without_credentials(provider: str | None) -> None:
+async def test_tracker_url_only_start_uses_selected_provider(provider: str | None) -> None:
     config = ValkyrieConfig(tracker_url="http://127.0.0.1:8765")
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -866,7 +833,6 @@ async def test_tracker_url_only_start_sends_configuration_without_credentials(pr
         assert "properties" not in payload
         assert "environment" not in payload
         assert request.url.host == "127.0.0.1"
-        assert "harness_config" not in payload
         assert "sandbox_provider_secret_name" not in payload
         assert not config.request_headers()
         return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])

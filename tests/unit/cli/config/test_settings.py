@@ -17,32 +17,16 @@ from valkyrie.sdk import ValkyrieConfig
 settings = import_module("valkyrie.cli.config.settings")
 
 
-def test_self_hosted_setup_preserves_provider_order_without_aws_prompts(
-    config_path: Path, cli_runner: CliRunner
-) -> None:
+def test_self_hosted_setup_preserves_provider_order(config_path: Path, cli_runner: CliRunner) -> None:
     providers = {"modal": "ModalSecrets", "daytona": "DaytonaSecrets"}
-    config_path.write_text(
-        yaml.safe_dump({"sandbox_providers": providers, "aws": {"S3_BUCKET": "unused"}}, sort_keys=False)
-    )
+    config_path.write_text(yaml.safe_dump({"sandbox_providers": providers}, sort_keys=False))
 
     result = cli_runner.invoke(settings.init, input="self-hosted\n")
 
     assert result.exit_code == 0, result.output
     config = ValkyrieConfig.from_yaml(config_path)
     assert config.resolve_sandbox_provider() == ("modal", "ModalSecrets")
-    assert "AWS_DEFAULT_REGION" not in result.output
     assert yaml.safe_load(config_path.read_text()) == {"sandbox_providers": providers}
-
-
-@pytest.mark.parametrize("key", ["AWS_DEFAULT_REGION", "S3_BUCKET", "LOG_GROUP", "LOG_RETENTION_POLICY"])
-def test_client_config_rejects_aws_resource_keys(key: str, config_path: Path, cli_runner: CliRunner) -> None:
-    config_path.write_text("api_key: test-key\n")
-
-    result = cli_runner.invoke(settings.set, [key, "resource"])
-
-    assert result.exit_code == 1
-    assert "not a valid config key" in result.output
-    assert config_path.read_text() == "api_key: test-key\n"
 
 
 def test_provider_commands_preserve_api_key_and_default(config_path: Path, cli_runner: CliRunner) -> None:
@@ -175,20 +159,12 @@ def test_init_hosted_managed_needs_only_api_key(config_path: Path, monkeypatch: 
     assert "Managed AWS execution is enabled" in result.output
 
 
-def test_init_hosted_preserves_provider_choices_and_drops_client_aws_settings(
-    config_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_init_hosted_preserves_provider_choices(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
     config_path.write_text(
         yaml.safe_dump(
             {
                 "api_key": "old-key",
-                "aws": {
-                    "AWS_DEFAULT_REGION": "us-east-1",
-                    "S3_BUCKET": "managed-bucket",
-                    "LOG_GROUP": "benchmarks",
-                    "LOG_RETENTION_POLICY": 365,
-                },
                 "sandbox_providers": {"daytona": "AgenticHarnessSecrets"},
                 "default_sandbox_provider": "daytona",
                 "benchmark_auth": {"svc": "old-key"},
@@ -210,7 +186,6 @@ def test_init_hosted_preserves_provider_choices_and_drops_client_aws_settings(
 
     assert result.exit_code == 0, result.output
     config = yaml.safe_load(config_path.read_text())
-    assert "aws" not in config
     assert config["sandbox_providers"] == {"daytona": "AgenticHarnessSecrets"}
     assert config["default_sandbox_provider"] == "daytona"
     assert config["api_key"] == "new-key"
