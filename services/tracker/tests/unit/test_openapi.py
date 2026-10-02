@@ -14,6 +14,18 @@ def test_openapi_snapshot_matches_generator() -> None:
     assert snapshot_path.read_text() == expected
 
 
+def test_openapi_list_fields_are_optional_and_nullable() -> None:
+    schemas = build_openapi()["components"]["schemas"]
+    fields = {
+        "BenchmarkTableRow": ("sandbox_provider", "priority", "dataset_version"),
+        "TaskSummary": ("score",),
+    }
+    for model, names in fields.items():
+        for name in names:
+            assert name not in schemas[model]["required"]
+            assert {"type": "null"} in schemas[model]["properties"][name]["anyOf"]
+
+
 def test_openapi_declares_authentication() -> None:
     schema = build_openapi()
 

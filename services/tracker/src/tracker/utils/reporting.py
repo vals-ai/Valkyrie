@@ -481,6 +481,11 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 label=b.label,
                 model=b.arguments.contract.model,
                 dataset=b.arguments.dataset or "default",
+                sandbox_provider=(
+                    b.arguments.sandbox_provider if "sandbox_provider" in b.arguments.model_fields_set else None
+                ),
+                priority=b.arguments.priority,
+                dataset_version=b.arguments.dataset_version,
                 executor_release_id=b.executor_release_id,
                 current_execution_release_id=b.current_execution_release_id,
                 executor_artifact_digest=b.executor_artifact_digest,

@@ -187,6 +187,9 @@ class BenchmarkTableRow(ResponseModel):
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
     dataset: str = "default"
+    sandbox_provider: str | None = None
+    priority: int | None = None
+    dataset_version: DatasetVersion | None = None
     started_by_email: str | None
     started_at: datetime
     finished_at: datetime | None

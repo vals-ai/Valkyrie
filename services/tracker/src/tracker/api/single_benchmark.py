@@ -13,7 +13,7 @@ from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations
 from tracker.aws.resolver import http_validate_saved_managed_storage_runtime, resolve_run_metadata_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
-from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
+from tracker.database.models import Benchmark, ErrorResult, EvaluationResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.types import SingleBenchmarkResponse, TasksResponse, TaskSummary
@@ -150,6 +150,18 @@ def get_benchmark_tasks(
         (col(Task.status) == TaskStatus.ERROR, latest_error_subquery),
         else_=None,
     )
+    latest_score_subquery = (
+        select(col(EvaluationResult.result).op("->")("score"))
+        .where(EvaluationResult.task == Task.id)
+        .where(EvaluationResult.org_id == org.id)
+        .order_by(desc(EvaluationResult.created_at), desc(EvaluationResult.id))
+        .limit(1)
+        .scalar_subquery()
+    )
+    latest_score = case(
+        (col(Task.status) == TaskStatus.FINISHED, latest_score_subquery),
+        else_=None,
+    )
     sort_expr = {
         "task_id": col(Task.task_id),
         "started_at": col(Task.started_at),
@@ -161,7 +173,11 @@ def get_benchmark_tasks(
     order_by = [primary, col(Task.started_at).desc()]
 
     rows = session.exec(
-        select(Task, latest_error_message).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)
+        select(Task, latest_error_message, latest_score)
+        .where(*base_filters)
+        .order_by(*order_by)
+        .limit(limit)
+        .offset(offset)
     ).all()
     total = session.exec(select(func.count()).select_from(Task).where(*base_filters)).one()
 
@@ -174,8 +190,9 @@ def get_benchmark_tasks(
                 started_at=task.started_at,
                 finished_at=task.finished_at,
                 error_message=error_message if task.status == TaskStatus.ERROR else None,
+                score=float(score) if type(score) in (int, float) else None,
             )
-            for task, error_message in rows
+            for task, error_message, score in rows
         ],
         total_count=total,
     )

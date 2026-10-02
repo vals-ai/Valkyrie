@@ -562,6 +562,11 @@ class Benchmark(SQLModel, table=True):
             agent_name=self.arguments.contract.name,
             model=self.arguments.contract.model,
             dataset=self.arguments.dataset or "default",
+            sandbox_provider=(
+                self.arguments.sandbox_provider if "sandbox_provider" in self.arguments.model_fields_set else None
+            ),
+            priority=self.arguments.priority,
+            dataset_version=self.arguments.dataset_version,
             executor_release_id=self.executor_release_id,
             current_execution_release_id=self.current_execution_release_id,
             executor_artifact_digest=self.executor_artifact_digest,

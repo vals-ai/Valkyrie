@@ -388,6 +388,9 @@ class BenchmarkTableRow(BaseModel):
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
     dataset: str = "default"
+    sandbox_provider: str | None = None
+    priority: int | None = None
+    dataset_version: DatasetVersion | None = None
     started_by_email: str | None
     started_at: datetime
     finished_at: datetime | None
@@ -533,6 +536,7 @@ class TaskSummary(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None = None
+    score: float | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:

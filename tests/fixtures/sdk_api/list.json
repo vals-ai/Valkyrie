@@ -37,7 +37,10 @@
           "FINISHED": 2
         },
         "final_score": 0.75,
-        "error_message": null
+        "error_message": null,
+        "sandbox_provider": null,
+        "priority": null,
+        "dataset_version": null
       }
     ],
     "total_count": 1,

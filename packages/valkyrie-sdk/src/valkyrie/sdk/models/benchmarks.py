@@ -95,6 +95,7 @@ class TaskSummary(ResponseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None = None
+    score: float | None = None
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:

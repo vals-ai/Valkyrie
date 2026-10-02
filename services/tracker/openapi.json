@@ -873,6 +873,16 @@
             "title": "Dataset",
             "type": "string"
           },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "error_message": {
             "anyOf": [
               {
@@ -973,6 +983,28 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "sandbox_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider"
           },
           "started_at": {
             "title": "Started At",
@@ -3275,6 +3307,17 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
           },
           "started_at": {
             "title": "Started At",
