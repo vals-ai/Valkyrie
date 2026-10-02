@@ -62,7 +62,18 @@ class TestAgentsResource:
         tmp_path: Path,
         download_host: str,
     ) -> None:
+        aws_values = {
+            "AWS_ACCESS_KEY_ID": "synthetic-aws-id-canary",
+            "AWS_SECRET_ACCESS_KEY": "synthetic-aws-secret-canary",
+            "AWS_SESSION_TOKEN": "synthetic-aws-token-canary",
+            "AWS_PROFILE": "synthetic-missing-profile-canary",
+        }
+        for name, value in aws_values.items():
+            monkeypatch.setenv(name, value)
+        requests: list[httpx.Request] = []
+
         async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+            requests.append(request)
             assert request.url.host == download_host
             assert ("x-api-key" in request.headers) == (download_host == "tracker.test")
             assert not any(header.startswith("x-harness") for header in request.headers)
@@ -72,7 +83,9 @@ class TestAgentsResource:
 
         monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
 
-        def download_url(_request: httpx.Request) -> httpx.Response:
+        def download_url(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            assert request.headers["X-Api-Key"] == "vals-key"
             return httpx.Response(
                 200,
                 json={
@@ -95,6 +108,13 @@ class TestAgentsResource:
             await client.agents.download("demo", tmp_path, overwrite=True)
 
         assert not (path / "obsolete").exists()
+
+        for request in requests:
+            assert not any(name.startswith("x-harness-") for name in request.headers)
+            serialized = str(request.url) + str(dict(request.headers)) + request.content.decode()
+            for name, value in aws_values.items():
+                assert name.lower() not in serialized.lower()
+                assert value not in serialized
 
     async def test_install_subfolder_pushes_override_without_rewriting_contract(
         self,
