@@ -22,10 +22,11 @@ from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.egress import combine_run_egress_policies
-from tracker.exceptions import SandboxError
+from tracker.exceptions import AgentRunFailedError, SandboxError
 from tracker.sandbox import (
     apply_egress_policy,
     create_sandbox,
+    create_agent_error_redactor,
     install_agent_dependencies,
     run_agent,
     stream_command_output,
@@ -108,6 +109,29 @@ with urllib.request.urlopen(request, timeout=5) as response:
 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
+
+    async def test_reported_error_survives_live_command(self, test_sandbox: Sandbox) -> None:
+        """Preserve a report while excluding stdout and masking a configured secret."""
+        output: list[str] = []
+        command = 'sh -c \'printf "AgentError: failed with fixture-secret\\n" > "$VALKYRIE_ERROR_PATH"; echo stdout-only-sentinel; exit 1\''
+
+        with pytest.raises(AgentRunFailedError) as failure:
+            await stream_command_output(
+                test_sandbox,
+                command,
+                on_output=output.append,
+                redact_error=create_agent_error_redactor(["fixture-secret"]),
+            )
+
+        assert "AgentError: failed with [REDACTED]" in str(failure.value)
+        assert "fixture-secret" not in str(failure.value)
+        assert "stdout-only-sentinel" not in str(failure.value)
+        assert "stdout-only-sentinel" in "".join(output)
+
+        remaining = await test_sandbox.exec("find /tmp/.valkyrie -type f")
+
+        assert remaining.exit_code == 0
+        assert not remaining.stdout.strip()
 
     async def test_create_and_cleanup_sandbox(
         self,
