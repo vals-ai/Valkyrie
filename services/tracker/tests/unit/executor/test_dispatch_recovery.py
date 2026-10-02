@@ -68,7 +68,7 @@ def test_reconcile_once_rolls_back_and_reraises_failures(monkeypatch: MonkeyPatc
 def test_reconcile_once_commits_database_recovery_when_ecs_check_fails(monkeypatch: MonkeyPatch) -> None:
     database_pass = Mock()
     ecs_pass = Mock()
-    sessions = iter([database_pass, ecs_pass])
+    sessions = iter([ecs_pass, database_pass])
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "ecs")
     monkeypatch.setattr(dispatch_recovery, "Session", lambda _engine: SessionContext(next(sessions)))
     monkeypatch.setattr(dispatch_recovery, "reconcile_expired_dispatches", lambda _session: 2)
@@ -235,12 +235,16 @@ def test_automatic_recovery_logs_if_owned_thread_does_not_stop(monkeypatch: Monk
     )
 
 
-@pytest.mark.parametrize("last_status", ["STOPPED", "RUNNING", "MISSING"])
+@pytest.mark.parametrize(
+    ("last_status", "claim_deadline_passed"),
+    [("STOPPED", False), ("RUNNING", False), ("MISSING", False), ("STOPPED", True)],
+)
 def test_recovery_reports_only_stopped_before_claim(
     database_session: Session,
     example_benchmark_object: Benchmark,
     monkeypatch: MonkeyPatch,
     last_status: str,
+    claim_deadline_passed: bool,
 ) -> None:
     release = ExecutorRelease(
         id="ecs-stopped-release",
@@ -256,7 +260,7 @@ def test_recovery_reports_only_stopped_before_claim(
         benchmark.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4(), task_ids=["task-1"]
     )
     dispatch.ecs_task_arn = "arn:aws:ecs:us-east-1:123456789012:task/cluster/task"
-    dispatch.claim_deadline_at = datetime.now(UTC) + timedelta(minutes=2)
+    dispatch.claim_deadline_at = datetime.now(UTC) + timedelta(minutes=-1 if claim_deadline_passed else 2)
     task = Task(
         org_id=benchmark.org_id,
         benchmark=benchmark.id,
