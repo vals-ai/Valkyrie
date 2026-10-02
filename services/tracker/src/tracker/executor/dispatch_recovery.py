@@ -61,33 +61,38 @@ def _reconcile_stopped_tasks(session: Session) -> int:
 
 
 def reconcile_expired_dispatches_once() -> int:
-    """Run one lease-reconciliation pass, then fail ECS tasks that stopped before claiming.
+    """Fail ECS tasks that stopped before claiming, then run one lease-reconciliation pass.
 
-    Each pass commits on its own so an ECS outage never blocks database recovery.
+    The ECS check runs first so a task that stopped near its claim deadline keeps ECS's stop reason. Each pass
+    commits on its own, and database recovery still runs when the ECS check fails.
     """
-    with Session(engine) as session:
-        try:
-            recovered_count = reconcile_expired_dispatches(session)
-            session.exec(
-                delete(ExecutorDispatchPayload).where(
-                    col(ExecutorDispatchPayload.dispatch_id).in_(
-                        select(ExecutorDispatch.id).where(col(ExecutorDispatch.status) != ExecutorDispatchStatus.QUEUED)
+    recovered_count = 0
+    try:
+        if os.environ["EXECUTOR_LAUNCHER"] == "ecs":
+            with Session(engine) as session:
+                try:
+                    recovered_count += _reconcile_stopped_tasks(session)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+    finally:
+        with Session(engine) as session:
+            try:
+                recovered_count += reconcile_expired_dispatches(session)
+                session.exec(
+                    delete(ExecutorDispatchPayload).where(
+                        col(ExecutorDispatchPayload.dispatch_id).in_(
+                            select(ExecutorDispatch.id).where(
+                                col(ExecutorDispatch.status) != ExecutorDispatchStatus.QUEUED
+                            )
+                        )
                     )
                 )
-            )
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-    if os.environ["EXECUTOR_LAUNCHER"] != "ecs":
-        return recovered_count
-    with Session(engine) as session:
-        try:
-            recovered_count += _reconcile_stopped_tasks(session)
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
     return recovered_count
 
 
