@@ -2228,30 +2228,52 @@ class TestRunAgent:
         assert workload.wait_finished.is_set()
         assert workload.output_finished.is_set()
 
-    async def test_controlled_wait_error_kills_before_nonretryable_failure(self) -> None:
+    async def test_controlled_wait_sandbox_loss_propagates(self) -> None:
         workload = _FakeControlledWorkload(wait_error=SandboxNotFoundError("lost"), natural=False)
+        workload.kill_error = SandboxNotFoundError("lost")
         sandbox = _FakeControlledSandbox(workload)
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=0.0,
+        )
+        sealed: list[ExternalServiceAccountingSummary] = []
 
-        with pytest.raises(ControlledGenerationError):
-            await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
+        async def persist_summary(summary: ExternalServiceAccountingSummary) -> None:
+            sealed.append(summary)
 
-        assert workload.kill_calls == 1
-        assert workload.closed.is_set()
+        with pytest.raises(SandboxNotFoundError):
+            await _stream_controlled_output(
+                cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0, controller, persist_summary
+            )
 
-    async def test_controlled_output_error_after_start_is_nonretryable(self) -> None:
+        assert client.decisions == ["SEAL"]
+        assert len(sealed) == 1
+        assert workload.output_finished.is_set()
+
+    async def test_controlled_output_sandbox_loss_propagates(self) -> None:
         workload = _FakeControlledWorkload()
         workload.output_error = SandboxNotFoundError("output lost")
         sandbox = _FakeControlledSandbox(workload)
 
-        with pytest.raises(ControlledGenerationError):
+        with pytest.raises(SandboxNotFoundError):
             await _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 10.0)
 
-        assert workload.kill_calls == 1
-        assert workload.closed.is_set()
+    async def test_controlled_deadline_sandbox_loss_propagates_instead_of_timeout(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.kill_error = SandboxNotFoundError("lost")
+        sandbox = _FakeControlledSandbox(workload)
+
+        with pytest.raises(SandboxNotFoundError):
+            await asyncio.wait_for(
+                _stream_controlled_output(cast(Any, sandbox), "echo done", "/workspace", _ignore_output, 0.001), 5
+            )
 
     async def test_controlled_output_error_reports_unconfirmed_termination_when_kill_fails(self) -> None:
         workload = _FakeControlledWorkload()
-        workload.output_error = SandboxNotFoundError("output lost")
+        workload.output_error = ProviderSandboxError("output lost")
         workload.kill_error = ProviderSandboxError("kill unavailable")
         sandbox = _FakeControlledSandbox(workload)
 

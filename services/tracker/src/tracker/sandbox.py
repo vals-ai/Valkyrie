@@ -720,8 +720,13 @@ def _controlled_result_outcome(
 
 
 async def _raise_controlled_failure_after_close(workload: ControlledWorkload, error: BaseException) -> Never:
+    if isinstance(error, SandboxNotFoundError):
+        # The deleted sandbox took the workload with it; the task's sandbox-loss handler owns it.
+        raise error
     try:
         await workload.kill()
+    except SandboxNotFoundError:
+        raise
     except BaseException as kill_error:
         raise ControlledGenerationTerminationUnconfirmedError(
             "Controlled generation failed and workload termination could not be confirmed"
@@ -852,6 +857,8 @@ async def _stream_controlled_output(
                 absence_confirmed_at = loop.time()
         except asyncio.CancelledError:
             raise
+        except SandboxNotFoundError:
+            raise
         except BaseException as error:
             if termination_deadline is not None:
                 raise GenerationTerminationUnconfirmedError(
@@ -897,6 +904,13 @@ async def _stream_controlled_output(
                 assert absence_confirmed_at is not None
                 await controller.end_generation(now=absence_confirmed_at)
             sealed_once = True
+
+    async def seal_after_absence(error: BaseException) -> None:
+        try:
+            await seal()
+        except BaseException as seal_error:
+            error.add_note(f"Gateway cleanup after confirmed stop failed: {seal_error!r}")
+            logger.exception("Could not seal gateway after confirmed workload stop")
 
     async def exhausted_at(ended_at: float) -> bool:
         nonlocal stop_at
@@ -1088,6 +1102,11 @@ async def _stream_controlled_output(
         await disarm()
         if isinstance(error, ControlledGenerationTerminationUnconfirmedError):
             raise
+        if isinstance(error, SandboxNotFoundError):
+            # A deleted sandbox took the outer and nested workload with it.
+            absence_confirmed_at = loop.time()
+            await seal_after_absence(error)
+            raise
         try:
             if not (wait_task.done() and not wait_task.cancelled() and wait_task.exception() is None):
                 await stop(stop_at)
@@ -1097,16 +1116,16 @@ async def _stream_controlled_output(
                     await _confirm_inner_stopped(sandbox, active_container)
                     inner_stopped = True
                     absence_confirmed_at = loop.time()
+        except SandboxNotFoundError as lost:
+            absence_confirmed_at = loop.time()
+            await seal_after_absence(lost)
+            raise lost from error
         except BaseException as stop_error:
             raise ControlledGenerationTerminationUnconfirmedError(
                 "Controlled generation failed without confirmed nested and outer workload absence"
             ) from stop_error
         if not isinstance(error, ControlledGenerationError):
-            try:
-                await seal()
-            except BaseException as seal_error:
-                error.add_note(f"Gateway cleanup after confirmed stop failed: {seal_error!r}")
-                logger.exception("Could not seal gateway after confirmed workload stop")
+            await seal_after_absence(error)
         raise
     finally:
         await disarm()
