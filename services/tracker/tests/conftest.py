@@ -5,14 +5,14 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from dotenv import load_dotenv
 from sqlalchemy import event
 from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tests.factories import make_benchmark
-from tests.utils import TEST_ORG_ID
-from tracker.aws.resolver import reset_managed_storage_validation_cache
+from tests.utils import TEST_ORG_ID, FakeAccessKeys
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -24,25 +24,24 @@ from tracker.database.models import (
     ExecutorRelease,
     Org,
 )
+from tracker.aws.clients import AWSClientProvider
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.executor.execution_authority import ExecutionAuthority
-from tracker.types import AWSCredentials
 
 _ = load_dotenv()
 
 
-@pytest.fixture(autouse=True)
-def clear_managed_storage_validation_cache() -> None:
-    """Keep one test's remembered owner-bucket validation out of the next test."""
-    reset_managed_storage_validation_cache()
-
-
 @pytest.fixture
-def aws_credentials() -> AWSCredentials:
-    """Provide deterministic AWS credentials for non-live tests."""
-    return AWSCredentials(
-        aws_access_key_id="test-aws-access-key-id",
-        aws_secret_access_key="test-aws-secret-access-key",
-        aws_default_region="us-east-1",
+def aws_runtime() -> AWSRuntime:
+    return AWSRuntime(
+        resources=AWSResources(
+            region="us-east-1",
+            s3_bucket="test-bucket",
+            log_group="test-log-group",
+            log_retention_days=30,
+        ),
+        clients=AWSClientProvider("us-east-1"),
+        expected_bucket_owner="123456789012",
     )
 
 
@@ -64,7 +63,7 @@ def database_session() -> Generator[Session, None, None]:
         with Session(test_engine, expire_on_commit=False) as session:
             # Mirror migration-owned singleton rows and the default organization.
             session.add(ExecutorAdmission())
-            session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
+            session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME, storage_key="test-bucket"))
             session.commit()
             yield session
     finally:
@@ -76,7 +75,7 @@ def database_session() -> Generator[Session, None, None]:
 def executor_authority_kwargs(
     database_session: Session,
 ) -> Callable[..., dict[str, object]]:
-    """Create one live host claim for direct process_benchmark tests."""
+    """Create one live runner claim for direct process_benchmark tests."""
 
     def create(
         benchmark: Benchmark,
@@ -93,7 +92,7 @@ def executor_authority_kwargs(
                     id=release_id,
                     artifact_uri="s3://artifacts/authority-test-release.pex",
                     artifact_digest="a" * 64,
-                    protocol_version="1",
+                    protocol_version=SUPPORTED_PROTOCOL_VERSION,
                     readiness_verified=True,
                 )
                 authority_session.add(release)
@@ -155,3 +154,10 @@ def contract() -> AgentContractRequest:
 def example_benchmark_object(contract: AgentContractRequest) -> Benchmark:
     """Provide a benchmark with the shared test organization and contract."""
     return make_benchmark(contract=contract, concurrency=5)
+
+
+@pytest.fixture
+def fake_access_keys(monkeypatch: pytest.MonkeyPatch) -> FakeAccessKeys:
+    access_keys = FakeAccessKeys()
+    monkeypatch.setattr("tracker.run_access_keys.descope_access_keys", lambda: access_keys)
+    return access_keys

@@ -1,4 +1,4 @@
-"""Validate uploaded agent archives before publishing them to the shared library."""
+"""Validate uploaded agent archives before publishing them to an organization's agent library."""
 
 import stat
 import zipfile

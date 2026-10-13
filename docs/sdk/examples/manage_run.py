@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
 
 async def manage_run(args: argparse.Namespace) -> None:
     """Fetch a run and perform the selected management action."""
-    async with ValkyrieClient.from_config() as client:
+    async with ValkyrieClient() as client:
         current = await client.runs.fetch(args.run_id)
         print(f"{current.benchmark_id} is {current.details.status.value}")
 

@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import BenchmarkStatus
+from tracker.database.models import BenchmarkStatus, FailureCategory
 from tracker.types import RetrieveResultsResponse, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -151,6 +151,7 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
         run_id,
         error_message=None,
         task_errors={"task-b": raw_error, "task-a": "another failure"},
+        task_failure_categories={"task-b": FailureCategory.AGENT},
     )
     tracker = StubErrorsTracker(response)
 
@@ -170,6 +171,7 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
         "error_message",
         "task_error_count",
         "task_errors",
+        "task_failure_categories",
     }
     assert payload["schema_version"] == 1
     assert payload["kind"] == "run_errors"
@@ -181,6 +183,7 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
     assert payload["task_error_count"] == 2
     assert list(payload["task_errors"]) == ["task-a", "task-b"]
     assert payload["task_errors"]["task-b"] == raw_error
+    assert payload["task_failure_categories"] == {"task-b": "agent"}
     assert not any(
         marker in result.stdout
         for marker in ["excluded-secret-name", "excluded-kwarg-value", "excluded-evaluation-value"]
@@ -225,10 +228,40 @@ def test_group_task_errors_uses_raw_messages_and_stable_order() -> None:
     )
 
     assert groups == [
-        ("same", ("task-a", "task-c")),
-        ("different\x1b", ("task-b",)),
-        ("different\\x1b", ("task-d",)),
+        (None, "same", ("task-a", "task-c")),
+        (None, "different\x1b", ("task-b",)),
+        (None, "different\\x1b", ("task-d",)),
     ]
+
+
+def test_group_task_errors_splits_identical_messages_by_category() -> None:
+    groups = group_task_errors(
+        {"task-a": "same", "task-b": "same", "task-c": "same"},
+        {"task-a": FailureCategory.INFRASTRUCTURE, "task-b": FailureCategory.INFRASTRUCTURE},
+    )
+
+    assert groups == [
+        (FailureCategory.INFRASTRUCTURE, "same", ("task-a", "task-b")),
+        (None, "same", ("task-c",)),
+    ]
+
+
+def test_errors_text_labels_groups_with_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = uuid4()
+    tracker = StubErrorsTracker(
+        make_final_view(
+            run_id,
+            error_message=None,
+            task_errors={"task-a": "sandbox setup failed", "task-b": "legacy failure"},
+            task_failure_categories={"task-a": FailureCategory.INFRASTRUCTURE},
+        )
+    )
+
+    result = invoke_with_tracker(monkeypatch, tracker, run_id)
+
+    assert result.exit_code == 0, result.output
+    assert "[1 task, infrastructure] task-a" in result.stdout
+    assert "[1 task] task-b" in result.stdout
 
 
 def test_errors_tracker_failure_has_no_partial_stdout(monkeypatch: pytest.MonkeyPatch) -> None:

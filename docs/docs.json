@@ -73,8 +73,7 @@
           "runs/start",
           "runs/monitor",
           "runs/manage",
-          "runs/results-and-outputs",
-          "runs/slack-notifications"
+          "runs/results-and-outputs"
         ]
       },
       {

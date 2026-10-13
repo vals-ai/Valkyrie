@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -9,12 +9,14 @@ from pydantic import (
     BaseModel,
     Field as PydanticField,
     SerializerFunctionWrapHandler,
+    TypeAdapter,
     field_serializer,
     field_validator,
     model_serializer,
     model_validator,
 )
-from sqlalchemy import Boolean, Connection, Dialect, Index, event, text
+from benchmark_service.schemas import DatasetVersion
+from sqlalchemy import Boolean, Connection, DateTime, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -32,6 +34,7 @@ from sqlmodel import (
 )
 
 from tracker.aws.runtime import AWSResources
+from tracker.local.resources import LocalResources
 from tracker.database.utils import has_field_changed
 from tracker.egress import EgressPolicy
 from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
@@ -42,8 +45,7 @@ if TYPE_CHECKING:
     from tracker.types import (
         BenchmarkTableRow,
         FetchBenchmarkMetadataResponse,
-        HarnessConfig,
-        StartBenchmarkRequest,
+        RunExecutionRequest,
     )
 
 
@@ -53,6 +55,7 @@ DEFAULT_ORG_NAME = "default"
 class Org(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(unique=True, index=True)
+    storage_key: str | None = Field(default=None, unique=True)
 
 
 class TaskStatus(str, Enum):
@@ -98,6 +101,16 @@ class AgentCausedExitReason(str, Enum):
 
     TIMEOUT = "TIMEOUT"
     OS_KILLED = "OS_KILLED"
+
+
+class FailureCategory(str, Enum):
+    """Coarse classification of a task or run failure, decided where the failure is caught."""
+
+    INFRASTRUCTURE = "infrastructure"
+    BENCHMARK_SERVICE = "benchmark_service"
+    AGENT = "agent"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
 
 
 class RetryMode(str, Enum):
@@ -204,21 +217,41 @@ class AgentContractRequest(BaseModel):
         return normalized_artifacts
 
 
-class BenchmarkArguments(BaseModel):
+class _BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}
 
     contract: AgentContractRequest
     concurrency: int
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
     priority: int | None = PydanticField(default=None, exclude=True, strict=True, ge=0, le=4)
     queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    dataset_version: DatasetVersion | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
+
+
+class AWSBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments for an AWS run, including legacy rows without resources."""
+
+    environment: Literal["aws"] = "aws"
+    properties: AWSResources | None = None
+
+
+class LocalBenchmarkArguments(_BenchmarkArguments):
+    """Stored arguments with the filesystem resources selected at admission."""
+
+    environment: Literal["local"] = "local"
+    properties: LocalResources
+
+
+BenchmarkArguments = Annotated[
+    AWSBenchmarkArguments | LocalBenchmarkArguments,
+    PydanticField(discriminator="environment"),
+]
+benchmark_arguments_adapter: TypeAdapter[BenchmarkArguments] = TypeAdapter(BenchmarkArguments)
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -256,7 +289,10 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we save the value to the database."""
         if value is None:
             return None
-        serialized = value.model_dump(exclude={"priority", "queue_pool_id"})
+        excluded_fields = {"priority", "queue_pool_id"}
+        if value.dataset_version is None:
+            excluded_fields.add("dataset_version")
+        serialized = value.model_dump(mode="json", exclude=excluded_fields)
         if value.priority is not None:
             serialized["priority"] = value.priority
         if value.queue_pool_id is not None:
@@ -268,7 +304,7 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we fetch the value from the database."""
         if value is None:
             return None
-        return BenchmarkArguments(**value)
+        return benchmark_arguments_adapter.validate_python({"environment": "aws", **value})
 
 
 class ExecutorRelease(SQLModel, table=True):
@@ -318,6 +354,91 @@ class ExecutorDispatch(SQLModel, table=True):
     heartbeat_at: datetime | None = None
     lease_expires_at: datetime | None = None
     failure_reason: str | None = None
+    ecs_task_arn: str | None = None
+
+
+class OrganizationInvite(SQLModel, table=True):
+    __tablename__ = "organization_invite"
+
+    organization: str = Field(primary_key=True)
+    email: str = Field(primary_key=True, index=True)
+    invited_by: str
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(ZoneInfo("UTC")),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class RunAccessKey(SQLModel, table=True):
+    __tablename__ = "run_access_key"
+
+    key_id: str = Field(primary_key=True)
+    benchmark_id: UUID = Field(foreign_key="benchmark.id")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(ZoneInfo("UTC")),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    last_attempt_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+
+
+class OrgProviderSecret(SQLModel, table=True):
+    __tablename__ = "org_provider_secret"
+
+    org_id: UUID = Field(foreign_key="org.id", primary_key=True)
+    provider: str = Field(primary_key=True)
+    secret_name: str
+
+
+class UserDefaultProvider(SQLModel, table=True):
+    __tablename__ = "user_default_provider"
+
+    org_id: UUID = Field(foreign_key="org.id", primary_key=True)
+    user_id: str = Field(primary_key=True)
+    provider: str
+
+
+class UserBenchmarkService(SQLModel, table=True):
+    __tablename__ = "user_benchmark_service"
+
+    org_id: UUID = Field(foreign_key="org.id", primary_key=True)
+    user_id: str = Field(primary_key=True)
+    benchmark: str = Field(primary_key=True)
+    url: str
+    auth_header_name: str | None = None
+    auth_secret_name: str | None = None
+
+
+class ExecutorDispatchPayload(SQLModel, table=True):
+    __tablename__ = "executor_dispatch_payload"
+
+    dispatch_id: UUID = Field(primary_key=True, foreign_key="executordispatch.id")
+    ciphertext: bytes
+    encrypted_data_key: bytes
+    nonce: bytes
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(ZoneInfo("UTC")),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class SandboxBuildReservation(SQLModel, table=True):
+    """Capacity held while one exact task attempt is building."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0",
+            name="sandbox_build_reservation_resources_nonnegative",
+        ),
+        Index("ix_sandboxbuildreservation_pool", "pool_id"),
+    )
+
+    task_row_id: UUID = Field(primary_key=True, foreign_key="task.id")
+    attempt_started_at: datetime
+    reserved_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    pool_id: str
+    requested_vcpu: int
+    requested_memory: int
+    requested_disk: int
 
 
 class Benchmark(SQLModel, table=True):
@@ -348,7 +469,6 @@ class Benchmark(SQLModel, table=True):
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
-    aws_managed: bool = Field(default=False, nullable=False)
     executor_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     current_execution_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     executor_artifact_uri: str | None = None
@@ -356,8 +476,6 @@ class Benchmark(SQLModel, table=True):
     executor_protocol_version: str | None = None
 
     error_message: str | None = Field(default=None)
-    webhook_secret_name: str | None = Field(default=None)
-    webhook_intervals: list[int] | None = Field(default=None, sa_column=Column(JSON))
     custom_benchmark_service: str | None = Field(default=None)
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
@@ -376,8 +494,15 @@ class Benchmark(SQLModel, table=True):
         return fetch_evaluation_results(self.id, session, self.org_id)
 
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
+        errors = self.fetch_task_failures(session)
+        if errors is None:
+            return None
+        return {task_id: message for task_id, (message, _category) in errors.items()}
+
+    def fetch_task_failures(self, session: Session) -> dict[str, tuple[str, FailureCategory | None]] | None:
+        """Latest terminal error message and category keyed by task ID for errored tasks."""
         error_rows = session.exec(
-            select(Task.task_id, ErrorResult.error_message)
+            select(Task.task_id, col(ErrorResult.error_message), col(ErrorResult.category))
             .outerjoin(
                 ErrorResult,
                 (col(ErrorResult.task) == col(Task.id))
@@ -393,54 +518,31 @@ class Benchmark(SQLModel, table=True):
         if not error_rows:
             return None
 
-        errors_by_task_id: dict[str, str] = {}
-        for task_id, error_message in error_rows:
-            errors_by_task_id.setdefault(task_id, error_message or "No error message was provided")
+        errors_by_task_id: dict[str, tuple[str, FailureCategory | None]] = {}
+        for task_id, error_message, category in error_rows:
+            errors_by_task_id.setdefault(task_id, (error_message or "No error message was provided", category))
 
         return errors_by_task_id
 
-    def access_key_start_benchmark_request(
-        self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
-    ) -> "StartBenchmarkRequest":
-        from tracker.types import StartBenchmarkRequest
+    def local_start_benchmark_request(self, service_headers: dict[str, str]) -> "RunExecutionRequest":
+        from tracker.types import RunExecutionRequest
 
-        if self.aws_managed:
-            raise ValueError("Managed runs cannot create access-key execution requests")
-
-        # Older rows may persist the provider secret only in benchmark arguments.
-        if self.arguments.sandbox_provider_secret_name:
-            harness_config = harness_config.model_copy(
-                update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
-            )
-
-        return StartBenchmarkRequest(
-            environment=self.arguments.environment,
-            properties=self.arguments.properties,
-            contract=self.arguments.contract,
+        return RunExecutionRequest(
+            **self.arguments.model_dump(exclude={"dataset_version"}),
+            resolved_dataset_version=self.arguments.dataset_version,
             benchmark_name=self.name,
-            concurrency=self.arguments.concurrency,
-            priority=self.arguments.priority,
-            task_ids=self.arguments.task_ids,
-            slice_str=self.arguments.slice_str,
-            lambda_function=self.arguments.lambda_function,
-            dataset=self.arguments.dataset,
-            harness_config=harness_config,
-            sandbox_provider=self.arguments.sandbox_provider,
+            label=self.label,
             custom_benchmark_service=self.custom_benchmark_service,
-            webhook_secret_name=self.webhook_secret_name,
-            webhook_intervals=self.webhook_intervals,
-            service_headers=service_headers or {},
+            service_headers=service_headers,
         )
 
-    def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
-        from tracker.types import StartBenchmarkRequest
+    def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "RunExecutionRequest":
+        from tracker.types import RunExecutionRequest
 
-        if not self.aws_managed:
-            raise ValueError("Access-key runs cannot create managed execution requests")
-        if not self.arguments.sandbox_provider_secret_name:
+        if self.arguments.environment == "aws" and not self.arguments.sandbox_provider_secret_name:
             raise ValueError("Managed runs require a sandbox provider secret name")
 
-        return StartBenchmarkRequest(
+        return RunExecutionRequest(
             environment=self.arguments.environment,
             properties=self.arguments.properties,
             contract=self.arguments.contract,
@@ -451,12 +553,10 @@ class Benchmark(SQLModel, table=True):
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
-            harness_config=None,
+            resolved_dataset_version=self.arguments.dataset_version,
             sandbox_provider=self.arguments.sandbox_provider,
             sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
-            webhook_secret_name=self.webhook_secret_name,
-            webhook_intervals=self.webhook_intervals,
             service_headers=service_headers or {},
         )
 
@@ -474,7 +574,9 @@ class Benchmark(SQLModel, table=True):
             if benchmark_url is not None
             else self.custom_benchmark_service or create_benchmark_service_url(self.name)
         )
-        return create_benchmark_service_client(url=url, service_headers=service_headers)
+        return create_benchmark_service_client(
+            url=url, service_headers=service_headers, dataset_version=self.arguments.dataset_version
+        )
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":
@@ -662,6 +764,7 @@ class ErrorResult(ResultBase, table=True):
     operation: str | None = Field(default=None)
     error_type: str | None = Field(default=None)
     cause_code: str | None = Field(default=None)
+    category: FailureCategory | None = Field(default=None)
     retry_scheduled: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),

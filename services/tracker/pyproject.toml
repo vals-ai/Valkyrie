@@ -19,9 +19,7 @@ dependencies = [
   "logfire[fastapi,httpx]>=3.0.0",
   "opentelemetry-api>=1.20.0",
   "opentelemetry-sdk>=1.20.0",
-  # taskiq 0.13 removed compat helpers still imported by taskiq-redis.
-  "taskiq>=0.12.1,<0.13",
-  "taskiq-redis>=1.2.2",
+  "cryptography>=44.0.0",
   "alembic>=1.18.4",
   "descope>=0.9.0",
   "tenacity>=9.0.0",
@@ -30,6 +28,7 @@ dependencies = [
   "python-dotenv>=1.2.2",
   "create-benchmark-service>=0.39.1",
   "aioboto3>=7.0.0",
+  "aiobotocore>=3.4.0",
 ]
 
 [dependency-groups]
@@ -38,7 +37,6 @@ dev = [
   "pytest-asyncio>=1.3.0",
   "ruff",
   "basedpyright",
-  "pytest-env>=1.2.0",
   "pytest-alembic>=0.12.1",
   "testcontainers[postgres]>=4.10.0",
   "pytest-cov>=7.1.0",
@@ -51,9 +49,11 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 prerelease = "allow"
+# Editable installs copy force-included executor_protocol.py, so rebuild when it changes.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/executor_protocol.py" }]
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "36c147a21cf4938abe4a87c2ea4c806d4530f171" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", tag = "v0.45.3" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -91,7 +91,6 @@ exclude = [".venv", "src/tracker/database/migrations/versions"]
 addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
 pythonpath = [".", "src", "../.."]
-env = ["BROKER_ENVIRONMENT=testing"]
 [tool.coverage.run]
 source = ["src/tracker", "main"]
 branch = true

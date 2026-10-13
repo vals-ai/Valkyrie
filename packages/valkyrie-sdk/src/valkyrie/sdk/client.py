@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterable
 from contextlib import AbstractAsyncContextManager
-from pathlib import Path
 from types import TracebackType
 from typing import Any, TypeVar
 
 import httpx
 from pydantic import BaseModel
 
-from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, TRACKER_URLS, ValkyrieConfig
+from valkyrie.sdk.config import ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieAPIError, ValkyrieTransportError
 from valkyrie.sdk.resources.agents import AgentsResource
 from valkyrie.sdk.resources.artifacts import ArtifactsResource
@@ -20,30 +18,29 @@ from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from .resources.logs import LogsResource
 from valkyrie.sdk.resources.runs import RunsResource
 from valkyrie.sdk.resources.scheduler import SchedulerResource
+from valkyrie.sdk.resources.secrets import SecretsResource
+from valkyrie.sdk.resources.settings import ProvidersResource, SettingsResource
 from valkyrie.sdk.resources.services import BenchmarkServicesResource
 
-DEFAULT_BASE_URL = TRACKER_URLS["bench"]
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 
 
 class ValkyrieClient:
-    """Async client for Valkyrie API resources."""
+    """Async client for Valkyrie API resources; without a config it uses `ValkyrieConfig()`."""
 
     def __init__(
         self,
-        config: ValkyrieConfig,
+        config: ValkyrieConfig | None = None,
         *,
-        base_url: str | None = None,
         timeout: float | httpx.Timeout = 120,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.config = config
-        resolved_base_url = base_url or os.environ.get("TRACKER_SERVICE_URL") or config.tracker_url
+        self.config = config or ValkyrieConfig()
         self._timeout = timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)
         self._client = httpx.AsyncClient(
-            base_url=resolved_base_url.rstrip("/"),
+            base_url=self.config.url,
             timeout=self._timeout,
-            headers=config.request_headers(),
+            auth=self.config.http_auth(),
             transport=transport,
         )
         self.runs = RunsResource(self)
@@ -53,23 +50,9 @@ class ValkyrieClient:
         self.artifacts = ArtifactsResource(self)
         self.services = BenchmarkServicesResource(self)
         self.scheduler = SchedulerResource(self)
-
-    @classmethod
-    def from_config(
-        cls,
-        path: str | Path = DEFAULT_CONFIG_PATH,
-        *,
-        base_url: str | None = None,
-        timeout: float | httpx.Timeout = 120,
-        transport: httpx.AsyncBaseTransport | None = None,
-    ) -> ValkyrieClient:
-        """Load a client from a CLI-compatible YAML config."""
-        return cls(
-            ValkyrieConfig.from_yaml(path),
-            base_url=base_url,
-            timeout=timeout,
-            transport=transport,
-        )
+        self.secrets = SecretsResource(self)
+        self.providers = ProvidersResource(self)
+        self.settings = SettingsResource(self)
 
     async def __aenter__(self) -> ValkyrieClient:
         return self
@@ -124,6 +107,18 @@ class ValkyrieClient:
             body = response.text
         detail = body.get("detail", body) if isinstance(body, dict) else body
         raise ValkyrieAPIError(response.status_code, detail)
+
+    def download_auth(self, url: str) -> httpx.Auth | None:
+        """Authenticate downloads only on this client's Tracker origin."""
+        target = httpx.URL(url)
+        tracker = self._client.base_url
+        if target.scheme in {"http", "https"} and (target.scheme, target.host, target.port) == (
+            tracker.scheme,
+            tracker.host,
+            tracker.port,
+        ):
+            return self._client.auth
+        return None
 
     def stream_response(
         self,

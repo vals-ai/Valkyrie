@@ -1,8 +1,6 @@
 {
   "request": {
     "environment": "aws",
-    "properties": null,
-    "managed_s3_bucket": null,
     "contract": {
       "name": "sweagent",
       "model": "claude-sonnet",
@@ -35,26 +33,10 @@
     "slice_str": null,
     "lambda_function": null,
     "dataset": "default",
-    "harness_config": {
-      "aws": {
-        "aws_access_key_id": "aws-key",
-        "aws_secret_access_key": "aws-secret",
-        "aws_default_region": "us-west-2",
-        "aws_session_token": null
-      },
-      "s3_bucket": "runs-bucket",
-      "log_group": "benchmarks",
-      "log_retention_policy": 30,
-      "sandbox_provider_secret_name": "ModalSecret"
-    },
-    "custom_benchmark_service": null,
+    "ignore_custom_services": false,
     "service_headers": {},
-    "sandbox_provider": "modal",
-    "sandbox_provider_secret_name": null,
-    "service_auth_header_name": null,
-    "service_auth_secret_name": null,
-    "webhook_secret_name": null,
-    "webhook_intervals": null
+    "sandbox_provider": "daytona",
+    "dataset_version": null
   },
   "response": {
     "benchmark_name": "swebench",
@@ -69,6 +51,8 @@
     "executor_release_id": null,
     "current_execution_release_id": null,
     "executor_artifact_digest": null,
-    "executor_protocol_version": null
+    "executor_protocol_version": null,
+    "dataset_version": null,
+    "dataset_version_warning": null
   }
 }

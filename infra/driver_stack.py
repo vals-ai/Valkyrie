@@ -25,7 +25,6 @@ from constants import (
     DRIVER_LOG_GROUP_NAME,
     POSTGRES_DB,
     POSTGRES_PORT,
-    REDIS_PORT,
     RELEASE_TEST_DRIVER_SECRET_ARN_ENV,
     RELEASE_TEST_OPERATOR_PRINCIPAL_ARN_ENV,
     RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN_ENV,
@@ -38,7 +37,6 @@ from stage import Stage
 from stage_config import config_for
 
 _ARTIFACT_PREFIX = "releases/package-r"
-_CAMPAIGN_AGENT_KEY = "agents/coexistence_sleep_agent.zip"
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
     operating_system_family=aws_ecs.OperatingSystemFamily.LINUX,
@@ -62,8 +60,6 @@ class DriverStack(Stack):
         db_host: str,
         db_port: str,
         db_credentials: aws_secretsmanager.ISecret,
-        redis_url: str,
-        redis_security_group: aws_ec2.ISecurityGroup,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, id, **kwargs)
@@ -105,16 +101,6 @@ class DriverStack(Stack):
             description="No-ingress security group for the release-test Package R driver",
             allow_all_outbound=False,
         )
-        aws_ec2.CfnSecurityGroupIngress(
-            self,
-            "DriverToRedisIngress",
-            group_id=redis_security_group.security_group_id,
-            source_security_group_id=self.security_group.security_group_id,
-            ip_protocol="tcp",
-            from_port=REDIS_PORT,
-            to_port=REDIS_PORT,
-            description="Allow release-test Driver to connect to Redis",
-        )
         self.security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),
             aws_ec2.Port.tcp(80),
@@ -123,12 +109,7 @@ class DriverStack(Stack):
         self.security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),
             aws_ec2.Port.tcp(POSTGRES_PORT),
-            "Release-test PostgreSQL",
-        )
-        self.security_group.add_egress_rule(
-            aws_ec2.Peer.ipv4(VPC_CIDR),
-            aws_ec2.Port.tcp(REDIS_PORT),
-            "Release-test Redis",
+            "Release-test RDS proxy",
         )
         self.security_group.add_egress_rule(
             aws_ec2.Peer.ipv4(VPC_CIDR),
@@ -191,7 +172,6 @@ class DriverStack(Stack):
                 "DB_HOST": db_host,
                 "DB_PORT": db_port,
                 "DB_NAME": POSTGRES_DB,
-                "REDIS_URL": redis_url,
                 "TRACKER_BASE_URL": f"http://{tracker_alb_dns}",
             },
             secrets={
@@ -212,10 +192,7 @@ class DriverStack(Stack):
         task_role.add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["s3:GetObject"],
-                resources=[
-                    bucket.arn_for_objects(f"{_ARTIFACT_PREFIX}/*"),
-                    bucket.arn_for_objects(_CAMPAIGN_AGENT_KEY),
-                ],
+                resources=[bucket.arn_for_objects(f"{_ARTIFACT_PREFIX}/*")],
             )
         )
         task_role.add_to_policy(

@@ -8,15 +8,16 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from importlib import import_module
-from pathlib import Path
 
-from valkyrie.sdk.client import DEFAULT_BASE_URL, ValkyrieClient  # pyright: ignore[reportMissingImports]
-from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.client import ValkyrieClient  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.config import ValkyrieConfig  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.agents import AgentsResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.secrets import SecretsResource  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk.resources.settings import ProvidersResource, SettingsResource  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
 EXPECTED_ALL = [
@@ -35,6 +36,8 @@ EXPECTED_ALL = [
     "BenchmarkStatus",
     "BenchmarkStatusEntry",
     "BenchmarkStatusResponse",
+    "DatasetVersion",
+    "FailureCategory",
     "FetchBenchmarkResponse",
     "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
@@ -58,8 +61,15 @@ EXPECTED_ALL = [
     "SchedulerResourceCapacityResponse",
     "SchedulerSummaryResponse",
     "SchedulerWaitingEntryResponse",
+    "SecretEntry",
+    "SecretsResponse",
+    "ProvidersResponse",
+    "RunSettingsResponse",
+    "SavedBenchmarkService",
     "SingleBenchmarkResponse",
     "SingleTaskResponse",
+    "ShedBenchmarkRequest",
+    "ShedBenchmarkResponse",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
     "UpdateBenchmarkConcurrencyRequest",
@@ -72,7 +82,6 @@ EXPECTED_ALL = [
     "ValkyrieClient",
     "ValkyrieConfig",
     "ValkyrieConfigError",
-    "ValkyrieRunAcceptedError",
     "ValkyrieRunError",
     "ValkyrieSDKError",
     "ValkyrieStreamError",
@@ -80,16 +89,12 @@ EXPECTED_ALL = [
 ]
 
 EXPECTED_SIGNATURES = {
-    ValkyrieClient: "config, *, base_url=None, timeout=120, transport=None",
-    ValkyrieClient.from_config: (
-        "path=~/.config/valkyrie/valkyrie.yaml, *, base_url=None, timeout=120, transport=None"
-    ),
+    ValkyrieClient: "config=None, *, timeout=120, transport=None",
     RunsResource.start: (
-        "self, agent, benchmark, *, model=None, concurrency=5, priority=None, properties=None, "
-        "managed_s3_bucket=None, task_ids=None, "
-        "slice_str=None, dataset=None, "
+        "self, agent, benchmark, *, model=None, concurrency=5, priority=None, task_ids=None, "
+        "slice_str=None, dataset=None, dataset_version=None, "
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
-        "webhook_intervals=None, ignore_custom_services=False"
+        "ignore_custom_services=False"
     ),
     RunsResource.filter_options: "self",
     RunsResource.fetch: "self, run_id",
@@ -104,11 +109,11 @@ EXPECTED_SIGNATURES = {
     RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "update_agent=False, benchmark_url=None"
     ),
     RunsResource.retry: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "benchmark_url=None"
+        "update_agent=False, benchmark_url=None"
     ),
     LogsResource.page_task: (
         "self, run_id, task_id, *, query=None, start_time=None, end_time=None, cursor=None, limit=1000"
@@ -127,6 +132,16 @@ EXPECTED_SIGNATURES = {
     ),
     AgentsResource.list: "self",
     AgentsResource.download_url: "self, name",
+    SecretsResource.list: "self",
+    SecretsResource.set: "self, name, value",
+    SecretsResource.remove: "self, name",
+    ProvidersResource.list: "self",
+    ProvidersResource.set: "self, provider, secret_name",
+    ProvidersResource.remove: "self, provider",
+    SettingsResource.get: "self",
+    SettingsResource.set_default_provider: "self, provider",
+    SettingsResource.set_benchmark_service: "self, benchmark, url, *, auth_secret=None, auth_header=None",
+    SettingsResource.remove_benchmark_service: "self, benchmark",
     BenchmarkServicesResource.catalog: "self",
     BenchmarkServicesResource.list: "self",
     BenchmarkServicesResource.task_ids: (
@@ -151,8 +166,7 @@ def signature_text(callable_object: Callable[..., object]) -> str:
         else:
             part = parameter.name
         if parameter.default is not inspect.Parameter.empty:
-            value = str(parameter.default) if isinstance(parameter.default, Path) else repr(parameter.default)
-            part += f"={value}"
+            part += f"={parameter.default!r}"
         parts.append(part)
         if parameter.kind is inspect.Parameter.POSITIONAL_ONLY and (
             index + 1 == len(parameters) or parameters[index + 1].kind is not inspect.Parameter.POSITIONAL_ONLY
@@ -165,8 +179,6 @@ def test_public_exports_and_constants_are_stable() -> None:
     sdk = import_module("valkyrie.sdk")
 
     assert getattr(sdk, "__all__") == EXPECTED_ALL
-    assert DEFAULT_BASE_URL == "https://benchmark-tracker.vals.ai"
-    assert str(DEFAULT_CONFIG_PATH) == "~/.config/valkyrie/valkyrie.yaml"
     assert getattr(sdk, "ValkyrieClient") is ValkyrieClient
     assert getattr(sdk, "ValkyrieConfig") is ValkyrieConfig
 
@@ -191,4 +203,7 @@ async def test_client_exposes_v2_resource_namespaces(make_client) -> None:
         assert isinstance(client.agents, AgentsResource)
         assert isinstance(client.services, BenchmarkServicesResource)
         assert isinstance(client.scheduler, SchedulerResource)
+        assert isinstance(client.secrets, SecretsResource)
+        assert isinstance(client.providers, ProvidersResource)
+        assert isinstance(client.settings, SettingsResource)
         assert not hasattr(client.services, "check")

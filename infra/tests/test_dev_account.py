@@ -30,7 +30,7 @@ from constants import (
 )
 from shared import SharedStack
 from executor_stack import ExecutorStack
-from stage import BENCH, DEV, RELEASE_TEST, Stage
+from stage import BENCH, DEV, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
 
 TEST_ACCOUNT = "123456789012"
@@ -73,6 +73,7 @@ SENTRY_DSN_SECRET_NAME = "example/sentry-dsn"
 DEV_AUTH_ENV = {
     "AWS_DEPLOYMENT_ROLE_ORG_IDS": "00000000-0000-0000-0000-000000000001",
     "AWS_TRACKER_SECRET_NAME_PREFIXES": "test-tracker-secret",
+    "AWS_SHARED_SECRET_TENANTS": "test-tenant",
     "DESCOPE_PROJECT_ID": "dev-project",
     "DESCOPE_MANAGEMENT_KEY_SECRET_NAME": DESCOPE_MANAGEMENT_KEY_SECRET_NAME,
     "SENTRY_DSN_SECRET_NAME": SENTRY_DSN_SECRET_NAME,
@@ -108,8 +109,6 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
             namespace=shared.namespace,
             hosted_zone=shared.hosted_zone,
             bucket_name=shared.bucket_name,
-            redis_url=shared.redis_url,
-            redis_security_group=shared.redis_security_group,
             env=TEST_ENV,
         )
         executor = ExecutorStack(
@@ -118,10 +117,7 @@ def dev_service_templates() -> tuple[assertions.Template, assertions.Template]:
             stage=stage,
             vpc=shared.vpc,
             cluster=shared.cluster,
-            namespace=shared.namespace,
-            redis_url=shared.redis_url,
-            bucket_name=shared.bucket_name,
-            database=tracker.database,
+            database_proxy=tracker.database_proxy,
             db_credentials=tracker.db_credentials,
             tracker_service=tracker.tracker_fargate_service,
             tracker_image=tracker.tracker_image,
@@ -198,7 +194,15 @@ class DevAccountInfrastructureTest(unittest.TestCase):
 
         self.assertEqual(
             bucket["Properties"]["LifecycleConfiguration"],
-            {"Rules": [{"AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}, "Status": "Enabled"}]},
+            {
+                "Rules": [
+                    {
+                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
+                        "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+                        "Status": "Enabled",
+                    }
+                ]
+            },
         )
 
         conditional_write_statements = [
@@ -214,6 +218,21 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         self.assertEqual(conditional_write["Principal"], {"AWS": "*"})
         self.assertEqual(conditional_write["Condition"], {"Null": {"s3:if-none-match": "true"}})
         self.assertIn("releases/*", json.dumps(conditional_write["Resource"]))
+
+    def test_artifact_retention_preserves_current_objects_and_legacy_bucket(self) -> None:
+        for stage_name in (DEV, PROD, RELEASE_TEST, BENCH):
+            with self.subTest(stage=stage_name):
+                app = cdk.App(context=TEST_CONTEXT)
+                stage = Stage(stage_name)
+                shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
+                template = assertions.Template.from_stack(shared)
+                bucket = next(iter(template.find_resources("AWS::S3::Bucket").values()))
+                rules = bucket["Properties"]["LifecycleConfiguration"]["Rules"]
+                self.assertFalse(any("ExpirationInDays" in rule or "ExpirationDate" in rule for rule in rules))
+                expiration = [
+                    rule["NoncurrentVersionExpiration"] for rule in rules if "NoncurrentVersionExpiration" in rule
+                ]
+                self.assertEqual(expiration, [] if stage_name == BENCH else [{"NoncurrentDays": 30}])
 
     def test_release_test_bucket_remains_account_qualified(self) -> None:
         app = cdk.App(context=TEST_CONTEXT)
@@ -285,8 +304,6 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                             {
                                 "Environment": assertions.Match.array_with(
                                     [
-                                        {"Name": "DATABASE_POOL_SIZE", "Value": "5"},
-                                        {"Name": "DATABASE_MAX_OVERFLOW", "Value": "2"},
                                         {"Name": "AUTH_REQUIRED", "Value": "true"},
                                         {"Name": "DESCOPE_PROJECT_ID", "Value": "dev-project"},
                                     ]
@@ -300,6 +317,76 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                 )
             },
         )
+
+    def test_dev_database_clients_use_tls_proxy_and_keep_old_endpoint_exports(self) -> None:
+        with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
+            tracker_template, executor_template = dev_service_templates()
+
+        instance_id = next(iter(tracker_template.find_resources("AWS::RDS::DBInstance")))
+        secret_id = next(iter(tracker_template.find_resources("AWS::SecretsManager::Secret")))
+        proxy_id, proxy = next(iter(tracker_template.find_resources("AWS::RDS::DBProxy").items()))
+        proxy_properties = proxy["Properties"]
+        self.assertTrue(proxy_properties["RequireTLS"])
+        # Dev already runs this proxy; a new name would replace it.
+        self.assertEqual(proxy_properties["DBProxyName"], "TrackerDatabaseProxy")
+        self.assertEqual(proxy_properties["Auth"][0]["SecretArn"], {"Ref": secret_id})
+        self.assertEqual(len(proxy_properties["VpcSubnetIds"]), 2)
+
+        target_group = next(iter(tracker_template.find_resources("AWS::RDS::DBProxyTargetGroup").values()))
+        self.assertEqual(target_group["Properties"]["DBInstanceIdentifiers"], [{"Ref": instance_id}])
+        self.assertEqual(target_group["Properties"]["DBProxyName"], {"Ref": proxy_id})
+
+        proxy_sg_id, proxy_sg = next(
+            (logical_id, resource)
+            for logical_id, resource in tracker_template.find_resources("AWS::EC2::SecurityGroup").items()
+            if resource["Properties"]["GroupDescription"] == "Security group for Tracker RDS proxy"
+        )
+        self.assertIn(proxy_sg_id, json.dumps(proxy_properties["VpcSecurityGroupIds"]))
+        ingress_rules = proxy_sg["Properties"].get("SecurityGroupIngress", []) + [
+            resource["Properties"]
+            for resource in tracker_template.find_resources("AWS::EC2::SecurityGroupIngress").values()
+            if proxy_sg_id in json.dumps(resource["Properties"].get("GroupId"))
+        ]
+        self.assertTrue(
+            any(
+                rule.get("CidrIp") == "10.0.0.0/16" and rule.get("FromPort") == 5432 and rule.get("ToPort") == 5432
+                for rule in ingress_rules
+            )
+        )
+
+        outputs = tracker_template.to_json()["Outputs"]
+        old_outputs = {
+            attribute: next(
+                output for output in outputs.values() if output["Value"] == {"Fn::GetAtt": [instance_id, attribute]}
+            )
+            for attribute in ("Endpoint.Address", "Endpoint.Port")
+        }
+        self.assertTrue(all("Export" in output for output in old_outputs.values()))
+
+        proxy_output = next(
+            output for output in outputs.values() if output["Value"] == {"Fn::GetAtt": [proxy_id, "Endpoint"]}
+        )
+        proxy_host = {"Fn::ImportValue": proxy_output["Export"]["Name"]}
+        tracker_host = {"Fn::GetAtt": [proxy_id, "Endpoint"]}
+        for template, host in ((tracker_template, tracker_host), (executor_template, proxy_host)):
+            for task in template.find_resources("AWS::ECS::TaskDefinition").values():
+                for container in task["Properties"]["ContainerDefinitions"]:
+                    environment = {item["Name"]: item["Value"] for item in container.get("Environment", [])}
+                    self.assertFalse(any(name.startswith("DATABASE_POOL_") for name in environment))
+                    if "DB_HOST" in environment:
+                        self.assertEqual(environment["DB_HOST"], host)
+                        self.assertEqual(environment["DB_PORT"], "5432")
+
+        release_task = next(
+            task
+            for task in executor_template.find_resources("AWS::ECS::TaskDefinition").values()
+            if task["Properties"]["Family"] == "ValkyrieExecutorRelease-dev"
+        )
+        release_arguments = release_task["Properties"]["ContainerDefinitions"][0]["EntryPoint"]
+        self.assertEqual(release_arguments[4:6], [proxy_host, "5432"])
+        executor_template_json = json.dumps(executor_template.to_json())
+        for old_output in old_outputs.values():
+            self.assertNotIn(old_output["Export"]["Name"], executor_template_json)
 
     def test_dev_release_control_is_one_sealed_task_with_environment_bound_role(self) -> None:
         with mock.patch.dict(os.environ, DEV_AUTH_ENV, clear=True):
@@ -325,11 +412,6 @@ class DevAccountInfrastructureTest(unittest.TestCase):
             "AWS::SSM::Parameter",
             {"Name": executor_release_launch_parameter(DEV), "Type": "String"},
         )
-        for task in template.find_resources("AWS::ECS::TaskDefinition").values():
-            for container in task["Properties"]["ContainerDefinitions"]:
-                environment = {item["Name"]: item["Value"] for item in container.get("Environment", [])}
-                self.assertEqual(environment["DATABASE_POOL_SIZE"], "5")
-                self.assertEqual(environment["DATABASE_MAX_OVERFLOW"], "2")
         roles = template.find_resources("AWS::IAM::Role")
         release_role_id, release_role = next(
             (logical_id, role)
@@ -339,7 +421,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         trust = json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"])
         self.assertIn("token.actions.githubusercontent.com:aud", trust)
         self.assertIn("sts.amazonaws.com", trust)
-        self.assertIn("repo:vals-ai/Valkyrie:environment:dev", trust)
+        self.assertIn("repo:vals-ai@129814943/valkyrie-internal@1382051817:environment:dev", trust)
 
         release_policy = next(
             policy
@@ -392,6 +474,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         managed_runtime_environment = {
             "AWS_DEPLOYMENT_ROLE_ORG_IDS": DEV_AUTH_ENV["AWS_DEPLOYMENT_ROLE_ORG_IDS"],
             "AWS_TRACKER_SECRET_NAME_PREFIXES": DEV_AUTH_ENV["AWS_TRACKER_SECRET_NAME_PREFIXES"],
+            "AWS_SHARED_SECRET_TENANTS": DEV_AUTH_ENV["AWS_SHARED_SECRET_TENANTS"],
         }
         with mock.patch.dict(os.environ, managed_runtime_environment, clear=True):
             with self.assertRaisesRegex(ValueError, "dev deployments require DESCOPE_PROJECT_ID"):

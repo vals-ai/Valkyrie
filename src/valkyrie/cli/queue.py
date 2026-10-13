@@ -6,7 +6,6 @@ import click
 from valkyrie.sdk import SchedulerOverviewResponse, ValkyrieClient, ValkyrieSDKError
 
 from valkyrie.cli.display import format_table, terminal_safe
-from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
 
 @click.group()
@@ -57,7 +56,7 @@ def status(waiting_limit: int, active_limit: int, waiting_offset: int, active_of
 async def _fetch_overview(
     waiting_limit: int, active_limit: int, waiting_offset: int, active_offset: int
 ) -> SchedulerOverviewResponse:
-    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+    async with ValkyrieClient() as client:
         return await client.scheduler.overview(
             waiting_limit=waiting_limit,
             active_limit=active_limit,

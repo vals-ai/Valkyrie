@@ -1,4 +1,4 @@
-"""Manage the shared agents/ library using the existing agent AWS runtime."""
+"""Manage the shared agents/ library through the configured runtime."""
 
 from __future__ import annotations
 
@@ -14,13 +14,15 @@ from typing import BinaryIO
 import yaml
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from tracker import config
 from tracker.agent.archive import ArchiveLimitError, validate_agent_archive
 from tracker.agent.schemas import validate_agent_name
 from tracker.api.dependencies import AgentLibraryRuntimeDependency
-from tracker.runtime.artifacts import list_agents
+from tracker.api.download import local_file_response, resolve_download_url
 from tracker.exceptions import S3Error
+from tracker.runtime.artifacts import agent_bundle_key, list_agents
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse
 
 PRESIGNED_URL_EXPIRES_SECONDS = 300
@@ -34,13 +36,21 @@ def _agent_key(name: str) -> str:
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    return f"agents/{name}.zip"
+    return agent_bundle_key(name)
 
 
 @contextmanager
 def _storage_errors() -> Generator[None, None, None]:
     try:
         yield
+    except FileExistsError as error:
+        raise HTTPException(status_code=409, detail="Agent already exists") from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Agent not found") from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail="Agent storage permission denied") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except S3Error as error:
         cause = error.__cause__
         if isinstance(cause, ClientError) and (
@@ -64,7 +74,7 @@ async def _file_chunks(stream: BinaryIO) -> AsyncIterator[bytes]:
 async def list_agents_endpoint(
     runtime: AgentLibraryRuntimeDependency,
 ) -> AgentsResponse:
-    """List agent zips in the configured shared library."""
+    """List agent zips in the organization's agent library."""
     with _storage_errors():
         agents = await list_agents(runtime.objects)
 
@@ -80,15 +90,28 @@ async def list_agents_endpoint(
 async def get_agent_download_url(
     name: str,
     runtime: AgentLibraryRuntimeDependency,
-) -> AgentDownloadURLResponse:
-    """Return a 5-minute presigned URL to download agents/<name>.zip."""
+    request: Request,
+    download: bool = False,
+) -> AgentDownloadURLResponse | FileResponse:
+    """Return a download URL for the authorized agent."""
     key = _agent_key(name)
     with _storage_errors():
         if not await runtime.objects.exists(key):
             raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
-        url = await runtime.objects.temporary_download_url(key, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
+        if download:
+            response = local_file_response(runtime.objects, key, filename=f"{name}.zip", media_type="application/zip")
+            if response is not None:
+                return response
+        url, expires_in = await resolve_download_url(
+            runtime.objects,
+            key,
+            request=request,
+            route_name="get_agent_download_url",
+            route_params={"name": name},
+            expires_in=PRESIGNED_URL_EXPIRES_SECONDS,
+        )
 
-    return AgentDownloadURLResponse(name=name, download_url=url, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
+    return AgentDownloadURLResponse(name=name, download_url=url, expires_in=expires_in)
 
 
 @router.put(
@@ -107,6 +130,7 @@ async def get_agent_download_url(
     responses={
         400: {"description": "Invalid agent archive"},
         403: {"description": "Storage permission denied"},
+        409: {"description": "Agent already exists"},
         413: {"description": "Configured archive limit exceeded"},
     },
 )
@@ -114,19 +138,19 @@ async def push_agent_endpoint(
     name: str,
     request: Request,
     runtime: AgentLibraryRuntimeDependency,
+    overwrite: bool = True,
 ) -> AgentEntry:
-    """Validate and upload a ZIP, replacing agents/<name>.zip if it exists."""
+    """Validate and publish an agent ZIP, optionally refusing to replace an existing alias."""
     key = _agent_key(name)
     if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/zip":
         raise HTTPException(status_code=415, detail="Expected application/zip")
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
+    if (content_length := request.headers.get("content-length")) is not None:
         try:
             declared_bytes = int(content_length)
-            if declared_bytes < 0:
-                raise ValueError("negative content length")
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Invalid Content-Length") from error
+        if declared_bytes < 0:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length")
         if declared_bytes > config.AGENT_UPLOAD_MAX_BYTES:
             raise HTTPException(status_code=413, detail="Agent upload exceeds AGENT_UPLOAD_MAX_BYTES")
 
@@ -151,7 +175,7 @@ async def push_agent_endpoint(
         ) as error:
             raise HTTPException(status_code=400, detail="Invalid agent archive or contract") from error
         with _storage_errors():
-            await runtime.objects.put_stream(key, _file_chunks(stream))
+            await runtime.objects.put_stream(key, _file_chunks(stream), overwrite=overwrite)
 
     return AgentEntry(name=name)
 
@@ -165,7 +189,7 @@ async def remove_agent_endpoint(
     name: str,
     runtime: AgentLibraryRuntimeDependency,
 ) -> AgentEntry:
-    """Remove an existing ZIP from the configured shared agent library."""
+    """Remove an existing ZIP from the organization's agent library."""
     key = _agent_key(name)
     with _storage_errors():
         if not await runtime.objects.exists(key):

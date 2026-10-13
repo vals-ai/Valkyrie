@@ -2,12 +2,10 @@
 
 from collections.abc import Generator
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import UUID
 
 import httpx
 import pytest
-import yaml
 from click.testing import CliRunner
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,7 +18,7 @@ from tracker.database.models import (
     DEFAULT_ORG_NAME,
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     EvaluationResult,
     ExecutorAdmission,
@@ -32,9 +30,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config
-from valkyrie.cli.runtime_config import TRACKER_SERVICE_URL_ENV_VAR, VALKYRIE_CONFIG_PATH_ENV_VAR
 
 TEST_ORG_ID = UUID("c15649d2-6ec4-4b4a-974a-cc00ea80bbf7")
 
@@ -61,7 +56,7 @@ def database_session() -> Generator[Session, None, None]:
                 status=ExecutorReleaseStatus.ACTIVE,
                 readiness_verified=True,
             )
-            session.add_all([Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME), release])
+            session.add_all([Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME, storage_key="test-bucket"), release])
             session.flush()
             session.add(ExecutorAdmission(release_id=release.id))
             session.commit()
@@ -72,25 +67,8 @@ def database_session() -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def harness_config() -> HarnessConfig:
-    """Provide tracker configuration without cloud access."""
-    return HarnessConfig(
-        aws=AWSCredentials(
-            aws_access_key_id="test-key",
-            aws_secret_access_key="test-secret",
-            aws_default_region="us-east-1",
-        ),
-        s3_bucket="test-bucket",
-        log_group="test-log-group",
-        log_retention_policy=1,
-        sandbox_provider_secret_name="test-provider-secret",
-    )
-
-
-@pytest.fixture
 def local_tracker_app(
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[FastAPI, None, None]:
     """Connect the production tracker app to local test dependencies."""
@@ -102,7 +80,13 @@ def local_tracker_app(
     assert org is not None
     tracker_main.app.dependency_overrides[get_session] = get_test_session
     tracker_main.app.dependency_overrides[get_current_org] = lambda: org
-    tracker_main.app.dependency_overrides[fetch_harness_config] = lambda: harness_config
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "test-bucket")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "test-log-group")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "1")
+    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
+    monkeypatch.setattr("tracker.config.AWS_MANAGED_SUBMISSIONS_ENABLED", True)
     monkeypatch.setattr(tracker_main, "check_database_connection", lambda: True)
 
     try:
@@ -113,33 +97,17 @@ def local_tracker_app(
 
 @pytest.fixture(autouse=True)
 def route_cli_to_local_tracker(
-    tmp_path: Path,
     local_tracker_app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Route production tracker clients through the local FastAPI app."""
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "test-key",
-                "AWS_SECRET_ACCESS_KEY": "test-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "test-bucket",
-                "sandbox_providers": {"daytona": "test-provider-secret"},
-            }
-        )
-    )
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    monkeypatch.setenv(TRACKER_SERVICE_URL_ENV_VAR, "http://tracker.test")
+    monkeypatch.setenv("VALKYRIE_URL", "http://tracker.test")
 
-    def build_client(
-        *,
-        timeout: int,
-        headers: dict[str, str],
-    ) -> TestClient:
+    def build_client(*, timeout: int, auth: httpx.Auth | None) -> TestClient:
         del timeout
-        return TestClient(local_tracker_app, headers=headers)
+        client = TestClient(local_tracker_app)
+        client.auth = auth
+        return client
 
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
 
@@ -153,7 +121,7 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
         label="nightly",
         started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         started_by_email="runner@example.com",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="cli-agent",
                 model="openai/gpt-5",
@@ -174,7 +142,7 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
         started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         finished_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
         started_by_email="reviewer@example.com",
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="review-agent",
                 install_cmd="install",

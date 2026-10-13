@@ -1,10 +1,3 @@
-"""SDK and Tracker wire-contract tests.
-
-Run: uv run pytest tests/contract/test_sdk_tracker_contract.py
-
-Covers canonical payloads, mixed-version compatibility, and route schemas.
-"""
-
 from __future__ import annotations
 
 import json
@@ -15,17 +8,22 @@ from typing import Any, cast
 import httpx
 import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from services.tracker.main import app
 from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
+    LocalBenchmarkArguments,
     FinalEvaluation,
     OutputArtifact,
 )
 from tracker.types import (
-    AWSCredentials,
+    SecretEntry,
+    SecretsResponse,
+    ProvidersResponse,
+    RunSettingsResponse,
+    SavedBenchmarkService,
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
@@ -46,7 +44,6 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
-    HarnessConfig,
     LogEventResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -59,6 +56,8 @@ from tracker.types import (
     SingleTaskResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
+    ShedBenchmarkRequest,
+    ShedBenchmarkResponse,
     StopBenchmarkResponse,
     TaskArtifactsResponse,
     TasksResponse,
@@ -66,14 +65,19 @@ from tracker.types import (
 )
 from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
-    AWSCredentials as SDKAWSCredentials,
     AgentContractRequest as SDKAgentContractRequest,
     AgentDownloadURLResponse as SDKAgentDownloadURLResponse,
     AgentEntry as SDKAgentEntry,
     AgentsResponse as SDKAgentsResponse,
+    SecretEntry as SDKSecretEntry,
+    SecretsResponse as SDKSecretsResponse,
+    ProvidersResponse as SDKProvidersResponse,
+    RunSettingsResponse as SDKRunSettingsResponse,
+    SavedBenchmarkService as SDKSavedBenchmarkService,
     AnalyzeBenchmarkRequest as SDKAnalyzeBenchmarkRequest,
     AverageTaskBreakdown as SDKAverageTaskBreakdown,
-    BenchmarkArguments as SDKBenchmarkArguments,
+    AWSBenchmarkArguments as SDKAWSBenchmarkArguments,
+    LocalBenchmarkArguments as SDKLocalBenchmarkArguments,
     BenchmarkDetails as SDKBenchmarkDetails,
     BenchmarkServiceCatalogResponse as SDKBenchmarkServiceCatalogResponse,
     BenchmarkServiceEntry as SDKBenchmarkServiceEntry,
@@ -91,7 +95,6 @@ from valkyrie.sdk.models import (
     FinalEvaluation as SDKFinalEvaluation,
     FilterOptionsResponse as SDKFilterOptionsResponse,
     FinalViewResponse as SDKFinalViewResponse,
-    HarnessConfig as SDKHarnessConfig,
     LogEvent as SDKLogEvent,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
@@ -105,6 +108,8 @@ from valkyrie.sdk.models import (
     SingleTaskResponse as SDKSingleTaskResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
     StartBenchmarkResponse as SDKStartBenchmarkResponse,
+    ShedBenchmarkRequest as SDKShedBenchmarkRequest,
+    ShedBenchmarkResponse as SDKShedBenchmarkResponse,
     StopBenchmarkResponse as SDKStopBenchmarkResponse,
     TaskArtifactsResponse as SDKTaskArtifactsResponse,
     TaskIDsResponse as SDKTaskIDsResponse,
@@ -116,10 +121,10 @@ FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 ROUTES = (
     ("/benchmarks/filter-options", "get", ""),
     ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
+    ("/benchmarks/{benchmark_id}/shed", "post", "benchmark_id"),
     ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
-    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path"),
+    ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path download"),
     ("/start-benchmark", "post", ""),
-    ("/start-benchmark-with-storage", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
     (
         "/fetch-benchmarks",
@@ -129,7 +134,7 @@ ROUTES = (
     ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
     ("/preview-results", "get", "benchmark_id task_ids"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
-    ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
+    ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency update_agent"),
     ("/benchmarks/status", "get", "ids"),
     ("/scheduler/overview", "get", "waiting_limit active_limit waiting_offset active_offset include_capacity"),
     ("/benchmarks/{benchmark_id}", "get", "benchmark_id"),
@@ -151,9 +156,19 @@ ROUTES = (
         "benchmark_id task_id query start_time end_time",
     ),
     ("/agents", "get", ""),
-    ("/agents/{name}/download-url", "get", "name"),
-    ("/agents/{name}", "put", "name"),
+    ("/agents/{name}/download-url", "get", "name download"),
+    ("/agents/{name}", "put", "name overwrite"),
     ("/agents/{name}", "delete", "name"),
+    ("/secrets", "get", ""),
+    ("/secrets/{name}", "put", "name"),
+    ("/secrets/{name}", "delete", "name"),
+    ("/sandbox-providers", "get", ""),
+    ("/sandbox-providers/{provider}", "put", "provider"),
+    ("/sandbox-providers/{provider}", "delete", "provider"),
+    ("/settings", "get", ""),
+    ("/settings/default-provider", "put", ""),
+    ("/settings/benchmark-services/{benchmark}", "put", "benchmark"),
+    ("/settings/benchmark-services/{benchmark}", "delete", "benchmark"),
     ("/benchmark-services", "get", ""),
     ("/benchmark-services", "post", ""),
     ("/fetch-benchmark-tasks", "post", ""),
@@ -165,7 +180,6 @@ ROUTES = (
 RESPONSE_MODELS = {
     ("/benchmarks/filter-options", "get"): "FilterOptionsResponse",
     ("/start-benchmark", "post"): "StartBenchmarkResponse",
-    ("/start-benchmark-with-storage", "post"): "StartBenchmarkResponse",
     ("/fetch-benchmarks", "get"): "FetchBenchmarksResponse",
     ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
     ("/retry-or-resume-benchmark/{benchmark_id}", "post"): "RetryOrResumeBenchmarkResponse",
@@ -180,6 +194,16 @@ RESPONSE_MODELS = {
     ("/agents/{name}/download-url", "get"): "AgentDownloadURLResponse",
     ("/agents/{name}", "put"): "AgentEntry",
     ("/agents/{name}", "delete"): "AgentEntry",
+    ("/secrets", "get"): "SecretsResponse",
+    ("/secrets/{name}", "put"): "SecretEntry",
+    ("/secrets/{name}", "delete"): "SecretEntry",
+    ("/sandbox-providers", "get"): "ProvidersResponse",
+    ("/sandbox-providers/{provider}", "put"): "ProvidersResponse",
+    ("/sandbox-providers/{provider}", "delete"): "ProvidersResponse",
+    ("/settings", "get"): "RunSettingsResponse",
+    ("/settings/default-provider", "put"): "RunSettingsResponse",
+    ("/settings/benchmark-services/{benchmark}", "put"): "RunSettingsResponse",
+    ("/settings/benchmark-services/{benchmark}", "delete"): "RunSettingsResponse",
     ("/benchmark-services", "get"): "BenchmarkServiceCatalogResponse",
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
@@ -189,9 +213,12 @@ RESPONSE_MODELS = {
 MODEL_PAIRS = (
     (FilterOptionsResponse, SDKFilterOptionsResponse),
     (OutputArtifact, SDKOutputArtifact),
+    (SecretEntry, SDKSecretEntry),
+    (SecretsResponse, SDKSecretsResponse),
+    (ProvidersResponse, SDKProvidersResponse),
+    (RunSettingsResponse, SDKRunSettingsResponse),
+    (SavedBenchmarkService, SDKSavedBenchmarkService),
     (AgentContractRequest, SDKAgentContractRequest),
-    (AWSCredentials, SDKAWSCredentials),
-    (HarnessConfig, SDKHarnessConfig),
     (LogEventResponse, SDKLogEvent),
     (StartBenchmarkRequest, SDKStartBenchmarkRequest),
     (BenchmarkDetails, SDKBenchmarkDetails),
@@ -200,12 +227,15 @@ MODEL_PAIRS = (
     (FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
     (BenchmarkTableRow, SDKBenchmarkTableRow),
     (FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
-    (BenchmarkArguments, SDKBenchmarkArguments),
+    (AWSBenchmarkArguments, SDKAWSBenchmarkArguments),
+    (LocalBenchmarkArguments, SDKLocalBenchmarkArguments),
     (FinalEvaluation, SDKFinalEvaluation),
     (AverageTaskBreakdown, SDKAverageTaskBreakdown),
     (FinalViewResponse, SDKFinalViewResponse),
     (S3UploadResultsResponse, SDKS3ResultsResponse),
     (StopBenchmarkResponse, SDKStopBenchmarkResponse),
+    (ShedBenchmarkRequest, SDKShedBenchmarkRequest),
+    (ShedBenchmarkResponse, SDKShedBenchmarkResponse),
     (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
     (BenchmarkStatusEntry, SDKBenchmarkStatusEntry),
     (BenchmarkStatusResponse, SDKBenchmarkStatusResponse),
@@ -233,38 +263,43 @@ MODEL_PAIRS = (
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
+    ("/access-keys", "post"),
+    ("/access-keys/{key_id}", "delete"),
+    ("/auth/cli", "get"),
+    ("/auth/me", "get"),
     ("/aws-runtime", "get"),
     ("/health", "get"),
-    ("/init", "post"),
+    ("/secrets", "get"),
+    ("/secrets/{name}", "put"),
+    ("/secrets/{name}", "delete"),
+    ("/orgs", "get"),
+    ("/orgs", "post"),
+    ("/orgs/members", "get"),
+    ("/orgs/members", "post"),
+    ("/orgs/members/{email}", "delete"),
+    ("/orgs/invitations/{organization}/accept", "post"),
+    ("/orgs/invitations/{organization}", "delete"),
 }
+
+
+# Tracker sets these itself, from its deployment and its run settings; the SDK never sends them.
+TRACKER_ONLY_FIELDS: dict[type[BaseModel], set[str]] = {
+    StartBenchmarkRequest: {
+        "properties",
+        "custom_benchmark_service",
+        "sandbox_provider_secret_name",
+        "service_auth_header_name",
+        "service_auth_secret_name",
+    },
+    FetchBenchmarkTasksRequest: {"custom_benchmark_service"},
+}
+
+# The SDK leaves these out unless the caller sets them, so the Tracker applies the caller's saved settings.
+SDK_OPTIONAL_FIELDS: dict[type[BaseModel], set[str]] = {StartBenchmarkRequest: {"sandbox_provider"}}
 
 
 def load_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
-
-
-class _LegacyTrackerStartBenchmarkRequest(BaseModel):
-    """Start-request fields relevant before queue priority was introduced."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    contract: AgentContractRequest
-    benchmark_name: str
-    concurrency: int = 5
-    label: str | None = None
-    task_ids: list[str] | None = None
-    slice_str: str | None = None
-    lambda_function: str | None = None
-    dataset: str | None = None
-    harness_config: HarnessConfig
-    custom_benchmark_service: str | None = None
-    service_headers: dict[str, str] = Field(default_factory=dict)
-    sandbox_provider: str = "daytona"
-    sandbox_provider_secret_name: str | None = None
-    service_auth_header_name: str | None = None
-    service_auth_secret_name: str | None = None
-    webhook_secret_name: str | None = None
-    webhook_intervals: list[int] | None = None
 
 
 @pytest.mark.parametrize(
@@ -293,7 +328,8 @@ def test_sdk_and_tracker_accept_canonical_fixture(
 
     assert isinstance(tracker_value, tracker_model)
     assert isinstance(sdk_value, sdk_model)
-    assert tracker_value.model_dump(mode="json", warnings=False) == payload
+    tracker_only = TRACKER_ONLY_FIELDS.get(tracker_model, set())
+    assert tracker_value.model_dump(mode="json", warnings=False, exclude=tracker_only) == payload
     assert sdk_value.model_dump(mode="json") == payload
 
 
@@ -306,7 +342,7 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
     tracker_properties = {
         name: tracker_schema["properties"][name]
         for name, field in tracker_model.model_fields.items()
-        if not field.exclude
+        if not field.exclude and name not in TRACKER_ONLY_FIELDS.get(tracker_model, set())
     }
     sdk_properties = {
         name: sdk_schema["properties"][name] for name, field in sdk_model.model_fields.items() if not field.exclude
@@ -320,6 +356,10 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
     for name in tracker_properties:
         tracker_property = _normalized_wire_schema(tracker_properties[name])
         sdk_property = _normalized_wire_schema(sdk_properties[name])
+        if name in SDK_OPTIONAL_FIELDS.get(tracker_model, set()):
+            assert sdk_property == {"anyOf": [tracker_property, {"type": "null"}]}
+            assert sdk_model.model_fields[name].default is None
+            continue
         assert tracker_property == sdk_property
 
         tracker_field = tracker_model.model_fields[name]
@@ -353,25 +393,21 @@ def test_start_priority_override_is_optional_and_strict(model: type[BaseModel]) 
             model.model_validate({**payload, "sandbox_provider": "modal", "priority": invalid})
 
 
-async def test_sdk_default_start_request_is_accepted_by_legacy_tracker() -> None:
+async def test_sdk_start_matches_tracker_api_key_contract() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        wire_payload = json.loads(request.content)
-        legacy_request = _LegacyTrackerStartBenchmarkRequest.model_validate(wire_payload)
-        assert legacy_request.concurrency == 5
-        assert "priority" not in wire_payload
-        assert "environment" not in wire_payload
-        assert "properties" not in wire_payload
+        payload = json.loads(request.content)
+        started = StartBenchmarkRequest.model_validate(payload)
+
+        assert started.concurrency == 5
+        assert not {"sandbox_provider", "custom_benchmark_service"} & started.model_fields_set
+        assert request.headers["x-api-key"] == "vals-key"
+        assert "authorization" not in request.headers
+        assert "sandbox_provider_secret_name" not in payload
         return httpx.Response(200, json=load_fixture("start.json")["response"])
 
-    config = ValkyrieConfig(
-        AWS_ACCESS_KEY_ID="test-key",
-        AWS_SECRET_ACCESS_KEY="test-secret",
-        AWS_DEFAULT_REGION="us-west-2",
-        S3_BUCKET="test-bucket",
-        sandbox_providers={"daytona": "DaytonaSecret"},
-    )
     async with ValkyrieClient(
-        config, base_url="https://tracker.test", transport=httpx.MockTransport(handler)
+        ValkyrieConfig.model_validate({"api_key": "vals-key", "url": "https://tracker.test"}),
+        transport=httpx.MockTransport(handler),
     ) as client:
         await client.runs.start("sweagent", "swebench")
 

@@ -9,15 +9,15 @@ import json
 from collections import deque
 from collections.abc import AsyncIterator, Coroutine
 from datetime import datetime, timezone
+from functools import partial
 from importlib import import_module
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import httpx  # pyright: ignore[reportMissingImports]
 import pytest  # pyright: ignore[reportMissingImports]
 from click.testing import CliRunner  # pyright: ignore[reportMissingImports]
-from valkyrie.sdk import ValkyrieClient, ValkyrieConfig  # pyright: ignore[reportMissingImports]
+from valkyrie.sdk import ValkyrieClient  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.models.logs import LogEvent, LogPage  # pyright: ignore[reportMissingImports]
 
 from valkyrie.cli.run.logs import logs  # pyright: ignore[reportMissingImports]
@@ -73,7 +73,7 @@ def _invoke(
     run_id: UUID,
     arguments: list[str],
 ):
-    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(logs_module, "ValkyrieClient", lambda: client)
     return CliRunner().invoke(logs, [str(run_id), *arguments])
 
 
@@ -155,42 +155,14 @@ def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.Monke
             headers={"content-type": "text/event-stream"},
         )
 
-    config = ValkyrieConfig.model_validate(
-        {
-            "AWS_DEFAULT_REGION": "us-west-2",
-            "S3_BUCKET": "runs-bucket",
-            "sandbox_providers": {"modal": "ModalSecret"},
-        }
-    )
-    client = ValkyrieClient(config, base_url="https://tracker.test", transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", lambda *_args, **_kwargs: client)
+    client = ValkyrieClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(logs_module, "ValkyrieClient", lambda: client)
 
     result = CliRunner().invoke(logs, [str(run_id), "--task-id", "task-1", "--follow"])
 
     assert result.exit_code == 1
     assert "final" in result.output
     assert "ended before its end event" in result.output
-
-
-def test_logs_uses_cli_config_location(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Logs must use the same config path as the rest of the CLI."""
-    config_path = tmp_path / "dev.yaml"
-    client = MockClient([])
-    seen: dict[str, Any] = {}
-
-    def from_config(path: Path, *, base_url: str) -> MockClient:
-        seen["path"] = path
-        seen["base_url"] = base_url
-        return client
-
-    monkeypatch.setattr(logs_module, "config_location", lambda: config_path)
-    monkeypatch.setattr(logs_module, "tracker_service_url", lambda: "https://tracker.dev")
-    monkeypatch.setattr(logs_module.ValkyrieClient, "from_config", from_config)
-
-    result = CliRunner().invoke(logs, [str(uuid4())])
-
-    assert result.exit_code == 0, result.output
-    assert seen == {"path": config_path, "base_url": "https://tracker.dev"}
 
 
 @pytest.mark.parametrize(
@@ -274,3 +246,40 @@ def test_logs_handles_ctrl_c_without_traceback(monkeypatch: pytest.MonkeyPatch) 
 
     assert result.exit_code == 0
     assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("mode", ["run", "task", "follow"])
+def test_logs_uses_the_selected_tracker_and_access_key(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    monkeypatch.setenv("VALKYRIE_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("VALKYRIE_API_KEY", "synthetic-vals-key")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        event = {"timestamp": "2026-01-01T00:00:00Z", "message": "local log"}
+        if mode == "follow":
+            return httpx.Response(
+                200,
+                text=f"event: log\ndata: {json.dumps(event)}\n\nevent: end\ndata: {{}}\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json={"events": [event]})
+
+    client = partial(ValkyrieClient, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(logs_module, "ValkyrieClient", client)
+    run_id = uuid4()
+    arguments = [str(run_id)]
+    if mode != "run":
+        arguments += ["--task-id", "task-1"]
+    if mode == "follow":
+        arguments.append("--follow")
+    result = CliRunner().invoke(logs, arguments)
+    assert result.exit_code == 0, result.output
+    assert "local log" in result.output
+    assert len(requests) == 1
+    request = requests[0]
+    suffix = "/stream" if mode == "follow" else ""
+    assert request.url.path == f"/benchmarks/{run_id}/logs{suffix}"
+    assert request.url.host == "127.0.0.1" and request.url.port == 8765
+    assert request.url.params.get("task_id") == (None if mode == "run" else "task-1")
+    assert request.headers["X-Api-Key"] == "synthetic-vals-key"

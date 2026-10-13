@@ -3,6 +3,10 @@
   "reference/cli/run",
   "reference/cli/agent",
   "reference/cli/benchmark",
-  "reference/cli/config",
-  "reference/cli/queue"
+  "reference/cli/queue",
+  "reference/cli/secret",
+  "reference/cli/provider",
+  "reference/cli/login",
+  "reference/cli/token",
+  "reference/cli/org"
 ]

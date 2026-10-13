@@ -1,0 +1,75 @@
+{
+  "task": {
+    "id": "43aac1d3-231c-4fd6-bcfb-bce7c9a84d72",
+    "task_id": "task_0",
+    "status": "ERROR",
+    "started_at": "2026-09-21T22:48:00.674490+00:00",
+    "finished_at": "2026-09-21T22:48:00.732714+00:00",
+    "error_message": "Benchmark service WebSocket disconnected: no close frame received or sent; last application message received 10s ago",
+    "failure_category": "benchmark_service",
+    "evaluation_result": null,
+    "agent_caused_exit_reason": null
+  },
+  "tasks": {
+    "tasks": [
+      {
+        "id": "43aac1d3-231c-4fd6-bcfb-bce7c9a84d72",
+        "task_id": "task_0",
+        "status": "ERROR",
+        "started_at": "2026-09-21T22:48:00.674490+00:00",
+        "finished_at": "2026-09-21T22:48:00.732714+00:00",
+        "error_message": "Benchmark service WebSocket disconnected: no close frame received or sent; last application message received 10s ago",
+        "failure_category": "benchmark_service"
+      }
+    ],
+    "total_count": 1
+  },
+  "results": {
+    "benchmark_id": "63da607a-ce54-4b24-a9dd-45798a32c1cc",
+    "benchmark_name": "swebench",
+    "started_at": "2026-09-21T22:48:00.673358",
+    "finished_at": null,
+    "status": "IN_PROGRESS",
+    "error_message": null,
+    "benchmark_arguments": {
+      "contract": {
+        "name": "dummy",
+        "model": null,
+        "install_cmd": "echo installing dependencies...",
+        "run_cmd": "echo running agent...",
+        "final_output": null,
+        "output_artifacts": [],
+        "egress_allowlist": [],
+        "secrets": {},
+        "kwargs": {},
+        "inference_settings_attested": false
+      },
+      "concurrency": 1,
+      "environment": "aws",
+      "properties": null,
+      "task_ids": [
+        "task_0"
+      ],
+      "slice_str": null,
+      "lambda_function": null,
+      "dataset": null,
+      "sandbox_provider": "daytona",
+      "sandbox_provider_secret_name": "test-daytona-secret"
+    },
+    "tasks_stopped": null,
+    "final_evaluation": null,
+    "average_task_breakdown": {
+      "sandbox_build_duration": 0.00023437500931322575,
+      "agent_run_duration": 0.0,
+      "evaluation_run_duration": null,
+      "sandbox_run_duration": null
+    },
+    "evaluation_results": {},
+    "task_errors": {
+      "task_0": "Benchmark service WebSocket disconnected: no close frame received or sent; last application message received 10s ago"
+    },
+    "task_failure_categories": {
+      "task_0": "benchmark_service"
+    }
+  }
+}

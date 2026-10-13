@@ -1,23 +1,25 @@
-"""Shared Tracker-to-ExecutorHost wire contract."""
+"""Shared executor payload and lease protocol."""
 
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any, NotRequired, TypedDict, Unpack, cast
-from urllib.parse import urlparse
+from pathlib import Path
+from typing import Any, NotRequired, TypedDict, cast
+from urllib.parse import unquote, urlparse
 
-EXECUTOR_TASK_NAME = "tracker.utils:process_benchmark"
-SUPPORTED_PROTOCOL_VERSION = "3"
-SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", SUPPORTED_PROTOCOL_VERSION})
+RESERVED_QUEUE_PROTOCOL_VERSION = "5"
+SUPPORTED_PROTOCOL_VERSION = RESERVED_QUEUE_PROTOCOL_VERSION
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", "3", "4", SUPPORTED_PROTOCOL_VERSION})
 MANAGED_EXECUTION_PROTOCOL_VERSION = "3"
-DEFAULT_STABLE_QUEUE_NAME = "valkyrie-stable"
+DATASET_VERSION_PROTOCOL_VERSION = "4"
 DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
+EXECUTOR_ENTRYPOINT_MODULE = "tracker.executor.entrypoint"
 
-# A dispatch owner renews this lease from the executor host. The Tracker
-# reconciler runs every minute, so a dead host is recovered within roughly six
-# minutes while a healthy dispatch has ample time between heartbeats.
+# A dispatch owner renews this lease from its runner task. The Tracker
+# reconciler runs every minute, so a dead runner is recovered within roughly six
+# minutes while a healthy dispatch has ample time between renewal ticks.
 DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS = 120
 DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS = 300
-DEFAULT_EXECUTOR_DISPATCH_HEARTBEAT_INTERVAL_SECONDS = 30
+DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS = 5
 
 
 class ExecutorDispatchStatus(str, Enum):
@@ -33,9 +35,9 @@ class ExecutorTelemetryContext(TypedDict):
 
 
 class ExecutorPayload(TypedDict):
-    # Exactly one execution shape is set: access-key runs carry the first three
-    # fields; managed runs carry only execution_context_json. Dispatch fields
-    # are required for both.
+    # Exactly one execution shape is set: legacy flat payloads (local jobs queued
+    # before managed execution) carry the first three fields; managed runs carry
+    # only execution_context_json. Dispatch fields are required for both.
     start_benchmark_request_json: NotRequired[dict[str, Any] | None]
     benchmark_id_str: NotRequired[str | None]
     verified_task_ids: NotRequired[list[str] | None]
@@ -46,11 +48,6 @@ class ExecutorPayload(TypedDict):
     executor_artifact_uri: str
     executor_artifact_digest: str
     executor_protocol_version: str
-
-
-async def executor_task_signature(**_payload: Unpack[ExecutorPayload]) -> None:
-    """Provide the producer's typed Taskiq signature; this body never executes."""
-    raise RuntimeError("Executor task signatures cannot execute in Tracker")
 
 
 def executor_payload_benchmark_id(payload: Mapping[str, object]) -> str:
@@ -102,3 +99,19 @@ def validate_executor_artifact_uri(uri: str, expected_bucket: str, expected_pref
     if parsed.netloc != expected_bucket or not prefix or not key.startswith(f"{prefix}/"):
         raise ValueError("Executor artifact URI is outside the configured S3 bucket and prefix")
     return parsed.netloc, key
+
+
+def source_executor_artifact_uri(root: Path) -> str:
+    """Name a checkout's executor source tree as a release artifact."""
+    return root.as_uri().replace("file://", "source://", 1)
+
+
+def validate_source_executor_artifact_uri(artifact_uri: str, root: Path) -> Path:
+    """Require a source release to name the resolved configured source root."""
+    parsed = urlparse(artifact_uri)
+    if parsed.scheme != "source" or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("Source executor artifact URI must use source:///absolute/path")
+    path = Path(unquote(parsed.path))
+    if not path.is_absolute() or path.resolve() != root:
+        raise ValueError("Source executor artifact URI does not match the configured source root")
+    return root

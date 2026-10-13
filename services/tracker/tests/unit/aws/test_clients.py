@@ -3,11 +3,13 @@
 Run: uv run pytest tests/unit/aws/test_clients.py
 """
 
+import asyncio
 import re
-from datetime import datetime, timezone
-from typing import cast
-from unittest.mock import ANY, MagicMock, call
+from datetime import datetime, timedelta, timezone
+from typing import Any, cast
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
+import aioboto3
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -15,8 +17,7 @@ from tracker.aws import clients as aws_clients
 from tracker.aws import cloudwatch_logs
 from tracker.aws.clients import (
     AWSClientProvider,
-    DefaultChainAWSClientProvider,
-    ExplicitCredentialsAWSClientProvider,
+    TenantRoleAWSClientProvider,
 )
 from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogLocations,
@@ -27,15 +28,7 @@ from tracker.aws.cloudwatch_logs import (
 from tracker.aws.runtime import AWSResources
 from tracker.aws.s3 import handle_s3_error
 from tracker.exceptions import CloudWatchError, S3Error
-from tracker.types import AWSCredentials
-
-_sanitize_log_stream_name = getattr(cloudwatch_logs, "_sanitize_log_stream_name")
-
-_AWS = AWSCredentials(
-    aws_access_key_id="test-key",
-    aws_secret_access_key="test-secret",
-    aws_default_region="us-east-1",
-)
+from tracker.runtime.logs import sanitize_log_stream_name as _sanitize_log_stream_name
 
 _AWS_RESOURCES = AWSResources(
     region="us-east-1",
@@ -48,51 +41,7 @@ _AWS_RESOURCES = AWSResources(
 class TestAWSClientProviders:
     """Credential selection and presigned URL lifetime behavior."""
 
-    @pytest.mark.parametrize("session_token", [None, "test-session-token"])
-    def test_explicit_provider_forwards_optional_session_token(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        session_token: str | None,
-    ) -> None:
-        session = MagicMock()
-        session_factory = MagicMock(return_value=session)
-        boto_client_factory = MagicMock()
-        monkeypatch.setattr(aws_clients.aioboto3, "Session", session_factory)
-        monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
-
-        credentials = AWSCredentials(
-            aws_access_key_id=f"test-key-{session_token or 'none'}",
-            aws_secret_access_key="test-secret",
-            aws_default_region="us-east-1",
-            aws_session_token=session_token,
-        )
-        provider = ExplicitCredentialsAWSClientProvider(credentials)
-
-        provider.s3_client()
-        provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
-        provider.secretsmanager_async_client()
-        provider.lambda_client()
-
-        session_factory.assert_called_once_with(
-            aws_access_key_id=credentials.aws_access_key_id,
-            aws_secret_access_key=credentials.aws_secret_access_key,
-            aws_session_token=session_token,
-            region_name=credentials.aws_default_region,
-        )
-        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
-        assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
-            "logs",
-            "secretsmanager",
-            "lambda",
-        }
-        for constructed in boto_client_factory.call_args_list:
-            assert constructed.kwargs["aws_access_key_id"] == credentials.aws_access_key_id
-            assert constructed.kwargs["aws_secret_access_key"] == credentials.aws_secret_access_key
-            assert constructed.kwargs["aws_session_token"] == session_token
-            assert constructed.kwargs["region_name"] == credentials.aws_default_region
-
-    def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_default_chain_provider_omits_explicit_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         session = MagicMock()
         session_factory = MagicMock(return_value=session)
         boto_client_factory = MagicMock()
@@ -100,32 +49,47 @@ class TestAWSClientProviders:
         monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
 
         region = "test-default-chain-region"
-        provider = DefaultChainAWSClientProvider(region=region)
+        provider = AWSClientProvider(region=region)
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
-        provider.secretsmanager_client()
+        provider.cloudwatch_logs_async_client()
         provider.secretsmanager_async_client()
         provider.lambda_client()
 
         session_factory.assert_called_once_with(region_name=region)
-        session.client.assert_has_calls([call("s3", config=ANY), call("secretsmanager")])
+        assert session.client.call_args_list == [
+            call("s3", config=ANY),
+            call("logs"),
+            call("secretsmanager"),
+            call("lambda", config=None),
+        ]
         assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
-            "secretsmanager",
-            "lambda",
         }
         credential_arguments = {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
         for constructed in boto_client_factory.call_args_list:
             assert constructed.kwargs["region_name"] == region
             assert credential_arguments.isdisjoint(constructed.kwargs)
 
+    async def test_async_clients_on_one_event_loop_share_a_session(self) -> None:
+        s3_session = getattr(AWSClientProvider(region="us-east-1"), "_task_session")
+
+        assert s3_session() is s3_session()
+
+    def test_async_clients_on_different_event_loops_use_separate_sessions(self) -> None:
+        s3_session = getattr(AWSClientProvider(region="us-east-1"), "_task_session")
+
+        async def running_loop_session() -> aioboto3.Session:
+            return s3_session()
+
+        assert asyncio.run(running_loop_session()) is not asyncio.run(running_loop_session())
+
     @pytest.mark.parametrize(
         ("provider", "requested_seconds", "expected_seconds"),
         [
-            (ExplicitCredentialsAWSClientProvider(_AWS), 86_400, 86_400),
-            (DefaultChainAWSClientProvider(region="us-east-1"), 86_400, 3_600),
-            (DefaultChainAWSClientProvider(region="us-east-1"), 300, 300),
+            (AWSClientProvider(region="us-east-1"), 86_400, 3_600),
+            (AWSClientProvider(region="us-east-1"), 300, 300),
         ],
     )
     def test_maximum_presign_ttl(
@@ -135,6 +99,113 @@ class TestAWSClientProviders:
         expected_seconds: int,
     ) -> None:
         assert provider.maximum_presign_ttl(requested_seconds) == expected_seconds
+
+
+def _role_credentials(key: str, lifetime: timedelta) -> dict[str, object]:
+    expiration = datetime.now(timezone.utc) + lifetime
+    return {
+        "Credentials": {
+            "AccessKeyId": key,
+            "SecretAccessKey": "secret",
+            "SessionToken": "token",
+            "Expiration": expiration,
+        }
+    }
+
+
+class TestTenantRoleAWSClientProvider:
+    """S3 clients assume the tenant role with the organization's session tag."""
+
+    _ROLE_ARN = "arn:aws:iam::123456789012:role/ValkyrieTrackerTenantAccessRole-dev"
+
+    def _provider(self) -> TenantRoleAWSClientProvider:
+        return TenantRoleAWSClientProvider(
+            region="us-east-1", role_arn=self._ROLE_ARN, org_id="org-1", shared_secrets=True
+        )
+
+    def _task_role_session(self, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock]:
+        sts = MagicMock()
+        sts.__aenter__.return_value = sts
+        sts.assume_role = AsyncMock(return_value=_role_credentials("tenant-key", timedelta(hours=1)))
+        session = MagicMock()
+        session.client.return_value = sts
+        monkeypatch.setattr(AWSClientProvider, "_task_session", lambda _provider: session)
+        return session, sts
+
+    async def test_s3_signs_with_renewed_credentials_tagged_with_the_org(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, sts = self._task_role_session(monkeypatch)
+        sts.assume_role.side_effect = [
+            _role_credentials("expiring-key", timedelta(minutes=1)),
+            sts.assume_role.return_value,
+        ]
+        provider = self._provider()
+
+        keys: list[str] = []
+        for _ in range(3):
+            async with provider.s3_client() as s3:
+                url = await s3.generate_presigned_url("get_object", Params={"Bucket": "b", "Key": "k"})
+            keys.append(re.search(r"(?:AWSAccessKeyId|X-Amz-Credential)=([^%&]+)", url).group(1))  # pyright: ignore[reportOptionalMemberAccess]
+
+        assert keys == ["expiring-key", "tenant-key", "tenant-key"]
+        tagged = call(
+            RoleArn=self._ROLE_ARN,
+            RoleSessionName="valkyrie-org-1",
+            Tags=[
+                {"Key": "valkyrie:org-id", "Value": "org-1"},
+                {"Key": "valkyrie:secret-scope", "Value": "shared-internal"},
+            ],
+        )
+        assert sts.assume_role.await_args_list == [tagged, tagged]
+
+    async def test_only_shared_orgs_send_the_secret_scope_tag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, sts = self._task_role_session(monkeypatch)
+        provider = TenantRoleAWSClientProvider(
+            region="us-east-1", role_arn=self._ROLE_ARN, org_id="org-1", shared_secrets=False
+        )
+
+        await getattr(provider, "_assume_role")()
+
+        assert sts.assume_role.await_args.kwargs["Tags"] == [{"Key": "valkyrie:org-id", "Value": "org-1"}]
+
+    async def test_task_role_clients_are_shared_across_orgs(self) -> None:
+        other = TenantRoleAWSClientProvider(
+            region="us-east-1", role_arn=self._ROLE_ARN, org_id="org-2", shared_secrets=False
+        )
+
+        assert self._provider().cloudwatch_logs_client() is other.cloudwatch_logs_client()
+        assert getattr(self._provider(), "_task_session")() is getattr(other, "_task_session")()
+
+    def test_presigned_urls_are_capped_to_the_refresh_window(self) -> None:
+        assert [self._provider().maximum_presign_ttl(seconds) for seconds in (3600, 300)] == [600, 300]
+
+    async def test_secrets_requests_are_signed_with_tenant_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._task_role_session(monkeypatch)
+        authorizations: list[str] = []
+
+        class Captured(Exception):
+            pass
+
+        def capture(request: Any, **_kwargs: Any) -> None:
+            header = request.headers["Authorization"]
+            authorizations.append(header.decode() if isinstance(header, bytes) else header)
+            raise Captured
+
+        async with self._provider().secretsmanager_async_client() as client:
+            client.meta.events.register("before-send.secrets-manager.GetSecretValue", capture)
+            with pytest.raises(Captured):
+                await client.get_secret_value(SecretId="valkyrie/tenants/org-1/daytona")
+
+        assert "Credential=tenant-key/" in authorizations[0]
+
+    async def test_logs_and_lambda_keep_the_task_role(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        session, sts = self._task_role_session(monkeypatch)
+        provider = self._provider()
+
+        provider.cloudwatch_logs_async_client()
+        provider.lambda_client()
+
+        assert session.client.call_args_list == [call("logs"), call("lambda", config=None)]
+        sts.assume_role.assert_not_called()
 
 
 class TestS3DecoratorClient:
@@ -176,8 +247,7 @@ class TestS3ClientRetry:
     @pytest.mark.parametrize(
         "provider",
         [
-            pytest.param(ExplicitCredentialsAWSClientProvider(_AWS), id="explicit"),
-            pytest.param(DefaultChainAWSClientProvider("us-east-1"), id="default-chain"),
+            pytest.param(AWSClientProvider("us-east-1"), id="default-chain"),
         ],
     )
     async def test_uses_standard_retry_mode(self, provider: AWSClientProvider) -> None:
@@ -271,6 +341,10 @@ class TestWriteBenchmarkLogEvent:
         client = MagicMock()
         client_provider = MagicMock(spec=AWSClientProvider)
         client_provider.cloudwatch_logs_client.return_value = client
+        client_provider.cloudwatch_logs_async_client.return_value = client
+        client.__aenter__.return_value = client
+        client.create_log_group = AsyncMock()
+        client.put_retention_policy = AsyncMock()
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", set[str]())
         return (
             client,
@@ -306,29 +380,38 @@ class TestWriteBenchmarkLogEvent:
         assert stream_name in str(exc_info.value)
         client.put_log_events.assert_not_called()
 
-    def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_configures_group_retention(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
 
-        sink.create_benchmark("bench123", retention_days=30)
+        await sink.create_benchmark("bench123", retention_days=30)
 
-        client.create_log_group.assert_called_once_with(logGroupName="/valkyrie/worker/bench123")
-        client.put_retention_policy.assert_called_once_with(
+        client.create_log_group.assert_awaited_once_with(logGroupName="/valkyrie/worker/bench123")
+        client.put_retention_policy.assert_awaited_once_with(
             logGroupName="/valkyrie/worker/bench123",
             retentionInDays=30,
         )
 
-    def test_create_benchmark_ignores_existing_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_retries_cancelled_retention_for_existing_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retry retention when cancellation leaves an already-created log group."""
         client, _, sink = self._sink_with_mock_client(monkeypatch)
-        client.create_log_group.side_effect = ClientError(
-            {"Error": {"Code": "ResourceAlreadyExistsException"}},
-            "CreateLogGroup",
-        )
+        client.create_log_group.side_effect = [
+            None,
+            ClientError({"Error": {"Code": "ResourceAlreadyExistsException"}}, "CreateLogGroup"),
+        ]
+        client.put_retention_policy.side_effect = [asyncio.CancelledError(), None]
 
-        sink.create_benchmark("bench123", retention_days=30)
+        with pytest.raises(asyncio.CancelledError):
+            await sink.create_benchmark("bench123", retention_days=30)
+        await sink.create_benchmark("bench123", retention_days=30)
 
-        client.put_retention_policy.assert_not_called()
+        assert client.put_retention_policy.await_args_list == [
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+            call(logGroupName="/valkyrie/worker/bench123", retentionInDays=30),
+        ]
 
-    def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_create_benchmark_translates_non_existing_group_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, _, sink = self._sink_with_mock_client(monkeypatch)
         client.create_log_group.side_effect = ClientError(
             {"Error": {"Code": "AccessDeniedException"}},
@@ -336,7 +419,7 @@ class TestWriteBenchmarkLogEvent:
         )
 
         with pytest.raises(CloudWatchError, match="Failed to create log group"):
-            sink.create_benchmark("bench123", retention_days=30)
+            await sink.create_benchmark("bench123", retention_days=30)
 
     def test_blank_message_does_not_create_client_or_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client, client_provider, sink = self._sink_with_mock_client(monkeypatch)

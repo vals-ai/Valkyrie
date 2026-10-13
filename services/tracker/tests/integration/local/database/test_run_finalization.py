@@ -5,7 +5,7 @@ Run: uv run pytest tests/integration/local/database/test_run_finalization.py
 
 import asyncio
 from datetime import UTC, datetime
-from threading import Event, Thread, get_ident
+from threading import Event, Thread
 from time import monotonic, sleep
 from typing import Any
 from uuid import UUID, uuid4
@@ -44,8 +44,7 @@ from tracker.exceptions import ExecutionAuthorityRevoked
 from tracker.executor.dispatch_control import admit_recovery_dispatch, terminalize_active_dispatches
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.executor.release_control import promote_release
-from tracker.notifications import SlackNotifier
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tracker.utils.reporting import create_final_view
 from tracker.utils.resources import fetch_benchmark_row
@@ -53,11 +52,25 @@ from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import TaskMonitor
 
 
+@pytest.fixture(autouse=True)
+def managed_execution_runtime(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> None:
+    monkeypatch.setattr("tracker.aws.services.deployment_aws_runtime", lambda *_args: aws_runtime)
+
+
+def _execution_context(request: StartBenchmarkRequest, benchmark: Benchmark) -> dict[str, Any]:
+    return ManagedExecutionContext(
+        version=2,
+        benchmark_id=benchmark.id,
+        verified_task_ids=[],
+        start_benchmark_request=RunExecutionRequest.model_validate(request.model_dump(mode="python")),
+    ).model_dump(mode="json")
+
+
 async def _skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-def _skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+async def _skip_log_group(*_args: Any, **_kwargs: Any) -> str:
     return "test-log-group"
 
 
@@ -77,7 +90,7 @@ def _patch_process_dependencies(
 ) -> None:
     monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
     monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", _skip_log_group)
-    monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", _provider_config)
+    monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", _provider_config)
     monkeypatch.setattr(run_orchestration_module, "upload_final_view", upload)
 
 
@@ -183,7 +196,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -233,8 +246,7 @@ class TestRunFinalization:
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
 
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        runtime = CloudRuntimeFactory.create_runtime(aws_runtime)
+        runtime = CloudRuntimeFactory.create_runtime(aws_runtime, sandbox_provider_secret_name="test-provider-secret")
         with pytest.raises(ExecutionAuthorityRevoked):
             async with run_orchestration_module.hold_dispatch_authority(authority):
                 await run_orchestration_module.upload_final_view(final_view, runtime.objects)
@@ -247,7 +259,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -288,13 +300,15 @@ class TestRunFinalization:
             contract=contract,
             benchmark_name=benchmark.name,
             concurrency=1,
-            harness_config=harness_config,
+            properties=aws_runtime.resources,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         )
 
         async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
             return None
 
-        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+        async def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
 
         async def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
@@ -354,7 +368,7 @@ class TestRunFinalization:
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
-        monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", provider_config)
+        monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_retry_task)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", stale_final_score)
@@ -364,9 +378,7 @@ class TestRunFinalization:
         promote_release(postgres_session, benchmark.current_execution_release_id)
         postgres_session.commit()
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark.id),
-            verified_task_ids=[],
+            execution_context_json=_execution_context(request, benchmark),
             **authority_kwargs,
         )
 
@@ -391,7 +403,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -424,7 +436,9 @@ class TestRunFinalization:
             contract=contract,
             benchmark_name=benchmark.name,
             concurrency=1,
-            harness_config=harness_config,
+            properties=aws_runtime.resources,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         )
         first_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
         second_authority = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
@@ -435,7 +449,7 @@ class TestRunFinalization:
             upload_calls += 1
             return None
 
-        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+        async def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
 
         async def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
@@ -466,22 +480,18 @@ class TestRunFinalization:
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
-        monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", provider_config)
+        monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
         monkeypatch.setattr(TaskMonitor, "track_tasks", synchronized_track_tasks)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
 
         await asyncio.gather(
             process_benchmark(
-                start_benchmark_request_json=request.model_dump(),
-                benchmark_id_str=str(benchmark.id),
-                verified_task_ids=[],
+                execution_context_json=_execution_context(request, benchmark),
                 **first_authority,
             ),
             process_benchmark(
-                start_benchmark_request_json=request.model_dump(),
-                benchmark_id_str=str(benchmark.id),
-                verified_task_ids=[],
+                execution_context_json=_execution_context(request, benchmark),
                 **second_authority,
             ),
         )
@@ -502,7 +512,7 @@ class TestRunFinalization:
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -535,9 +545,9 @@ class TestRunFinalization:
             contract=contract,
             benchmark_name=benchmark.name,
             concurrency=1,
-            harness_config=harness_config,
-            webhook_secret_name="test-webhook-secret",
-            webhook_intervals=[100],
+            properties=aws_runtime.resources,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         )
         authority_kwargs = executor_authority_kwargs(benchmark, dispatch_id=uuid4(), session=postgres_session)
         benchmark.arguments = benchmark.arguments.model_copy(update={"lambda_function": "test-lambda"})
@@ -546,10 +556,8 @@ class TestRunFinalization:
         side_effects: dict[str, dict[str, int | bool]] = {
             "upload": {"calls": 0, "lock_held": False},
             "lambda": {"calls": 0, "lock_held": False},
-            "notification": {"calls": 0, "lock_held": False},
         }
         lambda_configs: list[Config] = []
-        lambda_thread_ids: list[int] = []
 
         def assert_lock_held(benchmark_id: UUID) -> bool:
             with Session(postgres_engine) as retry_session:
@@ -564,23 +572,14 @@ class TestRunFinalization:
             side_effects["upload"]["calls"] += 1
             side_effects["upload"]["lock_held"] = assert_lock_held(benchmark.id)
 
-        def assert_lambda_lock_held(*_args: Any, **_kwargs: Any) -> None:
+        async def assert_lambda_lock_held(*_args: Any, **_kwargs: Any) -> None:
             side_effects["lambda"]["calls"] += 1
             side_effects["lambda"]["lock_held"] = assert_lock_held(benchmark.id)
             callback_config = _kwargs.get("config")
             assert isinstance(callback_config, Config)
             lambda_configs.append(callback_config)
-            lambda_thread_ids.append(get_ident())
 
-        async def assert_notification_lock_held(
-            _notifier: SlackNotifier,
-            _context: Any,
-            **_kwargs: Any,
-        ) -> None:
-            side_effects["notification"]["calls"] += 1
-            side_effects["notification"]["lock_held"] = assert_lock_held(benchmark.id)
-
-        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+        async def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
             return "test-log-group"
 
         async def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
@@ -595,35 +594,30 @@ class TestRunFinalization:
 
         monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "create_benchmark", skip_log_group)
-        monkeypatch.setattr("tracker.runtime.services.RuntimeServices._load_sandbox_provider_config", provider_config)
+        monkeypatch.setattr("tracker.runtime.services.RuntimeServices.get_sandbox_provider_config", provider_config)
         monkeypatch.setattr(run_orchestration_module, "upload_final_view", assert_upload_lock_held)
         monkeypatch.setattr("tracker.aws.services.invoke_lambda", assert_lambda_lock_held)
-        monkeypatch.setattr(SlackNotifier, "send_terminal_notification", assert_notification_lock_held)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
         # Release the fixture connection so separate probe sessions can contend for the row lock.
         postgres_session.close()
 
         await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark.id),
-            verified_task_ids=[],
+            execution_context_json=_execution_context(request, benchmark),
             **authority_kwargs,
         )
 
         assert side_effects == {
             "upload": {"calls": 1, "lock_held": True},
             "lambda": {"calls": 1, "lock_held": True},
-            "notification": {"calls": 1, "lock_held": True},
         }
         assert lambda_configs[0].read_timeout == 60
         assert lambda_configs[0].retries == {"total_max_attempts": 1}
-        assert lambda_thread_ids[0] != get_ident()
 
     async def test_all_error_finalization_returns_distinct_representatives(
         self,
         postgres_engine: Engine,
         postgres_session: Session,
-        harness_config: HarnessConfig,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         executor_authority_kwargs: Any,
     ) -> None:
@@ -689,10 +683,12 @@ class TestRunFinalization:
                 contract=contract,
                 benchmark_name=benchmark.name,
                 concurrency=1,
-                harness_config=harness_config,
+                properties=aws_runtime.resources,
+                sandbox_provider="daytona",
+                sandbox_provider_secret_name="test-provider-secret",
             )
             authority_kwargs = executor_authority_kwargs(benchmark, session=postgres_session)
-            await process_benchmark(request.model_dump(), str(benchmark.id), [], **authority_kwargs)
+            await process_benchmark(execution_context_json=_execution_context(request, benchmark), **authority_kwargs)
 
             with Session(postgres_engine) as assertion_session:
                 persisted_benchmark = assertion_session.get(Benchmark, benchmark.id)

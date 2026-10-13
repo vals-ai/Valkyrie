@@ -108,7 +108,6 @@ async def test_task_ids_builds_configured_service_request(make_client) -> None:
     assert captured_body == {
         "benchmark_name": "swebench",
         "dataset": "default",
-        "custom_benchmark_service": "https://local.swebench",
         "service_headers": {"Authorization": "explicit-token", "X-Custom": "value"},
     }
 
@@ -123,8 +122,7 @@ async def test_task_ids_can_ignore_custom_service_configuration(make_client) -> 
     async with make_client(handler) as client:
         await client.services.task_ids("swebench", ignore_custom_services=True)
 
-    assert captured_body["custom_benchmark_service"] is None
-    assert captured_body["service_headers"] == {"Authorization": "benchmark-token"}
+    assert captured_body["ignore_custom_services"] is True
 
 
 async def test_task_ids_rejects_blank_benchmark_name(make_client) -> None:

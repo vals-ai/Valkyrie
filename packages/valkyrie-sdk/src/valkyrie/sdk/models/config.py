@@ -1,15 +1,8 @@
-"""Nested configuration models sent to the Valkyrie API."""
+"""AWS and local resource locations that the Valkyrie API reports for a run."""
 
-from pydantic import BaseModel, Field
+from pathlib import Path
 
-
-class AWSCredentials(BaseModel, frozen=True):
-    """AWS credentials forwarded in the run harness configuration."""
-
-    aws_access_key_id: str
-    aws_secret_access_key: str = Field(repr=False)
-    aws_default_region: str
-    aws_session_token: str | None = Field(default=None, repr=False)
+from pydantic import BaseModel, Field, field_validator
 
 
 class AWSResources(BaseModel, frozen=True):
@@ -19,11 +12,13 @@ class AWSResources(BaseModel, frozen=True):
     log_retention_days: int = Field(gt=0)
 
 
-class HarnessConfig(BaseModel):
-    """Harness configuration required to start a run."""
+class LocalResources(BaseModel, frozen=True):
+    data_root: Path
+    secrets_file: Path | None = None
 
-    aws: AWSCredentials
-    s3_bucket: str
-    log_group: str
-    log_retention_policy: int
-    sandbox_provider_secret_name: str
+    @field_validator("data_root", "secrets_file")
+    @classmethod
+    def validate_absolute_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("Local resource paths must be absolute")
+        return value

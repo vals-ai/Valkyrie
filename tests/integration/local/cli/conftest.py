@@ -8,7 +8,7 @@ import httpx
 import pytest
 from botocore.exceptions import ClientError
 from fastapi import FastAPI
-from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import AWSClientProvider
 
 
 @pytest.fixture
@@ -26,6 +26,20 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
         return {"ETag": "local-etag"}
 
     async def complete(**kwargs: Any) -> dict[str, str]:
+        if kwargs.get("IfNoneMatch") == "*" and kwargs["Key"] in objects:
+            parts.clear()
+            raise ClientError(
+                {
+                    "ResponseMetadata": {
+                        "HTTPStatusCode": 412,
+                        "RequestId": "test",
+                        "HostId": "test",
+                        "HTTPHeaders": {},
+                        "RetryAttempts": 0,
+                    }
+                },
+                "CompleteMultipartUpload",
+            )
         objects[kwargs["Key"]] = b"".join(parts)
         parts.clear()
 
@@ -42,19 +56,27 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
 
         return {}
 
-    async def pages(**_kwargs: Any) -> AsyncIterator[dict[str, object]]:
-        yield {"Contents": [{"Key": key} for key in objects]}
+    async def pages(**kwargs: Any) -> AsyncIterator[dict[str, object]]:
+        yield {
+            "Contents": [
+                {"Key": key, "Size": len(value)} for key, value in objects.items() if key.startswith(kwargs["Prefix"])
+            ]
+        }
 
     client.upload_part.side_effect = upload_part
     client.complete_multipart_upload.side_effect = complete
     client.head_object.side_effect = head
     client.delete_object.side_effect = delete
-    client.generate_presigned_url.return_value = "https://download.test/agents/alias.zip"
+
+    async def presigned_url(_operation: str, **kwargs: Any) -> str:
+        return f"https://download.test/{kwargs['Params']['Key']}"
+
+    client.generate_presigned_url.side_effect = presigned_url
     paginator = MagicMock()
     paginator.paginate.side_effect = pages
     client.get_paginator = MagicMock(return_value=paginator)
 
-    def s3_client(_provider: ExplicitCredentialsAWSClientProvider) -> AsyncMock:
+    def s3_client(_provider: AWSClientProvider) -> AsyncMock:
         return client
 
     async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
@@ -66,7 +88,7 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
         async with httpx.ASGITransport(app=local_tracker_app) as transport:
             return await transport.handle_async_request(request)
 
-    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", s3_client)
+    monkeypatch.setattr(AWSClientProvider, "s3_client", s3_client)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
 
     return objects

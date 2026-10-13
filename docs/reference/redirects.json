@@ -4,6 +4,58 @@
     "destination": "/get-started/overview"
   },
   {
+    "source": "/reference/cli/config/provider/set",
+    "destination": "/reference/cli/provider#set"
+  },
+  {
+    "source": "/reference/cli/config/provider/default",
+    "destination": "/reference/cli/provider#default"
+  },
+  {
+    "source": "/reference/cli/config/provider/remove",
+    "destination": "/reference/cli/provider#remove"
+  },
+  {
+    "source": "/reference/cli/config/provider/list",
+    "destination": "/reference/cli/provider#list"
+  },
+  {
+    "source": "/reference/cli/config/service/set",
+    "destination": "/reference/cli/benchmark#service-set"
+  },
+  {
+    "source": "/reference/cli/config/service/remove",
+    "destination": "/reference/cli/benchmark#service-remove"
+  },
+  {
+    "source": "/reference/cli/config/service/list",
+    "destination": "/reference/cli/benchmark#service-list"
+  },
+  {
+    "source": "/reference/cli/config/auth/set",
+    "destination": "/reference/cli/benchmark#service-set"
+  },
+  {
+    "source": "/reference/cli/config/auth/remove",
+    "destination": "/reference/cli/benchmark#service-set"
+  },
+  {
+    "source": "/reference/cli/config/auth/list",
+    "destination": "/reference/cli/benchmark#service-list"
+  },
+  {
+    "source": "/reference/cli/config",
+    "destination": "/get-started/configuration"
+  },
+  {
+    "source": "/reference/cli/config/set",
+    "destination": "/get-started/configuration"
+  },
+  {
+    "source": "/reference/cli/config/remove",
+    "destination": "/get-started/configuration"
+  },
+  {
     "source": "/reference/cli/run/analyze",
     "destination": "/reference/cli/run#analyze"
   },
@@ -50,6 +102,10 @@
   {
     "source": "/reference/cli/run/retry",
     "destination": "/reference/cli/run#retry"
+  },
+  {
+    "source": "/reference/cli/run/shed",
+    "destination": "/reference/cli/run#shed"
   },
   {
     "source": "/reference/cli/run/start",
@@ -104,60 +160,88 @@
     "destination": "/reference/cli/benchmark#tasks"
   },
   {
-    "source": "/reference/cli/config/auth/set",
-    "destination": "/reference/cli/config#auth-set"
+    "source": "/reference/cli/benchmark/service/set",
+    "destination": "/reference/cli/benchmark#service-set"
   },
   {
-    "source": "/reference/cli/config/auth/remove",
-    "destination": "/reference/cli/config#auth-remove"
+    "source": "/reference/cli/benchmark/service/remove",
+    "destination": "/reference/cli/benchmark#service-remove"
   },
   {
-    "source": "/reference/cli/config/auth/list",
-    "destination": "/reference/cli/config#auth-list"
-  },
-  {
-    "source": "/reference/cli/config/init",
-    "destination": "/reference/cli/config#init"
-  },
-  {
-    "source": "/reference/cli/config/set",
-    "destination": "/reference/cli/config#set"
-  },
-  {
-    "source": "/reference/cli/config/remove",
-    "destination": "/reference/cli/config#remove"
-  },
-  {
-    "source": "/reference/cli/config/provider/set",
-    "destination": "/reference/cli/config#provider-set"
-  },
-  {
-    "source": "/reference/cli/config/provider/default",
-    "destination": "/reference/cli/config#provider-default"
-  },
-  {
-    "source": "/reference/cli/config/provider/remove",
-    "destination": "/reference/cli/config#provider-remove"
-  },
-  {
-    "source": "/reference/cli/config/provider/list",
-    "destination": "/reference/cli/config#provider-list"
-  },
-  {
-    "source": "/reference/cli/config/service/set",
-    "destination": "/reference/cli/config#service-set"
-  },
-  {
-    "source": "/reference/cli/config/service/remove",
-    "destination": "/reference/cli/config#service-remove"
-  },
-  {
-    "source": "/reference/cli/config/service/list",
-    "destination": "/reference/cli/config#service-list"
+    "source": "/reference/cli/benchmark/service/list",
+    "destination": "/reference/cli/benchmark#service-list"
   },
   {
     "source": "/reference/cli/queue/status",
     "destination": "/reference/cli/queue#status"
+  },
+  {
+    "source": "/reference/cli/secret/set",
+    "destination": "/reference/cli/secret#set"
+  },
+  {
+    "source": "/reference/cli/secret/list",
+    "destination": "/reference/cli/secret#list"
+  },
+  {
+    "source": "/reference/cli/secret/remove",
+    "destination": "/reference/cli/secret#remove"
+  },
+  {
+    "source": "/reference/cli/provider/set",
+    "destination": "/reference/cli/provider#set"
+  },
+  {
+    "source": "/reference/cli/provider/remove",
+    "destination": "/reference/cli/provider#remove"
+  },
+  {
+    "source": "/reference/cli/provider/list",
+    "destination": "/reference/cli/provider#list"
+  },
+  {
+    "source": "/reference/cli/provider/default",
+    "destination": "/reference/cli/provider#default"
+  },
+  {
+    "source": "/reference/cli/token/create",
+    "destination": "/reference/cli/token#create"
+  },
+  {
+    "source": "/reference/cli/token/revoke",
+    "destination": "/reference/cli/token#revoke"
+  },
+  {
+    "source": "/reference/cli/org/list",
+    "destination": "/reference/cli/org#list"
+  },
+  {
+    "source": "/reference/cli/org/create",
+    "destination": "/reference/cli/org#create"
+  },
+  {
+    "source": "/reference/cli/org/use",
+    "destination": "/reference/cli/org#use"
+  },
+  {
+    "source": "/reference/cli/org/invite",
+    "destination": "/reference/cli/org#invite"
+  },
+  {
+    "source": "/reference/cli/org/accept",
+    "destination": "/reference/cli/org#accept"
+  },
+  {
+    "source": "/reference/cli/org/decline",
+    "destination": "/reference/cli/org#decline"
+  },
+  {
+    "source": "/reference/cli/org/members",
+    "destination": "/reference/cli/org#members"
+  },
+  {
+    "source": "/reference/cli/org/remove",
+    "destination": "/reference/cli/org#remove"
   },
   {
     "source": "/reference/sdk/artifacts/list",
@@ -226,6 +310,10 @@
   {
     "source": "/reference/sdk/runs/update_concurrency",
     "destination": "/reference/sdk/runs#update-concurrency"
+  },
+  {
+    "source": "/reference/sdk/runs/shed",
+    "destination": "/reference/sdk/runs#shed"
   },
   {
     "source": "/reference/sdk/runs/stop",
@@ -324,6 +412,46 @@
     "destination": "/reference/sdk/scheduler#overview"
   },
   {
+    "source": "/reference/sdk/secrets/list",
+    "destination": "/reference/sdk/secrets#list"
+  },
+  {
+    "source": "/reference/sdk/secrets/set",
+    "destination": "/reference/sdk/secrets#set"
+  },
+  {
+    "source": "/reference/sdk/secrets/remove",
+    "destination": "/reference/sdk/secrets#remove"
+  },
+  {
+    "source": "/reference/sdk/providers/list",
+    "destination": "/reference/sdk/providers#list"
+  },
+  {
+    "source": "/reference/sdk/providers/set",
+    "destination": "/reference/sdk/providers#set"
+  },
+  {
+    "source": "/reference/sdk/providers/remove",
+    "destination": "/reference/sdk/providers#remove"
+  },
+  {
+    "source": "/reference/sdk/settings/get",
+    "destination": "/reference/sdk/settings#get"
+  },
+  {
+    "source": "/reference/sdk/settings/set_default_provider",
+    "destination": "/reference/sdk/settings#set-default-provider"
+  },
+  {
+    "source": "/reference/sdk/settings/set_benchmark_service",
+    "destination": "/reference/sdk/settings#set-benchmark-service"
+  },
+  {
+    "source": "/reference/sdk/settings/remove_benchmark_service",
+    "destination": "/reference/sdk/settings#remove-benchmark-service"
+  },
+  {
     "source": "/reference/sdk/models/artifacts/run-artifact-entry",
     "destination": "/reference/sdk/models/artifacts#run-artifact-entry"
   },
@@ -382,6 +510,14 @@
   {
     "source": "/reference/sdk/models/benchmarks/benchmark-status-response",
     "destination": "/reference/sdk/models/benchmarks#benchmark-status-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/dataset-version",
+    "destination": "/reference/sdk/models/runs#dataset-version"
+  },
+  {
+    "source": "/reference/sdk/models/runs/failure-category",
+    "destination": "/reference/sdk/models/runs#failure-category"
   },
   {
     "source": "/reference/sdk/models/runs/fetch-benchmark-response",
@@ -476,12 +612,40 @@
     "destination": "/reference/sdk/models/scheduler#scheduler-waiting-entry-response"
   },
   {
+    "source": "/reference/sdk/models/secrets/secret-entry",
+    "destination": "/reference/sdk/models/secrets#secret-entry"
+  },
+  {
+    "source": "/reference/sdk/models/secrets/secrets-response",
+    "destination": "/reference/sdk/models/secrets#secrets-response"
+  },
+  {
+    "source": "/reference/sdk/models/settings/providers-response",
+    "destination": "/reference/sdk/models/settings#providers-response"
+  },
+  {
+    "source": "/reference/sdk/models/settings/run-settings-response",
+    "destination": "/reference/sdk/models/settings#run-settings-response"
+  },
+  {
+    "source": "/reference/sdk/models/settings/saved-benchmark-service",
+    "destination": "/reference/sdk/models/settings#saved-benchmark-service"
+  },
+  {
     "source": "/reference/sdk/models/benchmarks/single-benchmark-response",
     "destination": "/reference/sdk/models/benchmarks#single-benchmark-response"
   },
   {
     "source": "/reference/sdk/models/benchmarks/single-task-response",
     "destination": "/reference/sdk/models/benchmarks#single-task-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/shed-benchmark-request",
+    "destination": "/reference/sdk/models/runs#shed-benchmark-request"
+  },
+  {
+    "source": "/reference/sdk/models/runs/shed-benchmark-response",
+    "destination": "/reference/sdk/models/runs#shed-benchmark-response"
   },
   {
     "source": "/reference/sdk/models/runs/start-benchmark-response",

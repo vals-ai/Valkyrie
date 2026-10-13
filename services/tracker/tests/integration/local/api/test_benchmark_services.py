@@ -32,7 +32,7 @@ class TestBenchmarkServices:
 
         response = client.post(
             "/benchmark-services",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
             json={
                 "services": [
                     {"name": "swebench", "url": "http://up:8001"},

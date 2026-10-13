@@ -8,20 +8,24 @@ import stat
 import struct
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 from botocore.exceptions import ClientError
-from tracker import config
+from tracker import auth, config
+from tracker.auth import get_current_org
+from tracker.database.models import Org
+from tracker.local import config as local_config
+from tracker.local.resources import LocalResources
 from tracker.exceptions import S3Error
 
 import tracker.api.agents as agents_api
 from main import app
-from tracker.aws.runtime import AWSRuntime
 from tracker.aws import s3 as aws_s3
 from tracker.aws.s3 import S3ObjectStore
-from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 
 _client = TestClient(app)
 
@@ -58,13 +62,24 @@ def _agent_archive(
 class TestAgentWrites:
     """Write validation and clean storage permission failures."""
 
+    def test_conditional_upload_returns_conflict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        upload = AsyncMock(side_effect=FileExistsError("agents/demo.zip"))
+        monkeypatch.setattr(aws_s3, "upload_stream_to_s3", upload)
+        response = _client.put(
+            "/agents/demo?overwrite=false",
+            headers={"Content-Type": "application/zip"},
+            content=_agent_archive(),
+        )
+        assert response.status_code == 409
+        assert upload.call_args.kwargs["overwrite"] is False
+
     @pytest.mark.parametrize(
         "member", ["../escape", "/escape", "demo/../escape", "other/file", "demo\\file", "demo/C:file"]
     )
-    def test_upload_rejects_unsafe_members(self, harness_headers: dict[str, str], member: str) -> None:
+    def test_upload_rejects_unsafe_members(self, member: str) -> None:
         response = _client.put(
             "/agents/demo",
-            headers={**harness_headers, "Content-Type": "application/zip"},
+            headers={"Content-Type": "application/zip"},
             content=_agent_archive(member),
         )
 
@@ -80,64 +95,46 @@ class TestAgentWrites:
             _agent_archive().replace(b"agent content", b"wrong content"),
         ],
     )
-    def test_upload_rejects_invalid_contract_symlink_and_crc(
-        self, harness_headers: dict[str, str], body: bytes
-    ) -> None:
-        response = _client.put(
-            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=body
-        )
+    def test_upload_rejects_invalid_contract_symlink_and_crc(self, body: bytes) -> None:
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=body)
 
         assert response.status_code == 400
 
     @pytest.mark.parametrize(
         "setting", ["AGENT_UPLOAD_MAX_BYTES", "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", "AGENT_ARCHIVE_MAX_ENTRIES"]
     )
-    def test_upload_limits_return_413(
-        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str], setting: str
-    ) -> None:
+    def test_upload_limits_return_413(self, monkeypatch: pytest.MonkeyPatch, setting: str) -> None:
         monkeypatch.setattr(config, setting, 1)
-        response = _client.put(
-            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=_agent_archive()
-        )
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=_agent_archive())
 
         assert response.status_code == 413
         assert setting in response.json()["detail"]
 
-    def test_actual_upload_bytes_are_bounded(
-        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
-    ) -> None:
+    def test_actual_upload_bytes_are_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(config, "AGENT_UPLOAD_MAX_BYTES", 3)
         response = _client.put(
             "/agents/demo",
-            headers={**harness_headers, "Content-Type": "application/zip", "Content-Length": "1"},
+            headers={"Content-Type": "application/zip", "Content-Length": "1"},
             content=b"oversized body",
         )
 
         assert response.status_code == 413
 
-    def test_metadata_limits_precede_decompression(
-        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
-    ) -> None:
+    def test_metadata_limits_precede_decompression(self, monkeypatch: pytest.MonkeyPatch) -> None:
         body = _agent_archive()
         monkeypatch.setattr(config, "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 1)
         monkeypatch.setattr(zipfile.ZipFile, "open", MagicMock(side_effect=AssertionError("archive was decompressed")))
 
-        response = _client.put(
-            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=body
-        )
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=body)
 
         assert response.status_code == 413
 
-    def test_actual_decompressed_bytes_are_bounded(
-        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str]
-    ) -> None:
+    def test_actual_decompressed_bytes_are_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         body = _agent_archive()
         monkeypatch.setattr(config, "AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 1000)
         monkeypatch.setattr(zipfile.ZipExtFile, "read", MagicMock(return_value=b"x" * 1001))
 
-        response = _client.put(
-            "/agents/demo", headers={**harness_headers, "Content-Type": "application/zip"}, content=body
-        )
+        response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=body)
 
         assert response.status_code == 413
 
@@ -149,7 +146,6 @@ class TestAgentWrites:
     def test_storage_denial_is_actionable(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_headers: dict[str, str],
         operation: str,
         code: str,
         status: int,
@@ -164,7 +160,7 @@ class TestAgentWrites:
         response = _client.request(
             operation,
             "/agents/demo",
-            headers={**harness_headers, "Content-Type": "application/zip"},
+            headers={"Content-Type": "application/zip"},
             content=_agent_archive(),
         )
 
@@ -178,12 +174,11 @@ class TestAgentWrites:
             ("demo", {"Content-Type": "application/json"}, 415),
             ("demo", {"Content-Type": "application/zip", "Content-Length": "invalid"}, 400),
             ("demo", {"Content-Type": "application/zip", "Content-Length": "-1"}, 400),
+            ("demo", {"Content-Type": "application/zip", "Content-Length": "0" * 5000 + "1"}, 400),
         ],
     )
-    def test_upload_rejects_invalid_headers(
-        self, harness_headers: dict[str, str], name: str, headers: dict[str, str], status: int
-    ) -> None:
-        response = _client.put(f"/agents/{name}", headers={**harness_headers, **headers}, content=b"archive")
+    def test_upload_rejects_invalid_headers(self, name: str, headers: dict[str, str], status: int) -> None:
+        response = _client.put(f"/agents/{name}", headers=headers, content=b"archive")
 
         assert response.status_code == status
 
@@ -200,27 +195,21 @@ class TestAgentRoutes:
 
     @pytest.mark.parametrize("method, path", [("DELETE", "/agents/demo"), ("GET", "/agents/demo/download-url")])
     def test_denied_head_returns_permission_error(
-        self, monkeypatch: pytest.MonkeyPatch, harness_headers: dict[str, str], method: str, path: str
+        self, monkeypatch: pytest.MonkeyPatch, method: str, path: str
     ) -> None:
-        client = AsyncMock()
-        client.__aenter__.return_value = client
-        client.head_object.side_effect = ClientError({"Error": {"Code": "AccessDenied"}}, "HeadObject")
+        error = S3Error("storage failed")
+        error.__cause__ = ClientError({"Error": {"Code": "AccessDenied"}}, "HeadObject")
+        operation = "delete" if method == "DELETE" else "exists"
+        monkeypatch.setattr(S3ObjectStore, operation, AsyncMock(side_effect=error))
 
-        def s3_client(_provider: ExplicitCredentialsAWSClientProvider) -> AsyncMock:
-            return client
-
-        monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", s3_client)
-
-        response = _client.request(method, path, headers=harness_headers)
+        response = _client.request(method, path)
 
         assert response.status_code == 403
         assert "permission denied" in response.json()["detail"]
-        client.head_object.assert_awaited_once()
 
     def test_list_agents_returns_storage_metadata(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_headers: dict[str, str],
     ) -> None:
         """Agent listing must expose the names and timestamps returned by storage.
 
@@ -231,7 +220,9 @@ class TestAgentRoutes:
         list_agents = AsyncMock(return_value=[("agent-a", datetime(2026, 1, 2, tzinfo=timezone.utc))])
         monkeypatch.setattr(agents_api, "list_agents", list_agents)
 
-        response = _client.get("/agents", headers=harness_headers)
+        response = _client.get(
+            "/agents",
+        )
 
         assert response.status_code == 200
         assert response.json() == {"agents": [{"name": "agent-a", "last_modified": "2026-01-02 00:00:00+00:00"}]}
@@ -241,8 +232,6 @@ class TestAgentRoutes:
     def test_agent_download_url_uses_route_expiration(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AWSRuntime,
-        harness_headers: dict[str, str],
     ) -> None:
         """Download links must use the route's configured expiration in both the signer and response.
 
@@ -251,10 +240,10 @@ class TestAgentRoutes:
         """
         exists = AsyncMock(return_value=True)
         presigned_url = AsyncMock(return_value="https://example.test/agent-a.zip")
-        monkeypatch.setattr(aws_s3, "s3_object_exists", exists)
-        monkeypatch.setattr(aws_s3, "create_presigned_url", presigned_url)
+        monkeypatch.setattr(S3ObjectStore, "exists", exists)
+        monkeypatch.setattr(S3ObjectStore, "temporary_download_url", presigned_url)
 
-        response = _client.get("/agents/agent-a/download-url", headers=harness_headers)
+        response = _client.get("/agents/agent-a/download-url")
 
         assert response.status_code == 200
         assert response.json() == {
@@ -262,18 +251,15 @@ class TestAgentRoutes:
             "download_url": "https://example.test/agent-a.zip",
             "expires_in": agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
         }
-        exists.assert_awaited_once_with("agents/agent-a.zip", aws_runtime)
+        exists.assert_awaited_once_with("agents/agent-a.zip")
         presigned_url.assert_awaited_once_with(
             "agents/agent-a.zip",
-            aws_runtime,
-            expiration=agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
+            expires_in=agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
         )
 
     def test_agent_download_url_returns_not_found_for_missing_agent(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AWSRuntime,
-        harness_headers: dict[str, str],
     ) -> None:
         """Missing agent artifacts must return not found instead of a useless signed URL.
 
@@ -282,10 +268,49 @@ class TestAgentRoutes:
         """
 
         exists = AsyncMock(return_value=False)
-        monkeypatch.setattr(aws_s3, "s3_object_exists", exists)
+        monkeypatch.setattr(S3ObjectStore, "exists", exists)
 
-        response = _client.get("/agents/missing/download-url", headers=harness_headers)
+        response = _client.get("/agents/missing/download-url")
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Agent 'missing' not found in S3"
-        exists.assert_awaited_once_with("agents/missing.zip", aws_runtime)
+        exists.assert_awaited_once_with("agents/missing.zip")
+
+    def test_local_agent_download_is_scoped_and_requires_authentication(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Download local bundles through the authenticated organization-scoped route.
+
+        Test cases:
+        - Download links return agent bytes without requiring a shared filesystem.
+        - Other organizations and missing credentials cannot download the bundle.
+        - Invalid agent names and missing files cannot download.
+        """
+        org = app.dependency_overrides[get_current_org]()
+        monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+        local_client = TestClient(app, base_url="http://localhost")
+        archive = tmp_path / "orgs" / str(org.id) / "objects/agents/demo.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"agent bundle")
+
+        response = local_client.get("/agents/demo/download-url")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["expires_in"] == 0
+        download_url = response.json()["download_url"]
+        assert download_url.startswith("http://localhost/agents/demo/download-url?")
+        download = local_client.get(download_url)
+        assert download.status_code == 200
+        assert download.content == b"agent bundle"
+        assert local_client.get("/agents/invalid%3Aname/download-url", params={"download": "true"}).status_code == 400
+
+        with monkeypatch.context() as scoped:
+            scoped.setitem(app.dependency_overrides, get_current_org, lambda: Org(id=uuid4(), name="other"))
+            assert local_client.get(download_url).status_code == 404
+        with monkeypatch.context() as scoped:
+            scoped.delitem(app.dependency_overrides, get_current_org)
+            scoped.setattr(auth, "AUTH_REQUIRED", True)
+            assert local_client.get(download_url).status_code == 401
+
+        archive.unlink()
+        assert local_client.get(download_url).status_code == 404

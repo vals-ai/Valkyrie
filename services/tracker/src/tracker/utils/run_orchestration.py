@@ -17,26 +17,28 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.executor.dependencies import get_execution_runtime
+from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.services import RuntimeServices
-from tracker.config import AUTH_REQUIRED, broker
+from tracker.config import AUTH_REQUIRED
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     DocentReadingStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     FinalEvaluation,
     Org,
+    SandboxBuildReservation,
     Task,
     TaskStatus,
 )
 from tracker.database.session import engine
 from tracker.executor.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
+from tracker.utils.failure_classification import classify_failure
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
-from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
-from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import error_span
 from tracker.observability.sentry import capture_exception
 from tracker.observability.tracing import observability_span
@@ -45,7 +47,7 @@ from tracker.scheduler.admission import SandboxQueueContext, create_queue_contex
 from tracker.types import (
     FinalViewResponse,
     ManagedExecutionContext,
-    StartBenchmarkRequest,
+    RunExecutionRequest,
 )
 
 from tracker.utils.resources import (
@@ -67,7 +69,7 @@ async def _run_queued_tasks(
     *,
     benchmark_id: UUID,
     task_rows: Sequence[tuple[str, Task]],
-    start_benchmark_request: StartBenchmarkRequest,
+    start_benchmark_request: RunExecutionRequest,
     benchmark_service: BenchmarkServiceClient,
     runtime: RuntimeServices,
     org: Org,
@@ -75,7 +77,6 @@ async def _run_queued_tasks(
     sandbox_provider: SandboxProvider,
     creation_semaphore: Semaphore,
     queue_context: SandboxQueueContext,
-    notifier: SlackNotifier | None,
     record_cancellation: Callable[[dict[UUID, datetime]], None],
     authority: ExecutionAuthority,
 ) -> None:
@@ -90,11 +91,9 @@ async def _run_queued_tasks(
         tracked_tasks,
         org,
         limiter=None,
-        notifier=notifier,
         coordinator_done=coordinator_done,
         authority=authority,
     )
-    await recover_queued_pool(queue_context)
     monitor_task = asyncio.create_task(monitor.track_tasks())
     cancellation_attempts: dict[UUID, datetime] | None = None
 
@@ -124,6 +123,7 @@ async def _run_queued_tasks(
 
     try:
         while True:
+            await recover_queued_pool(queue_context)
             completed_task_row_ids: set[UUID] = set()
             for task_row_id, (_attempt, runner) in list(local_runners.items()):
                 if runner.done():
@@ -138,78 +138,92 @@ async def _run_queued_tasks(
                 )
                 current_rows = [task_row for task_row in benchmark_task_rows if task_row.id in owned_task_row_ids]
 
-            current_by_id = {task_row.id: task_row for task_row in current_rows}
-            retired_evaluation_row_ids.update(
-                task_row_id
-                for task_row_id in completed_task_row_ids
-                if (completed_row := current_by_id.get(task_row_id)) is not None
-                and completed_row.status == TaskStatus.EVALUATING
-                and completed_row.eval_resume_state is not None
-            )
-            active_task_row_ids = {
-                task_row_id
-                for task_row_id, (attempt, _runner) in local_runners.items()
-                if (current_task := current_by_id.get(task_row_id)) is not None and current_task.started_at == attempt
-            }
-            used_slots = sum(
-                task_row.status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)
-                or (
-                    task_row.status == TaskStatus.EVALUATING
-                    and (
-                        task_row.eval_resume_state is None
-                        or task_row.id not in owned_task_row_ids
-                        or task_row.id in active_task_row_ids
-                    )
+                current_by_id = {task_row.id: task_row for task_row in current_rows}
+                retired_evaluation_row_ids.update(
+                    task_row_id
+                    for task_row_id in completed_task_row_ids
+                    if (completed_row := current_by_id.get(task_row_id)) is not None
+                    and completed_row.status == TaskStatus.EVALUATING
+                    and completed_row.eval_resume_state is not None
                 )
-                for task_row in benchmark_task_rows
-            )
-            available_slots = max(benchmark_row.arguments.concurrency - used_slots, 0)
+                active_task_row_ids = {
+                    task_row_id
+                    for task_row_id, (attempt, _runner) in local_runners.items()
+                    if (current_task := current_by_id.get(task_row_id)) is not None
+                    and current_task.started_at == attempt
+                }
+                used_slots = sum(
+                    task_row.status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)
+                    or (
+                        task_row.status == TaskStatus.EVALUATING
+                        and (
+                            task_row.eval_resume_state is None
+                            or task_row.id not in owned_task_row_ids
+                            or task_row.id in active_task_row_ids
+                        )
+                    )
+                    for task_row in benchmark_task_rows
+                )
+                available_slots = max(benchmark_row.arguments.concurrency - used_slots, 0)
 
-            if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
-                break
+                if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+                    break
 
-            if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and available_slots:
-                evaluation_candidates = sorted(
-                    (
+                if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and available_slots:
+                    evaluation_candidates = sorted(
+                        (
+                            task_row
+                            for task_row in current_rows
+                            if task_row.status == TaskStatus.EVALUATING
+                            and task_row.eval_resume_state is not None
+                            and task_row.id not in local_runners
+                            and task_row.id not in retired_evaluation_row_ids
+                        ),
+                        key=lambda task_row: (task_row.started_at, task_row.id),
+                    )
+                    for task_row in evaluation_candidates[:available_slots]:
+                        launch(task_row)
+                    available_slots -= min(len(evaluation_candidates), available_slots)
+
+                pending_contender_exists = any(
+                    current_by_id.get(task_row_id) is not None
+                    and current_by_id[task_row_id].status == TaskStatus.PENDING
+                    and current_by_id[task_row_id].started_at == attempt
+                    for task_row_id, (attempt, _runner) in local_runners.items()
+                )
+                if (
+                    not pending_contender_exists
+                    and available_slots
+                    and benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+                ):
+                    reserved_task_row_ids = set(
+                        session.exec(
+                            select(SandboxBuildReservation.task_row_id).where(
+                                col(SandboxBuildReservation.task_row_id).in_(owned_task_row_ids)
+                            )
+                        ).all()
+                    )
+                    pending_candidates = [
                         task_row
                         for task_row in current_rows
-                        if task_row.status == TaskStatus.EVALUATING
-                        and task_row.eval_resume_state is not None
+                        if task_row.status == TaskStatus.PENDING
                         and task_row.id not in local_runners
+                        and task_row.id not in reserved_task_row_ids
+                    ]
+                    if pending_candidates:
+                        launch(min(pending_candidates, key=lambda task_row: (task_row.started_at, task_row.id)))
+
+                actionable_rows_remain = any(
+                    task_row.status in (TaskStatus.PENDING, TaskStatus.BUILDING)
+                    or (
+                        task_row.status == TaskStatus.EVALUATING
+                        and task_row.eval_resume_state is not None
                         and task_row.id not in retired_evaluation_row_ids
-                    ),
-                    key=lambda task_row: (task_row.started_at, task_row.id),
-                )
-                for task_row in evaluation_candidates[:available_slots]:
-                    launch(task_row)
-                available_slots -= min(len(evaluation_candidates), available_slots)
-
-            pending_contender_exists = any(
-                current_by_id.get(task_row_id) is not None
-                and current_by_id[task_row_id].status == TaskStatus.PENDING
-                and current_by_id[task_row_id].started_at == attempt
-                for task_row_id, (attempt, _runner) in local_runners.items()
-            )
-            if not pending_contender_exists and available_slots and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
-                pending_candidates = [
-                    task_row
+                    )
                     for task_row in current_rows
-                    if task_row.status == TaskStatus.PENDING and task_row.id not in local_runners
-                ]
-                if pending_candidates:
-                    launch(min(pending_candidates, key=lambda task_row: (task_row.started_at, task_row.id)))
-
-            actionable_rows_remain = any(
-                task_row.status in (TaskStatus.PENDING, TaskStatus.BUILDING)
-                or (
-                    task_row.status == TaskStatus.EVALUATING
-                    and task_row.eval_resume_state is not None
-                    and task_row.id not in retired_evaluation_row_ids
                 )
-                for task_row in current_rows
-            )
-            if not local_runners and not actionable_rows_remain:
-                break
+                if not local_runners and not actionable_rows_remain:
+                    break
 
             await asyncio.sleep(queue_context.poll_interval_seconds)
     except asyncio.CancelledError:
@@ -234,6 +248,7 @@ def _capture_run_error(
     *,
     producer: str,
     operation: str,
+    category: FailureCategory,
     cause_code: str | None = None,
 ) -> None:
     with error_span(
@@ -244,6 +259,7 @@ def _capture_run_error(
         operation=operation,
         error_type=type(exc).__name__,
         cause_code=cause_code or "",
+        failure_category=category.value,
     ):
         logger.error(
             "Run execution failed",
@@ -254,9 +270,12 @@ def _capture_run_error(
                 "operation": operation,
                 "error_type": type(exc).__name__,
                 "cause_code": cause_code or "",
+                "failure_category": category.value,
             },
         )
-        capture_exception(exc)
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("failure_category", category.value)
+            capture_exception(exc)
 
 
 def _record_run_finalized(benchmark_id: UUID, status: BenchmarkStatus, authority: ExecutionAuthority) -> None:
@@ -533,35 +552,17 @@ async def finalize_all_error_run(
             producer="tracker",
             operation="summarize_task_errors",
             error_type="AllTasksFailed",
+            category=FailureCategory.UNKNOWN,
             authority=authority,
         )
         return False
 
 
-def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkRequest:
-    """Validate a queued request without serializing credential-bearing input in errors."""
-    request: StartBenchmarkRequest | None
-    try:
-        request = StartBenchmarkRequest.model_validate(payload)
-    except ValidationError as exc:
-        # Log field locations only; rendering the full error would expose input
-        # values, which include AWS credentials on this payload.
-        logger.warning(
-            f"Queued benchmark request failed validation: {exc.errors(include_url=False, include_input=False)}"
-        )
-        request = None
-
-    if request is None:
-        raise ValueError("Queued benchmark request is invalid and cannot be processed.")
-    return request
-
-
 @dataclass(frozen=True)
 class _QueuedExecution:
-    request: StartBenchmarkRequest
+    request: RunExecutionRequest
     benchmark_id: UUID
     verified_task_ids: list[str]
-    aws_managed: bool
     context_version: int | None = None
 
 
@@ -572,24 +573,22 @@ def _parse_queued_execution(
     execution_context_json: dict[str, Any] | None,
 ) -> _QueuedExecution:
     if execution_context_json is None:
-        if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
-            raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
-        request = _parse_start_benchmark_request(start_benchmark_request_json)
-        if request.harness_config is None:
-            raise ValueError("Queued access-key benchmark request has no AWS configuration.")
-
-        if request.managed_s3_bucket is not None:
-            raise ValueError("Queued execution cannot include an admission-only storage override.")
-
-        return _QueuedExecution(
-            request=request,
-            benchmark_id=UUID(benchmark_id_str),
-            verified_task_ids=verified_task_ids,
-            aws_managed=False,
-        )
-
-    if start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
-        raise ValueError("Queued benchmark request mixes access-key and managed execution inputs.")
+        if (
+            start_benchmark_request_json is None
+            or start_benchmark_request_json.get("environment") != "local"
+            or benchmark_id_str is None
+            or verified_task_ids is None
+        ):
+            raise ValueError("Queued benchmark request requires an execution context.")
+        # Local jobs queued before the hosted-runtime migration used separate fields.
+        execution_context_json = {
+            "version": 3,
+            "benchmark_id": benchmark_id_str,
+            "verified_task_ids": verified_task_ids,
+            "start_benchmark_request": start_benchmark_request_json,
+        }
+    elif start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
+        raise ValueError("Queued benchmark request must contain only an execution context.")
     try:
         context = ManagedExecutionContext.model_validate(execution_context_json)
     except ValidationError:
@@ -598,7 +597,6 @@ def _parse_queued_execution(
         request=context.start_benchmark_request,
         benchmark_id=context.benchmark_id,
         verified_task_ids=context.verified_task_ids,
-        aws_managed=True,
         context_version=context.version,
     )
 
@@ -619,15 +617,13 @@ def _queued_benchmark_id(
 @asynccontextmanager
 async def hold_dispatch_authority(
     authority: ExecutionAuthority,
-) -> AsyncGenerator[tuple[Session, Benchmark], None]:
+) -> AsyncGenerator[None, None]:
     """Hold dispatch authority while a terminal side effect runs."""
     with Session(bind=engine) as session:
-        benchmark = lock_execution_authority(session, authority, require_in_progress=False)
-        yield session, benchmark
+        lock_execution_authority(session, authority, require_in_progress=False)
+        yield
 
 
-# Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
-@broker.task(EXECUTOR_TASK_NAME)
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any] | None = None,
     benchmark_id_str: str | None = None,
@@ -681,7 +677,6 @@ async def _process_benchmark(
     finalization_deferred = False
     post_task_finalization = False
     queued_cancellation_recorded = False
-    notifier: SlackNotifier | None = None
     queue_context: SandboxQueueContext | None = None
     task_rows: Sequence[tuple[str, Task]] = ()
     run_task_rows: Sequence[tuple[str, Task]] = ()
@@ -721,12 +716,15 @@ async def _process_benchmark(
         ):
             pass
 
-        if execution.aws_managed != benchmark_row.aws_managed:
-            queued_mode = "managed" if execution.aws_managed else "access-key"
-            stored_mode = "managed" if benchmark_row.aws_managed else "access-key"
-            raise TrackerServiceError(
-                f"Queued {queued_mode} execution does not match the stored {stored_mode} run mode"
-            )
+        if start_benchmark_request.resolved_dataset_version != benchmark_row.arguments.dataset_version or (
+            benchmark_row.arguments.dataset_version is not None
+            and start_benchmark_request.dataset != benchmark_row.arguments.dataset
+        ):
+            raise TrackerServiceError("Queued dataset selection does not match the saved run")
+        if benchmark_row.arguments.dataset_version is not None and (
+            start_benchmark_request.custom_benchmark_service != benchmark_row.custom_benchmark_service
+        ):
+            raise TrackerServiceError("Queued benchmark service does not match the pinned run")
 
         if start_benchmark_request.custom_benchmark_service is not None:
             validate_custom_service_destination(
@@ -736,21 +734,16 @@ async def _process_benchmark(
             )
 
         runtime = await get_execution_runtime(
-            start_benchmark_request, benchmark_row, org, context_version=execution.context_version
+            start_benchmark_request,
+            benchmark_row,
+            org,
+            context_version=execution.context_version,
         )
         benchmark_service = await runtime_stack.enter_async_context(start_benchmark_request.benchmark_service)
         sandbox_provider_config = await runtime.get_sandbox_provider_config()
 
-        sandbox_provider = await runtime_stack.enter_async_context(
-            runtime.get_sandbox_provider(sandbox_provider_config)
-        )
-
-        if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
-            notifier = SlackNotifier(
-                secret_name=start_benchmark_request.webhook_secret_name,
-                secret_store=runtime.secrets,
-                intervals=start_benchmark_request.webhook_intervals,
-            )
+        sandbox_provider = sandbox_provider_config.create_provider()
+        runtime_stack.push_async_callback(lambda: finish_cleanup(asyncio.create_task(sandbox_provider.close())))
 
         if queued_run:
             with Session(bind=engine) as session:
@@ -774,8 +767,9 @@ async def _process_benchmark(
             except Exception as error:
                 logger.warning("Sandbox provider setup failed (%s)", type(error).__name__)
                 raise TrackerServiceError("Sandbox provider configuration is unavailable") from error
-            if queue_context.pool_id != queued_pool_id:
+            if not queue_context.serves_queue(queued_pool_id):
                 raise TrackerServiceError("Configured sandbox provider does not match the run's queued provider pool")
+            queue_context = queue_context.for_queue(queued_pool_id)
 
         if not queued_run:
             with Session(bind=engine) as session:
@@ -787,7 +781,8 @@ async def _process_benchmark(
                     org,
                     authority=authority,
                 )
-                run_task_rows = task_rows
+                # Pending admission counts durable evaluations, so let those acquire the local limiter first.
+                run_task_rows = sorted(task_rows, key=lambda item: item[1].status != TaskStatus.EVALUATING)
                 limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
 
         task_row_ids: set[str] = {task_id for task_id, _ in run_task_rows}
@@ -812,7 +807,6 @@ async def _process_benchmark(
                 sandbox_provider=sandbox_provider,
                 creation_semaphore=creation_semaphore,
                 queue_context=queue_context,
-                notifier=notifier,
                 record_cancellation=record_queued_cancellation,
                 authority=authority,
             )
@@ -844,7 +838,6 @@ async def _process_benchmark(
                 tracked_tasks,
                 org,
                 limiter=limiter,
-                notifier=notifier,
                 authority=authority,
             )
             monitor_task = asyncio.create_task(monitor.track_tasks())
@@ -946,6 +939,7 @@ async def _process_benchmark(
                     producer="tracker",
                     operation="process_benchmark",
                     error_type=asyncio.CancelledError.__name__,
+                    category=FailureCategory.CANCELLED,
                     authority=authority,
                     task_ids=verified_task_ids,
                 )
@@ -958,6 +952,7 @@ async def _process_benchmark(
             benchmark_id,
             producer="benchmark_service",
             operation="authenticate",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="authentication_failed",
         )
         with Session(bind=engine) as session:
@@ -971,6 +966,7 @@ async def _process_benchmark(
                 producer="benchmark_service",
                 operation="authenticate",
                 error_type=type(e).__name__,
+                category=FailureCategory.BENCHMARK_SERVICE,
                 cause_code="authentication_failed",
                 authority=authority,
                 task_ids=verified_task_ids,
@@ -981,6 +977,7 @@ async def _process_benchmark(
             benchmark_id,
             producer="benchmark_service",
             operation="process_benchmark",
+            category=FailureCategory.BENCHMARK_SERVICE,
         )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
@@ -992,11 +989,14 @@ async def _process_benchmark(
                 producer="benchmark_service",
                 operation="process_benchmark",
                 error_type=type(e).__name__,
+                category=FailureCategory.BENCHMARK_SERVICE,
                 authority=authority,
                 task_ids=verified_task_ids,
             )
     except Exception as e:
-        _capture_run_error(e, benchmark_id, producer="tracker", operation="process_benchmark")
+        _capture_run_error(
+            e, benchmark_id, producer="tracker", operation="process_benchmark", category=classify_failure(e)
+        )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -1007,39 +1007,21 @@ async def _process_benchmark(
                 producer="tracker",
                 operation="process_benchmark",
                 error_type=type(e).__name__,
+                category=classify_failure(e),
                 authority=authority,
                 task_ids=verified_task_ids,
             )
     finally:
-        authority_current = False
         if not finalization_deferred:
             with Session(bind=engine) as session:
                 # Handle any misalignments between the benchmark status and tasks
-                authority_current = catch_errors_during_cleanup(
+                catch_errors_during_cleanup(
                     benchmark_id,
                     session,
                     org,
                     authority=authority,
                     task_ids=verified_task_ids,
                 )
-
-        if notifier and not finalization_deferred and authority_current:
-            try:
-                async with hold_dispatch_authority(authority) as (notification_session, benchmark_row):
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, notification_session, org)
-                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
-                    notification_status = benchmark_row.status
-                    notification_error_message = benchmark_row.error_message
-                    await notifier.send_terminal_notification(
-                        notification_context,
-                        status=notification_status,
-                        final_score=final_score,
-                        error_message=notification_error_message,
-                    )
-            except ExecutionAuthorityRevoked:
-                pass
-            except Exception as notification_error:
-                logger.warning(f"Failed to send terminal notification: {notification_error}")
 
 
 def commit_benchmark_error(
@@ -1050,6 +1032,7 @@ def commit_benchmark_error(
     producer: str,
     operation: str,
     error_type: str,
+    category: FailureCategory,
     authority: ExecutionAuthority,
     cause_code: str | None = None,
     task_ids: list[str] | None = None,
@@ -1061,7 +1044,7 @@ def commit_benchmark_error(
         return False
     committed = record_dispatch_failure(
         session,
-        benchmark=benchmark_row,
+        benchmark_id=benchmark_row.id,
         dispatch_id=authority.dispatch_id,
         task_ids=task_ids or [],
         error_message=error_message,
@@ -1069,6 +1052,7 @@ def commit_benchmark_error(
         operation=operation,
         error_type=error_type,
         cause_code=cause_code,
+        category=category,
     )
     session.commit()
     if committed and benchmark_row.status == BenchmarkStatus.ERROR:
@@ -1109,7 +1093,17 @@ def _commit_queued_cancellation(
             )
             if task_row.started_at != owned_attempts[task_row.id] or not irrecoverable:
                 continue
-            session.add(ErrorResult(org_id=org.id, task=task_row.id, error_message=error_message))
+            session.add(
+                ErrorResult(
+                    org_id=org.id,
+                    task=task_row.id,
+                    error_message=error_message,
+                    producer="tracker",
+                    operation="process_benchmark",
+                    error_type=asyncio.CancelledError.__name__,
+                    category=FailureCategory.CANCELLED,
+                )
+            )
             task_row.status = TaskStatus.ERROR
             transitioned_task = True
 
@@ -1132,7 +1126,7 @@ def catch_errors_during_cleanup(
     *,
     authority: ExecutionAuthority,
     task_ids: list[str] | None = None,
-) -> bool:
+) -> None:
     """
     On task exit we must clean up any edge cases so that it does not affect the users experience.
     There are sometimes fishy things that may occur with the sandboxes that if not dealt with could become an issue.
@@ -1151,9 +1145,9 @@ def catch_errors_during_cleanup(
         )
     except ExecutionAuthorityRevoked:
         session.rollback()
-        return False
+        return
     if benchmark_row.status in terminal_statuses:
-        return True
+        return
 
     # Force non exited tasks to be ERROR
     task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
@@ -1167,9 +1161,7 @@ def catch_errors_during_cleanup(
         undetected_exit_tasks_query = undetected_exit_tasks_query.where(col(Task.task_id).in_(task_ids))
     undetected_exit_tasks = session.exec(undetected_exit_tasks_query).all()
 
-    # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
-    # helper uses try/finally so this only fires when the executor process was
-    # killed mid-invocation (no try/finally cleanup ran).
+    # Sweep stale RUNNING analyzer invocations to ERROR.
     if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
         benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
         session.add(benchmark_row)
@@ -1178,15 +1170,15 @@ def catch_errors_during_cleanup(
     error_message = f"Run {benchmark_id} exited without finishing"
     committed = record_dispatch_failure(
         session,
-        benchmark=benchmark_row,
+        benchmark_id=benchmark_row.id,
         dispatch_id=authority.dispatch_id,
         task_ids=[task.task_id for task in undetected_exit_tasks],
         error_message=error_message,
         producer="tracker",
         operation="cleanup",
         error_type="UndetectedExecutorExit",
+        category=FailureCategory.INFRASTRUCTURE,
     )
     session.commit()
     if committed and benchmark_row.status == BenchmarkStatus.ERROR:
         _record_run_finalized(benchmark_id, BenchmarkStatus.ERROR, authority)
-    return committed

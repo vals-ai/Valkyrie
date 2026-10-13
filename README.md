@@ -19,10 +19,10 @@ Install the CLI:
 uv tool install git+https://github.com/vals-ai/Valkyrie@prod
 ```
 
-Configure credentials and choose a hosting mode:
+Sign in with your Vals account:
 
 ```bash
-valkyrie config init
+valkyrie login
 ```
 
 Upload an agent with a valid `contract.yaml`:

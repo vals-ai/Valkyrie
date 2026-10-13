@@ -1,8 +1,5 @@
 """Back-compat re-export shim for the former tracker/utils.py."""
 
-from tracker.utils.harness_config import (
-    fetch_harness_config,
-)
 from tracker.utils.run_orchestration import (
     catch_errors_during_cleanup,
     commit_benchmark_error,
@@ -14,14 +11,14 @@ from tracker.utils.run_orchestration import (
     set_benchmark_final_status,
 )
 from tracker.utils.reporting import (
-    BenchmarkContext,
-    TaskCounts,
     YieldingWriter,
     build_benchmark_table_rows,
     create_final_view,
     decode_cursor,
     encode_cursor,
     fetch_average_task_breakdown,
+    fetch_benchmark_details,
+    fetch_benchmark_response,
     fetch_evaluation_results,
     fetch_filtered_benchmark_rows,
     stream_benchmark_results,
@@ -58,10 +55,8 @@ from tracker.utils.task_execution import (
 )
 
 __all__ = [
-    "BenchmarkContext",
     "BenchmarkConcurrencyUpdate",
     "ResizableLimiter",
-    "TaskCounts",
     "TaskMonitor",
     "TrackedTask",
     "TrackedTaskStatus",
@@ -77,11 +72,12 @@ __all__ = [
     "decode_cursor",
     "encode_cursor",
     "fetch_average_task_breakdown",
+    "fetch_benchmark_details",
+    "fetch_benchmark_response",
     "fetch_benchmark_row",
     "fetch_evaluation_results",
     "fetch_filtered_benchmark_rows",
     "fetch_final_score_inputs",
-    "fetch_harness_config",
     "fetch_sandbox_provider_config",
     "fetch_task_row",
     "force_stop_sandboxes",

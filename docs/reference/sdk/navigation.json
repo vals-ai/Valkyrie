@@ -8,6 +8,9 @@
   "reference/sdk/services",
   "reference/sdk/logs",
   "reference/sdk/scheduler",
+  "reference/sdk/secrets",
+  "reference/sdk/providers",
+  "reference/sdk/settings",
   {
     "group": "Types",
     "pages": [
@@ -20,6 +23,8 @@
       "reference/sdk/models/config",
       "reference/sdk/models/logs",
       "reference/sdk/models/scheduler",
+      "reference/sdk/models/secrets",
+      "reference/sdk/models/settings",
       "reference/sdk/errors"
     ]
   }

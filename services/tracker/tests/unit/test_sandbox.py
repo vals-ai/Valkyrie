@@ -8,7 +8,7 @@ import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
-from typing import Any, Never, cast
+from typing import Any, Literal, Never, cast
 from unittest.mock import AsyncMock, Mock, call
 
 import pytest
@@ -48,6 +48,7 @@ from tracker.exceptions import (
 )
 from tracker.sandbox import (
     OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
+    SandboxCreationState,
     create_sandbox,
     run_agent,
     upload_agent_artifacts,
@@ -990,7 +991,7 @@ class TestSandboxRetry:
 
         await _install_agent_dependencies(Mock(), contract, log_output)
 
-        expected_command = "cd /bundle/test-agent && timeout 600 sh -c 'apt-get update -qq && echo done'"
+        expected_command = "cd /bundle/test-agent && exec timeout 600 sh -c 'apt-get update -qq && echo done'"
         assert observed_commands == [expected_command, expected_command]
 
     async def test_install_agent_dependencies_uses_fixed_retry_schedule(
@@ -1300,6 +1301,7 @@ class TestSandboxLifecycle:
             source=ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources=resources,
             creation_semaphore=asyncio.Semaphore(1),
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             assert sandbox is mock_sandbox
 
@@ -1336,9 +1338,11 @@ class TestSandboxLifecycle:
             "resources": Resources(vcpu=2, memory=4, disk=5),
             "creation_semaphore": asyncio.Semaphore(1),
         }
-        async with create_sandbox(**common_arguments):
+        async with create_sandbox(**common_arguments, creation_state=SandboxCreationState(cleanup_pending=False)):
             pass
-        async with create_sandbox(**common_arguments, unique_name=False):
+        async with create_sandbox(
+            **common_arguments, creation_state=SandboxCreationState(cleanup_pending=False), unique_name=False
+        ):
             pass
 
         assert created_names[0].startswith("task-alias_")
@@ -1364,6 +1368,7 @@ class TestSandboxLifecycle:
             source=source,
             resources=Resources(vcpu=4, memory=16, disk=30),
             creation_semaphore=asyncio.Semaphore(1),
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             assert sandbox is mock_sandbox
 
@@ -1394,6 +1399,7 @@ class TestSandboxLifecycle:
                 source=ImageSource(image="ghcr.io/vals/swebench:latest"),
                 resources=resources,
                 creation_semaphore=asyncio.Semaphore(1),
+                creation_state=SandboxCreationState(cleanup_pending=False),
             ):
                 pass
 
@@ -1432,9 +1438,10 @@ class TestSandboxLifecycle:
 
         deletion_initiators: list[Any] = []
 
-        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any, **kwargs: Any) -> None:
+        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any, **kwargs: Any) -> bool:
             active_sandbox_ids.remove(sandbox.id)
             deletion_initiators.append(kwargs.get("initiated_by"))
+            return True
 
         monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
         monkeypatch.setattr(sandbox_module, "delete_sandbox", mock_delete_sandbox)
@@ -1446,6 +1453,7 @@ class TestSandboxLifecycle:
                 source=ImageSource(image="ghcr.io/vals/swebench:latest"),
                 resources=Resources(vcpu=2, memory=4, disk=5),
                 creation_semaphore=asyncio.Semaphore(1),
+                creation_state=SandboxCreationState(cleanup_pending=False),
             ):
                 pass
 
@@ -1483,6 +1491,7 @@ class TestSandboxLifecycle:
             source=ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources=Resources(vcpu=2, memory=4, disk=5),
             creation_semaphore=asyncio.Semaphore(1),
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ):
             pass
 
@@ -1514,6 +1523,7 @@ class TestSandboxLifecycle:
             source=ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources=Resources(vcpu=2, memory=4, disk=5),
             creation_semaphore=asyncio.Semaphore(1),
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ):
             pass
 
@@ -1557,6 +1567,7 @@ class TestSandboxLifecycle:
                 source=ImageSource(image="ghcr.io/vals/swebench:latest"),
                 resources=Resources(vcpu=2, memory=4, disk=5),
                 creation_semaphore=asyncio.Semaphore(1),
+                creation_state=SandboxCreationState(cleanup_pending=False),
             ):
                 raise primary_error
 
@@ -1589,6 +1600,7 @@ class TestSandboxLifecycle:
                 source=ImageSource(image="ghcr.io/vals/swebench:latest"),
                 resources=Resources(vcpu=2, memory=4, disk=5),
                 creation_semaphore=asyncio.Semaphore(1),
+                creation_state=SandboxCreationState(cleanup_pending=False),
             ):
                 pass
 
@@ -1627,6 +1639,7 @@ class TestSandboxLifecycle:
                 source=ImageSource(image="ghcr.io/vals/swebench:latest"),
                 resources=Resources(vcpu=2, memory=4, disk=5),
                 creation_semaphore=asyncio.Semaphore(1),
+                creation_state=SandboxCreationState(cleanup_pending=False),
             ):
                 pass
 
@@ -1643,6 +1656,129 @@ class TestSandboxLifecycle:
             "outcome": "cancelled",
             "error": None,
         }
+
+
+class TestSandboxCreationState:
+    @pytest.mark.parametrize("cancel_creation", [False, True], ids=["teardown", "cancelled-create"])
+    @pytest.mark.parametrize(
+        ("delete_error", "pending", "propagates"),
+        [
+            (None, False, False),
+            (SandboxNotFoundError("gone"), False, False),
+            (RuntimeError("delete unknown"), True, False),
+            (ProviderSandboxError("delete failed"), True, True),
+            (asyncio.CancelledError(), True, True),
+        ],
+        ids=["acknowledged", "already-gone", "unexpected-error", "provider-error", "interrupted-delete"],
+    )
+    async def test_cleanup_pending_clears_only_after_acknowledged_delete(
+        self, cancel_creation: bool, delete_error: BaseException | None, pending: bool, propagates: bool
+    ) -> None:
+        state = SandboxCreationState(cleanup_pending=False)
+        creating = asyncio.Event()
+        finish_creation = asyncio.Event()
+        deleting = asyncio.Event()
+        finish_deletion = asyncio.Event()
+        sandbox = Mock(id="sandbox-state", name="sandbox-state", labels={})
+        provider = AsyncMock()
+
+        async def create(_request: Any) -> Mock:
+            assert state.cleanup_pending
+            creating.set()
+            await finish_creation.wait()
+            return sandbox
+
+        async def delete(_sandbox_id: str) -> None:
+            assert state.cleanup_pending
+            deleting.set()
+            await finish_deletion.wait()
+            if delete_error is not None:
+                raise delete_error
+
+        provider.create_sandbox.side_effect = create
+        provider.delete_sandbox.side_effect = delete
+
+        async def use_sandbox() -> None:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="sandbox-state",
+                source=ImageSource(image="test-image"),
+                resources=Resources(vcpu=1, memory=2, disk=3),
+                creation_semaphore=asyncio.Semaphore(1),
+                creation_state=state,
+            ):
+                assert state.cleanup_pending
+
+        entering = asyncio.create_task(use_sandbox())
+        await asyncio.wait_for(creating.wait(), timeout=5)
+        if cancel_creation:
+            entering.cancel()
+        finish_creation.set()
+        await asyncio.wait_for(deleting.wait(), timeout=5)
+        assert state.cleanup_pending
+        assert not entering.done()
+        finish_deletion.set()
+        if isinstance(delete_error, asyncio.CancelledError) or (cancel_creation and not propagates):
+            with pytest.raises(asyncio.CancelledError):
+                await entering
+        elif cancel_creation and propagates:
+            with pytest.raises(ProviderSandboxError) as exc_info:
+                await entering
+            assert exc_info.value is delete_error
+        else:
+            await entering
+        assert state.cleanup_pending is pending
+        provider.delete_sandbox.assert_awaited_once_with(sandbox.id)
+
+    async def test_cancel_before_provider_entry_has_no_cleanup_pending(self) -> None:
+        waiting = asyncio.Event()
+
+        class ObservedSemaphore(asyncio.Semaphore):
+            async def acquire(self) -> Literal[True]:
+                waiting.set()
+                return await super().acquire()
+
+        state = SandboxCreationState(cleanup_pending=False)
+        provider = AsyncMock()
+
+        async def use_sandbox() -> None:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="waiting",
+                source=ImageSource(image="test-image"),
+                resources=Resources(vcpu=1, memory=2, disk=3),
+                creation_semaphore=ObservedSemaphore(0),
+                creation_state=state,
+            ):
+                pytest.fail("cancelled before creation")
+
+        entering = asyncio.create_task(use_sandbox())
+        await asyncio.wait_for(waiting.wait(), timeout=5)
+        entering.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await entering
+        assert not state.cleanup_pending
+        provider.create_sandbox.assert_not_awaited()
+        provider.delete_sandbox.assert_not_awaited()
+
+    async def test_unknown_creation_keeps_cleanup_pending_without_a_handle(self) -> None:
+        state = SandboxCreationState(cleanup_pending=False)
+        error = ProviderSandboxError("creation unknown")
+        provider = AsyncMock()
+        provider.create_sandbox.side_effect = error
+        with pytest.raises(ProviderSandboxError) as exc_info:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="unknown",
+                source=ImageSource(image="test-image"),
+                resources=Resources(vcpu=1, memory=2, disk=3),
+                creation_semaphore=asyncio.Semaphore(1),
+                creation_state=state,
+            ):
+                pytest.fail("creation failed")
+        assert exc_info.value is error
+        assert state.cleanup_pending
+        provider.delete_sandbox.assert_not_awaited()
 
 
 class TestDeleteSandboxAudit:
@@ -1681,7 +1817,8 @@ class TestDeleteSandboxAudit:
 
         # Of these outcomes only ProviderSandboxError propagates; test_delete_sandbox_raises_provider_errors pins that.
         with suppress(ProviderSandboxError):
-            await _delete_sandbox(self._sandbox(), provider, initiated_by="force_stop", org_id="org-1")
+            acknowledged = await _delete_sandbox(self._sandbox(), provider, initiated_by="force_stop", org_id="org-1")
+            assert acknowledged is (outcome in ("deleted", "already_gone"))
 
         logger_mock.info.assert_called_once_with(
             "sandbox.delete",

@@ -35,7 +35,6 @@ _STACK_PREFIXES = {
     RELEASE_TEST: RELEASE_TEST_STACK_PREFIX,
 }
 _RESOURCE_STAGE_NAMES = {BENCH: "prod", PROD: PROD, DEV: DEV, RELEASE_TEST: RELEASE_TEST}
-_GITHUB_ENVIRONMENTS = {BENCH: "prod", PROD: "prod-external", DEV: DEV, RELEASE_TEST: RELEASE_TEST}
 
 
 def resource_stage_name(stage_name: str) -> str:
@@ -64,7 +63,7 @@ class Stage:
     @property
     def github_environment(self) -> str:
         """Return the stable GitHub OIDC environment subject for this stage."""
-        return _GITHUB_ENVIRONMENTS[self.name]
+        return self.name
 
     def stack_id(self, base: str) -> str:
         return f"{_STACK_PREFIXES[self.name]}{base}"

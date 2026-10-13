@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from io import BytesIO
+from typing import cast
 
 import boto3
 import pytest
@@ -21,7 +22,6 @@ from tracker.database.models import ExecutorAdmission, ExecutorRelease, Executor
 
 def test_release_entrypoint_loads_database_config_after_sealed_environment() -> None:
     environment = os.environ.copy()
-    environment.update(DATABASE_POOL_SIZE="5", DATABASE_MAX_OVERFLOW="2")
     for name in ("DATABASE_URL", "DB_USERNAME", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME"):
         environment.pop(name, None)
 
@@ -48,8 +48,34 @@ assert engine.url.password == "sealed-password"
 assert engine.url.host == "database.internal"
 assert engine.url.port == 5433
 assert engine.url.database == "sealed-database"
-assert engine.pool.size() == 5
-assert engine.pool._max_overflow == 2
+""",
+        ],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_release_engine_does_not_retain_idle_connections(tmp_path: os.PathLike[str]) -> None:
+    environment = {**os.environ, "DATABASE_URL": f"sqlite:///{tmp_path}/release.sqlite3"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+from sqlalchemy import event
+from sqlmodel import Session, select
+from tracker.database.session import engine
+
+connections = []
+event.listen(engine, "connect", lambda connection, _record: connections.append(connection))
+for _ in range(2):
+    with Session(engine) as session:
+        assert session.exec(select(1)).one() == 1
+assert len(connections) == 2, "the engine retained an idle database connection"
 """,
         ],
         check=False,
@@ -92,22 +118,49 @@ class FakeS3Client:
 class FakeEcsClient:
     def __init__(self) -> None:
         self.service_updates: list[dict[str, object]] = []
-        self.protection_updates: list[dict[str, object]] = []
         self.stopped_tasks: list[str] = []
+        self.already_stopping_tasks: list[str] = []
+        self.list_calls: list[dict[str, object]] = []
+        self.waited_for: list[dict[str, object]] = []
+        self.pending_polls = 0
+        self.tracker_polls = 0
+        self.describe_polls = 0
 
     def get_waiter(self, name: str) -> "FakeEcsClient":
         assert name == "services_stable"
         return self
 
-    def wait(self, **_kwargs: object) -> None:
-        return
+    def wait(self, **kwargs: object) -> None:
+        self.waited_for.append(kwargs)
 
-    def list_tasks(self, **_kwargs: object) -> dict[str, object]:
-        return {"taskArns": ["task-1", "task-2"]}
+    def list_tasks(self, **kwargs: object) -> dict[str, object]:
+        self.list_calls.append(kwargs)
+        assert kwargs["family"] == "ValkyrieExecutorRunner"
+        assert kwargs["cluster"] == "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie"
+        if kwargs["desiredStatus"] == "PENDING":
+            self.pending_polls += 1
+            return {"taskArns": ["pending-runner"] if self.pending_polls == 1 else []}
+        if kwargs["desiredStatus"] == "STOPPED":
+            return {"taskArns": [*self.stopped_tasks, *self.already_stopping_tasks]}
+        if self.stopped_tasks or self.already_stopping_tasks:
+            return {"taskArns": []}
+        if kwargs.get("nextToken") == "page-2":
+            return {"taskArns": ["task-2"]}
+        return {"taskArns": ["task-1"], "nextToken": "page-2"}
 
-    def update_task_protection(self, **kwargs: object) -> dict[str, object]:
-        self.protection_updates.append(kwargs)
-        return {}
+    def describe_services(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["services"] == ["Tracker"]
+        self.tracker_polls += 1
+        return {"services": [{"runningCount": 1 if self.tracker_polls == 1 else 0}]}
+
+    def describe_tasks(self, **kwargs: object) -> dict[str, object]:
+        self.describe_polls += 1
+        return {
+            "tasks": [
+                {"taskArn": arn, "lastStatus": "RUNNING" if self.describe_polls == 1 else "STOPPED"}
+                for arn in cast(list[str], kwargs["tasks"])
+            ]
+        }
 
     def stop_task(self, **kwargs: object) -> dict[str, object]:
         self.stopped_tasks.append(str(kwargs["task"]))
@@ -131,10 +184,10 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
             "releases",
             "releases",
             "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "ExecutorHost",
             "Tracker",
-            "1",
             "2",
+            "--runner-task-family",
+            "ValkyrieExecutorRunner",
             "activate",
             "git-abc123-def456",
             "s3://releases/releases/git-abc123-def456/executor.pex",
@@ -198,7 +251,7 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     assert admission.release_id == stored_release.id
 
 
-def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
+def test_maintenance_begin_drains_paginated_runner_tasks_before_finish(
     monkeypatch: MonkeyPatch,
     database_session: Session,
 ) -> None:
@@ -209,6 +262,7 @@ def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
     ecs = FakeEcsClient()
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: secrets)
     monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
 
     release_entrypoint.main()
@@ -220,17 +274,16 @@ def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
     assert ecs.service_updates == [
         {
             "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "service": "ExecutorHost",
-            "desiredCount": 0,
-        },
-        {
-            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
             "service": "Tracker",
             "desiredCount": 0,
-        },
+        }
     ]
-    assert ecs.protection_updates[0]["tasks"] == ["task-1", "task-2"]
-    assert ecs.stopped_tasks == ["task-1", "task-2"]
+    assert ecs.stopped_tasks == ["task-1", "task-2", "pending-runner"]
+    assert ecs.list_calls[1]["nextToken"] == "page-2"
+    assert ecs.pending_polls == 2
+    assert ecs.tracker_polls == 2
+    assert ecs.describe_polls == 2
+    assert ecs.waited_for == []
 
     sys.argv = sys.argv[:12] + ["maintenance-finish", target_sha]
     release_entrypoint.main()
@@ -239,18 +292,170 @@ def test_maintenance_begin_fences_admission_and_stops_executor_hosts(
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
     assert admission.maintenance_target_sha is None
-    assert ecs.service_updates[-2:] == [
+    assert ecs.service_updates[-1] == {
+        "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
+        "service": "Tracker",
+        "desiredCount": 2,
+    }
+    assert len(ecs.service_updates) == 2
+    assert ecs.waited_for == [
         {
             "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "service": "ExecutorHost",
-            "desiredCount": 1,
-        },
-        {
-            "cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
-            "service": "Tracker",
-            "desiredCount": 2,
-        },
+            "services": ["Tracker"],
+        }
     ]
+
+
+def test_maintenance_begin_fails_loudly_if_runners_do_not_drain(
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    monkeypatch.setattr(ecs, "list_tasks", lambda **_kwargs: {"taskArns": ["still-running"]})
+    monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    with pytest.raises(TimeoutError, match="Maintenance drain timed out"):
+        release_entrypoint.main()
+    database_session.expire_all()
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    assert admission.maintenance_target_sha == "b" * 40
+
+
+def test_maintenance_begin_waits_for_previously_stopping_runner(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("previously-stopping-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    release_entrypoint.main()
+
+    assert ecs.stopped_tasks == []
+    assert ecs.describe_polls == 2
+    assert sum(call["desiredStatus"] == "STOPPED" for call in ecs.list_calls) == 2
+
+
+def test_maintenance_begin_times_out_for_previously_stopping_runner(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("previously-stopping-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(
+        ecs,
+        "describe_tasks",
+        lambda **kwargs: {
+            "tasks": [{"taskArn": arn, "lastStatus": "RUNNING"} for arn in cast(list[str], kwargs["tasks"])]
+        },
+    )
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    with pytest.raises(TimeoutError, match="Maintenance drain timed out"):
+        release_entrypoint.main()
+    assert ecs.stopped_tasks == []
+
+
+def test_maintenance_begin_treats_expired_historical_stopped_task_as_gone(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("expired-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    list_tasks = ecs.list_tasks
+    describe_tasks = ecs.describe_tasks
+    expired = False
+
+    def list_after_expiry(**kwargs: object) -> dict[str, object]:
+        response = list_tasks(**kwargs)
+        if kwargs["desiredStatus"] == "STOPPED" and expired:
+            return {"taskArns": [arn for arn in cast(list[str], response["taskArns"]) if arn != "expired-runner"]}
+        return response
+
+    def describe_after_expiry(**kwargs: object) -> dict[str, object]:
+        nonlocal expired
+        expired = True
+        return describe_tasks(
+            **{**kwargs, "tasks": [arn for arn in cast(list[str], kwargs["tasks"]) if arn != "expired-runner"]}
+        )
+
+    monkeypatch.setattr(ecs, "list_tasks", list_after_expiry)
+    monkeypatch.setattr(ecs, "describe_tasks", describe_after_expiry)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    release_entrypoint.main()
+
+    assert ecs.stopped_tasks == []
+    assert sum(call["desiredStatus"] == "STOPPED" for call in ecs.list_calls) == 2
+
+
+def test_maintenance_begin_waits_for_listed_runner_missing_from_describe(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    ecs.already_stopping_tasks.append("previously-stopping-runner")
+    ecs.pending_polls = 1
+    ecs.tracker_polls = 1
+    statuses = [None, "RUNNING", "STOPPED"]
+
+    def describe_tasks(**kwargs: object) -> dict[str, object]:
+        status = statuses.pop(0)
+        tasks = cast(list[str], kwargs["tasks"])
+        return {"tasks": [] if status is None else [{"taskArn": arn, "lastStatus": status} for arn in tasks]}
+
+    monkeypatch.setattr(ecs, "describe_tasks", describe_tasks)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(release_entrypoint.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    release_entrypoint.main()
+
+    assert statuses == []
+    assert ecs.stopped_tasks == []
+
+
+def test_maintenance_begin_times_out_when_a_task_it_stopped_cannot_be_described(
+    monkeypatch: MonkeyPatch, database_session: Session
+) -> None:
+    _release_arguments(monkeypatch)
+    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    ecs = FakeEcsClient()
+    monkeypatch.setattr(ecs, "describe_tasks", lambda **_kwargs: {"tasks": []})
+    monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", FakeSecretsManager)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    with pytest.raises(TimeoutError, match="Maintenance drain timed out"):
+        release_entrypoint.main()
+    assert ecs.stopped_tasks
 
 
 def test_release_entrypoint_digest_failure_does_not_commit_release(
@@ -292,7 +497,7 @@ def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(mon
     ("argument_index", "invalid_value", "error"),
     [
         (14, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
-        (16, "4", "Unsupported executor protocol"),
+        (16, "6", "Unsupported executor protocol"),
     ],
 )
 def test_release_entrypoint_rejects_invalid_artifact_identity_before_reading_secret(

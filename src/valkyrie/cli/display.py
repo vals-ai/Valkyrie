@@ -1,7 +1,7 @@
 """Shared CLI display helpers."""
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypeVar
 
 import click
@@ -23,6 +23,18 @@ def terminal_safe(value: str, *, preserve_newlines: bool) -> str:
             escaped.append(character.encode("unicode_escape").decode("ascii"))
 
     return "".join(escaped)
+
+
+def utc_isoformat(value: datetime | None = None) -> str:
+    """Format a datetime (default: now) as a UTC ISO-8601 string ending in Z."""
+    value = value or datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def progress_percent(finished_tasks: int, total_tasks: int) -> float:
+    return finished_tasks / total_tasks * 100 if total_tasks > 0 else 0
 
 
 def local_time(dt: datetime) -> str:

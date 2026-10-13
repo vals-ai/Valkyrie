@@ -1,5 +1,6 @@
 """Fixtures for local tracker API integration tests."""
 
+import base64
 import importlib
 from collections.abc import Generator
 from unittest.mock import patch
@@ -17,19 +18,13 @@ from tests.utils import TEST_ORG_ID
 from tracker.auth import get_current_org
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
-from tracker.types import AWSCredentials, HarnessConfig
 
 
-@pytest.fixture
-def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
-    """Provide deterministic harness configuration for local integration tests."""
-    return HarnessConfig(
-        aws=aws_credentials,
-        s3_bucket="test-bucket",
-        log_group="test-log-group",
-        log_retention_policy=30,
-        sandbox_provider_secret_name="test-daytona-secret",
-    )
+@pytest.fixture(autouse=True)
+def local_executor_payload_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
+    monkeypatch.delenv("EXECUTOR_PAYLOAD_KMS_KEY_ID", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +38,7 @@ def setup_app_dependencies(
         yield tracker_database
 
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
-    test_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
+    test_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME, storage_key="test-bucket")
     monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: test_org)
 
 
@@ -60,6 +55,17 @@ def local_app(
     importlib.reload(auth_module)
     importlib.reload(main_module)
 
+    for key, value in {
+        "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
+        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
+        "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
+        "AWS_DEPLOYMENT_REGION": "us-east-1",
+        "AWS_DEPLOYMENT_S3_BUCKET": "test-bucket",
+        "AWS_DEPLOYMENT_LOG_GROUP": "test-log-group",
+        "AWS_DEPLOYMENT_LOG_RETENTION_DAYS": "30",
+    }.items():
+        monkeypatch.setattr(config_module, key, value)
+
     def get_test_session() -> Generator[Session, None, None]:
         yield database_session
 
@@ -73,21 +79,7 @@ def local_app(
 
 
 @pytest.fixture
-def client(local_app: FastAPI) -> Generator[TestClient, None, None]:
-    """Use bearer authentication with the local tracker app."""
-    with patch.object(auth_module, "_descope_client") as mock_client:
-        mock_client.validate_session.return_value = {
-            "tenants": {"default": {}},
-            "userId": "U_caller",
-            "user": {"email": "caller@example.com"},
-        }
-        with TestClient(local_app) as test_client:
-            yield test_client
-
-
-@pytest.fixture
-def access_key_client(local_app: FastAPI) -> Generator[TestClient, None, None]:
-    """Use access-key authentication with the local tracker app."""
+def access_key_auth(local_app: FastAPI) -> Generator[None, None, None]:
     with patch.object(auth_module, "_descope_client") as mock_client:
         mock_client.exchange_access_key.return_value = {
             "tenants": {"default": {}},
@@ -97,5 +89,25 @@ def access_key_client(local_app: FastAPI) -> Generator[TestClient, None, None]:
             "user_id": "U_caller",
             "email": "caller@example.com",
         }
+        yield
+
+
+@pytest.fixture
+def session_client(local_app: FastAPI) -> Generator[TestClient, None, None]:
+    """Use a dashboard-style Descope session token with the local tracker app."""
+    with patch.object(auth_module, "_descope_client") as mock_client:
+        mock_client.validate_session.return_value = {"tenants": {"default": {}}}
         with TestClient(local_app) as test_client:
             yield test_client
+
+
+@pytest.fixture
+def access_key_client(access_key_auth: None, local_app: FastAPI) -> Generator[TestClient, None, None]:
+    with TestClient(local_app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def client(access_key_client: TestClient) -> Generator[TestClient, None, None]:
+    """Use access-key authentication with the local tracker app."""
+    yield access_key_client

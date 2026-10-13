@@ -4,6 +4,8 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
 import asyncio
+import json
+from pathlib import Path
 import socket
 import time
 from typing import Any, Never
@@ -11,6 +13,9 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
+import sentry_sdk
+from pythonjsonlogger.json import JsonFormatter
+from fastapi.testclient import TestClient
 from benchmark_service import ExecResult
 from benchmark_service.client import (
     BenchmarkServiceClient,
@@ -28,6 +33,7 @@ import tracker.sandbox as sandbox_module
 import tracker.utils.run_orchestration as run_orchestration_module
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 import tracker.utils.task_execution as utils_module
+from main import app
 from tests.unit.utils.task_execution_support import (
     TEST_ORG,
     bind_task_to_dispatch,
@@ -42,15 +48,26 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     Task,
     TaskBreakdown,
     TaskStatus,
 )
-from tracker.types import HarnessConfig
+from tracker.logging.config import DevFormatter
+from tracker.types import ManagedExecutionContext, RunExecutionRequest
 from tracker.utils import (
     fetch_benchmark_row,
     process_benchmark,
 )
+
+
+def _context(request: Any, benchmark_id: Any, task_ids: list[str]) -> dict[str, Any]:
+    return ManagedExecutionContext(
+        version=3,
+        benchmark_id=benchmark_id,
+        verified_task_ids=task_ids,
+        start_benchmark_request=RunExecutionRequest.model_validate(request.model_dump(mode="python")),
+    ).model_dump(mode="json")
 
 
 class TestBenchmarkServiceFailures:
@@ -73,12 +90,11 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + 10)
@@ -87,7 +103,19 @@ class TestBenchmarkServiceFailures:
         real_monotonic = time.monotonic
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+        events: list[Any] = []
+        with sentry_sdk.init(
+            dsn="https://public@example.com/1",
+            transport=events.append,
+            default_integrations=False,
+        ):
+            utils_module.logger.addHandler(caplog.handler)
+            try:
+                result = await run_process_task(
+                    start_benchmark_request, task_row, benchmark_id, runtime_services, authority
+                )
+            finally:
+                utils_module.logger.removeHandler(caplog.handler)
 
         assert result == {"task_0": None}
 
@@ -101,8 +129,43 @@ class TestBenchmarkServiceFailures:
         assert error_result.operation == "websocket"
         assert error_result.error_type == "ConnectionClosedError"
         assert error_result.cause_code == "websocket_connection_closed"
+        assert error_result.category == FailureCategory.BENCHMARK_SERVICE
         assert error_result.retry_scheduled is False
         assert error_result.failed_attempt_number is None
+
+        api_response = TestClient(app).get(f"/benchmarks/{benchmark_id}/tasks/{task_row.task_id}")
+        assert api_response.status_code == 200
+        assert api_response.json()["failure_category"] == "benchmark_service"
+        assert api_response.json()["error_message"] == error_result.error_message
+        client = TestClient(app)
+        task_list = client.get(f"/benchmarks/{benchmark_id}/tasks")
+        assert task_list.status_code == 200
+        assert task_list.json()["tasks"][0]["failure_category"] == error_result.category.value
+        results = client.get("/retrieve-results", params={"benchmark_id": str(benchmark_id)})
+        assert results.status_code == 200
+        assert results.json()["task_errors"] == {task_row.task_id: error_result.error_message}
+        assert results.json()["task_failure_categories"] == {task_row.task_id: error_result.category.value}
+        event = next(event for event in events if "exception" in event)
+        assert event["tags"]["failure_category"] == error_result.category.value
+        record = next(record for record in caplog.records if record.getMessage() == "Task execution failed")
+        formatted = DevFormatter("%(message)s").format(record)
+        assert f"failure_category={error_result.category.value}" in formatted
+        structured = json.loads(JsonFormatter().format(record))
+        assert structured["failure_category"] == error_result.category.value
+        # Export real test output for downstream SDK/CLI/Dashboard contract checks.
+        (tmp_path / "classification-proof.json").write_text(
+            json.dumps(
+                {
+                    "task": api_response.json(),
+                    "tasks": task_list.json(),
+                    "results": results.json(),
+                    "stored_error": error_result.model_dump(mode="json"),
+                    "sentry_category": event["tags"]["failure_category"],
+                    "log": structured,
+                },
+                indent=2,
+            )
+        )
 
     @pytest.mark.parametrize(
         ("code", "reason"),
@@ -119,12 +182,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise ConnectionClosedError(Close(code, reason), Close(code, reason), True)
@@ -150,12 +210,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         resume_calls = 0
 
@@ -192,12 +249,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
 
         async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[AgentCausedExitReason, float]:
@@ -237,12 +291,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         task_row.status = TaskStatus.EVALUATING
         task_row.eval_resume_state = saved_state
@@ -279,12 +330,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
@@ -306,12 +354,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
 
         async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -339,12 +384,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
 
         async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -375,12 +417,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         original_exception_message = utils_module._exception_message
 
@@ -412,12 +451,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         commit_calls = 0
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         original_commit_task_status_transition = utils_module.commit_task_status_transition
@@ -455,12 +491,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> Never:
             with Session(bind=database_session.bind) as session:
@@ -488,12 +521,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             raise socket.gaierror(-2, "Name or service not known")
@@ -515,12 +545,9 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> Never:
             raise socket.gaierror(-2, "unrelated DNS failure")
@@ -537,6 +564,7 @@ class TestBenchmarkServiceFailures:
         assert "WebSocket" not in error_result.error_message
         assert error_result.producer == "tracker"
         assert error_result.operation == "process_task"
+        assert error_result.category == FailureCategory.UNKNOWN
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_validation_error_produces_human_readable_message(
@@ -544,13 +572,10 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """VALKYRIE-5D: ValidationError from retrieve_task is caught with field names."""
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_retrieve_task_invalid(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return RetrieveTaskResponse.model_validate(
@@ -576,13 +601,10 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """VALKYRIE-5A: InvalidStatus from WebSocket rejection is caught with HTTP status."""
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> Never:
             raise InvalidStatus(Response(404, "Not Found", Headers()))
@@ -605,13 +627,10 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         contract.output_artifacts = ["artifacts/missing.json"]
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         expected_error = "Output artifact error: Required output artifact missing: /tmp/valkyrie/artifacts/missing.json"
         expected_log = f"[ERROR] {expected_error}"
         logged_messages: list[str] = []
@@ -657,6 +676,7 @@ class TestBenchmarkServiceFailures:
         assert error_result.operation == "upload_output_artifacts"
         assert error_result.error_type == "OutputArtifactError"
         assert error_result.cause_code is None
+        assert error_result.category == FailureCategory.INFRASTRUCTURE
         assert error_result.retry_scheduled is False
         assert error_result.failed_attempt_number is None
         assert any(expected_log in message for message in logged_messages)
@@ -667,13 +687,10 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """VALKYRIE-59: BenchmarkServiceError from setup_task is caught and stored."""
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> Never:
             raise BenchmarkServiceError(
@@ -697,7 +714,6 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """Network exceptions with empty strings must still produce visible task errors.
@@ -706,9 +722,7 @@ class TestBenchmarkServiceFailures:
         - Empty-string httpx.ConnectTimeout stores its exception type in the DB.
         - The task log path receives the same visible exception type.
         """
-        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
-        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         logged_messages: list[str] = []
 
         async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
@@ -735,24 +749,21 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
     ) -> None:
         start_benchmark_request, _task_row, benchmark_id, authority = create_task_environment(
-            contract, database_session, harness_config
+            contract, database_session
         )
         start_benchmark_request = start_benchmark_request.model_copy(
             update={"custom_benchmark_service": "http://service.internal:8001"}
         )
         monkeypatch.setattr(run_orchestration_module, "AUTH_REQUIRED", True)
         monkeypatch.setattr(
-            "tracker.runtime.services.RuntimeServices._load_sandbox_provider_config",
+            "tracker.runtime.services.RuntimeServices.get_sandbox_provider_config",
             AsyncMock(side_effect=AssertionError("sandbox config resolved before destination validation")),
         )
 
         await process_benchmark(
-            start_benchmark_request_json=start_benchmark_request.model_dump(),
-            benchmark_id_str=str(benchmark_id),
-            verified_task_ids=["task_0"],
+            execution_context_json=_context(start_benchmark_request, benchmark_id, ["task_0"]),
             executor_dispatch_id=str(authority.dispatch_id),
         )
 
@@ -768,12 +779,11 @@ class TestBenchmarkServiceFailures:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         executor_authority_kwargs: Any,
     ) -> None:
         """VALKYRIE-1Z: BenchmarkServiceError from final_score is caught at the benchmark level."""
         start_benchmark_request, _task_row, benchmark_id, _authority = create_task_environment(
-            contract, database_session, harness_config
+            contract, database_session
         )
 
         html_error = (
@@ -790,9 +800,7 @@ class TestBenchmarkServiceFailures:
         authority_kwargs = executor_authority_kwargs(benchmark_row)
 
         await process_benchmark(
-            start_benchmark_request_json=start_benchmark_request.model_dump(),
-            benchmark_id_str=str(benchmark_id),
-            verified_task_ids=["task_0"],
+            execution_context_json=_context(start_benchmark_request, benchmark_id, ["task_0"]),
             **authority_kwargs,
         )
 

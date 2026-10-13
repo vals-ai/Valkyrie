@@ -11,7 +11,6 @@ from click.testing import CliRunner
 
 from valkyrie.cli.benchmark.tasks import tasks
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_client import TrackerService
 
 tasks_module = import_module("valkyrie.cli.benchmark.tasks")
 
@@ -61,19 +60,14 @@ class TestBenchmarkTasksCommand:
         """Task export must write one ID per line and preserve benchmark request options.
 
         Test cases:
-        - Configured authorization is combined with CLI headers.
-        - Dataset and custom-service opt-out reach the tracker.
+        - CLI headers, dataset and custom-service opt-out reach the tracker.
         - The selected output file ends with a newline.
         """
         output_path = tmp_path / "tasks.txt"
         MockTaskTracker.response = ["task-a", "task-b"]
         MockTaskTracker.calls = []
 
-        def configured_auth(_benchmark_name: str) -> str:
-            return "Bearer configured"
-
         monkeypatch.setattr(tasks_module, "TrackerService", MockTaskTracker)
-        monkeypatch.setattr(TrackerService, "get_benchmark_auth", staticmethod(configured_auth))
 
         result = cli_runner.invoke(
             tasks,
@@ -97,7 +91,7 @@ class TestBenchmarkTasksCommand:
                 "benchmark_name": "swebench",
                 "dataset": "verified",
                 "ignore_custom_services": True,
-                "service_headers": {"Authorization": "Bearer configured", "X-Test": "value"},
+                "service_headers": {"X-Test": "value"},
             }
         ]
 
@@ -117,11 +111,7 @@ class TestBenchmarkTasksCommand:
         MockTaskTracker.response = TrackerServiceError("benchmark service unavailable")
         MockTaskTracker.calls = []
 
-        def no_auth(_benchmark_name: str) -> None:
-            return None
-
         monkeypatch.setattr(tasks_module, "TrackerService", MockTaskTracker)
-        monkeypatch.setattr(TrackerService, "get_benchmark_auth", staticmethod(no_auth))
 
         result = cli_runner.invoke(tasks, ["swebench", "--output", str(output_path)])
 

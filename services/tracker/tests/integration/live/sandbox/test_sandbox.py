@@ -13,17 +13,19 @@ import shlex
 import zipfile
 from typing import AsyncGenerator
 
-import boto3
 import pytest
 from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundError, SandboxProvider
 
 from tests.utils import random_task_id
+from tests.integration.seed_agent_artifacts import create_s3_client
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
+from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key
+from tracker.runtime.artifacts import agent_bundle_key
 from tracker.database.models import AgentContractRequest
 from tracker.egress import combine_run_egress_policies
 from tracker.exceptions import SandboxError
 from tracker.sandbox import (
+    SandboxCreationState,
     apply_egress_policy,
     create_sandbox,
     install_agent_dependencies,
@@ -31,7 +33,6 @@ from tracker.sandbox import (
     stream_command_output,
     upload_agent_artifacts,
 )
-from tracker.types import AWSCredentials, HarnessConfig
 
 
 @pytest.fixture
@@ -55,6 +56,7 @@ async def test_sandbox(
         ImageSource(image=test_image),
         test_resources,
         creation_semaphore,
+        creation_state=SandboxCreationState(cleanup_pending=False),
     ) as sandbox:
         yield sandbox
 
@@ -130,6 +132,7 @@ class TestSandboxOperations:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             assert sandbox.name.startswith(random_sandbox_name)
             result = await sandbox.exec("echo 'test'")
@@ -142,8 +145,7 @@ class TestSandboxOperations:
     async def test_upload_agent_artifacts(
         self,
         test_sandbox: Sandbox,
-        live_aws_credentials: AWSCredentials,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
     ) -> None:
         """Verify benchmark-scoped agent artifacts are downloaded from S3 into the sandbox.
 
@@ -158,7 +160,7 @@ class TestSandboxOperations:
             install_cmd="bash setup.sh",
             run_cmd="echo hello",
         )
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         object_store = S3ObjectStore(aws_runtime)
 
         agent_file = f"{contract_name}/{contract_name}/file.txt"
@@ -172,23 +174,17 @@ class TestSandboxOperations:
         zip_buffer.seek(0)
 
         # Upload zip to real S3
-        s3 = boto3.client(  # type: ignore
-            "s3",
-            region_name=live_aws_credentials.aws_default_region,
-            aws_access_key_id=live_aws_credentials.aws_access_key_id,
-            aws_secret_access_key=live_aws_credentials.aws_secret_access_key,
-            aws_session_token=live_aws_credentials.aws_session_token,
-        )
-        agent_key = get_contract_s3_key(contract_name)
+        s3 = create_s3_client(live_aws_runtime)
+        agent_key = agent_bundle_key(contract_name)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
         s3.put_object(
-            Bucket=harness_config.s3_bucket,
+            Bucket=live_aws_runtime.resources.s3_bucket,
             Key=agent_key,
             Body=zip_buffer.getvalue(),
         )
         # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
         s3.put_object(
-            Bucket=harness_config.s3_bucket,
+            Bucket=live_aws_runtime.resources.s3_bucket,
             Key=frozen_key,
             Body=zip_buffer.getvalue(),
         )
@@ -205,8 +201,8 @@ class TestSandboxOperations:
             assert result.exit_code == 0
             assert "hello world" in result.stdout
         finally:
-            s3.delete_object(Bucket=harness_config.s3_bucket, Key=agent_key)
-            s3.delete_object(Bucket=harness_config.s3_bucket, Key=frozen_key)
+            s3.delete_object(Bucket=live_aws_runtime.resources.s3_bucket, Key=agent_key)
+            s3.delete_object(Bucket=live_aws_runtime.resources.s3_bucket, Key=frozen_key)
 
     async def test_install_agent_dependencies(self, test_sandbox: Sandbox) -> None:
         """Verify the contract install command runs from the sandbox bundle.
@@ -241,7 +237,7 @@ class TestSandboxOperations:
     async def test_run_agent(
         self,
         test_sandbox: Sandbox,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
     ) -> None:
         """Verify run_agent streams output while executing a contract command.
 
@@ -262,7 +258,7 @@ class TestSandboxOperations:
             run_cmd=run_cmd,
             final_output="/tmp/agent_output.json",
         )
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         object_store = S3ObjectStore(aws_runtime)
 
         # Expecting bundle directory to exist
@@ -286,7 +282,7 @@ class TestSandboxOperations:
     async def test_run_policy_allowlist_then_unrestricted_transition(
         self,
         test_sandbox: Sandbox,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         egress_allowlist_probe_command: str,
         restored_egress_probe_command: str,
     ) -> None:
@@ -304,7 +300,7 @@ class TestSandboxOperations:
         )
 
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         object_store = S3ObjectStore(aws_runtime)
 
         await apply_egress_policy(
@@ -350,6 +346,7 @@ class TestSandboxOperations:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             command = "timeout 15 sleep 70"
 
@@ -363,6 +360,7 @@ class TestSandboxOperations:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             command = "timeout 15 sleep 10"
 
@@ -395,6 +393,7 @@ class TestSandboxOperations:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             command = "echo 'STAGE_1' && sleep 1 && echo 'STAGE_2' && sleep 1 && echo 'STAGE_3'"
 
@@ -427,6 +426,7 @@ class TestSandboxOperations:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             ready = asyncio.Event()
 
@@ -468,6 +468,7 @@ class TestSandboxOperations:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             # Use `false` (returns 1) instead of `exit 1` — exit kills the writer
             # shell itself, preventing the status file from being written.

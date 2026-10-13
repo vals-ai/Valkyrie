@@ -7,7 +7,6 @@ import re
 import typing
 from collections.abc import Callable, Sequence
 from enum import Enum
-from pathlib import Path
 from typing import Any
 
 import click  # pyright: ignore[reportMissingImports]
@@ -34,8 +33,6 @@ def _clean_docstring(value: object) -> str:
 def _format_value(value: object) -> str:
     if isinstance(value, Enum):
         return f"{type(value).__name__}.{value.name}"
-    if isinstance(value, Path):
-        return repr(str(value))
     if isinstance(value, type):
         return value.__name__
     if value is None or isinstance(value, (bool, str, int, float, list, tuple, dict)):
@@ -282,7 +279,7 @@ def _collect_model(model: type[BaseModel]) -> SDKModelReference:
         name=model.__name__,
         family=_family(model),
         slug=_type_slug(model.__name__),
-        description=_clean_docstring(inspect.getdoc(model)),
+        description=_clean_docstring(model.__doc__),
         fields=fields,
     )
 
@@ -336,6 +333,8 @@ def collect_sdk_reference() -> SDKReference:
     from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.secrets import SecretsResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.settings import ProvidersResource, SettingsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.services import BenchmarkServicesResource  # pyright: ignore[reportMissingImports]
 
     sdk_exports: list[str] = getattr(sdk, "__all__")
@@ -348,6 +347,9 @@ def collect_sdk_reference() -> SDKReference:
         ("BenchmarkServicesResource", "client.services", BenchmarkServicesResource),
         ("LogsResource", "client.logs", LogsResource),
         ("SchedulerResource", "client.scheduler", SchedulerResource),
+        ("SecretsResource", "client.secrets", SecretsResource),
+        ("ProvidersResource", "client.providers", ProvidersResource),
+        ("SettingsResource", "client.settings", SettingsResource),
     )
     resources = tuple(_collect_resource(name, attribute, resource) for name, attribute, resource in resource_types)
 
@@ -383,7 +385,6 @@ def collect_sdk_reference() -> SDKReference:
     )
     client_methods = (
         constructor,
-        _collect_method("from_config", ValkyrieClient.from_config.__func__),
         _collect_method("close", ValkyrieClient.close),
     )
     return SDKReference(

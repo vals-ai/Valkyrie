@@ -5,17 +5,25 @@ from __future__ import annotations
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, col, desc, select
 
-from tracker.api.dependencies import RunAWSDependency, TrackedBenchmarkId, load_task_for_benchmark_or_404
+from tracker.api.dependencies import (
+    RunBenchmarkDependency,
+    RunRuntimeDependency,
+    TrackedBenchmarkId,
+    load_task_for_benchmark_or_404,
+)
+from tracker.api.download import resolve_download_url
 from tracker.auth import get_current_org
-from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogLocations, task_log_stream_name
-from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
+from tracker.runtime.logs import task_log_stream_name
+from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
+from tracker.aws.services import CloudRuntimeServices
 from tracker.database.models import (
     Benchmark,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     Org,
     Task,
     TaskStatus,
@@ -43,7 +51,9 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
-def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
+def _fetch_result_objects(
+    session: Session, task: Task, org: Org
+) -> tuple[EvaluationResult | None, tuple[str, FailureCategory | None] | None]:
     """Fetches a task's evaluation result or error message depending on its status."""
     if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
         return None, None
@@ -58,14 +68,16 @@ def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[Evalu
     if task.status == TaskStatus.FINISHED:
         result_select = select(EvaluationResult)
     else:
-        result_select = select(ErrorResult.error_message).where(col(ErrorResult.retry_scheduled).is_(False))
+        result_select = select(ErrorResult.error_message, ErrorResult.category).where(
+            col(ErrorResult.retry_scheduled).is_(False)
+        )
 
     result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
 
     if task.status == TaskStatus.FINISHED:
         return cast(EvaluationResult | None, result), None
 
-    return None, cast(str | None, result)
+    return None, cast(tuple[str, FailureCategory | None] | None, result)
 
 
 @router.get(
@@ -81,7 +93,7 @@ def get_single_task(
     """Fetch a single task's status + evaluation result for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
-    eval_row, error_message = _fetch_result_objects(session, task, org)
+    eval_row, error = _fetch_result_objects(session, task, org)
 
     return SingleTaskResponse(
         id=task.id,
@@ -89,7 +101,8 @@ def get_single_task(
         status=task.status,
         started_at=task.started_at,
         finished_at=task.finished_at,
-        error_message=error_message,
+        error_message=error[0] if error else None,
+        failure_category=error[1] if error else None,
         evaluation_result=eval_row.result if eval_row else None,
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
@@ -104,35 +117,43 @@ def get_single_task(
 async def get_task_artifacts(
     benchmark_id: TrackedBenchmarkId,
     task_id: str,
-    run_context: RunAWSDependency,
+    benchmark: RunBenchmarkDependency,
+    runtime: RunRuntimeDependency,
+    request: Request,
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
-    """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
-    task = load_task_for_benchmark_or_404(run_context.benchmark, task_id, org, session)
-    aws_runtime = run_context.aws_runtime
-
-    cloudwatch_url: str | None = None
-    if aws_runtime.resources.log_group and aws_runtime.resources.region:
-        log_locations = CloudWatchBenchmarkLogLocations(aws_runtime.resources)
-        if any(character in task.task_id for character in ":*%"):
-            # Renamed streams may use either encoding; link to the run without guessing.
-            cloudwatch_url = log_locations.benchmark_location(str(benchmark_id))
-        else:
-            cloudwatch_url = log_locations.task_location(
-                str(benchmark_id),
-                task_log_stream_name(task.task_id, task.started_at),
-            )
+    """Return log and agent output locations for the task detail page."""
+    task = load_task_for_benchmark_or_404(benchmark, task_id, org, session)
+    cloudwatch_url: str | None
+    if benchmark.arguments.environment == "local":
+        cloudwatch_url = str(
+            request.url_for("get_logs", benchmark_id=benchmark_id).include_query_params(task_id=task_id)
+        )
+    elif isinstance(runtime, CloudRuntimeServices) and not (
+        runtime.aws_runtime.resources.log_group and runtime.aws_runtime.resources.region
+    ):
+        cloudwatch_url = None
+    elif any(character in task.task_id for character in ":*%"):
+        # Renamed streams may use either encoding; link to the run without guessing.
+        cloudwatch_url = runtime.log_locations.benchmark_location(str(benchmark_id))
+    else:
+        cloudwatch_url = runtime.log_locations.task_location(
+            str(benchmark_id), task_log_stream_name(task.task_id, task.started_at)
+        )
 
     agent_output_url: str | None = None
     ttl_seconds: int | None = None
     key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
-    if await s3_object_exists(key, aws_runtime):
-        ttl_seconds = aws_runtime.clients.maximum_presign_ttl(300)
-        agent_output_url = await create_presigned_url(
-            s3_key=key,
-            runtime=aws_runtime,
-            expiration=ttl_seconds,
+    if await runtime.objects.exists(key):
+        agent_output_url, ttl_seconds = await resolve_download_url(
+            runtime.objects,
+            key,
+            request=request,
+            route_name="get_run_artifact_url",
+            route_params={"benchmark_id": benchmark_id},
+            query_params={"path": f"{task_id}/agent_output.tar.gz"},
+            expires_in=300,
         )
 
     return TaskArtifactsResponse(

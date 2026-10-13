@@ -11,10 +11,9 @@ from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import S3ObjectStore, delete_from_s3, download_from_s3, get_agent_result_s3_key
+from tracker.aws.s3 import S3ObjectStore, delete_from_s3, get_agent_result_s3_key
 from tracker.database.models import Benchmark
-from tracker.sandbox import archive_and_upload_output, create_sandbox
-from tracker.types import HarnessConfig
+from tracker.sandbox import SandboxCreationState, archive_and_upload_output, create_sandbox
 
 
 def _archive_members(archive_content: bytes) -> dict[str, bytes]:
@@ -45,7 +44,7 @@ class TestUploadToS3:
         random_sandbox_name: str,
         test_resources: Resources,
         sandbox_provider: SandboxProvider,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Verify sandbox output archives preserve file contents when uploaded to S3.
@@ -58,7 +57,7 @@ class TestUploadToS3:
         file_content = '{"result": "success", "score": 95}'
         dir_path = "/tmp/test_output_dir"
         task_id = random_task_id()
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         object_store = S3ObjectStore(aws_runtime)
         file_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output.json")
         dir_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output_dir")
@@ -70,6 +69,7 @@ class TestUploadToS3:
                 source=ImageSource(image=test_image),
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
+                creation_state=SandboxCreationState(cleanup_pending=False),
             ) as sandbox:
                 await sandbox.exec(f"echo '{file_content}' > {file_path}")
                 await archive_and_upload_output(sandbox, file_path, file_s3_key, object_store)
@@ -80,8 +80,8 @@ class TestUploadToS3:
                 await sandbox.exec(f"echo 'nested content' > {dir_path}/nested/file3.txt")
                 await archive_and_upload_output(sandbox, dir_path, dir_s3_key, object_store)
 
-                file_members = _archive_members(await download_from_s3(file_s3_key, aws_runtime))
-                dir_members = _archive_members(await download_from_s3(dir_s3_key, aws_runtime))
+                file_members = _archive_members(await object_store.get_bytes(file_s3_key))
+                dir_members = _archive_members(await object_store.get_bytes(dir_s3_key))
 
                 assert _member_content(file_members, "tmp/test_output.json") == f"{file_content}\n".encode()
                 assert _member_content(dir_members, "tmp/test_output_dir/file1.txt") == b"file1 content\n"

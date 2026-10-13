@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime
+import hashlib
+from datetime import datetime, timezone
 from typing import Protocol
 from uuid import UUID
 
@@ -12,7 +13,7 @@ from uuid import UUID
 class BenchmarkLogSink(Protocol):
     """Create benchmark log destinations and write task log messages."""
 
-    def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
+    async def create_benchmark(self, benchmark_id: str, *, retention_days: int) -> None:
         """Ensure a benchmark log destination exists."""
         raise NotImplementedError
 
@@ -107,3 +108,20 @@ class LogProvider(Protocol):
     ) -> AsyncIterator[LogEvent]:
         """Yield existing and newly-arriving task logs."""
         raise NotImplementedError
+
+
+def sanitize_log_stream_name(task_id: str) -> str:
+    """Escape rejected characters and distinguish the result from legacy names."""
+    escaped = task_id.replace("%", "%25").replace(":", "%3A").replace("*", "%2A")
+    if escaped == task_id:
+        return task_id
+    digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
+    return f"{escaped}-{digest}"
+
+
+def task_log_stream_name(task_id: str, started_at: datetime) -> str:
+    """Return the canonical versioned log stream for a task attempt."""
+    if started_at.utcoffset() is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    suffix = f"{int(started_at.timestamp() * 1_000_000):x}"
+    return f"{sanitize_log_stream_name(task_id)}_{suffix}"

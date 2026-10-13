@@ -17,7 +17,7 @@ await client.runs.resume(run_id, concurrency=20)
 
 </CodeGroup>
 
-Full syntax for each command below is in the [`run update`](/reference/cli/run#update), [`run stop`](/reference/cli/run#stop), [`run resume`](/reference/cli/run#resume), and [`run retry`](/reference/cli/run#retry) reference, and in [`client.runs.resume`](/reference/sdk/runs#resume) and [`client.runs.retry`](/reference/sdk/runs#retry) for Python.
+Full syntax for each command below is in the [`run update`](/reference/cli/run#update), [`run stop`](/reference/cli/run#stop), [`run shed`](/reference/cli/run#shed), [`run resume`](/reference/cli/run#resume), and [`run retry`](/reference/cli/run#retry) reference, and in [`client.runs.resume`](/reference/sdk/runs#resume) and [`client.runs.retry`](/reference/sdk/runs#retry) for Python.
 
 ## Update concurrency
 
@@ -48,6 +48,17 @@ valkyrie run stop <run-id> --force
   Force-stopping deletes running sandboxes and cannot be undone. The CLI asks for confirmation first.
 </Warning>
 
+## Shed load from a running run
+
+When a model starts hitting rate limits, lowering concurrency alone waits for running tasks to finish. `run shed` lowers the limit and then force-stops the newest building or in-progress tasks until the run is back at the new limit. The most recently admitted tasks have done the least work, so less is lost:
+
+```bash
+valkyrie run shed <run-id> --concurrency 10 --dry-run
+valkyrie run shed <run-id> --concurrency 10
+```
+
+The new limit must be below the current one; the tracker rejects a shed that would keep or raise it. "Newest" means the latest `started_at`, which is when a task was queued or last retried, not when its sandbox came up; tasks are admitted in that order, so it is a close approximation rather than an exact record of how much work each task has done. Evaluating tasks still count toward the limit but are never stopped: the tracker lowers the limit, picks the tasks, and stops them in one locked transaction, so a task that has moved on to evaluating since the preview is left alone. Stopped tasks can be rerun with `run retry` once the rate limits clear; they restart from the beginning.
+
 ## Choose resume or retry
 
 `resume` admits work that never ran. `retry` re-runs tasks that ended in `ERROR`:
@@ -59,7 +70,7 @@ valkyrie run retry <run-id>
 
 Either accepts a task subset, a concurrency override, and `--connect` to stream afterwards. Three overrides change what the retried work uses:
 
-- `--update-agent` refreshes the frozen agent from its current S3 bundle, so a re-pushed agent takes effect.
+- `--update-agent` refreshes the frozen agent from its current published bundle, so a re-pushed agent takes effect. Stop a run that is still in progress before using it.
 - `--from-scratch` clears stored evaluation resume state, so a task is graded again from the beginning.
 - `--benchmark-url` replaces the benchmark-service URL stored on the run, which a tunnelled service needs after its URL changes.
 

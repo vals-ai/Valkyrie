@@ -4,16 +4,28 @@ Exercise single-benchmark routes through the real app and local database.
 """
 
 import json
+import socket
+import time
+from collections.abc import Generator
 from datetime import UTC, datetime
+from pathlib import Path
+from threading import Thread
 from uuid import uuid4
 
+import httpx
 import pytest
+import uvicorn
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import event
-from sqlmodel import Session
+from sqlalchemy import event, text
+from sqlmodel import Session, SQLModel, create_engine
+from testcontainers.postgres import PostgresContainer
 
 from tests.factories import make_benchmark, make_task
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
+    LocalBenchmarkArguments,
+    DEFAULT_ORG_NAME,
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
@@ -22,10 +34,48 @@ from tracker.database.models import (
     Org,
     TaskStatus,
 )
+from tracker.aws.runtime import AWSResources
+from tracker.local.resources import LocalResources
+from tracker.database.session import get_session
 
 
 class TestSingleBenchmark:
     """Single benchmark responses and missing runs."""
+
+    @pytest.mark.parametrize("headers", [{}, {"X-Descope-Api-Key": "fake"}])
+    def test_read_requires_api_key(self, client: TestClient, headers: dict[str, str]) -> None:
+        response = client.get(f"/benchmarks/{uuid4()}", headers=headers)
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Missing Authorization or x-api-key header"
+
+    def test_dashboard_session_reads_run_and_ignores_aws_headers(
+        self, session_client: TestClient, database_session: Session
+    ) -> None:
+        """The dashboard signs in with a Descope session and still sends legacy X-Harness-* headers."""
+        benchmark = make_benchmark(name="dashboard-run", session=database_session)
+        headers = {"Authorization": "Bearer session-token", "X-Harness-Aws-Access-Key-Id": "legacy-key"}
+
+        response = session_client.get(f"/benchmarks/{benchmark.id}", headers=headers)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["id"] == str(benchmark.id)
+
+    def test_read_is_scoped_to_api_key_tenant(self, client: TestClient, database_session: Session) -> None:
+        other_org = Org(id=uuid4(), name="other-tenant")
+        database_session.add(other_org)
+        database_session.commit()
+        own_benchmark = make_benchmark(name="own-run", session=database_session)
+        other_benchmark = make_benchmark(name="other-run", org_id=other_org.id, session=database_session)
+        headers = {"X-Api-Key": "fake"}
+
+        own_response = client.get(f"/benchmarks/{own_benchmark.id}", headers=headers)
+        other_response = client.get(f"/benchmarks/{other_benchmark.id}", headers=headers)
+
+        assert own_response.status_code == 200
+        assert own_response.json()["id"] == str(own_benchmark.id)
+        assert other_response.status_code == 404
+        assert "other-run" not in other_response.text
 
     def test_get_single_benchmark_returns_payload(self, client: TestClient, database_session: Session) -> None:
         """Run detail must combine persisted benchmark metadata and task progress.
@@ -56,7 +106,7 @@ class TestSingleBenchmark:
         database_session.add(benchmark)
         database_session.commit()
 
-        response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"X-Api-Key": "fake"})
 
         assert response.status_code == 200, response.text
         response_body = response.json()
@@ -78,7 +128,7 @@ class TestSingleBenchmark:
         database_session.add(FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=0.42))
         database_session.commit()
 
-        response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"X-Api-Key": "fake"})
 
         assert response.json()["final_score"] == 0.42
 
@@ -90,9 +140,70 @@ class TestSingleBenchmark:
         """
         unknown_benchmark_id = uuid4()
 
-        response = client.get(f"/benchmarks/{unknown_benchmark_id}", headers={"Authorization": "Bearer fake"})
+        response = client.get(f"/benchmarks/{unknown_benchmark_id}", headers={"X-Api-Key": "fake"})
 
         assert response.status_code == 404
+
+
+class TestBenchmarkStatusStreamPostgres:
+    """Live status streams on PostgreSQL."""
+
+    @pytest.mark.usefixtures("access_key_auth")
+    def test_open_stream_releases_postgres_request_and_poll_transactions(self, local_app: FastAPI) -> None:
+        """An open status stream must not hold benchmark locks between events."""
+        with PostgresContainer("postgres:16-alpine") as postgres:
+            engine = create_engine(
+                postgres.get_connection_url(), connect_args={"application_name": "tracker-sse-test-app"}
+            )
+            SQLModel.metadata.create_all(engine)
+            with Session(engine, expire_on_commit=False) as seed_session:
+                seed_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME, storage_key="test-bucket"))
+                seed_session.commit()
+                benchmark_id = make_benchmark(name="open-stream", session=seed_session).id
+
+            def postgres_request_session() -> Generator[Session, None, None]:
+                with Session(engine, expire_on_commit=False) as request_session:
+                    yield request_session
+
+            local_app.dependency_overrides[get_session] = postgres_request_session
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                port = listener.getsockname()[1]
+                server = uvicorn.Server(uvicorn.Config(local_app, log_level="error", lifespan="off"))
+                server_thread = Thread(target=server.run, kwargs={"sockets": [listener]})
+                server_thread.start()
+                try:
+                    deadline = time.monotonic() + 10
+                    while not server.started and server_thread.is_alive() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    assert server.started
+
+                    with httpx.Client(timeout=10) as http_client:
+                        with http_client.stream(
+                            "GET",
+                            f"http://127.0.0.1:{port}/fetch-benchmark",
+                            params={"benchmark_id": str(benchmark_id), "connect": "true"},
+                            headers={"X-Api-Key": "fake"},
+                        ) as response:
+                            assert response.status_code == 200
+                            lines = response.iter_lines()
+                            assert next(lines).startswith("data: ")
+                            with engine.connect() as observer:
+                                idle_backends = observer.execute(
+                                    text(
+                                        "SELECT pid FROM pg_stat_activity "
+                                        "WHERE datname = current_database() "
+                                        "AND application_name = 'tracker-sse-test-app' "
+                                        "AND state = 'idle in transaction' AND pid <> pg_backend_pid()"
+                                    )
+                                ).all()
+                            assert idle_backends == []
+                finally:
+                    server.should_exit = True
+                    server_thread.join(timeout=10)
+                    engine.dispose()
+                    assert not server_thread.is_alive()
 
 
 class TestBenchmarkStatusStream:
@@ -127,7 +238,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers=_HARNESS_HEADERS,
+            headers={"X-Api-Key": "fake"},
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 
@@ -142,18 +253,32 @@ class TestBenchmarkStatusStream:
         assert streamed_statuses[0]["details"]["task_breakdown"] == {}
         assert streamed_statuses[1]["details"]["task_breakdown"] == {"FINISHED": 1}
 
+    @pytest.mark.parametrize("local", [False, True])
     def test_terminal_benchmark_streams_status_and_completes(
         self,
         client: TestClient,
         database_session: Session,
+        tmp_path: Path,
+        local: bool,
     ) -> None:
         """Terminal run streams must return persisted state and close without polling.
 
         Test cases:
         - A finished benchmark emits its current payload as a data event.
         - The stream emits a completion event with SSE response headers.
+        - Local and AWS streams retain the artifact URL from ordinary fetches.
         """
         benchmark = make_benchmark(name="streamed-benchmark", status=BenchmarkStatus.FINISHED, session=database_session)
+        if local:
+            benchmark.arguments = LocalBenchmarkArguments.model_validate(
+                {
+                    **benchmark.arguments.model_dump(),
+                    "environment": "local",
+                    "properties": LocalResources(data_root=tmp_path),
+                    "sandbox_provider": "docker",
+                }
+            )
+            database_session.add(benchmark)
         database_session.add_all(
             [
                 make_task(benchmark, "completed-task", status=TaskStatus.FINISHED),
@@ -166,7 +291,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers=_HARNESS_HEADERS,
+            headers={"X-Api-Key": "fake"},
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 
@@ -180,6 +305,17 @@ class TestBenchmarkStatusStream:
         assert streamed_status["benchmark_name"] == "streamed-benchmark"
         assert streamed_status["details"]["status"] == "FINISHED"
         assert streamed_status["final_score"] == 0.75
+        fetched = client.get(
+            "/fetch-benchmark", params={"benchmark_id": str(benchmark.id)}, headers={"X-Api-Key": "fake"}
+        )
+        assert fetched.status_code == 200
+        assert streamed_status["s3_bucket_url"] == fetched.json()["s3_bucket_url"]
+        assert streamed_status["storage_bucket"] == fetched.json()["storage_bucket"]
+        if not local:
+            assert benchmark.arguments.properties is None
+            assert streamed_status["storage_bucket"] is not None
+        if local:
+            assert streamed_status["s3_bucket_url"] == f"http://testserver/benchmarks/{benchmark.id}/artifacts"
 
     def test_error_benchmark_streams_release_provenance_and_message(
         self,
@@ -216,7 +352,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers={**_HARNESS_HEADERS, "Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 
@@ -268,7 +404,7 @@ class TestBenchmarkTaskListing:
         try:
             response = client.get(
                 f"/benchmarks/{benchmark.id}/tasks?limit=2&offset=1",
-                headers={"Authorization": "Bearer fake"},
+                headers={"X-Api-Key": "fake"},
             )
         finally:
             event.remove(bind, "before_cursor_execute", record_statement)
@@ -349,13 +485,13 @@ class TestBenchmarkTaskListing:
 
         error_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?status=ERROR",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
         error_response_body = error_response.json()
 
         finished_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?status=FINISHED",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
         finished_response_body = finished_response.json()
 
@@ -392,7 +528,7 @@ class TestBenchmarkTaskListing:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?sort=status",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         statuses = [task["status"] for task in response.json()["tasks"]]
@@ -415,82 +551,51 @@ class TestBenchmarkTaskListing:
 
         response_body = client.get(
             f"/benchmarks/{benchmark.id}/tasks?sort=task_id&sort_dir=asc",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         ).json()
 
         assert [task["task_id"] for task in response_body["tasks"]] == ["t-a", "t-b", "t-c"]
 
 
-_HARNESS_HEADERS: dict[str, str] = {
-    "Authorization": "Bearer fake",
-    "X-Harness-AWS-Access-Key-Id": "AKIA",
-    "X-Harness-AWS-Secret-Access-Key": "secret",
-    "X-Harness-AWS-Default-Region": "us-east-1",
-    "X-Harness-S3-Bucket": "agentic-harness",
-    "X-Harness-Log-Group": "benchmarks",
-    "X-Harness-Log-Retention-Policy": "30",
-}
-
-
 class TestBenchmarkConsoleUrls:
-    """Benchmark console URL construction from harness metadata."""
-
-    def test_get_single_benchmark_builds_run_console_urls_from_harness_headers(
+    def test_get_single_benchmark_builds_run_console_urls(
         self,
         client: TestClient,
         database_session: Session,
     ) -> None:
-        """Run detail must build CloudWatch and S3 links from valid harness headers.
-
-        Test cases:
-        - A complete header set returns both console URLs for the benchmark.
-        """
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
 
-        response_body = client.get(f"/benchmarks/{benchmark.id}", headers=_HARNESS_HEADERS).json()
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"X-Api-Key": "fake"})
 
-        assert "cloudwatch/home" in response_body["cloudwatch_url"]
-        assert str(benchmark.id) in response_body["cloudwatch_url"]
-        assert "s3/buckets/agentic-harness" in response_body["s3_bucket_url"]
-        assert str(benchmark.id) in response_body["s3_bucket_url"]
+        assert response.status_code == 200
+        body = response.json()
+        assert "cloudwatch/home" in body["cloudwatch_url"]
+        assert str(benchmark.id) in body["cloudwatch_url"]
+        assert "s3/buckets/test-bucket" in body["s3_bucket_url"]
+        assert str(benchmark.id) in body["s3_bucket_url"]
 
-    def test_get_single_benchmark_omits_console_urls_without_harness_headers(
+    def test_get_single_benchmark_omits_unavailable_runtime_links(
         self,
         client: TestClient,
         database_session: Session,
     ) -> None:
-        """Run detail must remain usable when optional harness headers are absent.
-
-        Test cases:
-        - Missing headers return null CloudWatch and S3 links instead of an error.
-        """
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
+        benchmark.arguments = benchmark.arguments.model_copy(
+            update={
+                "properties": AWSResources(
+                    region="us-east-1", s3_bucket="customer-bucket", log_group="benchmarks", log_retention_days=7
+                )
+            }
+        )
+        database_session.add(benchmark)
+        database_session.commit()
 
-        response_body = client.get(
-            f"/benchmarks/{benchmark.id}",
-            headers={"Authorization": "Bearer fake"},
-        ).json()
+        response = client.get(f"/benchmarks/{benchmark.id}", headers={"X-Api-Key": "fake"})
 
-        assert response_body["cloudwatch_url"] is None
-        assert response_body["s3_bucket_url"] is None
-
-    def test_get_single_benchmark_s3_url_without_log_group_skips_cloudwatch(
-        self,
-        client: TestClient,
-        database_session: Session,
-    ) -> None:
-        """S3 navigation must not depend on an optional CloudWatch log group.
-
-        Test cases:
-        - Complete AWS headers without a log group return only the S3 link.
-        """
-        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
-
-        headers = {header: value for header, value in _HARNESS_HEADERS.items() if header != "X-Harness-Log-Group"}
-        response_body = client.get(f"/benchmarks/{benchmark.id}", headers=headers).json()
-
-        assert response_body["cloudwatch_url"] is None
-        assert "s3/buckets/agentic-harness" in response_body["s3_bucket_url"]
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cloudwatch_url"] is None
+        assert body["s3_bucket_url"] is None
 
 
 def test_unauth_returns_401(client: TestClient) -> None:
@@ -526,7 +631,7 @@ class TestBenchmarkTaskSearch:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=astropy",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         assert response.status_code == 200, response.text
@@ -557,12 +662,12 @@ class TestBenchmarkTaskSearch:
 
         underscore_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=task_1",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         percent_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=task%251",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         assert underscore_response.status_code == 200, underscore_response.text
@@ -589,7 +694,7 @@ class TestBenchmarkTaskSearch:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=django",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         response_body = response.json()
@@ -616,7 +721,7 @@ class TestBenchmarkTaskSearch:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks?task_id_search=astropy&status=ERROR",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         response_body = response.json()

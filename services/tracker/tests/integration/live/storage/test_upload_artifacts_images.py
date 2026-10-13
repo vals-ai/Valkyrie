@@ -6,15 +6,15 @@ Run: uv run pytest tests/integration/live/storage/test_upload_artifacts_images.p
 import asyncio
 from uuid import uuid4
 
-import boto3
 from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
+from tests.integration.seed_agent_artifacts import create_s3_client
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key, get_contract_s3_key
+from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key
+from tracker.runtime.artifacts import agent_bundle_key
 from tracker.database.models import AgentContractRequest
-from tracker.sandbox import create_sandbox, upload_agent_artifacts
-from tracker.types import HarnessConfig
+from tracker.sandbox import SandboxCreationState, create_sandbox, upload_agent_artifacts
 
 # Images covering the major package families
 _IMAGES = [
@@ -48,7 +48,7 @@ class TestUploadArtifactsAcrossImages:
         sandbox_provider: SandboxProvider,
         test_resources: Resources,
         contract: AgentContractRequest,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Verify agent artifact upload works across the supported Linux image families.
@@ -59,19 +59,12 @@ class TestUploadArtifactsAcrossImages:
         """
 
         benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
         object_store = S3ObjectStore(aws_runtime)
-        aws_credentials = harness_config.aws
 
         # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
-        s3 = boto3.client(  # type: ignore
-            "s3",
-            region_name=aws_credentials.aws_default_region,
-            aws_access_key_id=aws_credentials.aws_access_key_id,
-            aws_secret_access_key=aws_credentials.aws_secret_access_key,
-            aws_session_token=aws_credentials.aws_session_token,
-        )
-        agent_key = get_contract_s3_key(contract.name)
+        s3 = create_s3_client(live_aws_runtime)
+        agent_key = agent_bundle_key(contract.name)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
         s3.copy_object(
             Bucket=aws_runtime.resources.s3_bucket,
@@ -90,6 +83,7 @@ class TestUploadArtifactsAcrossImages:
                     ImageSource(image=image),
                     test_resources,
                     creation_semaphore,
+                    creation_state=SandboxCreationState(cleanup_pending=False),
                 ) as sandbox,
             ):
                 await upload_agent_artifacts(sandbox, contract, benchmark_id, object_store)

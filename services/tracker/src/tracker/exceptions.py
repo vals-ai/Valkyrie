@@ -105,3 +105,7 @@ class SecretsError(TrackerServiceError):
 
     def __str__(self) -> str:
         return "Secret error: " + super().__str__()
+
+
+class SecretNotFoundError(SecretsError):
+    """The named secret doesn't exist, or the caller may not read it."""

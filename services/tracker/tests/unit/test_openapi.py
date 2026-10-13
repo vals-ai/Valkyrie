@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from typing import Any
 
 from generate_openapi import build_openapi
 
@@ -31,81 +30,25 @@ def test_openapi_declares_authentication() -> None:
     }
     assert schema["security"] == [{"BearerAuth": []}, {"ApiKeyAuth": []}]
     assert schema["paths"]["/health"]["get"]["security"] == []
-    assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
-    assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]
-    assert schema["paths"]["/start-benchmark-with-storage"]["post"]["security"] == [{"ApiKeyAuth": []}]
+    assert "security" not in schema["paths"]["/start-benchmark"]["post"]
+    assert schema["paths"]["/auth/cli"]["get"]["security"] == []
+    assert schema["paths"]["/access-keys"]["post"]["security"] == [{"BearerAuth": []}]
 
 
-def test_openapi_declares_required_harness_headers() -> None:
-    schema = build_openapi()
-    expected_parameters = {
-        "HarnessAwsAccessKeyId": {
-            "name": "X-Harness-AWS-Access-Key-Id",
-            "in": "header",
-            "required": True,
-            "schema": {"type": "string"},
-        },
-        "HarnessAwsSecretAccessKey": {
-            "name": "X-Harness-AWS-Secret-Access-Key",
-            "in": "header",
-            "required": True,
-            "schema": {"type": "string"},
-        },
-        "HarnessAwsDefaultRegion": {
-            "name": "X-Harness-AWS-Default-Region",
-            "in": "header",
-            "required": True,
-            "schema": {"type": "string"},
-        },
-        "HarnessS3Bucket": {
-            "name": "X-Harness-S3-Bucket",
-            "in": "header",
-            "required": True,
-            "schema": {"type": "string"},
-        },
-    }
-    expected_references = [{"$ref": f"#/components/parameters/{name}"} for name in expected_parameters]
-    affected_operations = (
-        schema["paths"]["/agents"]["get"],
-        schema["paths"]["/agents/{name}/download-url"]["get"],
-        schema["paths"]["/analyze-benchmark/{benchmark_id}"]["post"],
-        schema["paths"]["/benchmarks/{benchmark_id}/logs"]["get"],
-        schema["paths"]["/benchmarks/{benchmark_id}/logs/stream"]["get"],
-        schema["paths"]["/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts"]["get"],
-        schema["paths"]["/check-results-exist"]["get"],
-        schema["paths"]["/fetch-benchmark"]["get"],
-        schema["paths"]["/fetch-benchmark-tasks"]["post"],
-        schema["paths"]["/fetch-run-outputs/{benchmark_id}"]["get"],
-        schema["paths"]["/retrieve-results"]["get"],
-        schema["paths"]["/retry-or-resume-benchmark/{benchmark_id}"]["post"],
-        schema["paths"]["/stop-benchmark/{benchmark_id}"]["post"],
-    )
-
-    assert schema["components"]["parameters"] == expected_parameters
-    for operation in affected_operations:
-        assert operation["parameters"][-4:] == expected_references
-
-
-def test_openapi_states_the_storage_requirement_of_each_start_route() -> None:
+def test_openapi_has_no_client_storage_override() -> None:
     schema = build_openapi()
 
-    def request_model(path: str) -> dict[str, Any]:
-        body = schema["paths"][path]["post"]["requestBody"]["content"]["application/json"]["schema"]
-        return schema["components"]["schemas"][body["$ref"].rsplit("/", 1)[-1]]
-
-    shared = request_model("/start-benchmark")
-    managed = request_model("/start-benchmark-with-storage")
-
-    assert "managed_s3_bucket" not in shared["required"]
-    assert "managed_s3_bucket" in managed["required"]
+    assert "/start-benchmark-with-storage" not in schema["paths"]
+    assert "managed_s3_bucket" not in schema["components"]["schemas"]["StartBenchmarkRequest"]["properties"]
 
 
 def test_openapi_keeps_scheduler_storage_fields_internal() -> None:
     schemas = build_openapi()["components"]["schemas"]
 
-    benchmark_argument_properties = schemas["BenchmarkArguments"]["properties"]
-    assert "priority" not in benchmark_argument_properties
-    assert "queue_pool_id" not in benchmark_argument_properties
+    for model in ("AWSBenchmarkArguments", "LocalBenchmarkArguments"):
+        benchmark_argument_properties = schemas[model]["properties"]
+        assert "priority" not in benchmark_argument_properties
+        assert "queue_pool_id" not in benchmark_argument_properties
     assert "priority" in schemas["StartBenchmarkRequest"]["properties"]
 
 

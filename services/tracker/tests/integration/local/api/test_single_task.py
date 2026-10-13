@@ -73,7 +73,7 @@ class TestSingleTask:
 
         finished_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
         assert finished_response.status_code == 200, finished_response.text
         finished_data: dict[str, Any] = finished_response.json()
@@ -84,7 +84,7 @@ class TestSingleTask:
 
         error_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
         assert error_response.status_code == 200, error_response.text
         error_data: dict[str, Any] = error_response.json()
@@ -103,7 +103,7 @@ class TestSingleTask:
 
         response = client.get(
             f"/benchmarks/{benchmark.id}/tasks/nonexistent",
-            headers={"Authorization": "Bearer fake"},
+            headers={"X-Api-Key": "fake"},
         )
 
         assert response.status_code == 404

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from benchmark_service import SandboxCapacity, SandboxCapacityDomain, SandboxProvider
+from benchmark_service import SandboxProvider
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import JSON, and_, or_, select as sa_select, type_coerce
 from sqlalchemy.sql.elements import ColumnElement
@@ -22,19 +22,17 @@ from tracker.aws.secrets import SecretsManagerStore
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.logging import get_logger
-from tracker.scheduler.store import queue_pool_id
+from tracker.scheduler.store import queue_pool_id, queue_pool_lock_id
 from tracker.types import (
     SchedulerActiveEntryResponse,
     SchedulerActiveStatus,
     SchedulerCapacityDomainResponse,
-    SchedulerCapacityResponse,
     SchedulerOverviewResponse,
     SchedulerPoolResponse,
-    SchedulerResourceCapacityResponse,
     SchedulerSummaryResponse,
     SchedulerWaitingEntryResponse,
 )
-from tracker.utils.resources import fetch_sandbox_provider_config_async
+from tracker.utils.resources import fetch_sandbox_provider_config
 
 router = APIRouter(prefix="/scheduler")
 logger = get_logger(__name__)
@@ -45,18 +43,14 @@ _CAPACITY_REQUEST_TIMEOUT_SECONDS = 3.0
 _PROVIDER_CLOSE_TIMEOUT_SECONDS = 1.0
 _CAPACITY_MAX_CONCURRENCY = 4
 
+_ARGUMENTS = type_coerce(col(Benchmark.arguments), JSON)
+_IS_QUEUED = _ARGUMENTS["queue_pool_id"].as_string().is_not(None)
+
 
 @dataclass(frozen=True)
 class _PoolProviderReference:
-    aws_managed: bool
     provider_type: str | None
     secret_name: str | None
-
-
-def _queued_benchmarks_expression():
-    arguments = type_coerce(col(Benchmark.arguments), JSON)
-
-    return arguments["queue_pool_id"].as_string().is_not(None)
 
 
 def _read_waiting_rows(
@@ -66,9 +60,8 @@ def _read_waiting_rows(
     limit: int,
     offset: int = 0,
 ) -> tuple[list[tuple[Task, Benchmark, int, str, int]], dict[str, int]]:
-    arguments = type_coerce(col(Benchmark.arguments), JSON)
-    priority = arguments["priority"].as_integer()
-    pool_id = arguments["queue_pool_id"].as_string()
+    priority = _ARGUMENTS["priority"].as_integer()
+    pool_id = _ARGUMENTS["queue_pool_id"].as_string()
     queued_tasks = (
         sa_select(
             cast(ColumnElement[UUID], col(Task.id).label("task_id")),
@@ -85,7 +78,7 @@ def _read_waiting_rows(
         .where(
             col(Task.status) == TaskStatus.PENDING,
             col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS,
-            _queued_benchmarks_expression(),
+            _IS_QUEUED,
         )
         .subquery()
     )
@@ -126,10 +119,9 @@ def _read_pool_references(
     org_id: UUID,
 ) -> dict[str, set[_PoolProviderReference]]:
     """Return every distinct provider reference contributing waiting or active work."""
-    arguments = type_coerce(col(Benchmark.arguments), JSON)
-    pool_id = arguments["queue_pool_id"].as_string()
-    provider_type = arguments["sandbox_provider"].as_string()
-    secret_name = arguments["sandbox_provider_secret_name"].as_string()
+    pool_id = _ARGUMENTS["queue_pool_id"].as_string()
+    provider_type = _ARGUMENTS["sandbox_provider"].as_string()
+    secret_name = _ARGUMENTS["sandbox_provider_secret_name"].as_string()
     lifecycle_scope = or_(
         and_(
             col(Task.status) == TaskStatus.PENDING,
@@ -141,10 +133,9 @@ def _read_pool_references(
         ),
     )
     statement = cast(
-        Select[tuple[str, bool, str | None, str | None]],
+        Select[tuple[str, str | None, str | None]],
         sa_select(
             pool_id,
-            col(Benchmark.aws_managed),
             provider_type,
             secret_name,
         )
@@ -154,15 +145,14 @@ def _read_pool_references(
             col(Task.org_id) == org_id,
             col(Benchmark.org_id) == org_id,
             lifecycle_scope,
-            _queued_benchmarks_expression(),
+            _IS_QUEUED,
         )
         .distinct(),
     )
     references: dict[str, set[_PoolProviderReference]] = {}
-    for stored_pool_id, aws_managed, stored_provider_type, stored_secret_name in session.exec(statement).all():
+    for stored_pool_id, stored_provider_type, stored_secret_name in session.exec(statement).all():
         references.setdefault(stored_pool_id, set()).add(
             _PoolProviderReference(
-                aws_managed=aws_managed,
                 provider_type=stored_provider_type,
                 secret_name=stored_secret_name,
             )
@@ -183,7 +173,7 @@ def _read_active_rows(
         col(Benchmark.org_id) == org_id,
         col(Benchmark.status).in_((BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)),
         col(Task.status).in_(_ACTIVE_STATUSES),
-        _queued_benchmarks_expression(),
+        _IS_QUEUED,
     )
     counts = dict(
         session.exec(
@@ -270,28 +260,6 @@ def read_scheduler_overview(
     )
 
 
-def _resource_capacity_response(available: float, total: float) -> SchedulerResourceCapacityResponse:
-    return SchedulerResourceCapacityResponse(available=available, total=total)
-
-
-def _capacity_response(capacity: SandboxCapacity) -> SchedulerCapacityResponse:
-    return SchedulerCapacityResponse(
-        cpu=_resource_capacity_response(capacity.cpu.available, capacity.cpu.total),
-        memory=_resource_capacity_response(capacity.memory.available, capacity.memory.total),
-        disk=_resource_capacity_response(capacity.disk.available, capacity.disk.total),
-        gpu=(None if capacity.gpu is None else _resource_capacity_response(capacity.gpu.available, capacity.gpu.total)),
-        allowed_gpu_types=(None if capacity.allowed_gpu_types is None else list(capacity.allowed_gpu_types)),
-    )
-
-
-def _capacity_domain_response(domain: SandboxCapacityDomain) -> SchedulerCapacityDomainResponse:
-    return SchedulerCapacityDomainResponse(
-        target_id=domain.target_id,
-        sandbox_class=domain.sandbox_class,
-        capacity=_capacity_response(domain.capacity),
-    )
-
-
 async def _cancel_and_drain(task: asyncio.Task[None]) -> None:
     task.cancel()
     drain = asyncio.gather(task, return_exceptions=True)
@@ -323,7 +291,7 @@ async def _close_provider(provider: SandboxProvider, pool_id: str, *, deadline: 
 
 async def _read_provider_capacity(
     *,
-    org_id: UUID,
+    org: Org,
     pool_id: str,
     provider_type: str,
     secret_name: str,
@@ -336,21 +304,22 @@ async def _read_provider_capacity(
             return None
         try:
             async with asyncio.timeout_at(read_deadline):
-                runtime = deployment_aws_runtime(org_id)
-                provider_config = await fetch_sandbox_provider_config_async(
+                runtime = deployment_aws_runtime(org)
+                provider_config = await fetch_sandbox_provider_config(
                     secret_name,
                     SecretsManagerStore(runtime.clients),
                     provider_type,
                 )
-                created_provider = provider_config.create_provider()
-                provider = created_provider
-                provider_pool_id = created_provider.admission_pool_id
-                if provider_pool_id is None or queue_pool_id(provider_pool_id) != pool_id:
+                provider = provider_config.create_provider()
+                provider_pool_id = provider.admission_pool_id
+                if provider_pool_id is None or queue_pool_id(provider_pool_id) != queue_pool_lock_id(pool_id):
                     raise ValueError("Sandbox capacity provider does not match the queued pool")
-                domains = await created_provider.get_capacity_domains()
+                domains = await provider.get_capacity_domains()
                 if domains is None:
                     return None
-                return [_capacity_domain_response(domain) for domain in domains]
+                return [
+                    SchedulerCapacityDomainResponse.model_validate(domain, from_attributes=True) for domain in domains
+                ]
         finally:
             if provider is not None:
                 await _close_provider(provider, pool_id, deadline=request_deadline)
@@ -366,9 +335,6 @@ def _capacity_request(
 ) -> tuple[str | None, tuple[str, str] | None]:
     provider_types = {reference.provider_type for reference in references if reference.provider_type}
     provider_type = next(iter(provider_types)) if len(provider_types) == 1 else None
-    if not references or any(not reference.aws_managed for reference in references):
-        return provider_type, None
-
     configurations = {(reference.provider_type, reference.secret_name) for reference in references}
     if len(configurations) != 1:
         return provider_type, None
@@ -381,7 +347,7 @@ def _capacity_request(
 async def _enrich_scheduler_capacity(
     overview: SchedulerOverviewResponse,
     *,
-    org_id: UUID,
+    org: Org,
     references: dict[str, set[_PoolProviderReference]],
 ) -> SchedulerOverviewResponse:
     loop = asyncio.get_running_loop()
@@ -404,7 +370,7 @@ async def _enrich_scheduler_capacity(
                 return
             pool = pools[index]
             capacity_domains = await _read_provider_capacity(
-                org_id=org_id,
+                org=org,
                 pool_id=pool.pool_id,
                 provider_type=provider_type,
                 secret_name=secret_name,
@@ -460,20 +426,7 @@ async def get_scheduler_overview(
     if not include_capacity:
         return overview
     references = await run_in_threadpool(_read_pool_references, session=session, org_id=org.id)
-    waiting_pools = {pool.pool_id: pool for pool in overview.pools}
-    pool_ids = sorted(waiting_pools.keys() | references.keys())
-    overview = overview.model_copy(
-        update={
-            "pools": [
-                waiting_pools[pool_id]
-                if pool_id in waiting_pools
-                else SchedulerPoolResponse(pool_id=pool_id, waiting=0)
-                for pool_id in pool_ids
-            ]
-        }
-    )
-    return await _enrich_scheduler_capacity(
-        overview,
-        org_id=org.id,
-        references=references,
-    )
+    pools = {pool_id: SchedulerPoolResponse(pool_id=pool_id, waiting=0) for pool_id in references}
+    pools.update({pool.pool_id: pool for pool in overview.pools})
+    overview = overview.model_copy(update={"pools": [pools[pool_id] for pool_id in sorted(pools)]})
+    return await _enrich_scheduler_capacity(overview, org=org, references=references)

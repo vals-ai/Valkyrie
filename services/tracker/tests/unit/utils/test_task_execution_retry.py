@@ -5,13 +5,22 @@ Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
-from benchmark_service import ComposeSource, ImageSource, SandboxNotFoundError, SandboxRecoveryPolicy
+from benchmark_service import (
+    ComposeSource,
+    DockerProviderConfig,
+    ImageSource,
+    SandboxNotFoundError,
+    SandboxRecoveryPolicy,
+)
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.sandbox.local.docker import DockerSandbox
 from benchmark_service.schemas import (
     AgentInstallOrder,
     BenchmarkEgressPlan,
@@ -40,8 +49,7 @@ from tracker.database.models import (
 )
 from tracker.egress import EgressPolicy
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
-from tracker.sandbox import DependencySetupMode
-from tracker.types import HarnessConfig
+from tracker.sandbox import DependencySetupMode, apply_egress_policy, create_sandbox
 from tracker.utils import task_execution as task_execution_module
 
 
@@ -86,7 +94,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         fail_target: str,
         error: SandboxSetupError,
@@ -106,7 +113,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
 
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
@@ -214,6 +220,68 @@ class TestTaskExecutionRetry:
         else:
             assert terminal_results == []
 
+    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize(
+        ("stage", "policy"),
+        [(None, "*")]
+        + [
+            (stage, policy)
+            for stage in ("install", "setup_task", "run", "evaluation")
+            for policy in ([], ["example.com"])
+        ]
+        + [("legacy_agent", ["example.com"])],
+    )
+    async def test_docker_generation_requires_an_unrestricted_plan_before_creation(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        runtime_services: RuntimeServices,
+        stage: str | None,
+        policy: EgressPolicy,
+    ) -> None:
+        task_data = make_retrieve_task_response().model_copy(update={"source": ImageSource(image="python:3.12-slim")})
+        if stage == "install":
+            contract = contract.model_copy(update={"install_egress": policy})
+        elif stage == "legacy_agent":
+            contract = contract.model_copy(update={"egress_allowlist": policy})
+        elif stage is not None:
+            task_data = task_data.model_copy(update={"egress": task_data.egress.model_copy(update={stage: policy})})
+        request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
+        # Keep Docker's real unsupported egress methods; only container/provider I/O is replaced.
+        sandbox = DockerSandbox(
+            cast(Any, Mock()),
+            cast(
+                Any,
+                SimpleNamespace(id="docker-task", labels={}, state="running", created=datetime(2026, 1, 1, tzinfo=UTC)),
+            ),
+        )
+        provider = AsyncMock()
+        provider.__aenter__.return_value = provider
+        provider.create_sandbox.return_value = sandbox
+
+        def provider_factory(_config: DockerProviderConfig) -> Any:
+            return provider
+
+        monkeypatch.setattr(DockerProviderConfig, "create_provider", provider_factory)
+        monkeypatch.setattr(
+            runtime_services, "get_sandbox_provider_config", AsyncMock(return_value=DockerProviderConfig())
+        )
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=task_data))
+        monkeypatch.setattr(task_execution_module, "create_sandbox", create_sandbox)
+        monkeypatch.setattr(task_execution_module, "apply_egress_policy", apply_egress_policy)
+
+        result = await run_process_task(request, task_row, benchmark_id, runtime_services, authority)
+
+        if stage is None:
+            assert result == {"task_0": {"status": "success", "score": 1.0}}
+            assert provider.create_sandbox.call_args.args[0].network_block_all is False
+        else:
+            assert result == {"task_0": None}
+            assert not provider.create_sandbox.called
+            error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).one()
+            assert "requires unrestricted egress for every stage" in error.error_message
+
     @pytest.mark.parametrize(
         ("compose_runtime", "agent_install_order", "setup_before_install"),
         [
@@ -228,7 +296,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         compose_runtime: bool,
         agent_install_order: AgentInstallOrder,
@@ -244,7 +311,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         source = (
             ComposeSource(
@@ -347,12 +413,20 @@ class TestTaskExecutionRetry:
             "teardown",
         ]
 
+    @pytest.mark.parametrize(
+        "service_error",
+        [
+            "docker daemon is not ready inside the sandbox: nohup: failed to run command 'dockerd': No such file or directory",
+            "Docker daemon did not become ready inside the compose sandbox (dockerd exited, 1 restart(s))",
+        ],
+        ids=["vcb", "terminal_bench"],
+    )
     async def test_process_task_retries_when_service_reports_broken_sandbox(
         self,
+        service_error: str,
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """A service-reported broken sandbox retries on a fresh sandbox instead of failing terminally.
@@ -366,7 +440,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -385,10 +458,6 @@ class TestTaskExecutionRetry:
             yield mock_sandbox
 
         setup_call_count = 0
-        service_error = (
-            "docker daemon is not ready inside the sandbox: "
-            "nohup: failed to run command 'dockerd': No such file or directory"
-        )
 
         async def _fails_first_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
             nonlocal setup_call_count
@@ -436,7 +505,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         """A service error without the broken-sandbox signature stays terminal.
@@ -448,7 +516,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -494,7 +561,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         failure_site: str,
     ) -> None:
@@ -511,7 +577,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -573,13 +638,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
@@ -633,7 +696,6 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
         max_attempts: int | None,
         failures: int,
@@ -643,7 +705,6 @@ class TestTaskExecutionRetry:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         monkeypatch.setattr(task_execution_module, "_SANDBOX_RETRY_DELAY_SECONDS", 0)
         monkeypatch.setattr("benchmark_service.client.time.time", lambda: 1_234.5)
@@ -706,13 +767,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         task_row.status = TaskStatus.EVALUATING
         task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
@@ -761,13 +820,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
         task_row.status = TaskStatus.EVALUATING
         task_row.eval_resume_state = {"artifact_prefix": "s3://bucket/run"}
@@ -809,13 +866,11 @@ class TestTaskExecutionRetry:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
         runtime_services: RuntimeServices,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
-            harness_config,
         )
 
         create_sandbox_kwargs: dict[str, Any] = {}
@@ -932,3 +987,46 @@ class TestTaskExecutionRetry:
         assert evaluation_start_record["task_id"] == "task_0"
         assert evaluation_start_record["benchmark_id"] == str(benchmark_id)
         assert evaluation_start_record["sandbox_id"] == "mock-sandbox-id"
+
+
+def test_task_retry_telemetry_carries_failure_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    increments: list[tuple[str, dict[str, str]]] = []
+    spans: list[dict[str, Any]] = []
+    log_records: list[dict[str, Any]] = []
+
+    def fake_incr(name: str, _value: float = 1, tags: dict[str, str] | None = None) -> None:
+        increments.append((name, tags or {}))
+
+    @contextmanager
+    def fake_span(name: str, **attributes: Any) -> Generator[None, None, None]:
+        spans.append({"name": name, **attributes})
+        yield
+
+    def fake_warning(message: str, *_args: object, extra: dict[str, Any] | None = None, **_kwargs: Any) -> None:
+        log_records.append({"message": message, **(extra or {})})
+
+    monkeypatch.setattr(task_execution_module, "incr", fake_incr)
+    monkeypatch.setattr(task_execution_module, "observability_span", fake_span)
+    monkeypatch.setattr(task_execution_module.logger, "warning", fake_warning)
+
+    task_execution_module._observe_task_retry(  # pyright: ignore[reportPrivateUsage]
+        Mock(number=2), SandboxSetupError("sandbox setup failed")
+    )
+
+    assert increments == [
+        ("valkyrie.task.retry", {"error_class": "SandboxSetupError", "failure_category": "infrastructure"})
+    ]
+    assert spans == [
+        {"name": "task.retry", "attempt": 2, "error_class": "SandboxSetupError", "failure_category": "infrastructure"}
+    ]
+    assert log_records == [
+        {
+            "message": "retry.before_sleep",
+            "metric": "valkyrie.task",
+            "fn": "_process_task_attempt",
+            "attempt": 2,
+            "idle_for": task_execution_module._SANDBOX_RETRY_DELAY_SECONDS,  # pyright: ignore[reportPrivateUsage]
+            "error_class": "SandboxSetupError",
+            "failure_category": "infrastructure",
+        }
+    ]

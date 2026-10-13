@@ -1,16 +1,12 @@
-import asyncio
 from copy import copy
 from uuid import UUID
 
 import click
 from tracker.database.models import RetryMode
-from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.progress import stream_benchmark_status
+from valkyrie.cli.run.progress import echo_next_steps, stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.agent.storage import update_benchmark_agent_version
-from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -69,7 +65,7 @@ from valkyrie.cli.tracker_client import TrackerService
     "-u",
     is_flag=True,
     default=False,
-    help="Refresh the frozen agent copy from the current agents/<name>.zip in S3 before resuming.",
+    help="Refresh the frozen agent copy from the current published agent bundle before resuming.",
 )
 @click.option(
     "--from-scratch",
@@ -100,7 +96,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: str | None,
-    secrets: tuple[tuple[str, str]],
+    secrets: tuple[tuple[str, str], ...],
     headers: tuple[tuple[str, str], ...],
     update_agent: bool,
     from_scratch: bool,
@@ -108,12 +104,6 @@ def resume(
     lambda_function: str | None,
     connect: bool,
 ):
-    """
-    Resume a run by its run id.
-
-    Example:
-        valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
-    """
     retry_task_ids = resolve_task_ids(task_ids, task_ids_file) or []
 
     # NOTE: workaround for auto retrying tasks when using the retry command
@@ -122,44 +112,23 @@ def resume(
 
     try:
         with TrackerService() as tracker:
-            benchmark_info = tracker.fetch_benchmark(run_id)
-            service_headers = benchmark_service_headers(benchmark_info.benchmark_name, headers)
-
-            if update_agent:
-                metadata = tracker.fetch_benchmark_metadata(run_id)
-                agent_name = metadata.benchmark_arguments.contract.name
-                click.echo(f"\r\033[KUpdating agent '{agent_name}'...", nl=False)
-                asyncio.run(
-                    update_benchmark_agent_version(agent_name, str(run_id), storage_bucket=metadata.storage_bucket)
-                )
-                click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
-
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
                 RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
                 concurrency,
                 retry_task_ids,
-                service_headers=service_headers,
-                secrets={key: value for key, value in secrets},
+                service_headers=dict(headers),
+                secrets=dict(secrets),
                 benchmark_url=benchmark_url,
                 lambda_function=lambda_function,
+                update_agent=update_agent,
             )
-            action_label = "retried" if retry else "resumed"
-            click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))
-            click.echo("┌─ Next Steps " + "─" * 66)
-            if not connect:
-                click.echo(
-                    f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan")
-                )
-            click.echo(
-                f"│ {'Get results:':<17} "
-                + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
-            )
-            click.echo("└" + "─" * 79)
+            click.echo(click.style(f"✓ Run {'retried' if retry else 'resumed'} successfully!", fg="green", bold=True))
+            echo_next_steps(run_id, track=not connect)
             if connect:
                 stream_benchmark_status(tracker, run_id)
-    except (TrackerServiceError, S3Error) as e:
+    except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
 

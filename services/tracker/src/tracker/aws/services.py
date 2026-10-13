@@ -1,6 +1,5 @@
 """Compose AWS-backed runtime services."""
 
-from asyncio import to_thread
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -12,9 +11,9 @@ from tracker.aws.cloudwatch_logs import (
     CloudWatchBenchmarkLogSink,
     CloudWatchLogProvider,
 )
-from tracker.aws.managed_storage import ManagedStorageError
-from tracker.aws.resolver import deployment_aws_runtime, validate_saved_managed_storage_runtime
+from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSResources, AWSRuntime
+from tracker.database.models import Org
 from tracker.aws.s3 import S3ArtifactLocations, S3ObjectStore
 from tracker.aws.secrets import SecretsManagerStore
 from tracker.exceptions import TrackerServiceError
@@ -33,17 +32,14 @@ class CloudRuntimeServices(RuntimeServices):
 
     aws_runtime: AWSRuntime
 
-    def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
+    async def prepare_execution(self, request: StartBenchmarkRequest, benchmark_id: UUID) -> None:
         """Prepare logs before sandbox work."""
-        self.logs.create_benchmark(str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days)
-        if self.aws_runtime.clients.credential_source != "managed":
-            return
-
-        resolve_secrets(request.contract.secrets, self.secrets)
-        if request.webhook_secret_name and request.webhook_intervals:
-            self.secrets.get(request.webhook_secret_name)
+        await self.logs.create_benchmark(
+            str(benchmark_id), retention_days=self.aws_runtime.resources.log_retention_days
+        )
+        await resolve_secrets(request.contract.secrets, self.secrets)
         if request.lambda_function:
-            dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
+            await dry_run_lambda(self.aws_runtime.clients, request.lambda_function)
 
     async def run_completion_callback(self, final_view: FinalViewResponse) -> None:
         arguments = final_view.benchmark_arguments
@@ -54,8 +50,7 @@ class CloudRuntimeServices(RuntimeServices):
         payload["benchmark_id"] = str(final_view.benchmark_id)
         payload["benchmark_name"] = final_view.benchmark_name
         payload["bucket"] = self.aws_runtime.resources.s3_bucket
-        await to_thread(
-            invoke_lambda,
+        await invoke_lambda(
             self.aws_runtime.clients,
             arguments.lambda_function,
             payload,
@@ -82,7 +77,6 @@ class CloudRuntimeFactory:
             aws_runtime=runtime,
             objects=S3ObjectStore(runtime),
             secrets=secrets,
-            async_secrets=secrets,
             logs=CloudWatchBenchmarkLogSink(clients, resources.log_group),
             log_reader=CloudWatchLogProvider(clients, resources.log_group),
             log_locations=CloudWatchBenchmarkLogLocations(resources),
@@ -95,35 +89,22 @@ class CloudRuntimeFactory:
     async def create_execution_runtime(
         cls,
         request: StartBenchmarkRequest,
-        org_id: UUID,
+        org: Org,
         benchmark_id: UUID,
         *,
         properties: AWSResources | None = None,
-        context_version: int | None = None,
     ) -> RuntimeServices:
         """Select AWS access and prepare services for one dispatch."""
+        assert request.properties is None or isinstance(request.properties, AWSResources)
         if properties is not None and request.properties is not None and request.properties != properties:
             raise TrackerServiceError("Queued AWS resources differ from the saved run")
 
         properties = properties or request.properties
-        aws_runtime = (
-            deployment_aws_runtime(org_id, properties)
-            if request.harness_config is None
-            else AWSRuntime.from_harness_config(request.harness_config).with_resources(properties)
-        )
-        if context_version == 2 and aws_runtime.resources.s3_bucket.startswith(("vs-dev-", "vs-prod-")):
-            raise TrackerServiceError("Protocol 2 cannot execute owner storage")
-
-        if request.harness_config is None:
-            try:
-                await validate_saved_managed_storage_runtime(aws_runtime, org_id=org_id)
-            except ManagedStorageError as exc:
-                raise TrackerServiceError(str(exc)) from exc
-
+        aws_runtime = deployment_aws_runtime(org, properties)
         runtime = cls.create_runtime(
             aws_runtime,
             sandbox_provider=request.sandbox_provider,
-            sandbox_provider_secret_name=request.sandbox_provider_secret_reference,
+            sandbox_provider_secret_name=request.sandbox_provider_secret_name,
         )
-        await to_thread(runtime.prepare_execution, request, benchmark_id)
+        await runtime.prepare_execution(request, benchmark_id)
         return runtime

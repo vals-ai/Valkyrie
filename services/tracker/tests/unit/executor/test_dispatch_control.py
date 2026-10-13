@@ -4,16 +4,23 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from benchmark_service.schemas import DatasetVersion
 from sqlmodel import Session, col, select
 
-from executor_protocol import MANAGED_EXECUTION_PROTOCOL_VERSION
+from executor_protocol import (
+    DATASET_VERSION_PROTOCOL_VERSION,
+    MANAGED_EXECUTION_PROTOCOL_VERSION,
+    RESERVED_QUEUE_PROTOCOL_VERSION,
+)
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     ErrorResult,
+    ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    FailureCategory,
     Task,
     TaskStatus,
 )
@@ -27,6 +34,7 @@ from tracker.executor.dispatch_control import (
     terminalize_active_dispatches,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
+from tracker.executor import runner
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import (
     ReleaseControlError,
@@ -35,9 +43,12 @@ from tracker.executor.release_control import (
     promote_release,
     register_release,
 )
+from tracker.scheduler.store import queue_pool_id, reserved_queue_pool_id
+
+_LEGACY_QUEUE_POOL_ID = queue_pool_id("daytona:org-1")
 
 
-def _release(release_id: str, *, protocol_version: str = "1") -> ExecutorRelease:
+def _release(release_id: str, *, protocol_version: str = MANAGED_EXECUTION_PROTOCOL_VERSION) -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
         artifact_uri=f"s3://artifacts/{release_id}.pex",
@@ -78,8 +89,6 @@ def test_managed_start_requires_a_compatible_active_release(
     register_release(database_session, _release("legacy", protocol_version=protocol_version))
     promote_release(database_session, "legacy")
     database_session.commit()
-    example_benchmark_object.aws_managed = True
-
     with pytest.raises(ReleaseControlError, match="supports managed runs"):
         admit_start_dispatch(
             database_session,
@@ -88,16 +97,19 @@ def test_managed_start_requires_a_compatible_active_release(
         )
 
 
-def test_managed_start_accepts_the_managed_execution_protocol(
+@pytest.mark.parametrize(
+    "protocol_version",
+    [MANAGED_EXECUTION_PROTOCOL_VERSION, DATASET_VERSION_PROTOCOL_VERSION, RESERVED_QUEUE_PROTOCOL_VERSION],
+)
+def test_nonqueued_managed_start_accepts_compatible_protocols(
+    protocol_version: str,
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
-    release = _release("managed", protocol_version=MANAGED_EXECUTION_PROTOCOL_VERSION)
+    release = _release("managed", protocol_version=protocol_version)
     register_release(database_session, release)
     promote_release(database_session, release.id)
     database_session.commit()
-    example_benchmark_object.aws_managed = True
-
     dispatch = admit_start_dispatch(
         database_session,
         benchmark=example_benchmark_object,
@@ -107,6 +119,220 @@ def test_managed_start_accepts_the_managed_execution_protocol(
     assert dispatch.executor_release_id == release.id
 
 
+@pytest.mark.parametrize("protocol_version", [DATASET_VERSION_PROTOCOL_VERSION, RESERVED_QUEUE_PROTOCOL_VERSION])
+def test_nonqueued_pinned_dataset_start_accepts_compatible_protocols(
+    protocol_version: str,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("dataset", protocol_version=protocol_version)
+    register_release(database_session, release)
+    promote_release(database_session, release.id)
+    database_session.commit()
+    example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+        update={"dataset_version": DatasetVersion(id="dataset-v1", label="snapshot")}
+    )
+
+    dispatch = admit_start_dispatch(database_session, benchmark=example_benchmark_object, dispatch_id=uuid4())
+
+    assert example_benchmark_object.arguments.queue_pool_id is None
+    assert dispatch.executor_release_id == release.id
+
+
+@pytest.mark.parametrize("protocol_version", ["1", "2", MANAGED_EXECUTION_PROTOCOL_VERSION])
+def test_pinned_dataset_start_rejects_protocols_without_dataset_version_support(
+    protocol_version: str,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("legacy", protocol_version=protocol_version)
+    register_release(database_session, release)
+    promote_release(database_session, release.id)
+    database_session.commit()
+    example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+        update={"dataset_version": DatasetVersion(id="dataset-v1", label="snapshot")}
+    )
+
+    with pytest.raises(ReleaseControlError, match="supports pinned dataset versions"):
+        admit_start_dispatch(database_session, benchmark=example_benchmark_object, dispatch_id=uuid4())
+
+
+@pytest.mark.parametrize("protocol_version", [MANAGED_EXECUTION_PROTOCOL_VERSION, DATASET_VERSION_PROTOCOL_VERSION])
+def test_queued_start_rejects_old_protocols_without_mutating_admission(
+    protocol_version: str,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("active", protocol_version=protocol_version)
+    register_release(database_session, release)
+    promote_release(database_session, release.id)
+    example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+        update={"queue_pool_id": _LEGACY_QUEUE_POOL_ID}
+    )
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+    dispatch_id = uuid4()
+
+    with pytest.raises(ReleaseControlError, match="supports reserved queues"):
+        admit_start_dispatch(database_session, benchmark=example_benchmark_object, dispatch_id=dispatch_id)
+
+    assert example_benchmark_object.arguments.queue_pool_id == _LEGACY_QUEUE_POOL_ID
+    assert example_benchmark_object.executor_release_id is None
+    assert example_benchmark_object.current_execution_release_id is None
+    assert example_benchmark_object.executor_artifact_uri is None
+    assert example_benchmark_object.executor_artifact_digest is None
+    assert example_benchmark_object.executor_protocol_version is None
+    assert database_session.get(ExecutorDispatch, dispatch_id) is None
+    database_session.rollback()
+    database_session.refresh(example_benchmark_object)
+
+    assert example_benchmark_object.arguments.queue_pool_id == _LEGACY_QUEUE_POOL_ID
+    assert example_benchmark_object.executor_release_id is None
+    assert example_benchmark_object.current_execution_release_id is None
+    assert example_benchmark_object.executor_artifact_uri is None
+    assert example_benchmark_object.executor_artifact_digest is None
+    assert example_benchmark_object.executor_protocol_version is None
+    assert database_session.get(ExecutorDispatch, dispatch_id) is None
+
+
+def test_start_persists_a_reserved_queue_id_with_protocol_five(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = _release("active", protocol_version=RESERVED_QUEUE_PROTOCOL_VERSION)
+    register_release(database_session, release)
+    promote_release(database_session, release.id)
+    database_session.commit()
+    example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+        update={"queue_pool_id": _LEGACY_QUEUE_POOL_ID}
+    )
+
+    dispatch = admit_start_dispatch(database_session, benchmark=example_benchmark_object, dispatch_id=uuid4())
+    database_session.commit()
+    database_session.expire_all()
+
+    persisted = database_session.get(Benchmark, example_benchmark_object.id)
+    assert persisted is not None
+    assert persisted.arguments.queue_pool_id == reserved_queue_pool_id(_LEGACY_QUEUE_POOL_ID)
+    assert persisted.current_execution_release_id == release.id
+    assert dispatch.executor_release_id == release.id
+
+
+@pytest.mark.parametrize("protocol_version", [MANAGED_EXECUTION_PROTOCOL_VERSION, DATASET_VERSION_PROTOCOL_VERSION])
+@pytest.mark.parametrize("pre_action_status", [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPED])
+def test_reserved_queue_recovery_rejects_old_protocols_without_mutating_admission(
+    protocol_version: str,
+    pre_action_status: BenchmarkStatus,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    previous = _release("previous", protocol_version=protocol_version)
+    register_release(database_session, previous)
+    promote_release(database_session, previous.id)
+    pin_benchmark_to_release(example_benchmark_object, previous)
+    reserved_id = reserved_queue_pool_id(_LEGACY_QUEUE_POOL_ID)
+    example_benchmark_object.status = pre_action_status
+    example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+        update={"queue_pool_id": reserved_id}
+    )
+    database_session.add(example_benchmark_object)
+    register_release(database_session, _release("active", protocol_version=protocol_version))
+    promote_release(database_session, "active")
+    database_session.commit()
+    dispatch_id = uuid4()
+
+    with pytest.raises(ReleaseControlError, match="supports reserved queues"):
+        admit_recovery_dispatch(
+            database_session,
+            benchmark=example_benchmark_object,
+            pre_action_status=pre_action_status,
+            dispatch_id=dispatch_id,
+            kind=ExecutorDispatchKind.RETRY,
+        )
+
+    assert example_benchmark_object.arguments.queue_pool_id == reserved_id
+    assert example_benchmark_object.current_execution_release_id == previous.id
+    assert database_session.get(ExecutorDispatch, dispatch_id) is None
+    database_session.rollback()
+    database_session.refresh(example_benchmark_object)
+
+    assert example_benchmark_object.arguments.queue_pool_id == reserved_id
+    assert example_benchmark_object.current_execution_release_id == previous.id
+    assert database_session.get(ExecutorDispatch, dispatch_id) is None
+
+
+@pytest.mark.parametrize("pre_action_status", [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPED])
+def test_reserved_queue_recovery_keeps_its_id_with_protocol_five(
+    pre_action_status: BenchmarkStatus,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    previous = _release("previous", protocol_version=RESERVED_QUEUE_PROTOCOL_VERSION)
+    register_release(database_session, previous)
+    promote_release(database_session, previous.id)
+    pin_benchmark_to_release(example_benchmark_object, previous)
+    reserved_id = reserved_queue_pool_id(_LEGACY_QUEUE_POOL_ID)
+    example_benchmark_object.status = pre_action_status
+    example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+        update={"queue_pool_id": reserved_id}
+    )
+    database_session.add(example_benchmark_object)
+    register_release(database_session, _release("active", protocol_version=RESERVED_QUEUE_PROTOCOL_VERSION))
+    promote_release(database_session, "active")
+    database_session.commit()
+
+    dispatch = admit_recovery_dispatch(
+        database_session,
+        benchmark=example_benchmark_object,
+        pre_action_status=pre_action_status,
+        dispatch_id=uuid4(),
+        kind=ExecutorDispatchKind.RETRY,
+    )
+    database_session.commit()
+    database_session.expire_all()
+
+    persisted = database_session.get(Benchmark, example_benchmark_object.id)
+    assert persisted is not None
+    release_id = "previous" if pre_action_status == BenchmarkStatus.IN_PROGRESS else "active"
+    assert persisted.arguments.queue_pool_id == reserved_id
+    assert persisted.current_execution_release_id == release_id
+    assert dispatch.executor_release_id == release_id
+
+
+@pytest.mark.parametrize("protocol_version", [MANAGED_EXECUTION_PROTOCOL_VERSION, DATASET_VERSION_PROTOCOL_VERSION])
+def test_legacy_queue_recovery_keeps_its_stored_id_with_compatible_protocols(
+    protocol_version: str,
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    legacy = _release("legacy", protocol_version=protocol_version)
+    register_release(database_session, legacy)
+    pin_benchmark_to_release(example_benchmark_object, legacy)
+    example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+        update={"queue_pool_id": _LEGACY_QUEUE_POOL_ID}
+    )
+    database_session.add(example_benchmark_object)
+    register_release(database_session, _release("active", protocol_version=protocol_version))
+    promote_release(database_session, "active")
+    database_session.commit()
+
+    dispatch = admit_recovery_dispatch(
+        database_session,
+        benchmark=example_benchmark_object,
+        pre_action_status=BenchmarkStatus.STOPPED,
+        dispatch_id=uuid4(),
+        kind=ExecutorDispatchKind.RETRY,
+    )
+    database_session.commit()
+    database_session.expire_all()
+
+    persisted = database_session.get(Benchmark, example_benchmark_object.id)
+    assert persisted is not None
+    assert persisted.arguments.queue_pool_id == _LEGACY_QUEUE_POOL_ID
+    assert persisted.current_execution_release_id == "active"
+    assert dispatch.executor_release_id == "active"
+
+
 def test_in_progress_managed_recovery_refuses_a_pinned_legacy_protocol(
     database_session: Session,
     example_benchmark_object: Benchmark,
@@ -114,7 +340,6 @@ def test_in_progress_managed_recovery_refuses_a_pinned_legacy_protocol(
     legacy = _release("legacy", protocol_version="2")
     register_release(database_session, legacy)
     promote_release(database_session, legacy.id)
-    example_benchmark_object.aws_managed = True
     pin_benchmark_to_release(example_benchmark_object, legacy)
     database_session.add(example_benchmark_object)
     register_release(database_session, _release("managed", protocol_version=MANAGED_EXECUTION_PROTOCOL_VERSION))
@@ -228,9 +453,47 @@ def test_enqueue_failure_makes_start_retryable(
         assert error_result.producer == "executor_dispatch"
         assert error_result.operation == "enqueue"
         assert error_result.error_type == "ExecutorDispatchEnqueueError"
+        assert error_result.category == FailureCategory.INFRASTRUCTURE
         assert error_result.cause_code is None
         assert error_result.retry_scheduled is False
         assert error_result.failed_attempt_number is None
+
+
+def test_payload_decryption_failure_records_infrastructure_category(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register_release(database_session, _release("active"))
+    promote_release(database_session, "active")
+    dispatch = admit_start_dispatch(
+        database_session,
+        benchmark=example_benchmark_object,
+        dispatch_id=uuid4(),
+        task_ids=["preclaim"],
+    )
+    task = Task(
+        org_id=example_benchmark_object.org_id,
+        benchmark=example_benchmark_object.id,
+        task_id="preclaim",
+        status=TaskStatus.PENDING,
+        started_at=dispatch.created_at - timedelta(seconds=1),
+    )
+    database_session.add(task)
+    database_session.commit()
+    monkeypatch.setattr(runner, "engine", database_session.get_bind())
+    store = runner.PostgresExecutorDispatchStore(
+        host="unused", port="0", dbname="unused", user="unused", password="unused"
+    )
+
+    assert store._fail_before_claim(str(dispatch.id), "InvalidTag")
+
+    database_session.expire_all()
+    error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
+    assert error.error_message == "Executor payload decrypt failed: InvalidTag"
+    assert error.error_type == "InvalidTag"
+    assert error.cause_code == "PAYLOAD_DECRYPT_FAILED"
+    assert error.category == FailureCategory.INFRASTRUCTURE
 
 
 def test_additive_retry_enqueue_failure_keeps_original_execution_active(
@@ -432,7 +695,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
 
     assert record_dispatch_failure(
         database_session,
-        benchmark=example_benchmark_object,
+        benchmark_id=example_benchmark_object.id,
         dispatch_id=failing_dispatch.id,
         task_ids=[
             *(task.task_id for task in shared_tasks),
@@ -444,6 +707,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
         producer="tracker",
         operation="process_benchmark",
         error_type="RuntimeError",
+        category=FailureCategory.UNKNOWN,
     )
     database_session.commit()
     database_session.refresh(example_benchmark_object)
@@ -474,6 +738,7 @@ def test_running_dispatch_failure_preserves_active_sibling(
     assert error_result.producer == "tracker"
     assert error_result.operation == "process_benchmark"
     assert error_result.error_type == "RuntimeError"
+    assert error_result.category == FailureCategory.UNKNOWN
     assert error_result.retry_scheduled is False
     assert error_result.failed_attempt_number is None
 
@@ -528,6 +793,7 @@ def test_expired_dispatch_failure_uses_persisted_assignment_and_reason(
 
     error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == owned_task.id)).one()
     assert error_result.cause_code == "LEASE_EXPIRED"
+    assert error_result.category == FailureCategory.INFRASTRUCTURE
 
 
 def test_fresh_heartbeat_wins_expiry_reconciliation(
@@ -598,7 +864,7 @@ def test_reconciliation_does_not_rewrite_dispatch_finished_after_expiry_scan(
     database_session.refresh(example_benchmark_object)
     database_session.refresh(dispatch)
 
-    assert exec_calls == 3
+    assert exec_calls == 4
     assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
     assert dispatch.status == ExecutorDispatchStatus.FINISHED
 
@@ -695,6 +961,7 @@ def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
 
     error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
     assert error_result.error_type == "ExecutorDispatchClaimDeadlineExpired"
+    assert error_result.category == FailureCategory.INFRASTRUCTURE
 
 
 def test_terminal_recovery_terminalizes_active_dispatches(

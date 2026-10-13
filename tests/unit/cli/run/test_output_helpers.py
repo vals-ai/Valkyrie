@@ -244,6 +244,7 @@ def test_format_start_benchmark_response_prints_run_outputs_command(capsys: pyte
         concurrency=4,
         started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
         task_count=10,
+        dataset_version_warning="Unversioned — dataset consistency is not guaranteed.",
         cloudwatch_url="https://example.com/cloudwatch",
         s3_bucket_url="s3://bucket/run",
     )
@@ -253,6 +254,7 @@ def test_format_start_benchmark_response_prints_run_outputs_command(capsys: pyte
     output = capsys.readouterr().out
     assert "Run outputs:" in output
     assert f"valkyrie run outputs {run_id} --output-dir ." in output
+    assert "Unversioned — dataset consistency is not guaranteed." in output
     assert "Agent outputs:" not in output
 
 

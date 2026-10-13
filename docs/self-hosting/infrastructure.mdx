@@ -7,12 +7,12 @@ Valkyrie ships an AWS CDK application under `infra/` that creates everything a d
 
 ## Architecture
 
-- **Shared stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
-- **Tracker stack**: public API, load balancer, and PostgreSQL
-- **Executor stack**: stable ExecutorHost, executor release storage, release control, and retained worker logs
-- **Monitoring stack**: tracker, load balancer, database, and Redis alarms
+- **Shared stack**: VPC, ECS cluster, service discovery, and benchmark storage
+- **Tracker stack**: public API, load balancer, PostgreSQL, RDS Proxy, KMS payload key, and a per-dispatch Fargate runner task definition with its own log group
+- **Executor stack**: immutable executor release storage and release control
+- **Monitoring stack**: tracker, load balancer, and database alarms
 
-The Python construct is named `ExecutorStack`, but its CloudFormation name is still `WorkerStack` so that existing deployments update their retained resources in place rather than replacing them.
+Tracker seals each dispatch's execution inputs with a per-dispatch AES-256-GCM key wrapped by KMS and stores the ciphertext in PostgreSQL. Each runner claims and deletes the payload inside one transaction, decrypts it, verifies the pinned release artifact, then executes it. Deploying a new runner task-definition revision does not replace running tasks; AWS Fargate platform retirement is an independent interruption.
 
 ## Prerequisites
 
@@ -46,10 +46,11 @@ Synthesis reads a few deployment-specific values from the environment, so export
 ```bash
 export AWS_DEPLOYMENT_ROLE_ORG_IDS=<organization-uuid>[,<organization-uuid>]
 export AWS_TRACKER_SECRET_NAME_PREFIXES=<secrets-manager-name-prefix>[,<prefix>]
+export AWS_SHARED_SECRET_TENANTS=<tenant-name>[,<tenant-name-prefix>*]
 export SENTRY_DSN_SECRET_NAME=<secrets-manager-secret-name>
 ```
 
-`AWS_DEPLOYMENT_ROLE_ORG_IDS` lists the organization ids allowed to submit managed runs, and `AWS_TRACKER_SECRET_NAME_PREFIXES` lists the Secrets Manager name prefixes the tracker is allowed to read for benchmark-service authentication. A deployment with authentication enabled also needs `DESCOPE_PROJECT_ID` and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`.
+`AWS_DEPLOYMENT_ROLE_ORG_IDS` lists the organization ids allowed to submit managed runs, and `AWS_TRACKER_SECRET_NAME_PREFIXES` lists the Secrets Manager name prefixes the tracker is allowed to read for benchmark-service authentication. `AWS_SHARED_SECRET_TENANTS` lists the tenants whose runs may also read secrets tagged `valkyrie:secret-scope=shared-internal`; an entry ending in `*` matches tenant names that start with it. Every organization may read its own secrets under `valkyrie/tenants/<organization id>/`. A deployment with authentication enabled also needs `DESCOPE_PROJECT_ID` and `DESCOPE_MANAGEMENT_KEY_SECRET_NAME`.
 
 Run the commands below from `infra/`, replacing the angle-bracket placeholders first. Start by inspecting every stack change:
 
@@ -81,7 +82,7 @@ make deploy \
 
 ## Benchmark catalog
 
-Set `BENCHMARK_CATALOG_URL` on tracker-service so `valkyrie config service list` can show benchmarks from a catalog API:
+Set `BENCHMARK_CATALOG_URL` on tracker-service so `valkyrie benchmark service list` can show benchmarks from a catalog API:
 
 ```bash
 export BENCHMARK_CATALOG_URL=https://<catalog-api-host>

@@ -8,6 +8,7 @@
   },
   "query": {
     "retry": false,
+    "update_agent": false,
     "retry_mode": "auto",
     "concurrency": 2
   },

@@ -1,6 +1,7 @@
 """Access run artifacts without direct storage credentials."""
 
 import asyncio
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -70,7 +71,7 @@ class ArtifactsResource:
         if min(max_bytes, max_entries) <= 0:
             raise ValueError("Artifact download limits must be positive")
         output_dir = Path(output_dir)
-        if await asyncio.to_thread(lambda: output_dir.exists() or output_dir.is_symlink()):
+        if await asyncio.to_thread(os.path.lexists, output_dir):
             raise FileExistsError(f"Output directory already exists: {output_dir}")
         await asyncio.to_thread(output_dir.parent.mkdir, parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=output_dir.parent) as temporary:
@@ -99,7 +100,11 @@ class ArtifactsResource:
                             destination = staging / relative
                             await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
                             size += await _download_file(
-                                download_client, url.download_url, destination, max_bytes - size
+                                download_client,
+                                url.download_url,
+                                destination,
+                                max_bytes - size,
+                                self._sdk.download_auth(url.download_url),
                             )
                         if page.next_cursor is None:
                             break
@@ -111,18 +116,19 @@ class ArtifactsResource:
                 raise ValkyrieTransportError("Artifact download failed") from error
             if not paths:
                 raise FileNotFoundError("No artifacts found at the requested path")
-            if await asyncio.to_thread(lambda: output_dir.exists() or output_dir.is_symlink()):
+            if await asyncio.to_thread(os.path.lexists, output_dir):
                 raise FileExistsError(f"Output directory already exists: {output_dir}")
             await asyncio.to_thread(staging.rename, output_dir)
         return output_dir
 
 
-async def _download_file(client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int) -> int:
-    """Stream one artifact to disk and return its downloaded size."""
+async def _download_file(
+    client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int, auth: httpx.Auth | None
+) -> int:
     size = 0
     output = await asyncio.to_thread(destination.open, "xb")
     try:
-        async with client.stream("GET", url) as response:
+        async with client.stream("GET", url, auth=auth, follow_redirects=auth is None) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
                 size += len(chunk)

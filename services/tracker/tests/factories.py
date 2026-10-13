@@ -11,10 +11,11 @@ from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    FailureCategory,
     Task,
     TaskStatus,
 )
@@ -63,10 +64,12 @@ def make_benchmark(
         label=label,
         started_by_id=started_by_id,
         started_by_email=started_by_email,
-        arguments=BenchmarkArguments(
+        arguments=AWSBenchmarkArguments(
             contract=contract or AgentContractRequest(name=agent_name, model=model, install_cmd="i", run_cmd="r"),
             dataset=dataset,
             concurrency=concurrency,
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="test-provider-secret",
         ),
     )
     if started_at is not None:
@@ -150,6 +153,7 @@ def make_error_result(
     operation: str | None = None,
     error_type: str | None = None,
     cause_code: str | None = None,
+    category: FailureCategory | None = None,
     retry_scheduled: bool = False,
     failed_attempt_number: int | None = None,
 ) -> ErrorResult:
@@ -163,6 +167,7 @@ def make_error_result(
     - operation: Optional failed operation.
     - error_type: Optional factual exception or error type.
     - cause_code: Optional producer-owned cause code.
+    - category: Optional coarse failure classification.
     - retry_scheduled: Whether this error caused a scheduled retry.
     - failed_attempt_number: 1-indexed failed attempt that scheduled the next attempt.
 
@@ -178,6 +183,7 @@ def make_error_result(
         operation=operation,
         error_type=error_type,
         cause_code=cause_code,
+        category=category,
         retry_scheduled=retry_scheduled,
         failed_attempt_number=failed_attempt_number,
     )

@@ -3,7 +3,6 @@ from pathlib import Path
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -32,7 +31,7 @@ from valkyrie.cli.tracker_client import TrackerService
     "--ignore-custom-services",
     "--ics",
     is_flag=True,
-    help="Ignore custom benchmark services that have been configured. Provides opt-out for custom services.",
+    help="Use the hosted benchmark service instead of the URL saved with `valkyrie benchmark service set`.",
 )
 @click.option(
     "--output",
@@ -52,15 +51,13 @@ def tasks(
     """
     Save task IDs for a benchmark dataset.
     """
-    service_headers = benchmark_service_headers(benchmark_name, headers)
-
     try:
         with TrackerService() as tracker:
             response = tracker.fetch_benchmark_tasks(
                 benchmark_name,
                 dataset=dataset,
                 ignore_custom_services=ignore_custom_services,
-                service_headers=service_headers,
+                service_headers=dict(headers),
             )
             output_path = output or Path(f"{benchmark_name}-{dataset or 'default'}-tasks.txt")
             output_path.write_text("\n".join(response) + "\n", encoding="utf-8")

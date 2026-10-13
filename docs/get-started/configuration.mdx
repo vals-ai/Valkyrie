@@ -1,67 +1,97 @@
 ---
-title: Configure the CLI
-description: Manage Valkyrie credentials, endpoints, and sandbox providers.
+title: Configure the CLI and SDK
+description: Sign in, choose a Tracker, and set up the Python SDK.
 ---
 
-The CLI stores configuration in `~/.config/valkyrie/valkyrie.yaml`. Every `config` command is in the [`valkyrie config` reference](/reference/cli/config).
+The CLI and SDK need only a login, or an access key, and a Tracker. Both come from `valkyrie login`, environment variables, and, in the SDK, `ValkyrieConfig`.
 
-## Initialize configuration
-
-```bash
-valkyrie config init
-```
-
-Initialization selects a [hosting mode](/get-started/hosting) and collects its required AWS and tracker credentials.
-
-## Set or remove a value
+## Log in
 
 ```bash
-valkyrie config set <KEY> <VALUE>
+valkyrie login
 ```
+
+`login` opens your browser to sign in with your Google account, then saves the login for the [selected Tracker](#choose-a-tracker) under `~/.config/valkyrie/sessions`, readable only by you. The login refreshes itself; run `valkyrie login` again if it expires. It then lists your organizations; if you belong to several, choose one with `valkyrie org use NAME`.
+
+Check which Tracker, organization and account your requests use with `valkyrie whoami`, and forget the login with `valkyrie logout`.
+
+### Organizations
+
+Runs, agents, secrets and keys belong to an organization. If you sign up and aren't in one yet, `valkyrie login` says so. Ask an organization admin to invite you, or create one, which makes you its admin:
 
 ```bash
-valkyrie config remove <KEY>
+valkyrie org create acme --name "Acme"
 ```
 
-Use `config set api_key` only for the Vals API key used by hosted tracker authentication. Benchmark-service credentials use the separate [authentication commands](/benchmarks/authentication).
+Admins invite people with `valkyrie org invite EMAIL`. The invitee signs in with `valkyrie login` using that address, sees the invitation, and joins with:
+
+```bash
+valkyrie org accept acme
+```
+
+Invitations expire after 14 days. `valkyrie org list` shows pending invitations and `valkyrie org decline NAME` declines one. `valkyrie org members` lists members and pending invitations, and `valkyrie org remove EMAIL` removes a member or cancels an invitation. Organization commands always use your login, even when `VALKYRIE_API_KEY` is set.
+
+A login can belong to several organizations. `valkyrie org list` shows them and marks the one your requests act for, and `valkyrie org use NAME` switches.
+
+### Access keys for CI
+
+CI jobs and other machines without a browser use an access key instead of a login. While logged in, create one with:
+
+```bash
+valkyrie token create github-actions --expires-in-days 30
+```
+
+The key is printed once. Set it as `VALKYRIE_API_KEY` where the job runs. Revoke it with `valkyrie token revoke <key id>`; the Tracker may keep accepting a revoked key for up to two hours.
+
+Keys last 1 to 90 days. Creating and revoking them needs a login; an access key can't create other keys.
+
+Runs started with a key use its creator's [default provider](#configure-sandbox-providers) and [saved benchmark service URLs](#configure-benchmark-services), and change when the creator changes them. Pin CI runs by passing `--provider` and `--ignore-custom-services` to `valkyrie run start`, and `--ignore-custom-services` to `valkyrie benchmark tasks`.
+
+## Choose a Tracker
+
+The CLI and SDK use the bench Tracker, `https://benchmark-tracker.vals.ai`, until you sign in to another. Choose another Tracker, such as a self-hosted one, for `valkyrie login` with `VALKYRIE_URL`:
+
+```bash
+VALKYRIE_URL=https://your-tracker.example.com valkyrie login
+```
+
+`valkyrie logout` forgets that Tracker, and commands go back to bench. Logins are saved per Tracker, so you can stay logged in to several and pick one for a single command with `VALKYRIE_URL`.
+
+Requests go to the first Tracker set by:
+
+1. `url` in the SDK's `ValkyrieConfig`
+2. `VALKYRIE_URL`
+3. Your last `valkyrie login`, only when no API key is set in `api_key` or `VALKYRIE_API_KEY`
+4. `https://benchmark-tracker.vals.ai` (bench)
+
+## Configure the Python SDK
+
+`ValkyrieClient()` uses the same Tracker and login as the CLI. To choose them in code, pass a `ValkyrieConfig`:
+
+```python
+from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
+
+config = ValkyrieConfig(url="https://your-tracker.example.com", api_key="<access key>")
+async with ValkyrieClient(config) as client:
+    runs = await client.runs.list()
+```
+
+`url` selects the Tracker and `api_key` an access key. Requests authenticate with `api_key`, then `VALKYRIE_API_KEY`, then your saved login for that Tracker. Without any of them requests carry no credentials, which only a Tracker without authentication accepts. Every field is in the [SDK configuration reference](/reference/sdk/models/config#valkyrie-config).
 
 ## Configure sandbox providers
 
-Map a provider name to an AWS Secrets Manager secret:
-
-```bash
-valkyrie config provider set daytona DaytonaSecrets
-```
-
-The first configured provider becomes the default. Change it explicitly with:
-
-```bash
-valkyrie config provider default daytona
-```
-
-List or remove provider mappings with:
-
-```bash
-valkyrie config provider list
-valkyrie config provider remove <name>
-```
-
-Select another configured provider for one run with `valkyrie run start --provider <name>`. See [Configure sandbox providers](/get-started/sandbox-providers) for the Daytona secret shape.
-
-## Environment variables
-
-The CLI reads these variables at startup, before any configuration file is loaded.
-
-| Variable | Effect |
-| --- | --- |
-| `VALKYRIE_ENV` | Legacy override for the hosted environment saved by `config init`. Accepts `bench`, `dev`, `prod` (a compatibility alias for `bench`), and `external` (the production environment). Any other value fails immediately. |
-| `TRACKER_SERVICE_URL` | Overrides the tracker endpoint for every environment. |
-| `VALKYRIE_CONFIG_PATH` | Overrides the configuration file path. |
-| `VALKYRIE_API_KEY` | Supplies the Vals API key during `config init` in hosted mode instead of prompting for it. |
-| `VALKYRIE_CLI_LOGS` | Set to `true` to print library log output. Logs are suppressed otherwise. |
-
-Hosted setup saves the selected environment in the configuration file, so leave `VALKYRIE_ENV` unset for normal use. With `VALKYRIE_ENV=dev` the CLI uses `https://benchmark-tracker-dev.vals.ai` and `~/.config/valkyrie/dev.yaml`, so a development profile never overwrites your hosted configuration.
+Sandbox providers are saved in the Tracker. Your organization maps each provider to a secret with `valkyrie provider set`, and you choose your own default with `valkyrie provider default`. See [Configure sandbox providers](/get-started/sandbox-providers).
 
 ## Configure benchmark services
 
-Custom benchmark endpoints and credentials use `config service` and `config auth`. See [Custom benchmark services](/benchmarks/custom-services) and [Benchmark authentication](/benchmarks/authentication).
+Benchmark service URLs are saved in the Tracker for you with `valkyrie benchmark service set`; see [Custom benchmark services](/benchmarks/custom-services). A service's credential is an organization secret that you name with `--auth-secret` when you save the URL; see [Benchmark authentication](/benchmarks/authentication).
+
+## Environment variables
+
+The CLI and SDK read these variables.
+
+| Variable | Effect |
+| --- | --- |
+| `VALKYRIE_API_KEY` | Authenticates every request with this access key instead of a saved login. |
+| `VALKYRIE_URL` | Sends requests to this Tracker instead of your last login's or the hosted one. |
+| `VALKYRIE_CLI_LOGS` | CLI only. Set to `true` to print library log output. Logs are suppressed otherwise. |

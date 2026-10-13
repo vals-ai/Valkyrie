@@ -4,32 +4,43 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, Self, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import DatasetVersion
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     FiniteFloat,
     PlainSerializer,
+    StringConstraints,
     field_serializer,
     field_validator,
     model_validator,
 )
 
 from tracker.aws.runtime import AWSResources
+from tracker.local.resources import LocalResources
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    FailureCategory,
     FinalEvaluation,
     TaskStatus,
 )
-from tracker.outbound_security import validate_benchmark_name, validate_service_url_syntax
+from tracker.outbound_security import validate_benchmark_name, validate_service_header_name, validate_service_url_syntax
+
+BenchmarkName = Annotated[str, AfterValidator(validate_benchmark_name)]
+ServiceUrl = Annotated[str, AfterValidator(validate_service_url_syntax)]
+ServiceHeaderName = Annotated[str, AfterValidator(validate_service_header_name)]
+ProviderName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,63}$")]
+SecretReference = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_+=.@/-]{1,512}$")]
 
 
 def _serialize_utc(value: datetime | None) -> str | None:
@@ -60,72 +71,65 @@ class BenchmarkDetails(BaseModel):
     docent_reading_url: str | None = None
 
 
-class AWSCredentials(BaseModel, frozen=True):
-    aws_access_key_id: str = Field(repr=False)
-    aws_secret_access_key: str = Field(repr=False)
-    aws_default_region: str
-    aws_session_token: str | None = Field(default=None, repr=False)
+class FetchBenchmarkTasksRequest(BaseModel):
+    benchmark_name: BenchmarkName
+    dataset: str | None = None
+    custom_benchmark_service: ServiceUrl | None = None
+    ignore_custom_services: bool = False
+    service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
+
+    def use_saved_service(self, settings: RunSettingsResponse) -> tuple[str, str] | None:
+        """Use the caller's saved service unless the request opts out; return its header and secret, if saved."""
+        saved = None if self.ignore_custom_services else settings.benchmark_services.get(self.benchmark_name)
+        self.custom_benchmark_service = saved.url if saved else None
+        if saved and saved.auth_header_name and saved.auth_secret_name:
+            return saved.auth_header_name, saved.auth_secret_name
+        return None
 
 
-class HarnessConfig(BaseModel):
-    aws: AWSCredentials
-    s3_bucket: str
-    log_group: str
-    log_retention_policy: int
-    sandbox_provider_secret_name: str
+class StartBenchmarkRequest(FetchBenchmarkTasksRequest):
+    model_config = ConfigDict(hide_input_in_errors=True)
 
-
-class StartBenchmarkRequest(BaseModel):
-    environment: Literal["aws"] = "aws"
-    properties: AWSResources | None = None
-    managed_s3_bucket: str | None = Field(
-        default=None,
-        description=(
-            "Owner-provisioned managed storage bucket. "
-            "POST /start-benchmark-with-storage requires it; POST /start-benchmark rejects it."
-        ),
-    )
+    environment: Literal["aws", "local"] = "aws"
+    properties: AWSResources | LocalResources | None = None
     contract: AgentContractRequest
-    benchmark_name: str
     concurrency: int = 5
     priority: int | None = Field(default=None, strict=True, ge=0, le=4)
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
-    dataset: str | None = None
-    harness_config: HarnessConfig | None = None
-    custom_benchmark_service: str | None = None
-    service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    dataset_version: str | None = Field(default=None, min_length=1, max_length=1024)
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
     service_auth_header_name: str | None = None
     service_auth_secret_name: str | None = None
-    webhook_secret_name: str | None = None
-    webhook_intervals: list[int] | None = None
 
-    @field_validator("benchmark_name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        return validate_benchmark_name(value)
+    @model_validator(mode="after")
+    def validate_execution_environment(self) -> "StartBenchmarkRequest":
+        if self.environment == "aws":
+            if isinstance(self.properties, LocalResources):
+                raise ValueError("AWS execution cannot include local resources")
+            return self
+        if isinstance(self.properties, AWSResources):
+            raise ValueError("Local execution cannot include AWS configuration")
+        if self.sandbox_provider != "docker" or self.sandbox_provider_secret_name is not None:
+            raise ValueError("Local execution requires Docker without a provider secret")
+        if self.lambda_function or self.service_auth_secret_name:
+            raise ValueError("Local execution does not support cloud callbacks or service secret references")
+        return self
 
-    @field_validator("custom_benchmark_service")
-    @classmethod
-    def validate_custom_service(cls, value: str | None) -> str | None:
-        return validate_service_url_syntax(value) if value is not None else None
-
-    @property
-    def sandbox_provider_secret_reference(self) -> str | None:
-        """Resolve the provider reference from legacy or managed configuration."""
-        if self.harness_config is not None and self.harness_config.sandbox_provider_secret_name:
-            return self.harness_config.sandbox_provider_secret_name
-        return self.sandbox_provider_secret_name
+    def use_settings(self, settings: RunSettingsResponse, provider_secrets: dict[str, str]) -> None:
+        """Take the provider's secret and the benchmark service from the organization's and the caller's settings."""
+        if "sandbox_provider" not in self.model_fields_set and settings.default_provider:
+            self.sandbox_provider = settings.default_provider
+        self.sandbox_provider_secret_name = provider_secrets.get(self.sandbox_provider)
+        self.service_auth_header_name, self.service_auth_secret_name = self.use_saved_service(settings) or (None, None)
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
 
-        # Prioritize user defined benchmark service over hosted one
         benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
             url=benchmark_service_url,
@@ -133,30 +137,21 @@ class StartBenchmarkRequest(BaseModel):
         )
 
 
-class ManagedStorageStartBenchmarkRequest(StartBenchmarkRequest):
-    """Start a run whose artifacts are written to an owner-provisioned managed storage bucket."""
+class RunExecutionRequest(StartBenchmarkRequest):
+    """Internal request carrying the exact dataset version saved for a run."""
 
-    managed_s3_bucket: str | None = Field(  # pyright: ignore[reportGeneralTypeIssues]
-        ...,
-        description="Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it.",
-    )
+    resolved_dataset_version: DatasetVersion | None = None
 
+    @property
+    def benchmark_service(self) -> BenchmarkServiceClient:
+        from tracker.utils import create_benchmark_service_client
 
-class FetchBenchmarkTasksRequest(BaseModel):
-    benchmark_name: str
-    dataset: str | None = None
-    custom_benchmark_service: str | None = None
-    service_headers: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("benchmark_name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        return validate_benchmark_name(value)
-
-    @field_validator("custom_benchmark_service")
-    @classmethod
-    def validate_custom_service(cls, value: str | None) -> str | None:
-        return validate_service_url_syntax(value) if value is not None else None
+        benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
+        return create_benchmark_service_client(
+            url=benchmark_service_url,
+            service_headers=self.service_headers,
+            dataset_version=self.resolved_dataset_version,
+        )
 
 
 class StartBenchmarkErrorResponse(BaseModel):
@@ -171,6 +166,8 @@ class StartBenchmarkResponse(BaseModel):
     concurrency: int
     started_at: datetime
     task_count: int
+    dataset_version: DatasetVersion | None = None
+    dataset_version_warning: str | None = None
     cloudwatch_url: str
     s3_bucket_url: str
     storage_bucket: str | None = None
@@ -232,6 +229,7 @@ class FinalViewResponse(BaseModel):
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
+    task_failure_categories: dict[str, FailureCategory] | None = None
 
 
 class S3UploadResultsResponse(BaseModel):
@@ -268,7 +266,7 @@ def _contains_forbidden_managed_aws_key(value: object) -> bool:
 
 
 def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
-    if request.harness_config is not None or _contains_forbidden_managed_aws_key(request.model_dump(mode="python")):
+    if _contains_forbidden_managed_aws_key(request.model_dump(mode="python")):
         raise ValueError("Managed execution cannot include AWS credentials")
     if not request.sandbox_provider or not request.sandbox_provider_secret_name:
         raise ValueError("Managed execution requires a sandbox provider and provider secret name")
@@ -280,19 +278,18 @@ class ManagedExecutionContext(BaseModel):
     version: Literal[2, 3]
     benchmark_id: UUID
     verified_task_ids: list[str]
-    start_benchmark_request: StartBenchmarkRequest
+    start_benchmark_request: RunExecutionRequest
 
     @model_validator(mode="after")
     def validate_credential_free_request(self) -> "ManagedExecutionContext":
-        validate_managed_execution_request(self.start_benchmark_request)
-        if self.start_benchmark_request.managed_s3_bucket is not None:
-            raise ValueError("Queued execution cannot include an admission-only storage override")
+        if self.start_benchmark_request.environment == "aws":
+            validate_managed_execution_request(self.start_benchmark_request)
 
         return self
 
 
 class AWSRuntimeResponse(BaseModel):
-    mode: Literal["access_key", "managed"]
+    mode: Literal["managed"]
     region: str | None = None
     s3_bucket: str | None = None
 
@@ -317,6 +314,17 @@ class UpdateBenchmarkConcurrencyResponse(BaseModel):
     benchmark_id: UUID
     status: BenchmarkStatus
     concurrency: int
+
+
+class ShedBenchmarkRequest(BaseModel):
+    concurrency: int = Field(ge=1, strict=True)
+    dry_run: bool = False
+
+
+class ShedBenchmarkResponse(BaseModel):
+    benchmark_id: UUID
+    concurrency: int
+    task_ids: list[str]
 
 
 class Order(str, Enum):
@@ -498,6 +506,7 @@ class TaskSummary(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None = None
+    failure_category: FailureCategory | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -522,6 +531,7 @@ class SingleTaskResponse(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     error_message: str | None
+    failure_category: FailureCategory | None = None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
 
@@ -549,6 +559,58 @@ class AgentDownloadURLResponse(BaseModel):
     name: str
     download_url: str
     expires_in: int
+
+
+class SecretEntry(BaseModel):
+    name: str
+    reference: str
+
+
+class SecretsResponse(BaseModel):
+    secrets: list[SecretEntry]
+
+
+class SecretValueRequest(BaseModel):
+    value: str
+
+
+class ProviderSecretRequest(BaseModel):
+    secret_name: SecretReference
+
+
+class ProvidersResponse(BaseModel):
+    providers: dict[str, str]
+
+
+class DefaultProviderRequest(BaseModel):
+    provider: ProviderName
+
+
+class BenchmarkServiceRequest(BaseModel):
+    url: ServiceUrl
+    auth_secret_name: SecretReference | None = None
+    auth_header_name: ServiceHeaderName | None = None
+
+    @model_validator(mode="after")
+    def default_header(self) -> Self:
+        if self.auth_header_name and not self.auth_secret_name:
+            raise ValueError("auth_header_name needs auth_secret_name")
+        if self.auth_secret_name and not self.auth_header_name:
+            self.auth_header_name = "Authorization"
+        return self
+
+
+class SavedBenchmarkService(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    url: str
+    auth_header_name: str | None
+    auth_secret_name: str | None
+
+
+class RunSettingsResponse(BaseModel):
+    default_provider: str | None
+    benchmark_services: dict[str, SavedBenchmarkService]
 
 
 class TaskArtifactsResponse(BaseModel):

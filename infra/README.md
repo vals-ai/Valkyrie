@@ -2,22 +2,16 @@
 
 AWS CDK infrastructure for Valkyrie's tracker, executor, storage, networking, and monitoring resources.
 
-- [Public self-hosting guide](../docs/self-hosting/infrastructure.mdx)
-- [Executor release and deployment runbook](executor-releases/README.md)
-- [Tracker ALB access-log runbook](tracker-alb-access-logs.md)
-
-The self-hosting guide documents reusable architecture and configuration. The executor runbook contains Vals-specific deployment, release activation, recovery, and retirement procedures for maintainers.
+The [public self-hosting guide](../docs/self-hosting/infrastructure.mdx) documents reusable architecture and configuration.
 
 ## Architecture
 
-- **Shared Stack**: VPC, ECS cluster, service discovery, benchmark storage, and Redis
-- **Tracker Stack**: Public API, load balancer, and PostgreSQL
-- **Executor Stack**: Stable ExecutorHost, executor release storage, sealed release control, and retained Worker logs
-- **Monitoring Stack**: Tracker, load balancer, database, and Redis alarms
+- **Shared Stack**: VPC, ECS cluster, service discovery, and benchmark storage
+- **Tracker Stack**: Public API, load balancer, PostgreSQL, RDS Proxy, KMS payload key, and per-dispatch Fargate runner task definition and logs
+- **Executor Stack**: Immutable executor release storage and sealed release control
+- **Monitoring Stack**: Tracker, load balancer, and database alarms
 
-`ExecutorStack` is the Python owner and `executor` is the deployment scope. Its
-physical CloudFormation name remains `WorkerStack` so deployments update the
-existing stack and retained resources in place.
+`ExecutorStack` remains the Python owner and `executor` the deployment scope; its historical CloudFormation name is `WorkerStack`. Tracker seals dispatch inputs under a KMS-wrapped per-dispatch key in PostgreSQL; the runner consumes them at claim time. New task-definition revisions apply to new launches only.
 
 Bench imports the existing `vals.ai` hosted zone and retains the established
 unsuffixed stack and resource names. Development and production import
@@ -43,16 +37,17 @@ Environment with the `AWS_REGION=us-east-1` variable and the `DEV_ACCOUNT_ID`,
 `DESCOPE_MANAGEMENT_KEY_SECRET_NAME` secrets (the last one names an
 account-local Secrets Manager secret holding the Descope management key).
 Managed AWS execution also requires these secrets in each enabled stage's
-protected GitHub Environment. The `dev`, `prod`, and `prod-external`
+protected GitHub Environment. The `dev`, `bench`, and `prod`
 environments hold their own values:
 
 - `AWS_DEPLOYMENT_ROLE_ORG_IDS` -- comma-separated organization UUIDs allowed
   to submit managed runs
 - `AWS_TRACKER_SECRET_NAME_PREFIXES` -- comma-separated Secrets Manager name
   prefixes the Tracker may resolve for benchmark-service authentication
+- `AWS_SHARED_SECRET_TENANTS` -- comma-separated tenant names whose runs may
+  also read shared secrets; see `docs/self-hosting/aws-permissions.mdx`
 
-The ExecutorHost task roles can read every Secrets Manager secret in their own
-account and Region. Release-test does not receive this access.
+The runner task roles can read the stage's authorized Secrets Manager secrets. Release-test access is scoped separately.
 
 Dev and production require `SENTRY_DSN_SECRET_NAME` to name an account-local
 Secrets Manager secret containing the DSN. Production also requires
@@ -65,15 +60,13 @@ secrets**, `VALKYRIE_BENCH_ACCOUNT_ID` holds the bench account ID and
 `VALKYRIE_PRODUCTION_ACCOUNT_ID` holds the production account ID. Deployment
 roles and `allowed-account-ids` constrain AWS access to the selected account. The
 `SANDBOX_CLEANUP_ENABLED` and `SANDBOX_CLEANUP_PROVIDER` toggles stay variables.
-The Sentry DSN is injected into both Tracker and ExecutorHost. The host
-propagates each run's trace and request context into its immutable executor
-artifact.
+The Sentry DSN is injected into Tracker and runner tasks. The runner propagates each run's trace and request context into its immutable executor artifact.
 
-The existing `prod` GitHub Environment deploys the bench stage so its OIDC
-subject remains compatible with the established roles. Configure the new
-production account in the protected `prod-external` GitHub Environment. Both
+The protected `bench` GitHub Environment deploys the bench stage. Configure the
+production account in the protected `prod` GitHub Environment. Both
 production Environments require their own
-`AWS_DEPLOYMENT_ROLE_ORG_IDS` and `AWS_TRACKER_SECRET_NAME_PREFIXES`. All target
+`AWS_DEPLOYMENT_ROLE_ORG_IDS`, `AWS_TRACKER_SECRET_NAME_PREFIXES`, and
+`AWS_SHARED_SECRET_TENANTS`. All target
 AWS accounts must already have the account-owned
 `token.actions.githubusercontent.com` OIDC provider with the
 `sts.amazonaws.com` audience. The stacks import that provider and create
@@ -111,12 +104,26 @@ Manual partial, plan, and credentials-only workflow operations never activate a
 release.
 
 Direct `make deploy` is CDK-only: it does not build, upload, or activate an
-executor release. The first executor-dispatch rollout uses the Monitoring-only
-pre-deployment, manual outage, legacy-queue drain, and separately authorized
-physical `WorkerStack` bootstrap documented in `executor-releases/README.md`. Automated
-executor work fails closed until the bootstrap publishes the stage's sealed
-release-control SSM parameter. Later workflow deployments keep existing
-executions pinned while previous releases drain normally.
+executor release. This hard cutover enters the existing CI-gated executor
+maintenance path once: admission closes, active runs stop, runner tasks are
+confirmed stopped, and the host-free control task completes release activation
+before Tracker resumes. Subsequent runner revisions only affect new tasks;
+deployments do not drain active runs unless separately classified as maintenance.
+
+The Redis queue and executor host have no consumers after this cutover, but
+SharedStack retains the unused Redis cluster and security group and their four
+CloudFormation exports (endpoint address, endpoint port, security group ID,
+cluster reference) for this deployment. TrackerStack likewise retains the
+Tracker service security group ID export. Release-test also keeps the unused
+executor-host ECR repository and its ARN and name exports. Core stacks deploy
+before WorkerStack, so these exports cannot be deleted while previously deployed
+consumers still import them. Remove the retained resources and exports in the
+follow-up cleanup PR together with the host-removal classifier rule. The
+release-test executor-host repository uses `RemovalPolicy.RETAIN` like the other
+release-test image repositories, so removing its construct leaves the physical
+repository; the follow-up must also delete it explicitly
+(`aws ecr delete-repository --force --repository-name valkyrie/release-test/executor-host`
+in the release-test account). Monitoring no longer uses Redis widgets.
 
 For a local plan or an administrator break-glass deployment, follow these
 steps. The preflight rejects the wrong account, Region, or STS identity.
@@ -134,11 +141,12 @@ export DESCOPE_PROJECT_ID="dev-project-id"
 export DESCOPE_MANAGEMENT_KEY_SECRET_NAME="dev-descope-management-key-secret"
 export AWS_DEPLOYMENT_ROLE_ORG_IDS="00000000-0000-0000-0000-000000000001"
 export AWS_TRACKER_SECRET_NAME_PREFIXES="benchmark-services/"
+export AWS_SHARED_SECRET_TENANTS="<tenant-name>"
 ```
 
    Use the target stage's values. Bench and production also require their
    deployment inputs, including `SENTRY_DSN_SECRET_NAME`. In GitHub,
-   the managed AWS values are under **Settings → Environments → dev, prod, or prod-external →
+   the managed AWS values are under **Settings → Environments → dev, bench, or prod →
    Environment secrets**. GitHub does not reveal stored secret values, so an
    administrator must obtain the approved values from the deployment owner.
 
@@ -217,7 +225,7 @@ required inputs and stay outside the repository.
 
 ## Benchmark Catalog
 
-`BENCHMARK_CATALOG_URL` optionally points tracker-service at a benchmark catalog API. When it is unset, `valkyrie config service list` returns an empty catalog.
+`BENCHMARK_CATALOG_URL` optionally points tracker-service at a benchmark catalog API. When it is unset, the catalog is empty and `valkyrie benchmark service list` shows only the URLs a user saved.
 
 ```bash
 export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com

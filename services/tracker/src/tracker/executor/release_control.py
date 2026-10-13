@@ -92,7 +92,7 @@ def activate_release(
     except ValueError as error:
         raise ReleaseControlError(str(error)) from error
 
-    _get_required_admission(session, for_update=True)
+    get_executor_admission(session, for_update=True)
     release = session.get(ExecutorRelease, candidate.id)
     if release is None:
         release = register_release(session, candidate)
@@ -107,7 +107,7 @@ def activate_release(
 
     verify_release_artifact(session, release.id, artifact_reader=artifact_reader)
     activated = promote_release(session, release.id)
-    admission = _get_required_admission(session)
+    admission = get_executor_admission(session)
     if (
         admission.release_id != activated.id
         or activated.status != ExecutorReleaseStatus.ACTIVE
@@ -225,11 +225,6 @@ def active_executor_release_work(session: Session) -> ActiveExecutorReleaseWork:
     )
 
 
-def get_executor_admission(session: Session, *, for_update: bool = False) -> ExecutorAdmission:
-    """Return the singleton executor admission row."""
-    return _get_required_admission(session, for_update=for_update)
-
-
 def _get_open_executor_admission(session: Session, *, for_update: bool) -> ExecutorAdmission:
     admission = _get_admission(session, for_update=for_update)
     if admission is None:
@@ -284,7 +279,7 @@ def resolve_current_execution_release(
 
 def promote_release(session: Session, release_id: str) -> ExecutorRelease:
     """Promote a verified candidate for new benchmarks."""
-    admission = _get_required_admission(session, for_update=True)
+    admission = get_executor_admission(session, for_update=True)
     release = _get_release(session, release_id, populate_existing=True, for_update=True)
 
     if admission.release_id == release_id:
@@ -328,7 +323,7 @@ def promote_release(session: Session, release_id: str) -> ExecutorRelease:
 
 def retire_drained_releases(session: Session) -> list[str]:
     """Retire every draining release that owns no active executor work."""
-    admission = _get_required_admission(session, for_update=True)
+    admission = get_executor_admission(session, for_update=True)
     draining_releases = session.exec(
         select(ExecutorRelease)
         .where(ExecutorRelease.status == ExecutorReleaseStatus.DRAINING)
@@ -342,48 +337,28 @@ def retire_drained_releases(session: Session) -> list[str]:
     if active_work.unattributed_executions:
         return []
 
+    busy_release_ids = active_work.counts_by_release
+    retired_at = datetime.now(UTC)
     retired_ids: list[str] = []
     for release in draining_releases:
-        if active_work.counts_by_release.get(release.id, 0):
+        if release.id in busy_release_ids:
             continue
-        _retire_release(session, release)
+        release.status = ExecutorReleaseStatus.RETIRED
+        release.retired_at = retired_at
+        release.artifact_retention_until = retired_at + timedelta(days=_ARTIFACT_RETENTION_DAYS)
+        session.add(release)
         retired_ids.append(release.id)
+        _logger.info(
+            "executor_release_lifecycle",
+            extra={
+                "event": "retired",
+                "release_id": release.id,
+                "status": release.status.value,
+                "artifact_retention_until": release.artifact_retention_until.isoformat(),
+            },
+        )
     session.flush()
     return retired_ids
-
-
-def _retire_release(session: Session, release: ExecutorRelease) -> None:
-    retired_at = datetime.now(UTC)
-    release.status = ExecutorReleaseStatus.RETIRED
-    release.retired_at = retired_at
-    release.artifact_retention_until = retired_at + timedelta(days=_ARTIFACT_RETENTION_DAYS)
-    session.add(release)
-    _logger.info(
-        "executor_release_lifecycle",
-        extra={
-            "event": "retired",
-            "release_id": release.id,
-            "status": release.status.value,
-            "artifact_retention_until": release.artifact_retention_until.isoformat(),
-        },
-    )
-
-
-def _artifact_deletion_allowed(
-    release: ExecutorRelease,
-    active_work: ActiveExecutorReleaseWork,
-    now: datetime,
-) -> bool:
-    if release.status != ExecutorReleaseStatus.RETIRED or release.artifact_retention_until is None:
-        return False
-    retention_until = release.artifact_retention_until
-    if retention_until.tzinfo is None:
-        retention_until = retention_until.replace(tzinfo=UTC)
-    return (
-        now >= retention_until
-        and not active_work.unattributed_executions
-        and active_work.counts_by_release.get(release.id, 0) == 0
-    )
 
 
 def artifact_deletion_allowed(session: Session, release_id: str, *, now: datetime | None = None) -> bool:
@@ -391,10 +366,14 @@ def artifact_deletion_allowed(session: Session, release_id: str, *, now: datetim
     release = _get_release(session, release_id)
     if release.status != ExecutorReleaseStatus.RETIRED or release.artifact_retention_until is None:
         return False
-    return _artifact_deletion_allowed(
-        release,
-        active_executor_release_work(session),
-        now or datetime.now(UTC),
+    retention_until = release.artifact_retention_until
+    if retention_until.tzinfo is None:
+        retention_until = retention_until.replace(tzinfo=UTC)
+    active_work = active_executor_release_work(session)
+    return (
+        (now or datetime.now(UTC)) >= retention_until
+        and not active_work.unattributed_executions
+        and release.id not in active_work.counts_by_release
     )
 
 
@@ -407,7 +386,8 @@ def _get_admission(session: Session, *, for_update: bool = False) -> ExecutorAdm
     return session.exec(statement).one_or_none()
 
 
-def _get_required_admission(session: Session, *, for_update: bool = False) -> ExecutorAdmission:
+def get_executor_admission(session: Session, *, for_update: bool = False) -> ExecutorAdmission:
+    """Return the singleton executor admission row."""
     admission = _get_admission(session, for_update=for_update)
     if admission is None:
         raise ReleaseControlError("Executor admission state is not initialized")
@@ -421,8 +401,8 @@ def _validate_release_manifest(release: ExecutorRelease) -> None:
         raise ReleaseControlError(str(error)) from error
     if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {release.protocol_version}")
-    if not release.artifact_uri.startswith("s3://"):
-        raise ReleaseControlError("Executor artifact URI must use s3://")
+    if not release.artifact_uri.startswith(("s3://", "source:///")):
+        raise ReleaseControlError("Executor artifact URI must use s3:// or source:///")
 
 
 def _get_release(
@@ -432,17 +412,12 @@ def _get_release(
     populate_existing: bool = False,
     for_update: bool = False,
 ) -> ExecutorRelease:
-    if populate_existing or for_update:
-        statement = (
-            select(ExecutorRelease)
-            .where(col(ExecutorRelease.id) == release_id)
-            .execution_options(populate_existing=True)
-        )
-        if for_update:
-            statement = statement.with_for_update()
-        release = session.exec(statement).one_or_none()
-    else:
-        release = session.get(ExecutorRelease, release_id)
+    release = session.get(
+        ExecutorRelease,
+        release_id,
+        populate_existing=populate_existing or for_update,
+        with_for_update=for_update or None,
+    )
     if release is None:
         raise ReleaseControlError(f"Executor release {release_id!r} does not exist")
     return release

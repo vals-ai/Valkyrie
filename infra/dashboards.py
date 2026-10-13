@@ -10,7 +10,6 @@ import aws_cdk as cdk
 from aws_cdk import (
     aws_cloudwatch,
     aws_ecs,
-    aws_elasticache,
     aws_elasticloadbalancingv2 as aws_elb,
     aws_rds,
 )
@@ -30,7 +29,6 @@ def create_overview_dashboard(
     load_balancer: aws_elb.ApplicationLoadBalancer,
     target_group: aws_elb.ApplicationTargetGroup,
     database: aws_rds.DatabaseInstance,
-    redis_cluster: aws_elasticache.CfnCacheCluster,
 ) -> aws_cloudwatch.Dashboard:
     """`Valkyrie-Overview` - Single-value widgets + sparklines."""
     dashboard = aws_cloudwatch.Dashboard(
@@ -47,7 +45,7 @@ def create_overview_dashboard(
                 "# Valkyrie Overview\n"
                 "Infra health at a glance. Red/green widgets show current alarm state.\n"
                 "For drill-downs: **Valkyrie-ECS**, **Valkyrie-ALB**, "
-                "**Valkyrie-RDS**, **Valkyrie-Redis**."
+                "**Valkyrie-RDS**."
             ),
             width=24,
             height=2,
@@ -165,38 +163,7 @@ def create_overview_dashboard(
             height=_SINGLE_VALUE_HEIGHT,
             sparkline=True,
         ),
-        aws_cloudwatch.SingleValueWidget(
-            title="Redis Memory Usage (%)",
-            metrics=[
-                redis_metric(
-                    redis_cluster,
-                    "DatabaseMemoryUsagePercentage",
-                    statistic="Average",
-                )
-            ],
-            width=6,
-            height=_SINGLE_VALUE_HEIGHT,
-            sparkline=True,
-        ),
     )
-
-    # Row 4: Redis evictions (stand-alone so it's visually isolated - should be zero)
-    dashboard.add_widgets(
-        aws_cloudwatch.GraphWidget(
-            title="Redis Evictions (should be 0)",
-            left=[
-                redis_metric(
-                    redis_cluster,
-                    "Evictions",
-                    statistic="Sum",
-                    period=cdk.Duration.minutes(5),
-                )
-            ],
-            width=24,
-            height=_WIDGET_HEIGHT,
-        ),
-    )
-
     return dashboard
 
 
@@ -658,147 +625,6 @@ def create_rds_dashboard(
     )
 
     return dashboard
-
-
-def create_redis_dashboard(
-    scope: Construct,
-    *,
-    stage: Stage,
-    redis_cluster: aws_elasticache.CfnCacheCluster,
-) -> aws_cloudwatch.Dashboard:
-    """`Valkyrie-Redis` -- ElastiCache metrics including command breakdown."""
-    dashboard = aws_cloudwatch.Dashboard(
-        scope,
-        "ValkyrieRedisDashboard",
-        dashboard_name=stage.phys("Valkyrie-Redis"),
-        default_interval=cdk.Duration.hours(24),
-        period_override=aws_cloudwatch.PeriodOverride.AUTO,
-    )
-
-    # Row 1: CPU utilization (instance-level + engine-level)
-    dashboard.add_widgets(
-        aws_cloudwatch.GraphWidget(
-            title="CPU Utilization (%) - Instance",
-            left=[redis_metric(redis_cluster, "CPUUtilization", statistic="Average")],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-        aws_cloudwatch.GraphWidget(
-            title="Engine CPU Utilization (%)",
-            left=[redis_metric(redis_cluster, "EngineCPUUtilization", statistic="Average")],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-    )
-
-    # Row 2: memory
-    dashboard.add_widgets(
-        aws_cloudwatch.GraphWidget(
-            title="Memory Used for Cache (bytes)",
-            left=[redis_metric(redis_cluster, "BytesUsedForCache", statistic="Average")],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-        aws_cloudwatch.GraphWidget(
-            title="Memory Usage (%)",
-            left=[
-                redis_metric(
-                    redis_cluster,
-                    "DatabaseMemoryUsagePercentage",
-                    statistic="Average",
-                )
-            ],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-    )
-
-    # Row 3: connections
-    dashboard.add_widgets(
-        aws_cloudwatch.GraphWidget(
-            title="Current Connections",
-            left=[redis_metric(redis_cluster, "CurrConnections", statistic="Maximum")],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-        aws_cloudwatch.GraphWidget(
-            title="New Connections per Minute",
-            left=[redis_metric(redis_cluster, "NewConnections", statistic="Sum")],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-    )
-
-    # Row 4: network + evictions
-    dashboard.add_widgets(
-        aws_cloudwatch.GraphWidget(
-            title="Network Bytes In/Out",
-            left=[redis_metric(redis_cluster, "NetworkBytesIn", statistic="Sum")],
-            right=[redis_metric(redis_cluster, "NetworkBytesOut", statistic="Sum")],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-        aws_cloudwatch.GraphWidget(
-            title="Evictions / Reclaimed",
-            left=[redis_metric(redis_cluster, "Evictions", statistic="Sum")],
-            right=[redis_metric(redis_cluster, "Reclaimed", statistic="Sum")],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-    )
-
-    # Row 5: hit/miss + command breakdown
-    dashboard.add_widgets(
-        aws_cloudwatch.GraphWidget(
-            title="Cache Hits / Misses",
-            left=[
-                redis_metric(redis_cluster, "CacheHits", statistic="Sum"),
-                redis_metric(redis_cluster, "CacheMisses", statistic="Sum"),
-            ],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-        aws_cloudwatch.GraphWidget(
-            title="Command Breakdown (per-second rate)",
-            left=[
-                redis_metric(redis_cluster, "GetTypeCmds", statistic="Sum"),
-                redis_metric(redis_cluster, "SetTypeCmds", statistic="Sum"),
-                redis_metric(redis_cluster, "ListBasedCmds", statistic="Sum"),
-                redis_metric(redis_cluster, "StreamBasedCmds", statistic="Sum"),
-            ],
-            width=12,
-            height=_WIDGET_HEIGHT,
-        ),
-    )
-
-    # Row 6: replication bytes (single-node shows 0; kept for future HA consistency)
-    dashboard.add_widgets(
-        aws_cloudwatch.GraphWidget(
-            title="Replication Bytes",
-            left=[redis_metric(redis_cluster, "ReplicationBytes", statistic="Average")],
-            width=24,
-            height=_WIDGET_HEIGHT,
-        ),
-    )
-
-    return dashboard
-
-
-def redis_metric(
-    redis_cluster: aws_elasticache.CfnCacheCluster,
-    metric_name: str,
-    *,
-    statistic: str = "Average",
-    period: cdk.Duration | None = None,
-) -> aws_cloudwatch.Metric:
-    """Helper: ElastiCache metric with CacheClusterId dimension."""
-    return aws_cloudwatch.Metric(
-        namespace="AWS/ElastiCache",
-        metric_name=metric_name,
-        dimensions_map={"CacheClusterId": redis_cluster.ref},
-        statistic=statistic,
-        period=period or cdk.Duration.minutes(1),
-    )
 
 
 def ecs_container_insights_metric(

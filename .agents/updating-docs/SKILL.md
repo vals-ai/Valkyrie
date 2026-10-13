@@ -16,10 +16,9 @@ Read this skill before editing `docs/`, the reference generator, documentation t
 | Public end-user documentation | `docs/` |
 | Public CLI and Python SDK reference generator | `scripts/generate_reference.py` entry point over the `scripts/reference_docs/` package: `collect` reads the public surface, `model` holds the manifest and `STATIC_REDIRECTS` for handwritten routes, `render` writes MDX, `generate` orchestrates |
 | Generated reference tests | `tests/unit/docs/test_generate_reference.py` |
-| Contributor setup, tracker operation, database and migrations | `docs/contributing/`. `DEVELOPMENT.md` and the service READMEs are pointers to those pages, plus the versioning table that CI links to |
+| Contributor setup, tracker operation, database and migrations | `docs/contributing/`. `DEVELOPMENT.md` and the service READMEs are pointers to those pages |
 | Generic self-hosting | `docs/self-hosting/` |
 | Vals-specific infrastructure operation | `infra/README.md` |
-| SDK release procedure | `scripts/sdk/RELEASING.md` |
 
 Contributor setup and service operation belong in the `Contributing` group. Never publish Vals-specific operations, release activation, protected-environment instructions, incident procedures, break-glass access, or internal automation instructions in Mintlify.
 

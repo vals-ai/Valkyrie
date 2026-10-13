@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence, cast
+from typing import Any, NamedTuple, Sequence, cast
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -24,6 +24,14 @@ class FilterOptionsResponse(BaseModel):
     started_by_emails: list[str]
 
 
+class _FilterRow(NamedTuple):
+    benchmark_name: str
+    agent_name: str
+    model: str | None
+    dataset: str | None
+    email: str | None
+
+
 @router.get("/filter-options", response_model=FilterOptionsResponse)
 def get_filter_options(
     org: Org = Depends(get_current_org),
@@ -31,23 +39,23 @@ def get_filter_options(
 ) -> FilterOptionsResponse:
     """Distinct benchmark, agent, model, dataset, and starter values in this org, for the runs-list filter dropdowns."""
 
-    arguments_json = type_coerce(col(Benchmark.arguments), JSON)
-    statement = cast(Any, select)(
-        col(Benchmark.name),
-        arguments_json["contract"]["name"].as_string(),
-        arguments_json["contract"]["model"].as_string(),
-        arguments_json["dataset"].as_string(),
-        col(Benchmark.started_by_email),
+    arguments = type_coerce(col(Benchmark.arguments), JSON)
+    statement = (
+        cast(Any, select)(
+            col(Benchmark.name).label("benchmark_name"),
+            arguments["contract"]["name"].as_string().label("agent_name"),
+            arguments["contract"]["model"].as_string().label("model"),
+            arguments["dataset"].as_string().label("dataset"),
+            col(Benchmark.started_by_email).label("email"),
+        )
+        .where(Benchmark.org_id == org.id)
+        .distinct()
     )
-    statement = statement.where(Benchmark.org_id == org.id).distinct()
-    rows = cast(
-        Sequence[tuple[str, str, str | None, str | None, str | None]],
-        cast(Any, session.exec(statement)).all(),
-    )
+    rows = cast(Sequence[_FilterRow], cast(Any, session.exec(statement)).all())
     return FilterOptionsResponse(
-        benchmark_names=sorted({name for name, _, _, _, _ in rows}),
-        agent_names=sorted({agent_name for _, agent_name, _, _, _ in rows}),
-        models=sorted({model for _, _, model, _, _ in rows if model}),
-        datasets=sorted({dataset or "default" for _, _, _, dataset, _ in rows}),
-        started_by_emails=sorted({email for _, _, _, _, email in rows if email}),
+        benchmark_names=sorted({row.benchmark_name for row in rows}),
+        agent_names=sorted({row.agent_name for row in rows}),
+        models=sorted({row.model for row in rows if row.model}),
+        datasets=sorted({row.dataset or "default" for row in rows}),
+        started_by_emails=sorted({row.email for row in rows if row.email}),
     )

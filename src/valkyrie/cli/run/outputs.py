@@ -10,7 +10,6 @@ from valkyrie.sdk import RunArtifactsResponse, ValkyrieClient, ValkyrieSDKError
 from valkyrie.cli.display import format_table, terminal_safe
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.runtime_config import config_location, tracker_service_url
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -99,7 +98,7 @@ def artifacts(run_id: UUID, prefix: str, cursor: str | None, limit: int, output_
 
 
 async def _list_artifacts(run_id: UUID, prefix: str, cursor: str | None, limit: int) -> RunArtifactsResponse:
-    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+    async with ValkyrieClient() as client:
         return await client.artifacts.list(run_id, prefix=prefix, cursor=cursor, limit=limit)
 
 
@@ -131,7 +130,7 @@ def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
 
 
 async def _download_artifacts(run_id: UUID, path: str, output_dir: Path) -> Path:
-    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+    async with ValkyrieClient() as client:
         return await client.artifacts.download(run_id, output_dir, path=path)
 
 

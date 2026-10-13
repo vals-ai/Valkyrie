@@ -16,24 +16,10 @@ ClientFactory = Callable[..., ValkyrieClient]
 
 @pytest.fixture
 def config_values() -> ConfigValuesFactory:
-    """Return a factory for complete YAML-shaped SDK configuration."""
+    """Return a factory for complete SDK configuration."""
 
     def factory(**overrides: object) -> dict[str, object]:
-        values: dict[str, object] = {
-            "api_key": "vals-key",
-            "AWS_ACCESS_KEY_ID": "aws-key",
-            "AWS_SECRET_ACCESS_KEY": "aws-secret",
-            "AWS_DEFAULT_REGION": "us-west-2",
-            "AWS_SESSION_TOKEN": "aws-session",
-            "S3_BUCKET": "runs-bucket",
-            "LOG_GROUP": "benchmarks",
-            "LOG_RETENTION_POLICY": 30,
-            "sandbox_providers": {"modal": "ModalSecret", "daytona": "DaytonaSecret"},
-            "default_sandbox_provider": "modal",
-            "custom_benchmark_services": {"swebench": "https://local.swebench/"},
-            "benchmark_auth": {"swebench": "benchmark-token"},
-            "webhook": "SlackWebhook",
-        }
+        values: dict[str, object] = {"api_key": "vals-key", "url": "https://tracker.test"}
         values.update(overrides)
         return values
 
@@ -84,10 +70,6 @@ def make_client(sdk_config: SDKConfigFactory) -> ClientFactory:
         *,
         config: ValkyrieConfig | None = None,
     ) -> ValkyrieClient:
-        return ValkyrieClient(
-            config or sdk_config(),
-            base_url="https://tracker.test",
-            transport=httpx.MockTransport(handler),
-        )
+        return ValkyrieClient(config or sdk_config(), transport=httpx.MockTransport(handler))
 
     return factory

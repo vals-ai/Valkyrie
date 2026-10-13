@@ -11,18 +11,19 @@ import pytest
 from benchmark_service import ComposeSource, ImageSource, Sandbox, SandboxProvider
 from benchmark_service.schemas import RetrieveTaskResponse
 
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.clients import AWSClientProvider
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import S3ObjectStore
 from tracker.database.models import AgentContractRequest
 from tracker.egress import combine_run_egress_policies
 from tracker.sandbox import (
+    SandboxCreationState,
     apply_egress_policy,
     create_sandbox,
     install_agent_dependencies,
     run_agent,
     runtime_sandbox,
 )
-from tracker.types import AWSCredentials, HarnessConfig
 
 _DIND_IMAGE = "docker:28.3.3-dind"
 _COMPOSE_SERVICE_IMAGE = "alpine:3.20"
@@ -122,6 +123,7 @@ async def compose_sandbox(
         task_data.source,
         task_data.resources,
         creation_semaphore,
+        creation_state=SandboxCreationState(cleanup_pending=False),
         env_vars=env_vars,
     ) as outer_sandbox:
         try:
@@ -209,18 +211,9 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
             'case "$IDENTITY" in *compose-agent*) true;; *) exit 1;; esac'
         ),
     )
-    aws_runtime = AWSRuntime.from_harness_config(
-        HarnessConfig(
-            aws=AWSCredentials(
-                aws_access_key_id="test",
-                aws_secret_access_key="test",
-                aws_default_region="us-east-1",
-            ),
-            s3_bucket="unused",
-            log_group="unused",
-            log_retention_policy=1,
-            sandbox_provider_secret_name="unused",
-        )
+    aws_runtime = AWSRuntime(
+        resources=AWSResources(region="us-east-1", s3_bucket="unused", log_group="unused", log_retention_days=1),
+        clients=AWSClientProvider("us-east-1"),
     )
 
     agent_sandbox = runtime_sandbox(outer_sandbox, task_data.source)

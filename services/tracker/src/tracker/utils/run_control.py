@@ -1,9 +1,10 @@
 """Operations that stop, resume, or retry a run and tear down its sandboxes."""
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
-import json
 from dataclasses import dataclass
+import json
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -14,7 +15,9 @@ from benchmark_service import (
     SandboxQuery,
 )
 from benchmark_service.client import BenchmarkServiceError
-from sqlmodel import Session, asc, col, func, or_, select, update
+import boto3
+from botocore.config import Config
+from sqlmodel import Session, asc, col, desc, func, or_, select, update
 
 from tracker.database.models import (
     Benchmark,
@@ -25,14 +28,16 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.executor.dispatch_control import terminalize_active_dispatches
+from tracker.executor.dispatch_control import (
+    active_dispatch_exists,
+    stop_unclaimed_dispatches,
+    terminalize_active_dispatches,
+)
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
+from tracker.runtime.services import RuntimeServices
 from tracker.sandbox import delete_sandbox
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.secrets import SecretsManagerStore
-
-from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
+from tracker.utils.resources import fetch_benchmark_row
 
 logger = get_logger(__name__)
 
@@ -43,11 +48,14 @@ def apply_stop_benchmark(
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
-) -> None:
+) -> list[str]:
     """Apply the Stop state transition without committing the transaction."""
     # Stop and recovery both update the benchmark and its tasks. Lock the benchmark
     # first so every lifecycle transition uses the same lock order.
     fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
+    stopped_unclaimed, task_arns = (
+        stop_unclaimed_dispatches(session, benchmark_row) if task_ids is None else (False, [])
+    )
 
     stoppable_statuses = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]
     if force:
@@ -79,9 +87,38 @@ def apply_stop_benchmark(
             benchmark_row.status = BenchmarkStatus.STOPPED
             terminalize_active_dispatches(session, benchmark_row.id)
             session.add(benchmark_row)
-    elif task_ids is None and result.rowcount > 0:
-        benchmark_row.status = BenchmarkStatus.STOPPING
+    elif task_ids is None and (result.rowcount > 0 or stopped_unclaimed):
+        if stopped_unclaimed and not active_dispatch_exists(session, benchmark_row.id):
+            benchmark_row.status = BenchmarkStatus.STOPPED
+            benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
+        else:
+            benchmark_row.status = BenchmarkStatus.STOPPING
         session.add(benchmark_row)
+    return task_arns
+
+
+def apply_shed_benchmark(benchmark_row: Benchmark, concurrency: int, session: Session, org: Org) -> list[str]:
+    """Lower the limit and stop the newest building/in-progress tasks above it; evaluating tasks count but stay."""
+    run_tasks = (col(Task.benchmark) == benchmark_row.id, col(Task.org_id) == org.id)
+    active_count = session.exec(
+        select(func.count(col(Task.id)))
+        .where(*run_tasks)
+        .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
+    ).one()
+    shed_tasks = session.exec(
+        select(Task)
+        .where(*run_tasks)
+        .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS]))
+        .order_by(desc(Task.started_at), desc(Task.id))
+        .limit(max(active_count - concurrency, 0))
+        .with_for_update()
+    ).all()
+
+    for task in shed_tasks:
+        task.status = TaskStatus.STOPPED
+    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
+    session.add(benchmark_row)
+    return [task.task_id for task in shed_tasks]
 
 
 async def initiate_stop_benchmark(
@@ -93,10 +130,22 @@ async def initiate_stop_benchmark(
 ) -> None:
     """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
+        task_arns = apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
         session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
+    if task_arns:
+        ecs = boto3.client("ecs", config=Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 1}))
+        for task_arn in task_arns:
+            try:
+                await asyncio.to_thread(
+                    ecs.stop_task,
+                    cluster=os.environ["EXECUTOR_RUNNER_CLUSTER"],
+                    task=task_arn,
+                    reason="Benchmark stopped before runner claim",
+                )
+            except Exception:
+                logger.exception("Failed to stop unclaimed executor task %s", task_arn)
 
 
 async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider, org: Org) -> None:
@@ -131,29 +180,18 @@ async def sandbox_generator(
 
 async def force_stop_sandboxes(
     benchmark_row: Benchmark,
-    sandbox_provider_secret_name: str,
-    aws_runtime: AWSRuntime,
+    runtime: RuntimeServices,
     org: Org,
-    sandbox_provider: str = "daytona",
     task_ids: list[str] | None = None,
 ) -> None:
     """Send provider kill signals without coupling provider teardown to DB state."""
-    benchmark_service = benchmark_row.benchmark_service()
     try:
-        provider = benchmark_service.get_sandbox_provider(
-            fetch_sandbox_provider_config(
-                sandbox_provider_secret_name, SecretsManagerStore(aws_runtime.clients), sandbox_provider
-            )
-        )
-        sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
-        await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))
+        config = await runtime.get_sandbox_provider_config()
+        async with config.create_provider() as provider:
+            sandboxes = [sandbox async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids)]
+            await asyncio.gather(*(stop_sandbox(sandbox, provider, org) for sandbox in sandboxes))
     except Exception:
         logger.exception("Unable to send force-stop signals for benchmark %s", benchmark_row.id)
-    finally:
-        try:
-            await benchmark_service.close()
-        except Exception:
-            logger.exception("Unable to close provider client for benchmark %s", benchmark_row.id)
 
 
 @dataclass(frozen=True)
@@ -185,7 +223,7 @@ def _retry_candidates(
     new_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_ids]
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and new_task_ids:
         raise TrackerServiceError(
-            f"{', '.join(new_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
+            f"{', '.join(new_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR or STOPPED status"
         )
     return existing_rows, new_task_ids
 
@@ -235,8 +273,10 @@ def prepare_retry_state(
             "name": benchmark_row.name,
             "destination": benchmark_row.custom_benchmark_service,
             "dataset": benchmark_row.arguments.dataset,
+            "dataset_version": benchmark_row.arguments.dataset_version.model_dump()
+            if benchmark_row.arguments.dataset_version
+            else None,
             "queue_pool_id": benchmark_row.arguments.queue_pool_id,
-            "aws_managed": benchmark_row.aws_managed,
             "properties": benchmark_row.arguments.model_dump(mode="json")["properties"],
             "tasks": [(row.id, row.task_id, row.status, row.started_at, row.eval_resume_state) for row in rows],
         },
@@ -322,14 +362,15 @@ def reset_to_in_progress_status(
 def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
     """Select retryable rows.
 
-    Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
+    Active retries on in-progress runs are limited to ERROR and STOPPED tasks (per-task stops leave the run
+    in progress). Finished tasks must wait until the run is terminal.
     """
     filters = [
         col(Task.benchmark) == benchmark_row.id,
         col(Task.org_id) == org.id,
     ]
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
-        filters.append(col(Task.status) == TaskStatus.ERROR)
+        filters.append(col(Task.status).in_([TaskStatus.ERROR, TaskStatus.STOPPED]))
         if rerun_task_ids:
             filters.append(col(Task.task_id).in_(rerun_task_ids))
         return filters

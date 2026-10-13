@@ -33,13 +33,10 @@ async def _file_chunks(stream: BinaryIO) -> AsyncIterator[bytes]:
 
 
 class AgentsResource:
-    """Async operations for the configured deployment's shared agent library."""
-
     def __init__(self, client: ValkyrieClient) -> None:
         self._sdk = client
 
     async def list(self) -> AgentsResponse:
-        """List uploaded agents in the configured shared library."""
         return await self._sdk.request_model("GET", "/agents", AgentsResponse)
 
     async def download_url(self, name: str) -> AgentDownloadURLResponse:
@@ -52,10 +49,11 @@ class AgentsResource:
             AgentDownloadURLResponse,
         )
 
-    async def push(self, agent_path: str | Path, *, name: str | None = None) -> AgentEntry:
+    async def push(self, agent_path: str | Path, *, name: str | None = None, overwrite: bool = True) -> AgentEntry:
         """Bundle a directory containing contract.yaml or contract.yml and upload it through Tracker.
 
         name defaults to the contract name and replaces that library alias if it exists.
+        Set overwrite=False to reject an existing alias with a 409 API error.
         """
         path = Path(agent_path)
         contract_name = await asyncio.to_thread(read_agent_name, path)
@@ -69,6 +67,7 @@ class AgentsResource:
                 "PUT",
                 f"/agents/{agent_name}",
                 AgentEntry,
+                params={"overwrite": overwrite},
                 content=_file_chunks(stream),
                 headers={"Content-Type": "application/zip", "Content-Length": str(size)},
             )
@@ -103,7 +102,10 @@ class AgentsResource:
             # A separate client must never inherit Tracker credentials for presigned transfers.
             async with httpx.AsyncClient(timeout=120) as client:
                 with tempfile.TemporaryFile() as stream:
-                    async with client.stream("GET", response.download_url) as download:
+                    auth = self._sdk.download_auth(response.download_url)
+                    async with client.stream(
+                        "GET", response.download_url, auth=auth, follow_redirects=auth is None
+                    ) as download:
                         download.raise_for_status()
                         downloaded_bytes = 0
                         async for chunk in download.aiter_bytes(chunk_size=1024 * 1024):

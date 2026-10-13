@@ -1,16 +1,15 @@
 ---
 title: Quickstart
-description: Install Valkyrie, configure credentials, and start a benchmark run.
+description: Install Valkyrie, sign in, and start a benchmark run.
 ---
 
 ## Prerequisites
 
 - Python 3.12
 - [uv](https://docs.astral.sh/uv/) and Git, used by the install command below
-- A configured [sandbox provider](/get-started/sandbox-providers)
-- A Vals API key when using hosted mode, requested at [contact@vals.ai](mailto:contact@vals.ai)
-- Local AWS SDK credentials for agent uploads and artifact downloads
-- For self-hosted or access-key execution, an S3 bucket for benchmark artifacts and agents plus AWS credentials with the [required permissions](/self-hosting/aws-permissions). Managed hosted execution reads the Region and bucket from the tracker instead. See [AWS execution mode](/get-started/hosting#aws-execution-mode).
+- A [sandbox-provider secret and mapping](/get-started/sandbox-providers), saved with `valkyrie secret set` and `valkyrie provider set` after you sign in
+- A Vals account, requested at [contact@vals.ai](mailto:contact@vals.ai)
+- For self-hosting, server IAM with the [required permissions](/self-hosting/aws-permissions) and an artifact bucket. [Hosted execution](/get-started/hosting#hosted-mode) uses deployment-configured resources.
 
 ## Install the CLI
 
@@ -20,13 +19,13 @@ uv tool install git+https://github.com/vals-ai/Valkyrie@prod
 
 Both `valkyrie` and `valk` invoke the same CLI.
 
-## Configure Valkyrie
+## Sign in
 
 ```bash
-valkyrie config init
+valkyrie login
 ```
 
-Choose hosted or self-hosted mode when prompted. See [Choose a hosting mode](/get-started/hosting) for the credentials each mode requires.
+This opens your browser to sign in with your Vals account. To use your own Tracker instead, see [Choose a hosting mode](/get-started/hosting).
 
 ## Upload an agent
 

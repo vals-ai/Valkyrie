@@ -4,7 +4,7 @@ Run: uv run pytest tests/integration/local/cli/test_read_commands.py
 """
 
 import json
-from pathlib import Path
+from functools import partial
 
 import httpx
 import pytest
@@ -12,7 +12,7 @@ from click.testing import CliRunner
 from fastapi import FastAPI
 from sqlmodel import Session
 from tracker.database.models import Benchmark
-from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
+from valkyrie.sdk import ValkyrieClient
 
 from valkyrie.cli.main import cli
 
@@ -78,14 +78,8 @@ def test_queue_status_reads_persisted_scheduler_state(
     database_session.add(running)
     database_session.commit()
 
-    def from_config(path: Path, *, base_url: str) -> ValkyrieClient:
-        return ValkyrieClient(
-            ValkyrieConfig.from_yaml(path),
-            base_url=base_url,
-            transport=httpx.ASGITransport(app=local_tracker_app),
-        )
-
-    monkeypatch.setattr(ValkyrieClient, "from_config", from_config)
+    client = partial(ValkyrieClient, transport=httpx.ASGITransport(app=local_tracker_app))
+    monkeypatch.setattr("valkyrie.cli.queue.ValkyrieClient", client)
 
     result = cli_runner.invoke(cli, ["queue", "status", "--format", "json"])
 
@@ -178,16 +172,11 @@ def test_cli_task_artifact_links(
 async def test_sdk_iterates_run_and_task_pages(
     seeded_runs: tuple[Benchmark, Benchmark], local_tracker_app: FastAPI
 ) -> None:
-    from valkyrie.cli.runtime_config import config_location
     from valkyrie.sdk import FetchBenchmarksRequest, FetchTasksRequest
 
     running, finished = seeded_runs
     request = FetchBenchmarksRequest(limit=1)
-    async with ValkyrieClient(
-        ValkyrieConfig.from_yaml(config_location()),
-        base_url="http://tracker.test",
-        transport=httpx.ASGITransport(app=local_tracker_app),
-    ) as client:
+    async with ValkyrieClient(transport=httpx.ASGITransport(app=local_tracker_app)) as client:
         runs = [run async for run in client.runs.iter(request)]
         tasks = [
             task async for task in client.benchmarks.iter_tasks(running.id, FetchTasksRequest(limit=1, sort="task_id"))

@@ -55,7 +55,7 @@ class FetchBenchmarkTasksRequest(BaseModel):
 
     benchmark_name: str
     dataset: str | None = None
-    custom_benchmark_service: str | None = None
+    ignore_custom_services: bool = False
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
 
 

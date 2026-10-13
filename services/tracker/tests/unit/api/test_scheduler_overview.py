@@ -27,13 +27,14 @@ from tracker.api.scheduler_overview import (  # pyright: ignore[reportPrivateUsa
     read_scheduler_overview,
 )
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
-from tracker.scheduler.store import queue_pool_id
+from tracker.scheduler.store import queue_pool_id, reserved_queue_pool_id
 from tracker.types import SchedulerOverviewResponse, SchedulerPoolResponse, SchedulerSummaryResponse
 
 
 _client = TestClient(app)
 _PROVIDER_POOL_ID = "daytona:capacity-test"
 _QUEUE_POOL_ID = queue_pool_id(_PROVIDER_POOL_ID)
+_TEST_ORG = Org(id=TEST_ORG_ID, name="test", storage_key="test-bucket")
 
 
 def _queue(benchmark: Benchmark, *, pool_id: str, priority: int) -> Benchmark:
@@ -47,9 +48,7 @@ def _provider_queue(
     *,
     pool_id: str = _QUEUE_POOL_ID,
     secret_name: str | None = "provider-secret",
-    aws_managed: bool = True,
 ) -> Benchmark:
-    benchmark.aws_managed = aws_managed
     benchmark.arguments = benchmark.arguments.model_copy(
         update={
             "priority": 3,
@@ -81,7 +80,7 @@ def _capacity_provider(
         "deployment_aws_runtime",
         Mock(return_value=SimpleNamespace(clients=Mock())),
     )
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
+    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config", fetch_config)
     return provider, fetch_config
 
 
@@ -109,7 +108,7 @@ def _capacity_enrichment_case(
         "deployment_aws_runtime",
         Mock(return_value=SimpleNamespace(clients=Mock())),
     )
-    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config_async", fetch_config)
+    monkeypatch.setattr(scheduler_overview_api, "fetch_sandbox_provider_config", fetch_config)
     monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_READ_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(scheduler_overview_api, "_CAPACITY_REQUEST_TIMEOUT_SECONDS", 0.03)
     monkeypatch.setattr(scheduler_overview_api, "_PROVIDER_CLOSE_TIMEOUT_SECONDS", 10.0)
@@ -128,7 +127,6 @@ def _capacity_enrichment_case(
     references = {
         _QUEUE_POOL_ID: {
             _PoolProviderReference(
-                aws_managed=True,
                 provider_type="daytona",
                 secret_name="provider-secret",
             )
@@ -137,7 +135,7 @@ def _capacity_enrichment_case(
     request = asyncio.create_task(
         scheduler_overview_api._enrich_scheduler_capacity(  # pyright: ignore[reportPrivateUsage]
             overview,
-            org_id=TEST_ORG_ID,
+            org=_TEST_ORG,
             references=references,
         )
     )
@@ -406,7 +404,7 @@ async def test_route_offloads_synchronous_database_reads(monkeypatch: pytest.Mon
             waiting_limit=100,
             active_limit=100,
             include_capacity=True,
-            org=Org(id=TEST_ORG_ID, name="test"),
+            org=_TEST_ORG,
             session=cast(Session, Mock()),
         ),
         release_from_event_loop(),
@@ -414,15 +412,17 @@ async def test_route_offloads_synchronous_database_reads(monkeypatch: pytest.Mon
 
     assert result is overview
     assert timed_out_reads == []
-    enrich.assert_awaited_once_with(overview, org_id=TEST_ORG_ID, references={})
+    enrich.assert_awaited_once_with(overview, org=_TEST_ORG, references={})
 
 
+@pytest.mark.parametrize("pool_id", [_QUEUE_POOL_ID, reserved_queue_pool_id(_QUEUE_POOL_ID)])
 def test_capacity_route_projects_provider_values_and_uses_complete_pool_references(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
+    pool_id: str,
 ) -> None:
-    first = _provider_queue(make_benchmark(name="first"))
-    second = _provider_queue(make_benchmark(name="second"))
+    first = _provider_queue(make_benchmark(name="first"), pool_id=pool_id)
+    second = _provider_queue(make_benchmark(name="second"), pool_id=pool_id)
     database_session.add_all([first, second, _waiting_task(first, "first"), _waiting_task(second, "second")])
     database_session.commit()
     provider, fetch_config = _capacity_provider(
@@ -459,7 +459,7 @@ def test_capacity_route_projects_provider_values_and_uses_complete_pool_referenc
     assert response.status_code == 200
     (pool,) = response.json()["pools"]
     domains = pool.pop("capacity_domains")
-    assert pool == {"pool_id": _QUEUE_POOL_ID, "waiting": 2, "provider": "daytona"}
+    assert pool == {"pool_id": pool_id, "waiting": 2, "provider": "daytona"}
     assert [(domain["target_id"], domain["sandbox_class"]) for domain in domains] == [
         ("region-b", "linux-vm"),
         ("region-a", "container"),
@@ -525,22 +525,16 @@ def test_capacity_route_enriches_active_only_pool(
     provider.close.assert_awaited_once()
 
 
-def test_access_key_and_ambiguous_pools_never_use_deployment_aws(
+def test_ambiguous_pools_never_use_deployment_aws(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    access_key = _provider_queue(make_benchmark(name="access-key"), aws_managed=False)
-    managed = _provider_queue(make_benchmark(name="managed"))
     first = _provider_queue(make_benchmark(name="first"), pool_id="pool_ambiguous", secret_name="first-secret")
     second = _provider_queue(make_benchmark(name="second"), pool_id="pool_ambiguous", secret_name="second-secret")
     database_session.add_all(
         [
-            access_key,
-            managed,
             first,
             second,
-            _waiting_task(access_key, "access-key"),
-            _waiting_task(managed, "managed"),
             _waiting_task(first, "first"),
             _waiting_task(second, "second"),
         ]
@@ -554,7 +548,6 @@ def test_access_key_and_ambiguous_pools_never_use_deployment_aws(
     assert response.status_code == 200
     assert response.json()["pools"] == [
         {"pool_id": "pool_ambiguous", "waiting": 2, "provider": "daytona", "capacity_domains": None},
-        {"pool_id": _QUEUE_POOL_ID, "waiting": 2, "provider": "daytona", "capacity_domains": None},
     ]
     deployment_runtime.assert_not_called()
 
@@ -569,7 +562,7 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
     )
 
     drifted = await scheduler_overview_api._read_provider_capacity(  # pyright: ignore[reportPrivateUsage]
-        org_id=TEST_ORG_ID,
+        org=_TEST_ORG,
         pool_id=_QUEUE_POOL_ID,
         provider_type="daytona",
         secret_name="provider-secret",
@@ -586,7 +579,7 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
     provider.close.reset_mock()
 
     empty = await scheduler_overview_api._read_provider_capacity(  # pyright: ignore[reportPrivateUsage]
-        org_id=TEST_ORG_ID,
+        org=_TEST_ORG,
         pool_id=_QUEUE_POOL_ID,
         provider_type="daytona",
         secret_name="provider-secret",
@@ -606,7 +599,7 @@ async def test_capacity_timeout_closes_provider_and_pool_drift_skips_observation
     loop = asyncio.get_running_loop()
 
     timed_out = await scheduler_overview_api._read_provider_capacity(  # pyright: ignore[reportPrivateUsage]
-        org_id=TEST_ORG_ID,
+        org=_TEST_ORG,
         pool_id=_QUEUE_POOL_ID,
         provider_type="daytona",
         secret_name="provider-secret",
@@ -649,7 +642,6 @@ async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch:
     references = {
         pool_id: {
             scheduler_overview_api._PoolProviderReference(  # pyright: ignore[reportPrivateUsage]
-                aws_managed=True,
                 provider_type="daytona",
                 secret_name=f"secret-{index}",
             )
@@ -666,13 +658,13 @@ async def test_capacity_enrichment_bounds_concurrent_provider_reads(monkeypatch:
     )
     monkeypatch.setattr(
         scheduler_overview_api,
-        "fetch_sandbox_provider_config_async",
+        "fetch_sandbox_provider_config",
         blocking_provider_config,
     )
 
     result = await scheduler_overview_api._enrich_scheduler_capacity(  # pyright: ignore[reportPrivateUsage]
         overview,
-        org_id=TEST_ORG_ID,
+        org=_TEST_ORG,
         references=references,
     )
 

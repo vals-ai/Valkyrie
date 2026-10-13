@@ -19,18 +19,16 @@ async def start(
     model: str | None = None,
     concurrency: int = 5,
     priority: int | None = None,
-    properties: AWSResources | None = None,
-    managed_s3_bucket: str | None = None,
     task_ids: Sequence[str] | None = None,
     slice_str: str | None = None,
     dataset: str | None = None,
+    dataset_version: str | None = None,
     label: str | None = None,
     lambda_function: str | None = None,
     provider: str | None = None,
     agent_kwargs: Mapping[str, str] | None = None,
     secrets: Mapping[str, str] | None = None,
     service_headers: Mapping[str, str] | None = None,
-    webhook_intervals: Sequence[int] | None = None,
     ignore_custom_services: bool = False,
 ) -> StartBenchmarkResponse
 ```
@@ -58,14 +56,6 @@ async def start(
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"properties"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · AWSResources | None · default: <code>{"None"}</code></span></div>
-</div>
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"managed_s3_bucket"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
-</div>
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"task_ids"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Sequence[str] | None · default: <code>{"None"}</code></span></div>
 </div>
 
@@ -75,6 +65,10 @@ async def start(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"dataset"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"dataset_version"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -99,10 +93,6 @@ async def start(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"service_headers"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Mapping[str, str] | None · default: <code>{"None"}</code></span></div>
-</div>
-
-<div className="border-b border-gray-200 py-3 dark:border-gray-800">
-  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"webhook_intervals"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · Sequence[int] | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -463,6 +453,34 @@ async def update_concurrency(run_id: UUID, *, concurrency: int) -> UpdateBenchma
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
+## `client.runs.shed` {#shed}
+
+Lower an active run's concurrency and force stop the newest tasks above the new limit.
+
+```python Signature
+async def shed(run_id: UUID, *, concurrency: int, dry_run: bool = False) -> ShedBenchmarkResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"concurrency"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · int</span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"dry_run"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/runs#shed-benchmark-response"><code>ShedBenchmarkResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
 ## `client.runs.stop` {#stop}
 
 Stop a run or selected tasks.
@@ -509,6 +527,7 @@ async def resume(
     secrets: Mapping[str, str] | None = None,
     service_headers: Mapping[str, str] | None = None,
     from_scratch: bool = False,
+    update_agent: bool = False,
     benchmark_url: str | None = None,
 ) -> RetryOrResumeBenchmarkResponse
 ```
@@ -537,6 +556,10 @@ async def resume(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"from_scratch"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"update_agent"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
@@ -562,6 +585,7 @@ async def retry(
     secrets: Mapping[str, str] | None = None,
     service_headers: Mapping[str, str] | None = None,
     from_scratch: bool = False,
+    update_agent: bool = False,
     benchmark_url: str | None = None,
 ) -> RetryOrResumeBenchmarkResponse
 ```
@@ -590,6 +614,10 @@ async def retry(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"from_scratch"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"update_agent"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · bool · default: <code>{"False"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

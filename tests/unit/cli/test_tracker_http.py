@@ -6,6 +6,7 @@ Run: uv run pytest tests/unit/cli/test_tracker_http.py
 import json
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from functools import partial
 from uuid import UUID
 
 import httpx
@@ -26,19 +27,10 @@ def _tracker_with_handler(
     monkeypatch: pytest.MonkeyPatch,
     handler: Callable[[httpx.Request], httpx.Response],
 ) -> Generator[TrackerService, None, None]:
-    original_client = httpx.Client
     transport = httpx.MockTransport(handler)
 
-    def build_client(
-        *,
-        timeout: int | float | httpx.Timeout | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> httpx.Client:
-        return original_client(transport=transport, timeout=timeout, headers=headers)
-
-    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(lambda: {}))
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
-    tracker = TrackerService(base_url="http://tracker", require_config=False)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", partial(httpx.Client, transport=transport))
+    tracker = TrackerService(base_url="http://tracker")
 
     try:
         yield tracker
@@ -69,6 +61,7 @@ def _metadata_payload() -> dict[str, object]:
         "benchmark_id": str(_RUN_ID),
         "benchmark_name": "swebench",
         "benchmark_arguments": {
+            "environment": "aws",
             "contract": {"name": "agent", "install_cmd": "true", "run_cmd": "true"},
             "concurrency": 2,
             "dataset": "verified",
@@ -79,30 +72,6 @@ def _metadata_payload() -> dict[str, object]:
 
 class TestTrackerJsonEndpoints:
     """Typed parsing and request contracts for tracker JSON endpoints."""
-
-    def test_aws_runtime_metadata_uses_api_key_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Runtime discovery must authenticate without sending harness credentials."""
-        requests: list[httpx.Request] = []
-
-        def handle_request(request: httpx.Request) -> httpx.Response:
-            requests.append(request)
-            return httpx.Response(
-                200,
-                json={"mode": "managed", "region": "us-east-1", "s3_bucket": "managed-bucket"},
-                request=request,
-            )
-
-        with _tracker_with_handler(monkeypatch, handle_request):
-            runtime = TrackerService.aws_runtime_metadata("vals-key", base_url="http://tracker")
-
-        assert runtime.mode == "managed"
-        assert runtime.region == "us-east-1"
-        assert runtime.s3_bucket == "managed-bucket"
-        assert len(requests) == 1
-        assert requests[0].method == "GET"
-        assert requests[0].url.path == "/aws-runtime"
-        assert requests[0].headers["X-Api-Key"] == "vals-key"
-        assert not any(name.lower().startswith("x-harness-") for name in requests[0].headers)
 
     def test_malformed_success_response_raises_tracker_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Successful HTTP responses with an invalid tracker payload need a stable CLI error.
@@ -239,7 +208,7 @@ class TestTrackerJsonEndpoints:
         assert json.loads(task_request.content) == {
             "benchmark_name": "swebench",
             "dataset": "verified",
-            "custom_benchmark_service": None,
+            "ignore_custom_services": True,
             "service_headers": {"Authorization": "Bearer benchmark"},
         }
 

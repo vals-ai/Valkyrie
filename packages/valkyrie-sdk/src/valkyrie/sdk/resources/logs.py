@@ -33,14 +33,7 @@ class LogsResource:
         limit: int = 1_000,
     ) -> LogPage:
         """Fetch one page from a task's current log stream, including IDs containing `/`."""
-        params = _request_params(query, start_time, end_time, cursor, limit)
-        params["task_id"] = task_id
-        return await self._sdk.request_model(
-            "GET",
-            f"/benchmarks/{run_id}/logs",
-            LogPage,
-            params=params,
-        )
+        return await self._page(run_id, task_id, query, start_time, end_time, cursor, limit)
 
     async def fetch_task(
         self,
@@ -52,24 +45,7 @@ class LogsResource:
         end_time: datetime | None = None,
     ) -> list[LogEvent]:
         """Fetch every matching event from a task stream, including IDs containing `/`."""
-        events: list[LogEvent] = []
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        while True:
-            page = await self.page_task(
-                run_id,
-                task_id,
-                query=query,
-                start_time=start_time,
-                end_time=end_time,
-                cursor=cursor,
-            )
-            events.extend(page.events)
-            cursor = _next_cursor(page.next_cursor, seen_cursors)
-            if cursor is None:
-                break
-        events.sort(key=_event_sort_key)
-        return events
+        return await self._fetch(run_id, task_id, query, start_time, end_time)
 
     async def page_run(
         self,
@@ -82,13 +58,7 @@ class LogsResource:
         limit: int = 1_000,
     ) -> LogPage:
         """Fetch one page across every stream in a run."""
-        params = _request_params(query, start_time, end_time, cursor, limit)
-        return await self._sdk.request_model(
-            "GET",
-            f"/benchmarks/{run_id}/logs",
-            LogPage,
-            params=params,
-        )
+        return await self._page(run_id, None, query, start_time, end_time, cursor, limit)
 
     async def fetch_run(
         self,
@@ -99,23 +69,42 @@ class LogsResource:
         end_time: datetime | None = None,
     ) -> list[LogEvent]:
         """Fetch every matching event across a run."""
+        return await self._fetch(run_id, None, query, start_time, end_time)
+
+    async def _page(
+        self,
+        run_id: UUID,
+        task_id: str | None,
+        query: str | None,
+        start_time: datetime | None,
+        end_time: datetime | None,
+        cursor: str | None,
+        limit: int,
+    ) -> LogPage:
+        params = _request_params(task_id, query, start_time, end_time, cursor, limit)
+        return await self._sdk.request_model("GET", f"/benchmarks/{run_id}/logs", LogPage, params=params)
+
+    async def _fetch(
+        self,
+        run_id: UUID,
+        task_id: str | None,
+        query: str | None,
+        start_time: datetime | None,
+        end_time: datetime | None,
+    ) -> list[LogEvent]:
         events: list[LogEvent] = []
         cursor: str | None = None
         seen_cursors: set[str] = set()
         while True:
-            page = await self.page_run(
-                run_id,
-                query=query,
-                start_time=start_time,
-                end_time=end_time,
-                cursor=cursor,
-            )
+            page = await self._page(run_id, task_id, query, start_time, end_time, cursor, 1_000)
             events.extend(page.events)
-            cursor = _next_cursor(page.next_cursor, seen_cursors)
+            cursor = page.next_cursor
             if cursor is None:
-                break
-        events.sort(key=_event_sort_key)
-        return events
+                events.sort(key=_event_sort_key)
+                return events
+            if cursor in seen_cursors:
+                raise ValkyrieStreamError("Valkyrie log pagination returned a repeated cursor")
+            seen_cursors.add(cursor)
 
     @handle_httpx_stream_errors("Valkyrie log stream failed")
     async def stream_task(
@@ -128,9 +117,7 @@ class LogsResource:
         end_time: datetime | None = None,
     ) -> AsyncIterator[LogEvent]:
         """Yield events from one task stream, including task IDs containing `/`."""
-        params = _request_params(query, start_time, end_time, None, 1_000)
-        params.pop("limit")
-        params["task_id"] = task_id
+        params = _request_params(task_id, query, start_time, end_time)
         async with self._sdk.stream_response(
             "GET",
             f"/benchmarks/{run_id}/logs/stream",
@@ -165,11 +152,12 @@ class LogsResource:
 
 
 def _request_params(
+    task_id: str | None,
     query: str | None,
     start_time: datetime | None,
     end_time: datetime | None,
-    cursor: str | None,
-    limit: int,
+    cursor: str | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     if query is not None and not query.strip():
         raise ValkyrieRunError("query must not be blank")
@@ -178,28 +166,18 @@ def _request_params(
             raise ValkyrieRunError(f"{name} must include a timezone offset")
     if start_time is not None and end_time is not None and end_time <= start_time:
         raise ValkyrieRunError("end_time must be later than start_time")
-    if limit < 1 or limit > 10_000:
+    if limit is not None and not 1 <= limit <= 10_000:
         raise ValkyrieRunError("limit must be between 1 and 10000")
 
-    params: dict[str, Any] = {"limit": limit}
-    if query is not None:
-        params["query"] = query
-    if start_time is not None:
-        params["start_time"] = start_time.isoformat()
-    if end_time is not None:
-        params["end_time"] = end_time.isoformat()
-    if cursor is not None:
-        params["cursor"] = cursor
-    return params
-
-
-def _next_cursor(cursor: str | None, seen_cursors: set[str]) -> str | None:
-    if cursor is None:
-        return None
-    if cursor in seen_cursors:
-        raise ValkyrieStreamError("Valkyrie log pagination returned a repeated cursor")
-    seen_cursors.add(cursor)
-    return cursor
+    params = {
+        "task_id": task_id,
+        "query": query,
+        "start_time": start_time and start_time.isoformat(),
+        "end_time": end_time and end_time.isoformat(),
+        "cursor": cursor,
+        "limit": limit,
+    }
+    return {key: value for key, value in params.items() if value is not None}
 
 
 def _parse_stream_event(event_name: str, data_lines: Sequence[str]) -> LogEvent | None:
@@ -211,9 +189,7 @@ def _parse_stream_event(event_name: str, data_lines: Sequence[str]) -> LogEvent 
             payload = data
         detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
         raise ValkyrieStreamError(f"Valkyrie log stream returned an error: {detail}")
-    if event_name == "end" or not data:
-        return None
-    if event_name != "log":
+    if event_name != "log" or not data:
         return None
     try:
         return LogEvent.model_validate_json(data)

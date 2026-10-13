@@ -5,7 +5,7 @@ import subprocess
 import sys
 from collections.abc import Generator
 from typing import Protocol
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
@@ -21,12 +21,17 @@ from testcontainers.postgres import PostgresContainer
 
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
+    Benchmark,
     BenchmarkStatus,
+    LocalBenchmarkArguments,
     ExecutorRelease,
     ExecutorReleaseStatus,
-    Org,
+    SandboxBuildReservation,
+    Task,
+    TaskStatus,
 )
+from tracker.local.resources import LocalResources
 
 _TRACKER_ROOT = Path(__file__).resolve().parents[4]
 _ALEMBIC_INI = _TRACKER_ROOT / "alembic.ini"
@@ -40,6 +45,11 @@ _DISPATCH_LEASE_REVISION = "6a7b8c9d0e1f"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 _TASK_LISTING_REVISION = "2d3e4f5a6b7c"
 _TASK_LISTING_PREDECESSOR = "1c2d3e4f5a6b"
+_SANDBOX_BUILD_RESERVATION_REVISION = "4f5a6b7c8d9e"
+_SANDBOX_BUILD_RESERVATION_PREDECESSOR = "3e4f5a6b7c8d"
+_ORG_BUCKET_REVISION = "a7b8c9d0e1f2"
+_ORG_BUCKET_PREDECESSOR = "b3c4d5e6f7a8"
+_DROP_AWS_MANAGED_REVISION = "c4d5e6f7a8b9"
 
 
 def test_migration_graph_has_single_head() -> None:
@@ -84,6 +94,65 @@ def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[s
         text=True,
         check=False,
     )
+
+
+def test_failure_category_migration_aborts_on_busy_table_and_retries(
+    migration_database_url: str,
+) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _TASK_LISTING_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.connect() as blocker:
+            blocker.execute(text("SELECT id FROM errorresult"))
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_alembic, migration_database_url, "upgrade", "head")
+                try:
+                    blocked = future.result(timeout=10)
+                finally:
+                    # Release even on assertion failure so the subprocess can exit.
+                    blocker.rollback()
+            assert blocked.returncode != 0
+            assert "lock timeout" in blocked.stderr
+
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                _TASK_LISTING_REVISION
+            )
+            assert (
+                connection.execute(text("SELECT count(*) FROM pg_type WHERE typname = 'failurecategory'")).scalar_one()
+                == 0
+            )
+            assert "category" not in {column["name"] for column in inspect(connection).get_columns("errorresult")}
+
+        retry = _run_alembic(migration_database_url, "upgrade", "head")
+        assert retry.returncode == 0, retry.stderr
+        with engine.connect() as connection:
+            columns = {column["name"]: column for column in inspect(connection).get_columns("errorresult")}
+            assert columns["category"]["nullable"] is True
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_current_head()
+            )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("predecessor", ["3e4f5a6b7c8d", "b4c5d6e7f8a9"])
+def test_dispatch_and_failure_category_heads_upgrade_together(migration_database_url: str, predecessor: str) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", predecessor)
+    assert upgrade.returncode == 0, upgrade.stderr
+    merge = _run_alembic(migration_database_url, "upgrade", "1f12bae14561")
+    assert merge.returncode == 0, merge.stderr
+    engine = create_engine(migration_database_url)
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "1f12bae14561"
+            inspector = inspect(connection)
+            assert "executor_dispatch_payload" in inspector.get_table_names()
+            columns = {column["name"]: column for column in inspector.get_columns("errorresult")}
+            assert columns["category"]["nullable"] is True
+    finally:
+        engine.dispose()
 
 
 class _TaskListingIndexRow(Protocol):
@@ -575,7 +644,11 @@ def test_current_execution_ownership_migration_rejects_downgrade(
     org_id = uuid4()
     benchmark_id = uuid4()
     with Session(engine) as session:
-        session.add(Org(id=org_id, name="migration-test-org"))
+        # The org table at this revision predates the ORM model's storage_key column.
+        session.execute(
+            text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+            {"id": org_id, "name": "migration-test-org"},
+        )
         session.add(
             ExecutorRelease(
                 id="migration-test-release",
@@ -589,7 +662,7 @@ def test_current_execution_ownership_migration_rejects_downgrade(
         session.commit()
         # Insert with explicit columns: the schema is pinned at the ownership
         # revision, which predates columns the current ORM model would include.
-        arguments = BenchmarkArguments(
+        arguments = AWSBenchmarkArguments(
             contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
         )
@@ -634,4 +707,144 @@ def test_current_execution_ownership_migration_rejects_downgrade(
         ).scalar_one()
     assert revision == _CURRENT_OWNERSHIP_REVISION
     assert stored_owner == "migration-test-release"
+    engine.dispose()
+
+
+def test_sandbox_build_reservation_upgrade_and_downgrade(
+    migration_database_url: str,
+) -> None:
+    def migrate(direction: str, revision: str) -> None:
+        result = _run_alembic(migration_database_url, direction, revision)
+        assert result.returncode == 0, result.stderr
+
+    migrate("upgrade", _SANDBOX_BUILD_RESERVATION_PREDECESSOR)
+    engine = create_engine(migration_database_url)
+    attempt_started_at = datetime(2026, 9, 29, 12)
+    org_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+            {"id": org_id, "name": f"migration-reservation-{org_id}"},
+        )
+    with Session(engine, expire_on_commit=False) as session:
+        benchmark = Benchmark(
+            org_id=org_id,
+            name="migration reservation",
+            arguments=AWSBenchmarkArguments(
+                contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
+                concurrency=1,
+                queue_pool_id="pool_migration",
+            ),
+        )
+        session.add(benchmark)
+        session.flush()
+        task = Task(
+            org_id=org_id,
+            task_id="reserved-task",
+            benchmark=benchmark.id,
+            status=TaskStatus.BUILDING,
+            started_at=attempt_started_at,
+        )
+        session.add(task)
+        session.commit()
+
+    migrate("upgrade", _SANDBOX_BUILD_RESERVATION_REVISION)
+    with Session(engine) as session:
+        session.add(
+            SandboxBuildReservation(
+                task_row_id=task.id,
+                attempt_started_at=attempt_started_at,
+                pool_id="pool_migration",
+                requested_vcpu=1,
+                requested_memory=2,
+                requested_disk=3,
+            )
+        )
+        session.commit()
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE task SET status = 'ERROR', finished_at = :finished_at WHERE id = :id"),
+            {"id": task.id, "finished_at": attempt_started_at + timedelta(seconds=1)},
+        )
+        remaining = connection.execute(
+            text("SELECT count(*) FROM sandboxbuildreservation WHERE task_row_id = :id"), {"id": task.id}
+        ).scalar_one()
+        assert remaining == 1
+
+    migrate("downgrade", _SANDBOX_BUILD_RESERVATION_PREDECESSOR)
+    assert "sandboxbuildreservation" not in inspect(engine).get_table_names()
+    engine.dispose()
+
+
+def test_org_bucket_migration_records_the_deployment_bucket_for_vals_only(
+    migration_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Vals keeps the bucket it already uses; Tracker creates every other organization's bucket later."""
+    monkeypatch.setenv("AWS_DEPLOYMENT_S3_BUCKET", "agentic-harness-test")
+    upgrade = _run_alembic(migration_database_url, "upgrade", _ORG_BUCKET_PREDECESSOR)
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+            [{"id": uuid4(), "name": "vals.ai"}, {"id": uuid4(), "name": "acme.example"}],
+        )
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _ORG_BUCKET_REVISION)
+
+    assert upgrade.returncode == 0, upgrade.stderr
+    with engine.connect() as connection:
+        buckets = {row.name: row.storage_key for row in connection.execute(text("SELECT name, storage_key FROM org"))}
+    assert buckets["vals.ai"] == "agentic-harness-test"
+    assert buckets["acme.example"] is None
+    downgrade = _run_alembic(migration_database_url, "downgrade", _ORG_BUCKET_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    engine.dispose()
+
+
+def test_dropping_aws_managed_downgrades_with_every_aws_run_marked_managed(migration_database_url: str) -> None:
+    """The flag is gone after upgrade; downgrade restores it so the previous Tracker can still resume AWS runs."""
+    upgrade = _run_alembic(migration_database_url, "upgrade", _ORG_BUCKET_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    org_id = uuid4()
+    contract = AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true")
+    runs = {
+        "aws": AWSBenchmarkArguments(contract=contract, concurrency=1).model_dump_json(),
+        "local": LocalBenchmarkArguments(
+            contract=contract,
+            concurrency=1,
+            properties=LocalResources(data_root=Path("/tmp/valkyrie")),
+            sandbox_provider="docker",
+        ).model_dump_json(),
+    }
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO org (id, name) VALUES (:id, :name)"), {"id": org_id, "name": "org"})
+        for name, arguments in runs.items():
+            connection.execute(
+                text(
+                    "INSERT INTO benchmark"
+                    " (id, org_id, name, started_at, finished_at, status, arguments, docent_reading_status)"
+                    " VALUES (:id, :org_id, :name, now(), now(), CAST(:status AS benchmarkstatus),"
+                    " CAST(:arguments AS json), CAST('IDLE' AS docentreadingstatus))"
+                ),
+                {
+                    "id": uuid4(),
+                    "org_id": org_id,
+                    "name": name,
+                    "status": BenchmarkStatus.FINISHED.value,
+                    "arguments": arguments,
+                },
+            )
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DROP_AWS_MANAGED_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "aws_managed" not in {column["name"] for column in inspect(engine).get_columns("benchmark")}
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _ORG_BUCKET_REVISION)
+    assert downgrade.returncode == 0, downgrade.stderr
+    with engine.connect() as connection:
+        flags = dict(connection.execute(text("SELECT name, aws_managed FROM benchmark")).all())
+    assert flags == {"aws": True, "local": False}
     engine.dispose()

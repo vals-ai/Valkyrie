@@ -3,27 +3,97 @@
 from __future__ import annotations
 
 import logging
+import os
 from threading import Event, Thread
 
-from sqlmodel import Session
+import boto3
+from botocore.config import Config
+from sqlalchemy import delete, select
+from sqlmodel import Session, col
 
+from executor_protocol import ExecutorDispatchStatus
+from tracker.database.models import ExecutorDispatch, ExecutorDispatchPayload, FailureCategory
 from tracker.database.session import engine
-from tracker.executor.dispatch_control import reconcile_expired_dispatches
+from tracker.executor.dispatch_control import record_dispatch_failure, reconcile_expired_dispatches
+from tracker.run_access_keys import delete_finished_run_keys
 
 _RECONCILIATION_INTERVAL_SECONDS = 60.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _logger = logging.getLogger(__name__)
+_ECS_CONFIG = Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 1})
+
+
+def _reconcile_stopped_tasks(session: Session) -> int:
+    candidates = session.exec(
+        select(ExecutorDispatch.id, ExecutorDispatch.ecs_task_arn)
+        .where(ExecutorDispatch.status == ExecutorDispatchStatus.QUEUED)
+        .where(ExecutorDispatch.ecs_task_arn.is_not(None))
+    ).all()
+    if not candidates:
+        return 0
+    ecs = boto3.client("ecs", config=_ECS_CONFIG)
+    recovered = 0
+    for offset in range(0, len(candidates), 100):
+        batch = candidates[offset : offset + 100]
+        response = ecs.describe_tasks(cluster=os.environ["EXECUTOR_RUNNER_CLUSTER"], tasks=[arn for _, arn in batch])
+        dispatch_ids = {arn: dispatch_id for dispatch_id, arn in batch}
+        for task in response["tasks"]:
+            if task["lastStatus"] != "STOPPED":
+                continue
+            dispatch = session.get(ExecutorDispatch, dispatch_ids[task["taskArn"]])
+            reasons = [task.get("stoppedReason"), *(c.get("reason") for c in task.get("containers", []))]
+            message = "; ".join(reason for reason in reasons if reason)
+            if record_dispatch_failure(
+                session,
+                benchmark_id=dispatch.benchmark_id,
+                dispatch_id=dispatch.id,
+                task_ids=dispatch.assigned_task_ids or [],
+                error_message=f"Executor task stopped before claim: {message}",
+                producer="executor_dispatch",
+                operation="dispatch_reconciliation",
+                error_type="ExecutorTaskStoppedBeforeClaim",
+                category=FailureCategory.INFRASTRUCTURE,
+                cause_code="ECS_TASK_STOPPED",
+                failure_reason="ECS_TASK_STOPPED",
+                dispatch_status=ExecutorDispatchStatus.QUEUED,
+            ):
+                recovered += 1
+    return recovered
 
 
 def reconcile_expired_dispatches_once() -> int:
-    """Run one atomic lease-reconciliation pass in a fresh database session."""
-    with Session(engine) as session:
-        try:
-            recovered_count = reconcile_expired_dispatches(session)
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
+    """Fail ECS tasks that stopped before claiming, then run one lease-reconciliation pass.
+
+    The ECS check runs first so a task that stopped near its claim deadline keeps ECS's stop reason. Each pass
+    commits on its own, and database recovery still runs when the ECS check fails.
+    """
+    recovered_count = 0
+    try:
+        if os.environ["EXECUTOR_LAUNCHER"] == "ecs":
+            with Session(engine) as session:
+                try:
+                    recovered_count += _reconcile_stopped_tasks(session)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+    finally:
+        with Session(engine) as session:
+            try:
+                recovered_count += reconcile_expired_dispatches(session)
+                session.exec(
+                    delete(ExecutorDispatchPayload).where(
+                        col(ExecutorDispatchPayload.dispatch_id).in_(
+                            select(ExecutorDispatch.id).where(
+                                col(ExecutorDispatch.status) != ExecutorDispatchStatus.QUEUED
+                            )
+                        )
+                    )
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
     return recovered_count
 
 
@@ -41,6 +111,10 @@ def run_dispatch_recovery_loop(
                 "executor_dispatch_recovery_failed",
                 extra={"event": "automatic_dispatch_recovery_failed"},
             )
+        try:
+            delete_finished_run_keys(engine)
+        except Exception:
+            _logger.exception("run_access_key_cleanup_failed")
         stop_event.wait(interval_seconds)
 
 

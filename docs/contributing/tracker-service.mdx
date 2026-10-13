@@ -3,19 +3,62 @@ title: Tracker service
 description: Architecture, local commands, and test suites for the tracker backend.
 ---
 
-The tracker is the FastAPI backend. It serves the CLI and SDK API, tracks run and task state in PostgreSQL, writes artifacts to S3, and publishes task dispatches through Redis. Each dispatch names an executor release. ExecutorHost picks the dispatch up and runs that release in a sandbox.
+The tracker is the FastAPI backend. It serves the CLI and SDK API, tracks run and task state in PostgreSQL, and writes artifacts to S3. Admission stores an encrypted payload row with each queued dispatch. In deployed stages Tracker launches one ECS runner task per dispatch; the runner claims the row, deletes and decrypts its payload transactionally, verifies the pinned executor release artifact, and runs it in a child process.
 
-Local Docker Compose starts the tracker, PostgreSQL, and Redis only. It does not run ExecutorHost or create an active executor release, so a locally started run never executes. Use a deployed environment to run benchmarks.
+Local Docker Compose starts Tracker and PostgreSQL with `EXECUTOR_LAUNCHER=local`, which spawns a runner subprocess per dispatch. It does not create an active executor release or external benchmark services, so a fresh local run cannot execute until those prerequisites are configured.
 
 ## Run configuration
 
-Runs currently support `environment: "aws"` only. Optional `properties` sets the AWS region, S3 bucket, log group, and log retention. Managed runs use deployment settings. Runs using your AWS credentials may supply their own properties.
+Runs support `environment: "aws"` or `environment: "local"`. AWS execution uses deployment-managed authority and writes to the organization's own S3 bucket. Tracker sets each run's AWS `properties`; a request that sends them must match. Local execution uses its configured local data root.
 
-New runs retain these locations for retries, resumes, and artifact reads. Older runs without saved properties use the current settings.
+New runs retain these locations for retries, resumes, and artifact reads. Older runs without saved properties use the current settings. A run saved in a bucket that is no longer its organization's bucket returns HTTP 410.
+
+## Organization buckets
+
+Every organization that may use managed AWS stores agents and run artifacts in its own bucket, whose name is recorded as the `storage_key` on its `org` row. Tracker creates the bucket the first time the organization authenticates. The bucket is named `$AWS_TENANT_BUCKET_PREFIX-<first 16 hex characters of the SHA-256 of the tenant name>`, so bucket names never contain tenant names. New buckets are versioned, expire noncurrent versions after 30 days, abort incomplete uploads after 1 day, and are created tagged `valkyrie:org-id` with attribute-based access control (ABAC) turned on. When authentication is on, Tracker and executors reach those objects through tenant access roles that only match buckets tagged with the organization's ID; see [AWS permissions](/self-hosting/aws-permissions#tenant-access-roles).
+
+A migration records the deployment bucket (`AWS_DEPLOYMENT_S3_BUCKET`) as the `vals.ai` organization's `storage_key`, so Vals keeps its bucket and follows the same path as every other organization. A self-hosted Tracker without authentication serves its one organization from the deployment bucket. Requests never choose a bucket.
 
 ## Benchmark-service authentication
 
-The tracker forwards its inbound Descope API key only when the benchmark-service origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives that key. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
+A hosted benchmark service receives a Descope access key only when its origin matches the hosted origin derived from the benchmark name and tracker configuration. A custom origin never receives one. Custom services authenticate with explicit headers or a stored service secret instead. See [Benchmark authentication](/benchmarks/authentication).
+
+With authentication on, the tracker sends its own key instead of the caller's. Each run start, resume or retry that does not supply its own `X-Descope-Api-Key` service header creates a Descope access key scoped to the run's tenant with no roles and no user binding, carrying the `valkyrie_run_key` claim so the tracker refuses it as an API credential, and expiring after `RUN_ACCESS_KEY_TTL_SECONDS` (14 days by default).
+
+The dispatch payload carries the key's secret sealed, and direct calls to the hosted benchmark service, such as task verification on start and retry, send it in the `X-Descope-Api-Key` request header. The dispatch recovery loop deletes the keys of finished, stopped and failed runs that have no queued or running dispatch. Keys a failed start or resume created are deleted when that request finishes. Creating keys needs `DESCOPE_MANAGEMENT_KEY` with access-key management rights; without it, the tracker forwards the caller's own key, and a login session is refused with HTTP 503. Listing a benchmark's tasks and recomputing a final score call the service directly. They forward an access-key caller's own key; a login session instead gets a 10-minute key that is deleted when the request finishes.
+
+## Login sessions
+
+Every authenticated route accepts either an access key in `X-Api-Key` or a Descope session token in `Authorization: Bearer`. A session acts for the tenant named in `X-Valkyrie-Tenant` (HTTP 403 if the user isn't a member), otherwise for Descope's current tenant (`dct`), and otherwise for its only tenant. A session with several tenants and neither the header nor a current tenant among them gets HTTP 400. A run started with a session records the user's Descope ID as `started_by_id`.
+
+`valkyrie login` uses the OAuth device flow of a Descope OIDC application. Set that application's client ID as `DESCOPE_CLI_CLIENT_ID` (the GitHub Environment variable of the same name in deployments); for the project's default OIDC application it is the project ID. Then enable the device flow in the project's settings, with a Flow that includes the Device Flow User Code Verification and Approval actions. The tracker then serves the login settings at `GET /auth/cli` and accepts tokens issued to that client. Without `DESCOPE_CLI_CLIENT_ID`, `/auth/cli` returns 404 and the CLI asks for `VALKYRIE_API_KEY` instead. A logged-in user can create expiring access keys for CI with `POST /access-keys`. Each key is scoped to an organization the user belongs to in Descope and attributed to them through its `user_id` and verified `email` claims. They can revoke their own keys with `DELETE /access-keys/{key_id}`. These keys carry a `valkyrie_user_key` claim, and the tracker refuses one once its creator is no longer a member of its organization in Descope, within the same two-hour cache as a revoke.
+
+## Organizations
+
+Organizations are Descope tenants. Any signed-in user with a verified email can create one with `POST /orgs` and becomes its admin by holding the `DESCOPE_ORG_ADMIN_ROLE` role (default `Valkyrie Admin`) in it. People who join by invitation hold no role. Without that role in the Descope project, `POST /orgs` returns 503 and creates nothing.
+
+On bench (`VALKYRIE_STAGE=bench`), `PUT` and `DELETE /secrets/{name}` and `PUT` and `DELETE /sandbox-providers/{provider}` for `vals.ai` need a login session whose live Descope user record holds `DESCOPE_ORG_ADMIN_ROLE` in `vals.ai`. Other members and access keys, including CI keys, can still list its secrets and provider mappings.
+
+Existing organization IDs and tenant names, reserved names, IDs starting with `vals` or `valkyrie`, and IDs that `AWS_SHARED_SECRET_TENANTS` matches are refused. A login can be the admin of at most five organizations. The Tracker never sets self-provisioning domains; an operator sets them in Descope for domains they have verified, such as `vals.ai`, so sign-ups from that domain join its organization.
+
+Membership and roles are read from the Descope user record on every organization request, not from the session token. A login in several organizations must choose one with the `X-Valkyrie-Tenant` header or Descope's current tenant.
+
+Admins invite people with `POST /orgs/members`. Nobody joins until the invitee, signed in with that verified email, accepts with `POST /orgs/invitations/{organization}/accept` or declines with `DELETE /orgs/invitations/{organization}`. Invitations expire after 14 days; inviting again restarts them. `GET /orgs` lists the login's organizations and pending invitations. Admins list members and invitations with `GET /orgs/members`, and remove a member or cancel an invitation with `DELETE /orgs/members/{email}`. Removal ends organization-route access at once; other routes accept the member's session until it expires and a deleted key for up to two hours. These routes take login sessions only.
+
+The Descope project needs:
+
+- sign-up (self-provisioning) enabled,
+- a project role named by `DESCOPE_ORG_ADMIN_ROLE` (default `Valkyrie Admin`),
+- a management key (`DESCOPE_MANAGEMENT_KEY`) allowed to manage users, tenants and access keys,
+- a device flow that signs people up or in with a "Sign Up or In / OAuth" step whose default provider is Google. Anyone with a Google account can sign up; the Tracker decides what they can do.
+
+## Run settings
+
+- **Provider secrets** belong to the organization. `GET /sandbox-providers` lists which secret holds each sandbox provider's configuration, `PUT /sandbox-providers/{provider}` with `{"secret_name": ...}` sets one, and `DELETE /sandbox-providers/{provider}` removes one. Setting a mapping returns HTTP 404 unless the secret exists in the organization's store; organizations that `AWS_SHARED_SECRET_TENANTS` matches and Trackers without authentication skip that check.
+- **User settings** belong to one user in one organization. `GET /settings` returns the caller's default provider and saved benchmark services, `PUT /settings/default-provider` sets the default, and `PUT` and `DELETE /settings/benchmark-services/{benchmark}` change a service. A service's `PUT` body is `{"url": ...}`, optionally with `auth_secret_name`, an organization secret whose value the Tracker sends to the service, and `auth_header_name`, the header that carries it (`Authorization` by default; headers the Tracker controls are refused with HTTP 422). Naming a secret returns HTTP 404 unless it exists in the organization's store, under the same exemptions as provider secrets. An access key reads its creator's settings, or empty settings if it has no user, and only a login session can change them (HTTP 403 otherwise). A Tracker without authentication keeps one set of user settings, under the fixed user id `local`, for every caller. A saved URL passes the custom-service destination check when it is saved and again at every run start or task listing.
+- **Run start and task listing.** `POST /start-benchmark` and `POST /fetch-benchmark-tasks` take these settings from the Tracker. A request chooses only the provider, with `sandbox_provider`, and whether to skip saved services, with `ignore_custom_services`. The provider is the request's, else the user's default, else `daytona`. The provider secret is always the organization's mapping for that provider, and a hosted run on a provider with none fails with HTTP 400 naming `valkyrie provider set`. The service is the user's saved service for the benchmark, or the hosted service when none is saved or the request sets `ignore_custom_services`. A saved service's secret always goes with its URL: run start and task listing resolve it from the organization's store into its header, and a local Tracker refuses it with HTTP 400. The Tracker ignores the `sandbox_provider_secret_name`, `custom_benchmark_service`, `service_auth_header_name` and `service_auth_secret_name` that released clients send. Retries and resumes send only the headers in their own request.
+
+The CLI manages them with [`valkyrie provider`](/reference/cli/provider) and [`valkyrie benchmark service`](/reference/cli/benchmark#service-set).
 
 ## Sandbox scheduling
 
@@ -35,7 +78,7 @@ Add `include_capacity=true` to request best-effort CPU, memory, disk, and aggreg
 
 ## Agent library limits
 
-Agent upload and removal use the same authentication and AWS runtime as listing and downloading. Bundles remain in the shared `agents/` prefix. PUT replaces an existing alias; DELETE reports a missing alias as HTTP 404. Existing storage permissions can deny writes with HTTP 403. These endpoints do not grant additional permissions.
+Agent upload and removal use the same authentication and AWS runtime as listing and downloading. AWS bundles use `agents/<name>.zip` in the organization's bucket. Local bundles use `agents/<name>.zip` beneath the existing organization data root. Run snapshots remain under `benchmarks/<benchmark_id>/`. PUT replaces an existing alias; DELETE reports a missing alias as HTTP 404. Existing storage permissions can deny writes with HTTP 403. These endpoints do not grant additional permissions.
 
 Set these positive-integer environment variables on the Tracker process to override archive limits:
 
@@ -59,7 +102,7 @@ Individual targets:
 
 ```bash
 make build    # Build the tracker image
-make run      # Start the tracker, PostgreSQL, and Redis
+make run      # Start Tracker and PostgreSQL
 make stop     # Stop the local stack
 make clean    # Stop the stack and remove local images
 make logs     # Tail tracker logs
@@ -75,14 +118,11 @@ make test-integration-local  # Local API and Postgres tests
 make test-integration-live   # AWS, benchmark service, and sandbox tests
 ```
 
-`tests/integration/live` requires `services/tracker/.env`:
+`tests/integration/live` uses the AWS SDK default credential chain, including a local AWS SSO profile, and requires the following resource and service settings in `services/tracker/.env`:
 
 ```env
 # AWS: uses Secrets Manager and performs live S3 and CloudWatch create/read/delete tests
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=us-east-1
-AWS_SESSION_TOKEN=              # Optional, required for temporary credentials
 
 # Test infrastructure
 TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts
@@ -105,4 +145,8 @@ See [Database and migrations](/contributing/database) for the full guide.
 
 ### Runtime configuration rollout
 
-Stop admission and drain active runs before deploying Tracker with a compatible executor release. Verify a new run and a stopped-run resume before reopening admission.
+Only the one-time runner cutover and CI-classified maintenance changes (such as
+unsafe migrations) stop admission and drain active runs; verify a new run and a
+stopped-run resume before reopening admission after those deployments. Ordinary
+Tracker and runner deployments register a new runner task-definition revision
+for new dispatches and do not drain running dispatches.

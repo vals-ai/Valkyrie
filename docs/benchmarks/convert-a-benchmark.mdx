@@ -253,12 +253,12 @@ You do not need to deploy to test. Run the service locally, [expose it with a re
     </Note>
   </Step>
 
-  <Step title="Register the tunnel">
+  <Step title="Save the tunnel">
     ```bash
-    valkyrie config service set <benchmark-name> https://my-tunnel.ngrok-free.dev
+    valkyrie benchmark service set <benchmark-name> https://my-tunnel.ngrok-free.dev
     ```
 
-    Re-register whenever the tunnel restarts with a new address. See [custom benchmark services](/benchmarks/custom-services) for how registration resolves, and [benchmark authentication](/benchmarks/authentication) once the service enforces auth.
+    Save the new address whenever the tunnel restarts. See [custom benchmark services](/benchmarks/custom-services) for how saved URLs resolve, and [benchmark authentication](/benchmarks/authentication) once the service enforces auth.
   </Step>
 
   <Step title="Run one task">

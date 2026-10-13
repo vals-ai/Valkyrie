@@ -1,7 +1,8 @@
 """Shared fixtures for tracker unit tests."""
 
+import base64
 import os
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager
 from types import ModuleType
 from typing import Any, cast
@@ -18,12 +19,12 @@ from benchmark_service.schemas import (
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
-from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
+from tests.unit.utils.task_execution_support import MockLauncher, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
-from tracker.database.models import Org
+from tracker.database.models import ExecutorDispatch, ExecutorDispatchPayload, Org, OrgProviderSecret
 from tracker.database.session import get_session
-from tracker.types import AWSCredentials, HarnessConfig
+from tracker.executor.dispatch_payload import SealedPayload, open_payload
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
@@ -36,39 +37,6 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 # Import the app after configuring the AWS environment.
 from main import app
-
-
-@pytest.fixture
-def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
-    return HarnessConfig(
-        aws=aws_credentials,
-        s3_bucket="test-bucket",
-        log_group="test-log-group",
-        log_retention_policy=30,
-        sandbox_provider_secret_name="test-daytona-secret",
-    )
-
-
-@pytest.fixture
-def harness_headers(harness_config: HarnessConfig) -> dict[str, str]:
-    """Provide complete access-key request headers."""
-    headers = {
-        "X-Harness-AWS-Access-Key-Id": harness_config.aws.aws_access_key_id,
-        "X-Harness-AWS-Secret-Access-Key": harness_config.aws.aws_secret_access_key,
-        "X-Harness-AWS-Default-Region": harness_config.aws.aws_default_region,
-        "X-Harness-S3-Bucket": harness_config.s3_bucket,
-        "X-Harness-Log-Group": harness_config.log_group,
-        "X-Harness-Log-Retention-Policy": str(harness_config.log_retention_policy),
-        "X-Harness-Sandbox-Provider-Secret-Name": harness_config.sandbox_provider_secret_name,
-    }
-    if harness_config.aws.aws_session_token:
-        headers["X-Harness-AWS-Session-Token"] = harness_config.aws.aws_session_token
-    return headers
-
-
-@pytest.fixture
-def aws_runtime(harness_config: HarnessConfig) -> AWSRuntime:
-    return AWSRuntime.from_harness_config(harness_config)
 
 
 @pytest.fixture
@@ -92,9 +60,6 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_get_bytes(*_args: Any, **_kwargs: Any) -> bytes:
         return b"mock-contract-content"
 
-    def _mock_get_contract_s3_key(contract_name: str) -> str:
-        return f"contracts/{contract_name}.zip"
-
     async def _mock_upload_to_s3(*_args: Any, **_kwargs: Any) -> None:
         return None
 
@@ -102,9 +67,23 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.get_bytes", _mock_get_bytes)
-    monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.put_bytes", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
+
+
+@pytest.fixture(autouse=True)
+def managed_deployment_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in {
+        "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
+        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
+        "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
+        "AWS_DEPLOYMENT_REGION": "us-east-1",
+        "AWS_DEPLOYMENT_S3_BUCKET": "test-bucket",
+        "AWS_DEPLOYMENT_LOG_GROUP": "test-log-group",
+        "AWS_DEPLOYMENT_LOG_RETENTION_DAYS": "30",
+    }.items():
+        monkeypatch.setattr("tracker.config." + key, value)
+    monkeypatch.setattr("tracker.aws.s3.S3ObjectStore.exists", AsyncMock(return_value=True))
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +101,7 @@ def override_database_session(database_session: Session, monkeypatch: pytest.Mon
 @pytest.fixture(autouse=True)
 def override_org(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override get_current_org to return a test org."""
-    test_org = Org(id=TEST_ORG_ID, name="default")
+    test_org = Org(id=TEST_ORG_ID, name="default", storage_key="test-bucket")
     monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: test_org)
 
 
@@ -133,17 +112,18 @@ def override_starter(monkeypatch: pytest.MonkeyPatch) -> None:
     Tests that need a different identity (e.g. hosted-mode with custom claims) can
     monkeypatch app.dependency_overrides[get_current_starter] inside the test body.
     """
-    test_org = Org(id=TEST_ORG_ID, name="default")
-    monkeypatch.setitem(
-        app.dependency_overrides,
-        get_current_starter,
-        lambda: RequestIdentity(
-            org=test_org,
-            access_key_id=None,
-            email=None,
-            name=None,
-        ),
+    test_org = Org(id=TEST_ORG_ID, name="default", storage_key="test-bucket")
+    monkeypatch.setitem(app.dependency_overrides, get_current_starter, lambda: RequestIdentity(org=test_org))
+
+
+@pytest.fixture
+def mapped_providers(database_session: Session) -> None:
+    """Map the test organization's sandbox providers to the secrets its runs use."""
+    database_session.add_all(
+        OrgProviderSecret(org_id=TEST_ORG_ID, provider=provider, secret_name=secret)
+        for provider, secret in {"daytona": "provider-secret", "modal": "ModalSecrets"}.items()
     )
+    database_session.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -173,7 +153,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
     if cast(ModuleType, request.module).__name__ == "tests.unit.aws.test_clients":
         return
 
-    def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_create_benchmark(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     def _mock_write(*_args: Any, **_kwargs: Any) -> None:
@@ -187,7 +167,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequ
 
 @pytest.fixture(autouse=True)
 def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    def get(_self: object, _name: str) -> dict[str, str]:
+    async def get(_self: object, _name: str) -> dict[str, str]:
         return {
             "DAYTONA_API_KEY": "test-key",
             "DAYTONA_API_URL": "http://localhost:8001",
@@ -196,13 +176,6 @@ def mock_secret_store(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get", get)
-
-    async def get_async(self: object, name: str) -> object:
-        from tracker.aws.secrets import SecretsManagerStore
-
-        return SecretsManagerStore.get(cast(SecretsManagerStore, self), name)
-
-    monkeypatch.setattr("tracker.aws.secrets.SecretsManagerStore.get_async", get_async)
 
 
 @pytest.fixture(autouse=True)
@@ -222,11 +195,32 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_kicker(monkeypatch: pytest.MonkeyPatch) -> MockKicker:
-    """Record queued benchmark work without starting the broker."""
-    kicker = MockKicker()
-    monkeypatch.setattr("main.process_benchmark.kicker", lambda: kicker)
-    return kicker
+def mock_launcher(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> MockLauncher:
+    """Capture committed dispatch inputs without starting a runner."""
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
+    monkeypatch.delenv("EXECUTOR_PAYLOAD_KMS_KEY_ID", raising=False)
+    launcher = MockLauncher()
+
+    async def launch(dispatch: ExecutorDispatch) -> None:
+        with Session(database_session.get_bind()) as session:
+            row = session.get(ExecutorDispatchPayload, dispatch.id)
+            assert row is not None
+            payload = open_payload(
+                dispatch.id,
+                SealedPayload(row.ciphertext, row.encrypted_data_key, row.nonce),
+            )
+            payload.update(
+                executor_dispatch_id=str(dispatch.id),
+                executor_release_id=dispatch.executor_release_id,
+                executor_artifact_uri=dispatch.executor_artifact_uri,
+                executor_artifact_digest=dispatch.executor_artifact_digest,
+                executor_protocol_version=dispatch.executor_protocol_version,
+            )
+            launcher.record(payload)
+
+    monkeypatch.setattr("main.launch_dispatch", launch)
+    return launcher
 
 
 @pytest.fixture
@@ -234,6 +228,10 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     """Use deterministic local dependencies for run-orchestration behavior tests."""
 
     sandbox_count = 0
+
+    async def inline_admission(function: Callable[..., Any], *args: Any) -> Any:
+        # SQLite's StaticPool shares one connection, so admission must not race the monitor on another thread.
+        return function(*args)
 
     @asynccontextmanager
     async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
@@ -264,6 +262,7 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
         return None
 
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.task_execution.to_thread", inline_admission)
     monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
     monkeypatch.setattr(TaskMonitor, "_TRACK_INTERVAL", 0)
     monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", _mock_recover_queued_pool)
@@ -272,15 +271,20 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
     monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+    monkeypatch.setattr("tracker.aws.services.dry_run_lambda", AsyncMock())
 
 
 @pytest.fixture
-async def runtime_services(
-    aws_runtime: AWSRuntime, harness_config: HarnessConfig
-) -> AsyncGenerator[RuntimeServices, None]:
+async def runtime_services(aws_runtime: AWSRuntime) -> AsyncGenerator[RuntimeServices, None]:
     """Compose the task runtime using the shared deterministic AWS configuration."""
     runtime = CloudRuntimeFactory.create_runtime(
         aws_runtime,
-        sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
+        sandbox_provider_secret_name="test-daytona-secret",
     )
     yield runtime
+
+
+@pytest.fixture
+def without_descope_management(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tracker.run_access_keys.AUTH_REQUIRED", True)
+    monkeypatch.setattr("tracker.run_access_keys.descope_access_keys", lambda: None)

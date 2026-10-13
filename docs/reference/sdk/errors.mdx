@@ -11,7 +11,6 @@ Catch `ValkyrieSDKError` to handle every SDK-defined failure, or catch a specifi
 | --- | --- |
 | [`ValkyrieAPIError`](#valkyrieapierror) | `ValkyrieSDKError` |
 | [`ValkyrieConfigError`](#valkyrieconfigerror) | `ValkyrieSDKError` |
-| [`ValkyrieRunAcceptedError`](#valkyrierunacceptederror) | `ValkyrieRunError` |
 | [`ValkyrieRunError`](#valkyrierunerror) | `ValkyrieSDKError` |
 | [`ValkyrieSDKError`](#valkyriesdkerror) | `Exception` |
 | [`ValkyrieStreamError`](#valkyriestreamerror) | `ValkyrieSDKError` |
@@ -27,28 +26,18 @@ ValkyrieAPIError(status_code: int, detail: Any)
 
 ## `ValkyrieConfigError`
 
-The supplied Valkyrie configuration is missing or invalid.
+A saved Valkyrie login could not be read, or signing in or refreshing it failed.
 
 ```python
 ValkyrieConfigError(*args: object)
 ```
 
-## `ValkyrieRunAcceptedError`
-
-The run exists with the requested storage, but its dispatch was not acknowledged.
-
-The run is safe to reconcile or retry by ``run_id``. It is not a storage rejection.
-
-```python
-ValkyrieRunAcceptedError(*args: object)
-```
-
 ## `ValkyrieRunError`
 
-A run operation received invalid input or an unconfirmed start response.
+A run operation received invalid input.
 
 ```python
-ValkyrieRunError(message: str, *, run_id: uuid.UUID | None = None) -> None
+ValkyrieRunError(*args: object)
 ```
 
 ## `ValkyrieSDKError`

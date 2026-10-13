@@ -1,6 +1,5 @@
 import asyncio
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import click
@@ -9,25 +8,25 @@ from tracker.agent.schemas import AgentConfig
 from tracker.database.models import AgentContractRequest
 from tracker.types import StartBenchmarkResponse
 
+from valkyrie.sdk.errors import ValkyrieSDKError
+
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent_if_absent
+from valkyrie.cli.agent.storage import push_agent_if_absent
 from valkyrie.cli.display import local_time
-from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService, response_error_detail
 
 
+BOX_WIDTH = 80
 COLUMN_WIDTH = 14
+RUN_COLUMN_WIDTH = 17
 _UNKNOWN_START_OUTCOME = "The latest start request's outcome may be unknown. Verify with `valkyrie run list`."
+_CLEAR_LINE = "\r\033[K"
 
 
-def row(label: str, value: str) -> str:
-    return f"│ {label:<{COLUMN_WIDTH}} {value}"
-
-
-def cont(value: str) -> str:
-    return f"│ {' ' * COLUMN_WIDTH} {value}"
+def row(label: str, value: str, width: int = COLUMN_WIDTH) -> str:
+    return f"│ {label:<{width}} {value}"
 
 
 def format_run_start_details(
@@ -39,7 +38,7 @@ def format_run_start_details(
     priority: int | None,
 ) -> None:
     """Format and display the start details of a run."""
-    click.echo("┌─ Benchmark " + "─" * 67)
+    click.echo("┌─ Benchmark ".ljust(BOX_WIDTH, "─"))
     click.echo(row("Name:", benchmark))
     click.echo(row("Dataset:", dataset or "default"))
     click.echo(row("Concurrency:", str(concurrency)))
@@ -47,12 +46,10 @@ def format_run_start_details(
         click.echo(row("Priority override:", str(priority)))
     if slice_str:
         click.echo(row("Slice:", slice_str))
-    if task_ids:
-        display = task_ids[:60] + "..." if len(task_ids) > 60 else task_ids
-        click.echo(row("Task IDs:", display))
-    else:
-        click.echo(row("Task IDs:", "all tasks"))
-    click.echo("└" + "─" * 79)
+    click.echo(
+        row("Task IDs:", (task_ids[:60] + "..." if len(task_ids) > 60 else task_ids) if task_ids else "all tasks")
+    )
+    click.echo("└".ljust(BOX_WIDTH, "─"))
     click.echo()
 
 
@@ -62,106 +59,68 @@ def format_agent_start_details(
     secrets: tuple[tuple[str, str], ...],
     kwargs: tuple[tuple[str, str], ...],
     service_headers: dict[str, str],
-    webhook_secret: str | None,
-    webhook_intervals: list[int] | None,
 ) -> None:
     """Format and display the start details of an agent."""
-    click.echo("┌─ Agent " + "─" * 71)
+    click.echo("┌─ Agent ".ljust(BOX_WIDTH, "─"))
     click.echo(row("Agent:", agent))
     if model:
         click.echo(row("Model:", model))
-    if secrets:
-        for index, (env_var, secret_name) in enumerate(secrets):
-            if index == 0:
-                click.echo(row("Secrets:", f"{env_var} → {secret_name}"))
-            else:
-                click.echo(cont(f"{env_var} → {secret_name}"))
+    for index, (env_var, secret_name) in enumerate(secrets):
+        click.echo(row("Secrets:" if index == 0 else "", f"{env_var} → {secret_name}"))
     if kwargs:
         click.echo(row("Kwargs:", ", ".join(f"{key}={value}" for key, value in kwargs)))
     if service_headers:
-        click.echo(row("Headers:", ", ".join(service_headers.keys())))
-    if webhook_secret and webhook_intervals:
-        click.echo(row("Notify at:", ", ".join(f"{interval}%" for interval in webhook_intervals)))
-    click.echo("└" + "─" * 79)
+        click.echo(row("Headers:", ", ".join(service_headers)))
+    click.echo("└".ljust(BOX_WIDTH, "─"))
     click.echo()
 
 
 def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse, connect: bool = False) -> None:
     """Format and display the start run response."""
     run_id = start_benchmark_response.benchmark_id
-
-    click.echo()
-    click.echo("┌─ Run Details " + "─" * 65)
-    click.echo(f"│ {'Benchmark:':<17} {start_benchmark_response.benchmark_name}")
-    click.echo(f"│ {'Agent:':<17} {start_benchmark_response.agent_name}")
-    click.echo(f"│ {'Run ID:':<17} {run_id}")
-    click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
-    click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
-    click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
-    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
-    click.echo("├" + "─" * 79)
+    version = start_benchmark_response.dataset_version
+    details = [
+        ("Benchmark:", start_benchmark_response.benchmark_name),
+        ("Agent:", start_benchmark_response.agent_name),
+        ("Run ID:", run_id),
+        ("Started at:", local_time(start_benchmark_response.started_at)),
+        ("Max concurrency:", start_benchmark_response.concurrency),
+        ("Total tasks:", start_benchmark_response.task_count),
+        ("Dataset version:", version.label or version.id if version else "not pinned"),
+    ]
+    commands = [
+        ("Get results:", f"valkyrie run results {run_id} --path ./results-{run_id}.json"),
+        ("Stop:", f"valkyrie run stop {run_id}"),
+        ("Resume:", f"valkyrie run resume {run_id}"),
+        ("Retry:", f"valkyrie run retry {run_id}"),
+        ("Run outputs:", f"valkyrie run outputs {run_id} --output-dir ."),
+    ]
     if not connect:
-        click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
-    click.echo(
-        f"│ {'Get results:':<17} "
-        + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
-    )
-    click.echo(f"│ {'Stop:':<17} " + click.style(f"valkyrie run stop {run_id}", fg="cyan"))
-    click.echo(f"│ {'Resume:':<17} " + click.style(f"valkyrie run resume {run_id}", fg="cyan"))
-    click.echo(f"│ {'Retry:':<17} " + click.style(f"valkyrie run retry {run_id}", fg="cyan"))
-    click.echo(f"│ {'Run outputs:':<17} " + click.style(f"valkyrie run outputs {run_id} --output-dir .", fg="cyan"))
-    click.echo("└" + "─" * 79)
-
-
-def format_confirmed_start_summary(run_ids: list[UUID], count: int) -> None:
-    """Display confirmed run IDs and their combined status command."""
-    if count == 1:
-        return
+        commands.insert(0, ("Track progress:", f"valkyrie run fetch {run_id} --connect"))
 
     click.echo()
-    click.echo(f"{len(run_ids)} / {count} requested runs successfully started.")
-    if not run_ids:
-        return
-
-    joined_run_ids = ",".join(str(run_id) for run_id in run_ids)
-    click.echo(f"Track progress: valkyrie run status --ids {joined_run_ids}")
-
-
-def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
-    """Validate notification interval values."""
-    interval_list = list(intervals)
-    if len(interval_list) > 3:
-        raise click.UsageError("Maximum of 3 intervals allowed.")
-    for interval in interval_list:
-        if interval < 5 or interval > 100:
-            raise click.UsageError(f"Interval {interval} out of range. Must be between 5 and 100.")
-        if interval % 5 != 0:
-            raise click.UsageError(f"Interval {interval} must be divisible by 5.")
-    return interval_list
+    click.echo("┌─ Run Details ".ljust(BOX_WIDTH, "─"))
+    for label, value in details:
+        click.echo(row(label, str(value), RUN_COLUMN_WIDTH))
+    if start_benchmark_response.dataset_version_warning:
+        click.secho(start_benchmark_response.dataset_version_warning, fg="yellow")
+    click.echo(row("Logs:", start_benchmark_response.cloudwatch_url, RUN_COLUMN_WIDTH))
+    click.echo(row("Artifacts:", start_benchmark_response.s3_bucket_url, RUN_COLUMN_WIDTH))
+    click.echo("├".ljust(BOX_WIDTH, "─"))
+    for label, command in commands:
+        click.echo(row(label, click.style(command, fg="cyan"), RUN_COLUMN_WIDTH))
+    click.echo("└".ljust(BOX_WIDTH, "─"))
 
 
-def resolve_webhook_config(
-    intervals: tuple[int, ...], webhook_secret: str | None
-) -> tuple[str | None, list[int] | None]:
-    """Resolve webhook secret and intervals for a benchmark run."""
-    if intervals and not webhook_secret:
-        click.echo(
-            click.style(
-                "  Warning: --interval specified but no webhook secret configured. "
-                "Run `valkyrie config set webhook <secret-name>` first. Ignoring intervals.",
-                fg="yellow",
-            )
-        )
-        return None, None
-
-    if intervals:
-        return webhook_secret, validate_intervals(intervals)
-
-    if webhook_secret:
-        return webhook_secret, [100]
-
-    return None, None
+def format_confirmed_start_summary(run_ids: list[UUID], count: int, outcome_unknown: bool = False) -> None:
+    """Display confirmed run IDs, their combined status command, and any unknown start outcome."""
+    if count > 1:
+        click.echo()
+        click.echo(f"{len(run_ids)} / {count} requested runs successfully started.")
+        if run_ids:
+            click.echo(f"Track progress: valkyrie run status --ids {','.join(str(run_id) for run_id in run_ids)}")
+    if outcome_unknown:
+        click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
 
 
 @click.command(
@@ -229,12 +188,13 @@ def resolve_webhook_config(
     default=None,
     help="Dataset name to use from the benchmark service (defaults to 'default')",
 )
+@click.option("--dataset-version", type=str, default=None, help="Fixed dataset version to use for this run")
 @click.option(
     "--provider",
     type=str,
     required=False,
     default=None,
-    help="Named sandbox provider from config (e.g., daytona, modal)",
+    help="Sandbox provider (e.g., daytona, modal); defaults to your default provider, then daytona",
 )
 @click.option(
     "--priority",
@@ -279,18 +239,10 @@ def resolve_webhook_config(
     help="Custom header for benchmark service requests (e.g., -H Authorization my-credential)",
 )
 @click.option(
-    "--interval",
-    "-i",
-    "intervals",
-    multiple=True,
-    type=int,
-    help="Progress percentage threshold for Slack notification (e.g., -i 25 -i 75). Max 3, must be divisible by 5, range 5-100.",
-)
-@click.option(
     "--ignore-custom-services",
     "--ics",
     is_flag=True,
-    help="Ignore custom benchmark services that have been configured. Provides opt-out for custom services.",
+    help="Use the hosted benchmark service instead of the URL saved with `valkyrie benchmark service set`.",
 )
 @click.option(
     "--connect",
@@ -316,13 +268,13 @@ def start(
     task_ids_file: str | None,
     slice_str: str | None,
     dataset: str | None,
+    dataset_version: str | None,
     provider: str | None,
     priority: int | None,
     label: str | None,
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
     headers: tuple[tuple[str, str]],
-    intervals: tuple[int, ...],
     ignore_custom_services: bool,
     connect: bool,
     count: int,
@@ -338,75 +290,34 @@ def start(
 
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
-    try:
-        TrackerService.validate_sandbox_provider(provider)
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
-
-    service_headers = benchmark_service_headers(benchmark, headers)
-
-    # Webhook notification setup (may print a warning before the boxes)
-    webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
+    service_headers = dict(headers)
 
     task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
     format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display, priority)
 
-    format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
+    format_agent_start_details(agent, model, secrets, kwargs, service_headers)
 
     try:
-        # Build agent config
-        config_kwargs: dict[str, Any] = {}
-        if model:
-            config_kwargs["model"] = model
-
-        config_kwargs["kwargs"] = {key: value for key, value in kwargs}
-        agent_config = AgentConfig(**config_kwargs)
-        managed_execution = not TrackerService.parse_config_keys()
-
         agent_path = Path(agent)
-
-        # If the user specified an agent on their machine we upload it first
         if agent_path.is_dir():
-            contract_file = next(
-                (
-                    agent_path / f"contract{ext}"
-                    for ext in (".yaml", ".yml")
-                    if (agent_path / f"contract{ext}").exists()
-                ),
-                agent_path / "contract.yaml",
-            )
-            contract = get_contract(contract_file, agent_config)
-            if not asyncio.run(push_agent_if_absent(contract.name, agent_path)):
+            candidates = (agent_path / "contract.yaml", agent_path / "contract.yml")
+            contract_file = next(filter(Path.exists, candidates), candidates[0])
+            local_contract = get_contract(contract_file, AgentConfig(model=model, kwargs=dict(kwargs)))
+            if not asyncio.run(push_agent_if_absent(local_contract.name, agent_path)):
                 raise click.UsageError(
-                    f"A published agent named '{contract.name}' already exists. "
+                    f"A published agent named '{local_contract.name}' already exists. "
                     "Refusing to overwrite it as a side effect of run start. "
-                    f"Use --agent {contract.name} to run the published release, "
+                    f"Use --agent {local_contract.name} to run the published release, "
                     "or explicitly publish the local directory under a different name first."
                 )
-            if managed_execution:
-                contract = AgentContractRequest(
-                    name=contract.name,
-                    model=agent_config.model,
-                    kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
-                )
-        elif managed_execution:
-            contract = AgentContractRequest(
-                name=agent,
-                model=agent_config.model,
-                kwargs={key: str(value) for key, value in agent_config.kwargs.items()},
-            )
-        else:
-            contract = asyncio.run(get_contract_from_s3(agent, agent_config))
-            contract.name = agent
+            agent = local_contract.name
 
-        # Merge CLI secrets into contract defaults (override with cli secret)
-        if secrets:
-            contract.secrets.update({key: value for key, value in secrets})
+        contract = AgentContractRequest(name=agent, model=model, kwargs=dict(kwargs), secrets=dict(secrets))
 
         confirmed_run_ids: list[UUID] = []
         with TrackerService() as tracker:
             for _ in range(count):
-                click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
+                click.echo(f"{_CLEAR_LINE}Starting run for: {contract.name}...", nl=False)
 
                 try:
                     response = tracker.start_benchmark(
@@ -419,31 +330,28 @@ def start(
                         label,
                         lambda_function,
                         dataset,
+                        dataset_version,
                         priority=priority,
-                        service_headers=service_headers or None,
+                        service_headers=service_headers,
                         provider=provider,
-                        webhook_secret_name=webhook_secret if webhook_intervals else None,
-                        webhook_intervals=webhook_intervals,
                     )
                 except TrackerServiceError as error:
-                    click.echo("\r\033[K", nl=False)
-                    format_confirmed_start_summary(confirmed_run_ids, count)
-                    click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
+                    click.echo(_CLEAR_LINE, nl=False)
+                    format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=True)
                     raise click.ClickException(str(error)) from error
 
-                click.echo("\r\033[K", nl=False)
+                click.echo(_CLEAR_LINE, nl=False)
                 if response.status_code != 200:
                     click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                    format_confirmed_start_summary(confirmed_run_ids, count)
-                    if response.status_code >= 500:
-                        click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
+                    format_confirmed_start_summary(
+                        confirmed_run_ids, count, outcome_unknown=response.status_code >= 500
+                    )
                     raise click.ClickException(str(response_error_detail(response)))
 
                 try:
                     start_response = StartBenchmarkResponse.model_validate(response.json())
                 except ValueError as error:
-                    format_confirmed_start_summary(confirmed_run_ids, count)
-                    click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
+                    format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=True)
                     raise click.ClickException("Tracker returned a malformed 200 start response.") from error
 
                 confirmed_run_ids.append(start_response.benchmark_id)
@@ -452,5 +360,5 @@ def start(
                     stream_benchmark_status(tracker, start_response.benchmark_id)
 
         format_confirmed_start_summary(confirmed_run_ids, count)
-    except (BundlerError, TrackerServiceError, ContractValidationError) as e:
+    except (BundlerError, TrackerServiceError, ContractValidationError, ValkyrieSDKError) as e:
         raise click.ClickException(str(e))

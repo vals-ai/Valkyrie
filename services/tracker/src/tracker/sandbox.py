@@ -7,6 +7,7 @@ import uuid
 from asyncio import Semaphore
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator, Literal, assert_never
@@ -85,6 +86,11 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
+@dataclass
+class SandboxCreationState:
+    cleanup_pending: bool
+
+
 SandboxDeleteInitiator = Literal["create_cancelled", "force_stop", "orphan_cleanup", "task_teardown"]
 SandboxDeleteOutcome = Literal["deleted", "already_gone", "cancelled", "failed"]
 
@@ -121,13 +127,14 @@ async def delete_sandbox(
     *,
     initiated_by: SandboxDeleteInitiator,
     org_id: str | None = None,
-) -> None:
-    """Delete sandbox through its provider."""
+) -> bool:
+    """Delete sandbox through its provider and report acknowledged cleanup."""
     try:
         await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "already_gone")
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
+        return True
     except ProviderSandboxError as e:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         raise
@@ -138,8 +145,10 @@ async def delete_sandbox(
     except Exception as e:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "failed", f"{type(e).__name__}: {e}")
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+        return False
     else:
         audit_sandbox_delete(sandbox, initiated_by, org_id, "deleted")
+        return True
 
 
 def _source_name(source: SandboxSource) -> str:
@@ -238,6 +247,7 @@ async def _create_sandbox(
             volumes=volumes or [],
             auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
+            network_block_all=False,
         )
     )
     _set_sandbox_span_attributes(sandbox)
@@ -256,6 +266,7 @@ async def create_sandbox(
     volumes: list[VolumeMount] | None = None,
     sandbox_secrets: dict[str, str] | None = None,
     *,
+    creation_state: SandboxCreationState,
     unique_name: bool = True,
 ) -> AsyncGenerator[Sandbox, Any]:
     """
@@ -271,6 +282,7 @@ async def create_sandbox(
         volumes: Persistent volumes to mount in the sandbox
         sandbox_secrets: Provider-managed secret references keyed by environment variable name
         creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
+        creation_state: Shared attempt state tracking unacknowledged provider cleanup.
         unique_name: Whether to append a random suffix to the supplied name.
 
     Returns:
@@ -286,6 +298,7 @@ async def create_sandbox(
     try:
         async with creation_semaphore:
             start = time.monotonic()
+            creation_state.cleanup_pending = True
             creation_task = asyncio.create_task(
                 _create_sandbox(
                     provider,
@@ -302,7 +315,8 @@ async def create_sandbox(
                 sandbox = await asyncio.shield(creation_task)
             except asyncio.CancelledError:
                 sandbox = await creation_task
-                await delete_sandbox(sandbox, provider, initiated_by="create_cancelled")
+                if await delete_sandbox(sandbox, provider, initiated_by="create_cancelled"):
+                    creation_state.cleanup_pending = False
                 raise
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
@@ -322,7 +336,8 @@ async def create_sandbox(
         raise
     finally:
         try:
-            await delete_sandbox(sandbox, provider, initiated_by="task_teardown")
+            if await delete_sandbox(sandbox, provider, initiated_by="task_teardown"):
+                creation_state.cleanup_pending = False
         except ProviderSandboxError:
             # The failed delete is audited by delete_sandbox and must not replace the task outcome.
             pass
@@ -342,7 +357,7 @@ async def upload_agent_artifacts(
     object_store: ObjectStore,
 ) -> None:
     """
-    Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
+    Transfer the frozen agent bundle using a signed URL or local provider file upload.
 
     Reads from benchmarks/<benchmark_id>/<name>.zip so edits to the shared agent don't affect runs in flight.
 
@@ -362,6 +377,11 @@ async def upload_agent_artifacts(
         contract_s3_key,
         expires_in=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS,
     )
+    if presigned_url is None:
+        from tracker.local.artifacts import upload_local_agent_artifacts
+
+        await upload_local_agent_artifacts(sandbox, await object_store.get_bytes(contract_s3_key))
+        return
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
     contract_dir = shlex.quote(str(bundle_path / contract.name))
@@ -431,7 +451,8 @@ async def _install_agent_dependencies_once(
     log_output(f"Installing dependencies for contract: {contract.name}")
 
     contract_path = get_contract_path(contract.name)
-    install_cmd = f"timeout {AGENT_INSTALL_TIMEOUT_SECONDS:g} sh -c {shlex.quote(contract.install_cmd)}"
+    # Reuse the provider shell's foreground process group so terminal setup cannot suspend the installer.
+    install_cmd = f"exec timeout {AGENT_INSTALL_TIMEOUT_SECONDS:g} sh -c {shlex.quote(contract.install_cmd)}"
 
     exit_reason, _duration = await stream_command_output(
         sandbox,
@@ -857,6 +878,8 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     async def upload_outputs(*, preserve_agent_error: bool = False) -> None:
+        if execution_is_current is not None and not execution_is_current():
+            return
         errors: list[Exception] = []
         if contract.final_output:
             try:

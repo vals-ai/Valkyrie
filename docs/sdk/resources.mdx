@@ -1,9 +1,9 @@
 ---
 title: Inspect resources with Python
-description: Query benchmark tasks, scheduler queues, agent bundles, and benchmark services.
+description: Query benchmark tasks, scheduler queues, agent bundles, secrets, run settings, and benchmark services.
 ---
 
-Each method's parameters, defaults, and return types are in the [`client.benchmarks`](/reference/sdk/benchmarks#fetch), [`client.agents`](/reference/sdk/agents#list), and [`client.services`](/reference/sdk/services#catalog) reference.
+Each method's parameters, defaults, and return types are in the [`client.benchmarks`](/reference/sdk/benchmarks#fetch), [`client.agents`](/reference/sdk/agents#list), [`client.secrets`](/reference/sdk/secrets#set), [`client.providers`](/reference/sdk/providers#set), [`client.settings`](/reference/sdk/settings#get), and [`client.services`](/reference/sdk/services#catalog) reference.
 
 ## Scheduler
 
@@ -77,7 +77,38 @@ agents = await client.agents.list()
 download = await client.agents.download_url(agents.agents[0].name)
 ```
 
-Local agent packaging and S3 upload or download remain CLI workflows.
+## Secrets
+
+Store a secret for your runs, then use the returned reference wherever a run names a secret, such as the secret you map to a sandbox provider with `valkyrie provider set`:
+
+```python
+entry = await client.secrets.set("daytona", daytona_json)
+print(entry.reference)
+names = [secret.name for secret in (await client.secrets.list()).secrets]
+```
+
+Values are never returned. Secrets set or removed in the last few minutes may not show up in `list` yet.
+
+## Sandbox providers and run settings
+
+Map a sandbox provider to one of your organization's secrets; every member's runs on that provider use it:
+
+```python
+await client.secrets.set("daytona", daytona_json)
+await client.providers.set("daytona", "daytona")
+mapped = (await client.providers.list()).providers
+```
+
+Your default provider and saved benchmark services are your own:
+
+```python
+await client.settings.set_default_provider("modal")
+await client.settings.set_benchmark_service("swebench", "https://my-service.example.com", auth_secret="swebench-key")
+settings = await client.settings.get()
+```
+
+These are the settings `valkyrie provider` and `valkyrie benchmark service` change. Changing your settings needs a login; an access key reads its creator's settings but can't change them. See [Configure sandbox providers](/get-started/sandbox-providers) and [Benchmark authentication](/benchmarks/authentication).
+
 
 ## Benchmark services
 
@@ -88,11 +119,11 @@ services = await client.services.list()
 task_ids = await client.services.task_ids("swebench", dataset="default")
 ```
 
-`list` reads the catalog and then health-checks every service in it. Use `catalog` when you only need the registered endpoints without paying for the health checks:
+`list` reads the catalog and then health-checks every service in it. Use `catalog` when you only need the hosted endpoints without paying for the health checks:
 
 ```python
 catalog = await client.services.catalog()
 names = [service.name for service in catalog.services]
 ```
 
-Task IDs come from the custom endpoint registered for that benchmark when one exists. Pass `ignore_custom_services=True` to query the hosted service instead, or `service_headers` to add request headers alongside the stored credential.
+Task IDs come from the URL you saved for that benchmark with `valkyrie benchmark service set` when one exists. Pass `ignore_custom_services=True` to query the hosted service instead, or `service_headers` to add request headers alongside the credential saved with that URL.

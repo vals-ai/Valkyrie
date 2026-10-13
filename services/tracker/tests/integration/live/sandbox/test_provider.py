@@ -18,7 +18,7 @@ from benchmark_service import (
     SandboxQuery,
 )
 
-from tracker.sandbox import create_sandbox
+from tracker.sandbox import SandboxCreationState, create_sandbox
 
 
 async def _wait_until_sandbox_not_found(
@@ -83,6 +83,7 @@ class TestProvider:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             await sandbox.exec("echo ready")
 
@@ -126,6 +127,7 @@ class TestProvider:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
             ready = asyncio.Event()
             stream_task = asyncio.create_task(_read_stream_until_ready(sandbox, ready))
@@ -158,6 +160,7 @@ class TestProvider:
             ImageSource(image=test_image),
             test_resources,
             creation_semaphore,
+            creation_state=SandboxCreationState(cleanup_pending=False),
             labels=labels,
         ) as sandbox:
             await _wait_until_sandbox_listed(sandbox_provider, query, sandbox.id)

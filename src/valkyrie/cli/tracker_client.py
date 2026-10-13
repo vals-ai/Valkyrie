@@ -1,20 +1,17 @@
 """Client for interacting with the tracker service."""
 
 import json
-import re
 from collections.abc import Generator, Iterator
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 from uuid import UUID
 
+import click
 import httpx
-import yaml
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from dotenv import load_dotenv
 from httpx._models import Response
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from tracker.database.models import AgentContractRequest, RetryMode
 from tracker.types import (
-    AWSRuntimeResponse,
     BenchmarkServiceEntry,
     BenchmarkServiceCatalogResponse,
     BenchmarkServicesRequest,
@@ -26,56 +23,55 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
-    HarnessConfig,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
+    ShedBenchmarkRequest,
+    ShedBenchmarkResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
     UpdateBenchmarkConcurrencyRequest,
     UpdateBenchmarkConcurrencyResponse,
 )
 
+from valkyrie.sdk import ValkyrieConfig
+
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
-from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
-_REQUIRED_ACCESS_KEY_CONFIG_KEYS = {
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_DEFAULT_REGION",
-    "S3_BUCKET",
-}
-_PROVIDER_SETUP_COMMAND = "valkyrie config provider set <provider> <secret-name>"
 ModelT = TypeVar("ModelT", bound=BaseModel)
-
-
-def _resolve_tracker_url(base_url: str | None) -> str:
-    """Load local environment values after CLI logging has been configured."""
-    if base_url is not None:
-        return base_url.rstrip("/")
-
-    load_dotenv()
-    return tracker_service_url().rstrip("/")
-
-
-def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
-    raw_providers = config.get("sandbox_providers")
-    if not isinstance(raw_providers, dict):
-        return {}
-    providers = cast(dict[object, object], raw_providers)
-    return {str(name): str(secret_name) for name, secret_name in providers.items()}
 
 
 def response_error_detail(response: Response) -> Any:
     """Return useful tracker error detail for JSON and plain-text responses."""
     try:
-        body = response.json()
-    except ValueError:
+        body = TypeAdapter(dict[str, Any]).validate_json(response.content)
+    except ValidationError:
         return response.text
+    detail = body.get("detail", response.text)
+    if isinstance(detail, list):
+        return "; ".join(f"{error['loc'][-1]}: {error['msg']}" for error in detail)
+    return detail
 
-    if isinstance(body, dict):
-        return body.get("detail", response.text)
-    return response.text
+
+def request_tracker(
+    method: str, path: str, auth: httpx.Auth | None = None, *, missing_ok: bool = False, **kwargs: Any
+) -> Any:
+    config = ValkyrieConfig()
+    tracker_url = config.url
+    auth = auth or config.http_auth()
+    try:
+        with httpx.Client(timeout=60, auth=auth) as client:
+            response = client.request(method, f"{tracker_url}{path}", **kwargs)
+    except httpx.HTTPError as error:
+        raise click.ClickException(f"Could not reach the Tracker at {tracker_url}: {error}") from error
+    if response.status_code == 401:
+        problem = "You are not logged in." if auth is None else "The Tracker rejected your credentials."
+        raise click.ClickException(f"{problem} Run `valkyrie login`.")
+    if missing_ok and response.status_code == 404:
+        return None
+    if response.is_error:
+        raise click.ClickException(f"{response_error_detail(response)} ({response.status_code})")
+    return response.json() if response.content else None
 
 
 def _parse_response(response: Response, action: str) -> Any:
@@ -97,44 +93,13 @@ def _parse_model_response(response: Response, action: str, model: type[ModelT]) 
         raise TrackerServiceError(f"{action}: tracker returned a malformed response") from error
 
 
-def _resolve_sandbox_provider_config(
-    config: dict[str, Any], config_values: dict[str, str], provider: str | None = None
-) -> tuple[str, str]:
-    providers = _sandbox_providers(config)
-
-    # Fall back to the legacy Daytona secret when named providers are not configured.
-    if not providers:
-        if provider is not None:
-            raise TrackerServiceError(
-                f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
-            )
-        secret_name = config.get("DAYTONA_SECRET_NAME")
-        if not secret_name:
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-        return "daytona", secret_name
-
-    # Use the requested provider, configured default, or first configured provider.
-    provider_name = str(provider or config.get("default_sandbox_provider") or next(iter(providers)))
-    secret_name = providers.get(provider_name)
-    if secret_name is not None:
-        return provider_name, secret_name
-
-    # Report valid provider names when the selected provider is unknown.
-    raise TrackerServiceError(
-        f"Unknown sandbox provider '{provider_name}'. Configured providers: {', '.join(providers)}"
-    )
-
-
 class TrackerService:
     """Client for tracker service API."""
-
-    _config_values: dict[str, str] = {}
 
     def __init__(
         self,
         base_url: str | None = None,
         timeout: int = 120,
-        require_config: bool = True,
     ):
         """
         Initialize tracker service client.
@@ -142,14 +107,10 @@ class TrackerService:
         Args:
             base_url: Base URL of tracker service
             timeout: Request timeout in seconds
-            require_config: Whether to require full harness config values
         """
-        self._config = self._load_config()
-        self._api_key = self._config.get("api_key")
-        self._base_url = _resolve_tracker_url(base_url)
-        self._timeout = timeout
-        self._config_values = self.parse_config_keys() if require_config else {}
-        self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
+        config = ValkyrieConfig() if base_url is None else ValkyrieConfig(url=base_url)
+        self._base_url = config.url
+        self._client = httpx.Client(timeout=timeout, auth=config.http_auth())
 
     def __enter__(self) -> "TrackerService":
         """Context manager entry."""
@@ -163,167 +124,6 @@ class TrackerService:
     def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()
-
-    @staticmethod
-    def _load_config() -> dict[str, Any]:
-        """Load the valkyrie config file if it exists."""
-        config_path = config_location()
-        if not config_path.exists():
-            return {}
-
-        with open(config_path) as f:
-            return yaml.safe_load(f) or {}
-
-    def _build_auth_headers(self) -> dict[str, str]:
-        """Build request headers. Hosted mode adds X-Api-Key alongside X-Harness-* headers."""
-        headers = self._build_harness_headers()
-        if self._api_key:
-            headers["X-Api-Key"] = self._api_key
-        return headers
-
-    @staticmethod
-    def get_benchmark_service_url(benchmark_name: str) -> str | None:
-        """
-        Get custom benchmark service URL from config if it exists.
-
-        Args:
-            benchmark_name: Name of the benchmark
-
-        Returns:
-            Custom URL if configured, None otherwise
-        """
-        config_path = config_location()
-        if not config_path.exists():
-            return None
-
-        with open(config_path) as f:
-            harness_config = yaml.safe_load(f) or {}
-
-        services = harness_config.get("custom_benchmark_services") or {}
-        return services.get(benchmark_name)
-
-    @staticmethod
-    def get_benchmark_auth(benchmark_name: str) -> str | None:
-        """
-        Get benchmark auth credential from config if it exists.
-
-        Args:
-            benchmark_name: Name of the benchmark
-
-        Returns:
-            Auth credential if configured, None otherwise
-        """
-        config_path = config_location()
-        if not config_path.exists():
-            return None
-
-        with open(config_path) as f:
-            harness_config = yaml.safe_load(f) or {}
-
-        auth = harness_config.get("benchmark_auth") or {}
-        return auth.get(benchmark_name)
-
-    @staticmethod
-    def get_webhook_secret() -> str | None:
-        """
-        Get Slack webhook secret name from config if it exists.
-
-        Returns:
-            Webhook secret name if configured, None otherwise
-        """
-        config_path = config_location()
-        if not config_path.exists():
-            return None
-
-        with open(config_path) as f:
-            harness_config = yaml.safe_load(f) or {}
-
-        secret_name = harness_config.get("webhook")
-        return secret_name if secret_name else None
-
-    @staticmethod
-    def parse_config_keys() -> dict[str, str]:
-        """Build access-key request values when static credentials are configured."""
-        config_path = config_location()
-        config_keys: dict[str, str] = {}
-        if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {config_path}, run `valkyrie config init`")
-
-        with open(config_path) as f:
-            harness_config: dict[str, Any] = yaml.safe_load(f) or {}
-
-        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
-            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
-
-        access_key_fields = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
-        configured_access_key_fields = [field for field in access_key_fields if field in harness_config]
-        if configured_access_key_fields and len(configured_access_key_fields) != len(access_key_fields):
-            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
-        if not configured_access_key_fields:
-            if "AWS_SESSION_TOKEN" in harness_config:
-                raise TrackerServiceError("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
-            return {}
-        if any(
-            not isinstance(harness_config[field], str) or not harness_config[field].strip()
-            for field in access_key_fields
-        ):
-            raise TrackerServiceError("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must not be blank.")
-
-        missing = _REQUIRED_ACCESS_KEY_CONFIG_KEYS - harness_config.keys()
-        if missing:
-            raise TrackerServiceError(
-                f"Missing required config keys: {', '.join(sorted(missing))}. "
-                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
-            )
-        # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
-
-        # Skip custom_benchmark_services to avoid adding them inside of the header
-        for key, value in harness_config.items():
-            if isinstance(value, dict) or key in _SKIP_HEADER_KEYS:
-                continue
-
-            config_keys[key] = str(value)
-
-        return config_keys
-
-    @classmethod
-    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str]:
-        """Validate sandbox provider config without opening a tracker client.
-
-        Arguments
-        - provider: Optional provider name supplied by the CLI.
-
-        Returns
-        - The resolved provider name and cloud secret name.
-
-        Raises
-        - TrackerServiceError: If provider config is missing or the provider is unknown.
-        """
-        return _resolve_sandbox_provider_config(cls._load_config(), cls.parse_config_keys(), provider)
-
-    def _build_harness_headers(self) -> dict[str, str]:
-        """Automate building the headers from the config keys"""
-        return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
-
-    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
-        return _resolve_sandbox_provider_config(self._config, self._config_values, provider)
-
-    def _build_harness_config_payload(self, sandbox_provider_secret_name: str) -> dict[str, Any]:
-        """Build the Valkyrie config in a way that can be packed into a object"""
-        flat = {key.lower(): value for key, value in self._config_values.items()}
-        return {
-            "aws": {
-                "aws_access_key_id": flat["aws_access_key_id"],
-                "aws_secret_access_key": flat["aws_secret_access_key"],
-                "aws_default_region": flat["aws_default_region"],
-                "aws_session_token": flat.get("aws_session_token"),
-            },
-            "s3_bucket": flat["s3_bucket"],
-            "log_group": flat["log_group"],
-            "log_retention_policy": int(flat["log_retention_policy"]),
-            "sandbox_provider_secret_name": sandbox_provider_secret_name,
-        }
 
     def health_check(self) -> Response:
         """
@@ -391,29 +191,6 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to check benchmark services: {e}") from e
 
-    @classmethod
-    def init_org(cls, api_key: str, base_url: str | None = None) -> dict[str, str | bool]:
-        """Validate a Descope API key and create/confirm the org. Does not require a full config."""
-        tracker_url = _resolve_tracker_url(base_url)
-        try:
-            with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
-                response = client.post(f"{tracker_url}/init")
-
-                return _parse_response(response, "Failed to initialize org")
-        except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to initialize org: {e}") from e
-
-    @classmethod
-    def aws_runtime_metadata(cls, api_key: str, base_url: str | None = None) -> AWSRuntimeResponse:
-        """Return the AWS mode and resources available to a hosted organization."""
-        tracker_url = _resolve_tracker_url(base_url)
-        try:
-            with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
-                response = client.get(f"{tracker_url}/aws-runtime")
-                return _parse_model_response(response, "Failed to resolve AWS runtime", AWSRuntimeResponse)
-        except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to resolve AWS runtime: {e}") from e
-
     def start_benchmark(
         self,
         contract: AgentContractRequest,
@@ -425,11 +202,10 @@ class TrackerService:
         label: str | None = None,
         lambda_function: str | None = None,
         dataset: str | None = None,
+        dataset_version: str | None = None,
         priority: int | None = None,
         service_headers: dict[str, str] | None = None,
         provider: str | None = None,
-        webhook_secret_name: str | None = None,
-        webhook_intervals: list[int] | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -450,12 +226,9 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
-            provider_name, sandbox_provider_secret_name = self.resolve_sandbox_provider(provider)
-            access_key_harness_config = (
-                HarnessConfig.model_validate(self._build_harness_config_payload(sandbox_provider_secret_name))
-                if self._config_values
-                else None
-            )
+            named: dict[str, Any] = {} if provider is None else {"sandbox_provider": provider}
+            if ignore_custom_services:
+                named["ignore_custom_services"] = True
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -466,24 +239,13 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 dataset=dataset,
-                harness_config=access_key_harness_config,
-                custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
-                if not ignore_custom_services
-                else None,
+                dataset_version=dataset_version,
                 service_headers=service_headers or {},
-                sandbox_provider=provider_name,
-                sandbox_provider_secret_name=(
-                    sandbox_provider_secret_name if access_key_harness_config is None else None
-                ),
-                webhook_secret_name=webhook_secret_name,
-                webhook_intervals=webhook_intervals,
+                **named,
             )
-
-            body = payload.model_dump()
-
-            response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
-
-            return response
+            return self._client.post(
+                f"{self._base_url}/start-benchmark", json=payload.model_dump(mode="json", exclude_unset=True)
+            )
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to start run: {e}") from e
 
@@ -627,12 +389,12 @@ class TrackerService:
             payload = FetchBenchmarkTasksRequest(
                 benchmark_name=benchmark_name,
                 dataset=dataset,
-                custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
-                if not ignore_custom_services
-                else None,
                 service_headers=service_headers or {},
+                ignore_custom_services=ignore_custom_services,
             )
-            response = self._client.post(f"{self._base_url}/fetch-benchmark-tasks", json=payload.model_dump())
+            response = self._client.post(
+                f"{self._base_url}/fetch-benchmark-tasks", json=payload.model_dump(exclude_defaults=True)
+            )
 
             return _parse_model_response(response, "Failed to fetch task ids", VerifyTaskIdsResponse).task_ids
         except httpx.HTTPError as e:
@@ -708,6 +470,18 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to update run concurrency: {e}") from e
 
+    def shed_benchmark(self, benchmark_id: UUID, concurrency: int, dry_run: bool) -> ShedBenchmarkResponse:
+        """Lower an active run's concurrency and force stop the newest tasks above the new limit."""
+        payload = ShedBenchmarkRequest(concurrency=concurrency, dry_run=dry_run)
+        try:
+            response = self._client.post(
+                f"{self._base_url}/benchmarks/{benchmark_id}/shed",
+                json=payload.model_dump(),
+            )
+            return _parse_model_response(response, "Failed to shed run", ShedBenchmarkResponse)
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to shed run: {e}") from e
+
     def retry_or_resume_benchmark(
         self,
         benchmark_id: UUID,
@@ -719,6 +493,7 @@ class TrackerService:
         secrets: dict[str, str] | None = None,
         benchmark_url: str | None = None,
         lambda_function: str | None = None,
+        update_agent: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -737,18 +512,15 @@ class TrackerService:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
-            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
-
+            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value, "update_agent": update_agent}
             if concurrency is not None:
                 params["concurrency"] = concurrency
 
             body: dict[str, Any] = {"task_ids": task_ids, "service_headers": service_headers or {}}
             if secrets:
                 body["secrets"] = secrets
-            if benchmark_url is not None:
-                body["benchmark_url"] = benchmark_url
-            if lambda_function is not None:
-                body["lambda_function"] = lambda_function
+            optional = {"benchmark_url": benchmark_url, "lambda_function": lambda_function}
+            body |= {key: value for key, value in optional.items() if value is not None}
 
             response = self._client.post(
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",

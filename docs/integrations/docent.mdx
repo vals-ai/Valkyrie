@@ -29,7 +29,7 @@ valkyrie run analyze <run-id>
 
 The run must be `FINISHED`. In-progress, stopping, stopped, and errored runs are rejected with a message naming the current status. See the [`run analyze`](/reference/cli/run#analyze) reference for full syntax.
 
-The tracker invokes the Lambda with the run's stored AWS credentials and streams progress until it returns. On success the command prints the reading URL.
+The tracker invokes the Lambda with its server AWS authority and streams progress until it returns. On success the command prints the reading URL.
 
 Re-run the analysis after fixing the Lambda:
 

@@ -1,19 +1,61 @@
 ---
 title: AWS permissions
-description: Scope the AWS credentials used by Valkyrie runs.
+description: Scope the AWS authority used by Valkyrie's services.
 ---
 
-Valkyrie uses your AWS credentials for artifact storage, logs, sandbox-provider secrets, and optional post-run integrations. In [managed AWS execution](/get-started/hosting#aws-execution-mode), local credentials are used only by local operations such as uploading an agent.
+Tracker and executor processes use their server IAM roles for artifact storage, logs, sandbox-provider secrets, and optional post-run integrations. [Hosted execution](/get-started/hosting#hosted-mode) uses deployment-configured resources.
 
 | Service | Permissions | Used for |
 | --- | --- | --- |
 | S3 | `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket` | Benchmark results, agent artifacts, and run outputs |
-| CloudWatch Logs | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | Task execution logs in access-key runs |
-| Secrets Manager | `secretsmanager:GetSecretValue` | Sandbox-provider credentials and webhook URLs in access-key runs |
-| Lambda (optional) | `lambda:InvokeFunction` | Post-run Lambda invocation in access-key runs |
+| CloudWatch Logs | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | Task execution logs |
+| Secrets Manager | `secretsmanager:GetSecretValue` | Configured sandbox-provider and benchmark-service secrets |
+| Lambda (optional) | `lambda:InvokeFunction` | Configured post-run functions |
 
-Scope local permissions to the configured S3 bucket. For access-key execution, also scope permissions to the CloudWatch log groups, Lambda functions, and Secrets Manager secrets that the installation uses.
+Scope each server role to its configured buckets, log groups, functions, and secret names. The default sandbox-provider secret must match an allowed Tracker secret-name prefix.
 
-<Warning>
-  In access-key execution, the SDK and CLI send AWS credentials to the configured tracker through `X-Harness-*` headers. Connect only to a trusted tracker and use HTTPS outside local development.
-</Warning>
+A self-hosted Tracker without authentication stores everything in its one bucket (`AWS_DEPLOYMENT_S3_BUCKET`). When Tracker requires authentication and `AWS_TENANT_BUCKET_PREFIX` is set, it creates a bucket for each organization the first time the organization needs one. Its role then also needs `s3:CreateBucket`, `s3:TagResource`, `s3:GetBucketTagging`, `s3:PutBucketVersioning`, `s3:PutLifecycleConfiguration`, and `s3:PutBucketABAC` on `$AWS_TENANT_BUCKET_PREFIX-*`, plus the S3 permissions above on those buckets. Tracker creates each bucket tagged `valkyrie:org-id=<organization id>` and turns on attribute-based access control (ABAC) for it.
+
+## Tenant access roles
+
+Deployments with authentication on (`AUTH_REQUIRED=true`) create these roles and set `AWS_TENANT_ACCESS_ROLE_ARN`; without authentication the servers keep their own roles. When `AWS_TENANT_ACCESS_ROLE_ARN` is set, a server reads and writes organization bucket objects and reads run secrets through that role instead of its own. Tracker and executors each get their own tenant access role, with the same object permissions as their server role. For each organization they assume it with the session tag `valkyrie:org-id`, plus `valkyrie:secret-scope=shared-internal` for tenants listed in `AWS_SHARED_SECRET_TENANTS`. The role allows:
+
+- S3 object access only on buckets in the deployment account whose `valkyrie:org-id` tag matches the session's and that have ABAC turned on.
+- `secretsmanager:GetSecretValue` on the organization's own secrets: named `valkyrie/tenants/<organization id>/…` and tagged `valkyrie:org-id` with that id.
+- `secretsmanager:GetSecretValue` on secrets tagged `valkyrie:secret-scope=shared-internal`, for sessions that carry that tag.
+
+Both roles deny every bucket tagging change and removing secret tags. The executor's role also denies adding secret tags. Tracker's role can also create, replace, and delete secrets through `/secrets`, but only under `valkyrie/tenants/<session organization id>/` and only tagged with that organization's id. It can list secret names account-wide, because IAM can't scope `secretsmanager:ListSecrets`; Tracker filters the results to the organization's prefix. The executor's role can't change secrets. Without a tenant access role, `/secrets` uses Tracker's server role, which then needs `secretsmanager:CreateSecret`, `TagResource`, `PutSecretValue`, and `DeleteSecret` on `valkyrie/tenants/*` and `secretsmanager:ListSecrets`; deleting a name that doesn't exist then succeeds instead of returning 404, because AWS doesn't report missing names on a forced delete. Each server role needs `sts:AssumeRole` and `sts:TagSession` on its tenant access role. CloudWatch Logs and Lambda stay on the server roles.
+
+Before deploying with these roles, tag the deployment bucket with the organization that owns it and turn on ABAC for every bucket. Buckets Tracker creates already have both. The organization id is the lowercase UUID in the `id` column of that organization's `org` row. With an AWS CLI that has `s3api put-bucket-abac`:
+
+```bash
+aws s3control tag-resource --account-id <account-id> --resource-arn arn:aws:s3:::<deployment-bucket> \
+  --tags Key=valkyrie:org-id,Value=<organization-id>
+buckets=$(printf '%s\n' <deployment-bucket> $(aws s3api list-buckets --prefix "$AWS_TENANT_BUCKET_PREFIX-" \
+  --query 'Buckets[].Name || `[]`' --output text))
+while read -r bucket; do
+  aws s3api put-bucket-abac --bucket "$bucket" --abac-status Status=Enabled --expected-bucket-owner <account-id>
+done <<< "$buckets"
+```
+
+Then, in the same shell, check that every bucket reports `Enabled` and carries its organization's tag:
+
+```bash
+while read -r bucket; do
+  echo "$bucket $(aws s3api get-bucket-abac --bucket "$bucket" --query AbacStatus.Status --output text)" \
+    "$(aws s3control list-tags-for-resource --account-id <account-id> --resource-arn "arn:aws:s3:::$bucket" \
+      --query "Tags[?Key=='valkyrie:org-id'].Value" --output text)"
+done <<< "$buckets"
+```
+
+Then tag the secrets runs read. Each secret under `valkyrie/tenants/<organization-id>/` gets `valkyrie:org-id` set to its organization id. Each secret that tenants listed in `AWS_SHARED_SECRET_TENANTS` use gets `valkyrie:secret-scope=shared-internal`: the agent contract and sandbox-provider secrets their runs name, and the benchmark-service auth secrets from the benchmark catalog (`auth_secret_name`) and `AWS_TRACKER_SECRET_NAME_PREFIXES`, which runs don't store. A secret without a matching tag can't be read by any run.
+
+```bash
+for name in $(aws secretsmanager list-secrets --filters Key=name,Values=valkyrie/tenants/ \
+  --query 'SecretList[?starts_with(Name, `valkyrie/tenants/`)].Name || `[]`' --output text); do
+  aws secretsmanager tag-resource --secret-id "$name" --tags Key=valkyrie:org-id,Value="$(echo "$name" | cut -d/ -f3)"
+done
+for name in <shared-secret-name> <shared-secret-name>; do
+  aws secretsmanager tag-resource --secret-id "$name" --tags Key=valkyrie:secret-scope,Value=shared-internal
+done
+```

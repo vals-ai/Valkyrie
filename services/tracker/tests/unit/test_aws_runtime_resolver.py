@@ -1,5 +1,6 @@
 from collections.abc import Iterator
-from typing import Any, Literal, cast
+from dataclasses import replace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -8,45 +9,23 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlmodel import Session
-from starlette.requests import Request
 
 from main import app
 from tracker import config
-from tracker.aws.clients import DefaultChainAWSClientProvider, ExplicitCredentialsAWSClientProvider
+from tracker.aws.clients import AWSClientProvider, TenantRoleAWSClientProvider
 from tracker.aws.resolver import (
+    deployment_aws_runtime,
+    resolve_run_aws_runtime,
     resolve_run_metadata_aws_runtime,
-    resolve_run_aws_runtime_and_access_key_config,
     resolve_start_aws_runtime,
 )
-from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import AgentContractRequest, Benchmark
-from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
+from tracker.aws.runtime import AWSResources, AWSRuntime
+from tracker.database.models import AgentContractRequest, Benchmark, Org
+from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 _OTHER_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
-
-_COMPLETE_HARNESS_HEADERS = {
-    "x-harness-aws-access-key-id": "header-access-key",
-    "x-harness-aws-secret-access-key": "header-secret-key",
-    "x-harness-aws-default-region": "header-region",
-    "x-harness-aws-session-token": "header-session-token",
-    "x-harness-s3-bucket": "header-bucket",
-    "x-harness-log-group": "header-log-group",
-    "x-harness-log-retention-policy": "14",
-    "x-harness-sandbox-provider-secret-name": "header-provider-secret",
-}
-
-
-def _request(headers: dict[str, str] | None = None) -> Request:
-    return Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/",
-            "query_string": b"",
-            "headers": [(key.encode(), value.encode()) for key, value in (headers or {}).items()],
-        }
-    )
+_ORG = Org(id=_ORG_ID, name="acme.example", storage_key="org-bucket")
 
 
 def _configure_managed_runtime(
@@ -66,57 +45,19 @@ def _configure_managed_runtime(
 
 
 @pytest.mark.parametrize(
-    (
-        "header_mode",
-        "include_body",
-        "submissions_enabled",
-        "eligible",
-        "resources_configured",
-        "expected_mode",
-        "expected_bucket",
-        "expected_status",
-    ),
+    ("submissions_enabled", "eligible", "resources_configured", "expected_status"),
     [
-        pytest.param(
-            "complete",
-            True,
-            False,
-            False,
-            False,
-            "access_key",
-            "header-bucket",
-            None,
-            id="headers-over-body",
-        ),
-        pytest.param(
-            "partial",
-            True,
-            True,
-            True,
-            True,
-            "access_key",
-            "test-bucket",
-            None,
-            id="partial-headers-body-fallback",
-        ),
-        pytest.param("partial", False, True, True, True, None, None, 400, id="partial-headers-rejected"),
-        pytest.param("none", True, False, False, False, "access_key", "test-bucket", None, id="body-only"),
-        pytest.param("none", False, True, True, True, "managed", "deployment-bucket", None, id="managed-eligible"),
-        pytest.param("none", False, False, True, True, None, None, 503, id="managed-gate-closed"),
-        pytest.param("none", False, True, False, True, None, None, 403, id="managed-ineligible"),
-        pytest.param("none", False, True, True, False, None, None, 500, id="managed-config-missing"),
+        pytest.param(True, True, True, None, id="managed-eligible"),
+        pytest.param(False, True, True, 503, id="managed-gate-closed"),
+        pytest.param(True, False, True, 403, id="managed-ineligible"),
+        pytest.param(True, True, False, 500, id="managed-config-missing"),
     ],
 )
 def test_start_runtime_selection(
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
-    header_mode: Literal["complete", "partial", "none"],
-    include_body: bool,
     submissions_enabled: bool,
     eligible: bool,
     resources_configured: bool,
-    expected_mode: Literal["access_key", "managed"] | None,
-    expected_bucket: str | None,
     expected_status: int | None,
 ) -> None:
     _configure_managed_runtime(
@@ -125,83 +66,150 @@ def test_start_runtime_selection(
         submissions_enabled=submissions_enabled,
         resources_configured=resources_configured,
     )
-    headers = {
-        "complete": _COMPLETE_HARNESS_HEADERS,
-        "partial": {"x-harness-aws-access-key-id": "partial-access-key"},
-        "none": {},
-    }[header_mode]
-    body_config = harness_config if include_body else None
 
     if expected_status is not None:
         with pytest.raises(HTTPException) as exc_info:
-            resolve_start_aws_runtime(_request(headers), body_config, _ORG_ID)
+            resolve_start_aws_runtime(_ORG)
         assert exc_info.value.status_code == expected_status
-        if header_mode == "partial":
-            assert exc_info.value.detail == "Missing harness config header 'x-harness-aws-secret-access-key'"
         return
 
-    resolution = resolve_start_aws_runtime(_request(headers), body_config, _ORG_ID)
+    runtime = resolve_start_aws_runtime(_ORG)
 
-    assert resolution.runtime.resources.s3_bucket == expected_bucket
-    if expected_mode == "managed":
-        assert resolution.access_key_harness_config is None
-        assert isinstance(resolution.runtime.clients, DefaultChainAWSClientProvider)
-        assert resolution.runtime.expected_bucket_owner == "123456789012"
-    else:
-        assert resolution.access_key_harness_config is not None
-        assert isinstance(resolution.runtime.clients, ExplicitCredentialsAWSClientProvider)
-        assert resolution.runtime.expected_bucket_owner is None
+    assert runtime.resources.s3_bucket == "org-bucket"
+    assert isinstance(runtime.clients, AWSClientProvider)
+    assert runtime.expected_bucket_owner == "123456789012"
+
+
+@pytest.mark.parametrize("log_prefix", ["/deployment/logs", "/deployment/logs/"])
+def test_managed_runtime_uses_the_org_bucket_with_deployment_settings(
+    monkeypatch: pytest.MonkeyPatch, log_prefix: str
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", log_prefix)
+
+    runtime = resolve_start_aws_runtime(_ORG)
+
+    assert runtime.resources == AWSResources(
+        region="deployment-region",
+        s3_bucket="org-bucket",
+        log_group=f"/deployment/logs/tenants/{_ORG_ID}",
+        log_retention_days=30,
+    )
+
+
+def test_new_run_logs_use_org_identity_not_its_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", f"{_ORG_ID},{_OTHER_ORG_ID}")
+    renamed_org = Org(id=_ORG_ID, name="renamed", storage_key="org-bucket")
+    other_org = Org(id=_OTHER_ORG_ID, name=_ORG.name, storage_key="other-bucket")
+
+    first = resolve_start_aws_runtime(_ORG)
+    renamed = resolve_start_aws_runtime(renamed_org)
+    other = resolve_start_aws_runtime(other_org)
+
+    assert first.resources.log_group == f"deployment-log-group/tenants/{_ORG_ID}"
+    assert renamed.resources.log_group == first.resources.log_group
+    assert other.resources.log_group == f"deployment-log-group/tenants/{_OTHER_ORG_ID}"
+
+
+def test_legacy_run_without_saved_resources_keeps_the_deployment_log_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+
+    runtime = resolve_run_aws_runtime(org=_ORG, properties=None)
+    metadata = resolve_run_metadata_aws_runtime(org=_ORG, properties=None)
+
+    assert runtime.resources.log_group == "deployment-log-group"
+    assert metadata is not None
+    assert metadata.resources.log_group == "deployment-log-group"
 
 
 @pytest.mark.parametrize(
-    ("aws_managed", "expected_bucket", "expected_provider"),
-    [
-        pytest.param(True, "deployment-bucket", DefaultChainAWSClientProvider, id="stored-managed"),
-        pytest.param(False, "header-bucket", ExplicitCredentialsAWSClientProvider, id="stored-access-keys"),
-    ],
+    "log_group",
+    ["deployment-log-group", f"deployment-log-group/tenants/{_OTHER_ORG_ID}", "unrelated/logs"],
 )
-def test_run_runtime_uses_stored_mode(
-    monkeypatch: pytest.MonkeyPatch,
-    aws_managed: bool,
-    expected_bucket: str,
-    expected_provider: type[DefaultChainAWSClientProvider] | type[ExplicitCredentialsAWSClientProvider],
-) -> None:
-    _configure_managed_runtime(monkeypatch, submissions_enabled=False)
-
-    runtime = resolve_run_aws_runtime_and_access_key_config(
-        _request(_COMPLETE_HARNESS_HEADERS),
-        aws_managed=aws_managed,
-        org_id=_ORG_ID,
-    ).runtime
-
-    assert runtime.resources.s3_bucket == expected_bucket
-    assert isinstance(runtime.clients, expected_provider)
-
-
-def test_access_key_run_reports_incomplete_legacy_config() -> None:
-    with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime_and_access_key_config(
-            _request({"x-harness-aws-access-key-id": "partial-access-key"}),
-            aws_managed=False,
-            org_id=_ORG_ID,
-        ).runtime
-
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "Missing harness config header 'x-harness-aws-secret-access-key'"
-
-
-def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_new_run_cannot_select_logs_outside_its_tenant(monkeypatch: pytest.MonkeyPatch, log_group: str) -> None:
     _configure_managed_runtime(monkeypatch)
+    resources = resolve_start_aws_runtime(_ORG).resources
 
-    runtime = resolve_run_aws_runtime_and_access_key_config(
-        _request({"x-harness-aws-access-key-id": "ignored"}),
-        aws_managed=True,
-        org_id=_ORG_ID,
-    ).runtime
+    with pytest.raises(HTTPException) as error:
+        resolve_start_aws_runtime(_ORG, replace(resources, log_group=log_group))
+
+    assert error.value.status_code == 400
+    assert resolve_start_aws_runtime(_ORG, resources).resources == resources
+
+
+def test_run_saved_outside_the_org_bucket_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run stored before its organization had its own bucket can no longer be read or resumed, and its page has no
+    storage links.
+    """
+    _configure_managed_runtime(monkeypatch)
+    saved = AWSResources(
+        region="deployment-region",
+        s3_bucket="deployment-bucket",
+        log_group="deployment-log-group",
+        log_retention_days=30,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_run_aws_runtime(org=_ORG, properties=saved)
+    assert exc_info.value.status_code == 410
+    assert exc_info.value.detail == "This run's storage is no longer available."
+    assert resolve_run_metadata_aws_runtime(org=_ORG, properties=saved) is None
+
+
+def test_hosted_org_without_a_bucket_cannot_use_managed_aws(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AUTH_REQUIRED", True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_start_aws_runtime(Org(id=_ORG_ID, name="acme.example"))
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "This organization has no storage bucket"
+
+
+def test_self_hosted_org_uses_the_deployment_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Tracker without authentication runs one organization from its configured bucket."""
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AUTH_REQUIRED", False)
+
+    runtime = resolve_start_aws_runtime(Org(id=_ORG_ID, name="default"))
 
     assert runtime.resources.s3_bucket == "deployment-bucket"
-    assert isinstance(runtime.clients, DefaultChainAWSClientProvider)
+
+
+def test_run_saved_in_the_org_bucket_uses_its_saved_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run saved in the organization's bucket keeps its saved resources, such as a log group from its own config.
+
+    Test cases:
+    - The runtime uses the saved resources with deployment credentials and the deployment's bucket owner.
+    - Metadata reports the saved bucket.
+    """
+    _configure_managed_runtime(monkeypatch)
+    saved = AWSResources(region="us-east-1", s3_bucket="org-bucket", log_group="benchmarks", log_retention_days=7)
+
+    runtime = resolve_run_aws_runtime(org=_ORG, properties=saved)
+    metadata = resolve_run_metadata_aws_runtime(org=_ORG, properties=saved)
+
+    assert runtime.resources == saved
+    assert isinstance(runtime.clients, AWSClientProvider)
     assert runtime.expected_bucket_owner == "123456789012"
+    assert metadata is not None and metadata.resources == saved
+
+
+def test_run_metadata_omits_runtime_for_ineligible_org(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch, eligible=False)
+
+    assert resolve_run_metadata_aws_runtime(org=_ORG) is None
+
+
+def test_run_metadata_returns_deployment_runtime_for_managed_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch, submissions_enabled=False)
+
+    runtime = resolve_run_metadata_aws_runtime(org=_ORG)
+
+    assert runtime is not None
+    assert runtime.resources.s3_bucket == "org-bucket"
 
 
 def test_managed_runtime_rejects_missing_deployment_account(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,61 +217,61 @@ def test_managed_runtime_rejects_missing_deployment_account(monkeypatch: pytest.
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", None)
 
     with pytest.raises(HTTPException) as error:
-        resolve_start_aws_runtime(_request(), None, _ORG_ID)
+        resolve_start_aws_runtime(_ORG)
 
     assert error.value.status_code == 500
     assert error.value.detail == "AWS_DEPLOYMENT_ACCOUNT_ID must be a 12-digit AWS account ID"
-
-
-@pytest.mark.parametrize(
-    ("aws_managed", "expected_bucket"),
-    [
-        pytest.param(True, "deployment-bucket", id="managed-metadata-has-runtime"),
-        pytest.param(False, None, id="access-key-metadata-omits-aws-links"),
-    ],
-)
-def test_optional_run_runtime_preserves_stored_mode(
-    monkeypatch: pytest.MonkeyPatch,
-    aws_managed: bool,
-    expected_bucket: str | None,
-) -> None:
-    _configure_managed_runtime(monkeypatch, submissions_enabled=False)
-
-    runtime = resolve_run_metadata_aws_runtime(
-        _request(),
-        aws_managed=aws_managed,
-        org_id=_ORG_ID,
-    )
-
-    assert (runtime.resources.s3_bucket if runtime is not None else None) == expected_bucket
 
 
 def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch, eligible=False)
 
     with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime_and_access_key_config(
-            _request(_COMPLETE_HARNESS_HEADERS),
-            aws_managed=True,
-            org_id=_ORG_ID,
-        ).runtime
+        resolve_run_aws_runtime(org=_ORG)
 
     assert exc_info.value.status_code == 403
 
 
+def test_saved_resources_survive_new_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    original = resolve_run_aws_runtime(org=_ORG)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "new-deployment-region")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "new-deployment-bucket")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "new-deployment-logs")
+
+    resumed = resolve_run_aws_runtime(
+        org=_ORG,
+        properties=original.resources,
+    )
+
+    assert resumed.resources == original.resources
+    assert isinstance(resumed.clients, AWSClientProvider)
+    assert resumed.clients.region == original.resources.region
+
+
+def test_managed_start_cannot_override_deployment_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+    original = resolve_start_aws_runtime(_ORG)
+    with pytest.raises(HTTPException) as error:
+        resolve_start_aws_runtime(_ORG, replace(original.resources, s3_bucket="other"))
+    assert error.value.status_code == 400
+
+
 @pytest.mark.parametrize(
-    ("eligible", "submissions_enabled", "expected_mode"),
+    ("eligible", "submissions_enabled", "expected_status"),
     [
-        pytest.param(True, True, "managed", id="eligible-and-open"),
-        pytest.param(True, False, "access_key", id="eligible-but-closed"),
-        pytest.param(False, True, "access_key", id="ineligible"),
+        pytest.param(True, True, 200, id="eligible-and-open"),
+        pytest.param(True, False, 503, id="eligible-but-closed"),
+        pytest.param(False, True, 403, id="ineligible"),
     ],
 )
 def test_aws_runtime_metadata_reflects_managed_submission_availability(
     monkeypatch: pytest.MonkeyPatch,
     eligible: bool,
     submissions_enabled: bool,
-    expected_mode: Literal["access_key", "managed"],
+    expected_status: int,
 ) -> None:
     _configure_managed_runtime(
         monkeypatch,
@@ -273,16 +281,11 @@ def test_aws_runtime_metadata_reflects_managed_submission_availability(
 
     response = TestClient(app).get("/aws-runtime")
 
-    assert response.status_code == 200
-    assert response.json() == (
-        {
-            "mode": "managed",
-            "region": "deployment-region",
-            "s3_bucket": "deployment-bucket",
-        }
-        if expected_mode == "managed"
-        else {"mode": "access_key", "region": None, "s3_bucket": None}
-    )
+    assert response.status_code == expected_status
+    if expected_status == 200:
+        assert response.json() == {"mode": "managed", "region": "deployment-region", "s3_bucket": "test-bucket"}
+    elif expected_status == 403:
+        assert response.json()["detail"].startswith("Managed AWS access is not available for this organization.")
 
 
 def _mapping_keys(value: Any) -> Iterator[str]:
@@ -295,8 +298,8 @@ def _mapping_keys(value: Any) -> Iterator[str]:
             yield from _mapping_keys(nested_value)
 
 
-def test_managed_execution_context_is_recursively_credential_free(harness_config: HarnessConfig) -> None:
-    request = StartBenchmarkRequest(
+def test_managed_execution_context_is_recursively_credential_free() -> None:
+    request = RunExecutionRequest(
         contract=AgentContractRequest(
             name="test-agent",
             install_cmd="echo install",
@@ -304,7 +307,6 @@ def test_managed_execution_context_is_recursively_credential_free(harness_config
             secrets={"STAGING_AWS_PROFILE": "profile-name"},
         ),
         benchmark_name="test-benchmark",
-        harness_config=None,
         sandbox_provider="daytona",
         sandbox_provider_secret_name="sandbox-provider-secret",
         service_headers={"Authorization": "benchmark-service-token"},
@@ -325,14 +327,6 @@ def test_managed_execution_context_is_recursively_credential_free(harness_config
     }
     assert forbidden_keys.isdisjoint(_mapping_keys(payload))
 
-    with pytest.raises(ValidationError, match="Managed execution cannot include AWS credentials"):
-        ManagedExecutionContext(
-            version=2,
-            benchmark_id=context.benchmark_id,
-            verified_task_ids=context.verified_task_ids,
-            start_benchmark_request=request.model_copy(update={"harness_config": harness_config}),
-        )
-
     for credential_bearing_request in (
         request.model_copy(update={"service_headers": {"X-Harness-Aws-Access-Key-Id": "credential"}}),
         request.model_copy(
@@ -348,7 +342,21 @@ def test_managed_execution_context_is_recursively_credential_free(harness_config
             )
 
 
-def test_agent_list_uses_deployment_runtime_for_eligible_org(
+def test_start_request_ignores_retired_fields() -> None:
+    request = StartBenchmarkRequest.model_validate(
+        {
+            "contract": {"name": "agent", "run_cmd": "run"},
+            "benchmark_name": "test",
+            "harness_config": None,
+            "webhook_secret_name": None,
+            "webhook_intervals": None,
+        }
+    )
+
+    assert {"harness_config", "webhook_secret_name", "webhook_intervals"}.isdisjoint(request.model_dump())
+
+
+def test_agent_list_uses_the_org_bucket_for_eligible_org(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
@@ -362,7 +370,7 @@ def test_agent_list_uses_deployment_runtime_for_eligible_org(
     assert response.status_code == 200
     create_store.assert_called_once()
     runtime = cast(AWSRuntime, create_store.call_args.args[0])
-    assert runtime.resources.s3_bucket == "deployment-bucket"
+    assert runtime.resources.s3_bucket == "test-bucket"
 
 
 def test_managed_results_report_capped_presign_expiry(
@@ -371,7 +379,6 @@ def test_managed_results_report_capped_presign_expiry(
     example_benchmark_object: Benchmark,
 ) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
-    example_benchmark_object.aws_managed = True
     database_session.add(example_benchmark_object)
     database_session.commit()
 
@@ -397,60 +404,18 @@ def test_managed_results_report_capped_presign_expiry(
     observed_expiration.assert_called_once_with(3600)
 
 
-@pytest.mark.parametrize("aws_managed", [False, True])
-@pytest.mark.parametrize("remove_defaults", [False, True])
-def test_saved_resources_survive_new_defaults_and_refreshed_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-    aws_managed: bool,
-    remove_defaults: bool,
-) -> None:
-    """Resume uses the saved region and locations with the current credential source."""
-    _configure_managed_runtime(monkeypatch)
-    request = _request(None if aws_managed else _COMPLETE_HARNESS_HEADERS)
-    original = resolve_run_aws_runtime_and_access_key_config(request, aws_managed=aws_managed, org_id=_ORG_ID).runtime
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "new-deployment-region")
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "new-deployment-bucket")
-    if remove_defaults:
-        for setting in (
-            "AWS_DEPLOYMENT_REGION",
-            "AWS_DEPLOYMENT_S3_BUCKET",
-            "AWS_DEPLOYMENT_LOG_GROUP",
-            "AWS_DEPLOYMENT_LOG_RETENTION_DAYS",
-        ):
-            monkeypatch.setattr(config, setting, None)
-
-    refreshed_headers = {
-        **_COMPLETE_HARNESS_HEADERS,
-        "x-harness-aws-access-key-id": "refreshed-test-key",
-        "x-harness-aws-default-region": "new-header-region",
-        "x-harness-s3-bucket": "new-header-bucket",
-    }
-    resumed = resolve_run_aws_runtime_and_access_key_config(
-        _request(None if aws_managed else refreshed_headers),
-        aws_managed=aws_managed,
-        org_id=_ORG_ID,
-        properties=original.resources,
-    ).runtime
-
-    assert resumed.resources == original.resources
-    if aws_managed:
-        assert isinstance(resumed.clients, DefaultChainAWSClientProvider)
-        assert resumed.clients.region == original.resources.region
-    else:
-        assert isinstance(resumed.clients, ExplicitCredentialsAWSClientProvider)
-        assert resumed.clients.credentials.aws_access_key_id == "refreshed-test-key"
-        assert resumed.clients.credentials.aws_default_region == original.resources.region
-
-
-def test_managed_start_cannot_override_deployment_resources(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resource properties cannot give managed callers a different deployment bucket."""
-    from dataclasses import replace
-
-    _configure_managed_runtime(monkeypatch)
-    original = resolve_start_aws_runtime(_request(), None, _ORG_ID)
+def test_managed_start_errors_provide_recovery_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch, submissions_enabled=False)
     with pytest.raises(HTTPException) as error:
-        resolve_start_aws_runtime(_request(), None, _ORG_ID, replace(original.runtime.resources, s3_bucket="other"))
-    assert error.value.status_code == 400
+        resolve_start_aws_runtime(_ORG)
+    assert error.value.status_code == 503
+    assert "Try again later or contact Vals support" in error.value.detail
+
+    _configure_managed_runtime(monkeypatch, eligible=False)
+    with pytest.raises(HTTPException) as error:
+        resolve_start_aws_runtime(_ORG)
+    assert error.value.status_code == 403
+    assert "Contact Vals support" in error.value.detail
 
 
 def test_local_start_is_rejected_before_aws_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -483,3 +448,50 @@ def test_start_rejects_invalid_resource_properties(invalid_property: dict[str, o
         },
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("org_name", "eligible"),
+    [("partner-acme", True), ("internal.example", True), ("acme.example", False)],
+    ids=["listed-prefix", "listed-name", "unlisted"],
+)
+def test_shared_secret_tenants_are_eligible_without_an_org_id(
+    monkeypatch: pytest.MonkeyPatch, org_name: str, eligible: bool
+) -> None:
+    _configure_managed_runtime(monkeypatch, eligible=False)
+    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", "internal.example,partner-*")
+    org = Org(id=_ORG_ID, name=org_name, storage_key="org-bucket")
+
+    if eligible:
+        assert resolve_start_aws_runtime(org).resources.s3_bucket == "org-bucket"
+    else:
+        with pytest.raises(HTTPException) as error:
+            resolve_start_aws_runtime(org)
+        assert error.value.status_code == 403
+
+
+def test_hosted_runtime_uses_the_default_chain_without_a_tenant_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_TENANT_ACCESS_ROLE_ARN", None)
+
+    assert type(deployment_aws_runtime(_ORG).clients) is AWSClientProvider
+
+
+@pytest.mark.parametrize(
+    ("shared_secret_tenants", "shared_secrets"),
+    [("", False), ("acme.*", True)],
+    ids=["own-secrets", "shared-secrets"],
+)
+def test_hosted_runtime_assumes_the_tenant_role_for_its_org(
+    monkeypatch: pytest.MonkeyPatch, shared_secret_tenants: str, shared_secrets: bool
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    role_arn = "arn:aws:iam::123456789012:role/ValkyrieTrackerTenantAccessRole-dev"
+    monkeypatch.setattr(config, "AWS_TENANT_ACCESS_ROLE_ARN", role_arn)
+    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", shared_secret_tenants)
+
+    clients = deployment_aws_runtime(_ORG).clients
+
+    assert clients == TenantRoleAWSClientProvider(
+        region="deployment-region", role_arn=role_arn, org_id=str(_ORG_ID), shared_secrets=shared_secrets
+    )

@@ -1,55 +1,18 @@
 {
   "components": {
-    "parameters": {
-      "HarnessAwsAccessKeyId": {
-        "in": "header",
-        "name": "X-Harness-AWS-Access-Key-Id",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      },
-      "HarnessAwsDefaultRegion": {
-        "in": "header",
-        "name": "X-Harness-AWS-Default-Region",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      },
-      "HarnessAwsSecretAccessKey": {
-        "in": "header",
-        "name": "X-Harness-AWS-Secret-Access-Key",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      },
-      "HarnessS3Bucket": {
-        "in": "header",
-        "name": "X-Harness-S3-Bucket",
-        "required": true,
-        "schema": {
-          "type": "string"
-        }
-      }
-    },
     "schemas": {
-      "AWSCredentials": {
+      "AWSBenchmarkArguments": {
+        "additionalProperties": false,
+        "description": "Stored arguments for an AWS run, including legacy rows without resources.",
         "properties": {
-          "aws_access_key_id": {
-            "title": "Aws Access Key Id",
-            "type": "string"
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
           },
-          "aws_default_region": {
-            "title": "Aws Default Region",
-            "type": "string"
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
           },
-          "aws_secret_access_key": {
-            "title": "Aws Secret Access Key",
-            "type": "string"
-          },
-          "aws_session_token": {
+          "dataset": {
             "anyOf": [
               {
                 "type": "string"
@@ -58,15 +21,92 @@
                 "type": "null"
               }
             ],
-            "title": "Aws Session Token"
+            "title": "Dataset"
+          },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "environment": {
+            "const": "aws",
+            "default": "aws",
+            "title": "Environment",
+            "type": "string"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "properties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AWSResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
           }
         },
         "required": [
-          "aws_access_key_id",
-          "aws_secret_access_key",
-          "aws_default_region"
+          "contract",
+          "concurrency"
         ],
-        "title": "AWSCredentials",
+        "title": "AWSBenchmarkArguments",
         "type": "object"
       },
       "AWSResources": {
@@ -103,10 +143,7 @@
       "AWSRuntimeResponse": {
         "properties": {
           "mode": {
-            "enum": [
-              "access_key",
-              "managed"
-            ],
+            "const": "managed",
             "title": "Mode",
             "type": "string"
           },
@@ -137,6 +174,30 @@
           "mode"
         ],
         "title": "AWSRuntimeResponse",
+        "type": "object"
+      },
+      "AccessKeyResponse": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_id",
+          "key",
+          "expires_at"
+        ],
+        "title": "AccessKeyResponse",
         "type": "object"
       },
       "AgentContractRequest-Input": {
@@ -494,103 +555,6 @@
         "title": "AverageTaskBreakdown",
         "type": "object"
       },
-      "BenchmarkArguments": {
-        "additionalProperties": false,
-        "properties": {
-          "concurrency": {
-            "title": "Concurrency",
-            "type": "integer"
-          },
-          "contract": {
-            "$ref": "#/components/schemas/AgentContractRequest-Output"
-          },
-          "dataset": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dataset"
-          },
-          "environment": {
-            "const": "aws",
-            "default": "aws",
-            "title": "Environment",
-            "type": "string"
-          },
-          "lambda_function": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lambda Function"
-          },
-          "properties": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AWSResources"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "sandbox_provider": {
-            "default": "daytona",
-            "title": "Sandbox Provider",
-            "type": "string"
-          },
-          "sandbox_provider_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sandbox Provider Secret Name"
-          },
-          "slice_str": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Slice Str"
-          },
-          "task_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Ids"
-          }
-        },
-        "required": [
-          "contract",
-          "concurrency"
-        ],
-        "title": "BenchmarkArguments",
-        "type": "object"
-      },
       "BenchmarkServiceCatalogResponse": {
         "properties": {
           "services": {
@@ -691,6 +655,42 @@
           "latency_ms"
         ],
         "title": "BenchmarkServiceHealth",
+        "type": "object"
+      },
+      "BenchmarkServiceRequest": {
+        "properties": {
+          "auth_header_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Header Name"
+          },
+          "auth_secret_name": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_+=.@/-]{1,512}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Secret Name"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "BenchmarkServiceRequest",
         "type": "object"
       },
       "BenchmarkServicesRequest": {
@@ -1081,10 +1081,130 @@
         "title": "Body_stop_benchmark",
         "type": "object"
       },
+      "CreateAccessKeyRequest": {
+        "properties": {
+          "expires_in_days": {
+            "default": 30,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Expires In Days",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "CreateAccessKeyRequest",
+        "type": "object"
+      },
+      "CreateOrganizationRequest": {
+        "properties": {
+          "id": {
+            "description": "Lowercase letters, digits, dots and hyphens; 3 to 63 characters",
+            "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CreateOrganizationRequest",
+        "type": "object"
+      },
+      "DatasetVersion": {
+        "description": "An immutable dataset identity and its optional display label.",
+        "properties": {
+          "id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[!-~]+$",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "DatasetVersion",
+        "type": "object"
+      },
+      "DefaultProviderRequest": {
+        "properties": {
+          "provider": {
+            "pattern": "^[a-z][a-z0-9-]{0,63}$",
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "DefaultProviderRequest",
+        "type": "object"
+      },
+      "FailureCategory": {
+        "description": "Coarse classification of a task or run failure, decided where the failure is caught.",
+        "enum": [
+          "infrastructure",
+          "benchmark_service",
+          "agent",
+          "cancelled",
+          "unknown"
+        ],
+        "title": "FailureCategory",
+        "type": "string"
+      },
       "FetchBenchmarkMetadataResponse": {
         "properties": {
           "benchmark_arguments": {
-            "$ref": "#/components/schemas/BenchmarkArguments"
+            "discriminator": {
+              "mapping": {
+                "aws": "#/components/schemas/AWSBenchmarkArguments",
+                "local": "#/components/schemas/LocalBenchmarkArguments"
+              },
+              "propertyName": "environment"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AWSBenchmarkArguments"
+              },
+              {
+                "$ref": "#/components/schemas/LocalBenchmarkArguments"
+              }
+            ],
+            "title": "Benchmark Arguments"
           },
           "benchmark_id": {
             "format": "uuid",
@@ -1208,6 +1328,11 @@
               }
             ],
             "title": "Dataset"
+          },
+          "ignore_custom_services": {
+            "default": false,
+            "title": "Ignore Custom Services",
+            "type": "boolean"
           },
           "service_headers": {
             "additionalProperties": {
@@ -1355,7 +1480,22 @@
             ]
           },
           "benchmark_arguments": {
-            "$ref": "#/components/schemas/BenchmarkArguments"
+            "discriminator": {
+              "mapping": {
+                "aws": "#/components/schemas/AWSBenchmarkArguments",
+                "local": "#/components/schemas/LocalBenchmarkArguments"
+              },
+              "propertyName": "environment"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AWSBenchmarkArguments"
+              },
+              {
+                "$ref": "#/components/schemas/LocalBenchmarkArguments"
+              }
+            ],
+            "title": "Benchmark Arguments"
           },
           "benchmark_id": {
             "format": "uuid",
@@ -1436,6 +1576,20 @@
             ],
             "title": "Task Errors"
           },
+          "task_failure_categories": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/FailureCategory"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Failure Categories"
+          },
           "tasks_stopped": {
             "anyOf": [
               {
@@ -1478,36 +1632,212 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "HarnessConfig": {
+      "IdentityResponse": {
         "properties": {
-          "aws": {
-            "$ref": "#/components/schemas/AWSCredentials"
-          },
-          "log_group": {
-            "title": "Log Group",
+          "credential": {
+            "enum": [
+              "login",
+              "access_key",
+              "none"
+            ],
+            "title": "Credential",
             "type": "string"
           },
-          "log_retention_policy": {
-            "title": "Log Retention Policy",
-            "type": "integer"
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
           },
-          "s3_bucket": {
-            "title": "S3 Bucket",
-            "type": "string"
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           },
-          "sandbox_provider_secret_name": {
-            "title": "Sandbox Provider Secret Name",
+          "organization": {
+            "title": "Organization",
             "type": "string"
           }
         },
         "required": [
-          "aws",
-          "s3_bucket",
-          "log_group",
-          "log_retention_policy",
-          "sandbox_provider_secret_name"
+          "organization",
+          "email",
+          "name",
+          "credential"
         ],
-        "title": "HarnessConfig",
+        "title": "IdentityResponse",
+        "type": "object"
+      },
+      "InviteRequest": {
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "InviteRequest",
+        "type": "object"
+      },
+      "InviteResponse": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "organization": {
+            "title": "Organization",
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization",
+          "email"
+        ],
+        "title": "InviteResponse",
+        "type": "object"
+      },
+      "LocalBenchmarkArguments": {
+        "additionalProperties": false,
+        "description": "Stored arguments with the filesystem resources selected at admission.",
+        "properties": {
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/AgentContractRequest-Output"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "environment": {
+            "const": "local",
+            "default": "local",
+            "title": "Environment",
+            "type": "string"
+          },
+          "lambda_function": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lambda Function"
+          },
+          "properties": {
+            "$ref": "#/components/schemas/LocalResources"
+          },
+          "sandbox_provider": {
+            "default": "daytona",
+            "title": "Sandbox Provider",
+            "type": "string"
+          },
+          "sandbox_provider_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Provider Secret Name"
+          },
+          "slice_str": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slice Str"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          }
+        },
+        "required": [
+          "contract",
+          "concurrency",
+          "properties"
+        ],
+        "title": "LocalBenchmarkArguments",
+        "type": "object"
+      },
+      "LocalResources": {
+        "properties": {
+          "data_root": {
+            "format": "path",
+            "title": "Data Root",
+            "type": "string"
+          },
+          "secrets_file": {
+            "anyOf": [
+              {
+                "format": "path",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secrets File"
+          }
+        },
+        "required": [
+          "data_root"
+        ],
+        "title": "LocalResources",
         "type": "object"
       },
       "LogEventResponse": {
@@ -1592,218 +1922,104 @@
         "title": "LogPageResponse",
         "type": "object"
       },
-      "ManagedStorageStartBenchmarkRequest": {
-        "description": "Start a run whose artifacts are written to an owner-provisioned managed storage bucket.",
+      "LoginSettingsResponse": {
         "properties": {
-          "benchmark_name": {
-            "title": "Benchmark Name",
+          "client_id": {
+            "title": "Client Id",
             "type": "string"
           },
-          "concurrency": {
-            "default": 5,
-            "title": "Concurrency",
-            "type": "integer"
-          },
-          "contract": {
-            "$ref": "#/components/schemas/AgentContractRequest-Input"
-          },
-          "custom_benchmark_service": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Custom Benchmark Service"
-          },
-          "dataset": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dataset"
-          },
-          "environment": {
-            "const": "aws",
-            "default": "aws",
-            "title": "Environment",
+          "device_url": {
+            "title": "Device Url",
             "type": "string"
           },
-          "harness_config": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/HarnessConfig"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "label": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Label"
-          },
-          "lambda_function": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lambda Function"
-          },
-          "managed_s3_bucket": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it.",
-            "title": "Managed S3 Bucket"
-          },
-          "priority": {
-            "anyOf": [
-              {
-                "maximum": 4.0,
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Priority"
-          },
-          "properties": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AWSResources"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "sandbox_provider": {
-            "default": "daytona",
-            "title": "Sandbox Provider",
+          "project_id": {
+            "title": "Project Id",
             "type": "string"
           },
-          "sandbox_provider_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sandbox Provider Secret Name"
+          "refresh_url": {
+            "title": "Refresh Url",
+            "type": "string"
           },
-          "service_auth_header_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Service Auth Header Name"
-          },
-          "service_auth_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Service Auth Secret Name"
-          },
-          "service_headers": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Service Headers",
-            "type": "object"
-          },
-          "slice_str": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Slice Str"
-          },
-          "task_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Ids"
-          },
-          "webhook_intervals": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Intervals"
-          },
-          "webhook_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Secret Name"
+          "token_url": {
+            "title": "Token Url",
+            "type": "string"
           }
         },
         "required": [
-          "managed_s3_bucket",
-          "contract",
-          "benchmark_name"
+          "device_url",
+          "token_url",
+          "client_id",
+          "project_id",
+          "refresh_url"
         ],
-        "title": "ManagedStorageStartBenchmarkRequest",
+        "title": "LoginSettingsResponse",
+        "type": "object"
+      },
+      "MemberEntry": {
+        "properties": {
+          "admin": {
+            "title": "Admin",
+            "type": "boolean"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "invited"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "name",
+          "admin",
+          "status"
+        ],
+        "title": "MemberEntry",
+        "type": "object"
+      },
+      "MembersResponse": {
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/MemberEntry"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "organization": {
+            "title": "Organization",
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization",
+          "members"
+        ],
+        "title": "MembersResponse",
         "type": "object"
       },
       "Order": {
@@ -1813,6 +2029,83 @@
         ],
         "title": "Order",
         "type": "string"
+      },
+      "OrganizationEntry": {
+        "properties": {
+          "admin": {
+            "title": "Admin",
+            "type": "boolean"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "admin",
+          "current"
+        ],
+        "title": "OrganizationEntry",
+        "type": "object"
+      },
+      "OrganizationResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "OrganizationResponse",
+        "type": "object"
+      },
+      "OrganizationsResponse": {
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "invitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Invitations",
+            "type": "array"
+          },
+          "organizations": {
+            "items": {
+              "$ref": "#/components/schemas/OrganizationEntry"
+            },
+            "title": "Organizations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "email",
+          "organizations",
+          "invitations"
+        ],
+        "title": "OrganizationsResponse",
+        "type": "object"
       },
       "OutputArtifact-Input": {
         "properties": {
@@ -1845,6 +2138,36 @@
       },
       "OutputArtifact-Output": {
         "additionalProperties": true,
+        "type": "object"
+      },
+      "ProviderSecretRequest": {
+        "properties": {
+          "secret_name": {
+            "pattern": "^[A-Za-z0-9_+=.@/-]{1,512}$",
+            "title": "Secret Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret_name"
+        ],
+        "title": "ProviderSecretRequest",
+        "type": "object"
+      },
+      "ProvidersResponse": {
+        "properties": {
+          "providers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Providers",
+            "type": "object"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "title": "ProvidersResponse",
         "type": "object"
       },
       "RetryMode": {
@@ -1956,6 +2279,34 @@
         "title": "RunArtifactsResponse",
         "type": "object"
       },
+      "RunSettingsResponse": {
+        "properties": {
+          "benchmark_services": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SavedBenchmarkService"
+            },
+            "title": "Benchmark Services",
+            "type": "object"
+          },
+          "default_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Provider"
+          }
+        },
+        "required": [
+          "default_provider",
+          "benchmark_services"
+        ],
+        "title": "RunSettingsResponse",
+        "type": "object"
+      },
       "S3UploadResultsResponse": {
         "properties": {
           "console_url": {
@@ -1982,6 +2333,43 @@
           "console_url"
         ],
         "title": "S3UploadResultsResponse",
+        "type": "object"
+      },
+      "SavedBenchmarkService": {
+        "properties": {
+          "auth_header_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Header Name"
+          },
+          "auth_secret_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Secret Name"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "auth_header_name",
+          "auth_secret_name"
+        ],
+        "title": "SavedBenchmarkService",
         "type": "object"
       },
       "SchedulerActiveEntryResponse": {
@@ -2338,6 +2726,99 @@
         "title": "SchedulerWaitingEntryResponse",
         "type": "object"
       },
+      "SecretEntry": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reference"
+        ],
+        "title": "SecretEntry",
+        "type": "object"
+      },
+      "SecretValueRequest": {
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "SecretValueRequest",
+        "type": "object"
+      },
+      "SecretsResponse": {
+        "properties": {
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/SecretEntry"
+            },
+            "title": "Secrets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "secrets"
+        ],
+        "title": "SecretsResponse",
+        "type": "object"
+      },
+      "ShedBenchmarkRequest": {
+        "properties": {
+          "concurrency": {
+            "minimum": 1.0,
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "concurrency"
+        ],
+        "title": "ShedBenchmarkRequest",
+        "type": "object"
+      },
+      "ShedBenchmarkResponse": {
+        "properties": {
+          "benchmark_id": {
+            "format": "uuid",
+            "title": "Benchmark Id",
+            "type": "string"
+          },
+          "concurrency": {
+            "title": "Concurrency",
+            "type": "integer"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "benchmark_id",
+          "concurrency",
+          "task_ids"
+        ],
+        "title": "ShedBenchmarkResponse",
+        "type": "object"
+      },
       "SingleBenchmarkResponse": {
         "description": "Single-run view: BenchmarkTableRow fields plus optional final_score.",
         "properties": {
@@ -2559,6 +3040,16 @@
             ],
             "title": "Evaluation Result"
           },
+          "failure_category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FailureCategory"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -2636,21 +3127,32 @@
             ],
             "title": "Dataset"
           },
-          "environment": {
-            "const": "aws",
-            "default": "aws",
-            "title": "Environment",
-            "type": "string"
-          },
-          "harness_config": {
+          "dataset_version": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/HarnessConfig"
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Dataset Version"
+          },
+          "environment": {
+            "default": "aws",
+            "enum": [
+              "aws",
+              "local"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "ignore_custom_services": {
+            "default": false,
+            "title": "Ignore Custom Services",
+            "type": "boolean"
           },
           "label": {
             "anyOf": [
@@ -2674,18 +3176,6 @@
             ],
             "title": "Lambda Function"
           },
-          "managed_s3_bucket": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Owner-provisioned managed storage bucket. POST /start-benchmark-with-storage requires it; POST /start-benchmark rejects it.",
-            "title": "Managed S3 Bucket"
-          },
           "priority": {
             "anyOf": [
               {
@@ -2705,9 +3195,13 @@
                 "$ref": "#/components/schemas/AWSResources"
               },
               {
+                "$ref": "#/components/schemas/LocalResources"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Properties"
           },
           "sandbox_provider": {
             "default": "daytona",
@@ -2778,36 +3272,11 @@
               }
             ],
             "title": "Task Ids"
-          },
-          "webhook_intervals": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Intervals"
-          },
-          "webhook_secret_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Webhook Secret Name"
           }
         },
         "required": [
-          "contract",
-          "benchmark_name"
+          "benchmark_name",
+          "contract"
         ],
         "title": "StartBenchmarkRequest",
         "type": "object"
@@ -2845,6 +3314,27 @@
               }
             ],
             "title": "Current Execution Release Id"
+          },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DatasetVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dataset_version_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Version Warning"
           },
           "executor_artifact_digest": {
             "anyOf": [
@@ -2999,6 +3489,16 @@
               }
             ],
             "title": "Error Message"
+          },
+          "failure_category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FailureCategory"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "finished_at": {
             "anyOf": [
@@ -3174,24 +3674,98 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/agents": {
-      "get": {
-        "description": "List agent zips in the configured shared library.",
-        "operationId": "list_agents_endpoint",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
+    "/access-keys": {
+      "post": {
+        "description": "Create an expiring access key for the logged-in user's organization, for CI and other headless use.",
+        "operationId": "create_access_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccessKeyRequest"
+              }
+            }
           },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessKeyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
           {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
+            "BearerAuth": []
           }
         ],
+        "summary": "Create Access Key",
+        "tags": [
+          "login"
+        ]
+      }
+    },
+    "/access-keys/{key_id}": {
+      "delete": {
+        "description": "Delete an access key the logged-in user created for this organization.",
+        "operationId": "revoke_access_key",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Revoke Access Key",
+        "tags": [
+          "login"
+        ]
+      }
+    },
+    "/agents": {
+      "get": {
+        "description": "List agent zips in the organization's agent library.",
+        "operationId": "list_agents_endpoint",
         "responses": {
           "200": {
             "content": {
@@ -3209,7 +3783,7 @@
     },
     "/agents/{name}": {
       "delete": {
-        "description": "Remove an existing ZIP from the configured shared agent library.",
+        "description": "Remove an existing ZIP from the organization's agent library.",
         "operationId": "remove_agent_endpoint",
         "parameters": [
           {
@@ -3220,18 +3794,6 @@
               "title": "Name",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -3265,7 +3827,7 @@
         "summary": "Remove Agent Endpoint"
       },
       "put": {
-        "description": "Validate and upload a ZIP, replacing agents/<name>.zip if it exists.",
+        "description": "Validate and publish an agent ZIP, optionally refusing to replace an existing alias.",
         "operationId": "push_agent_endpoint",
         "parameters": [
           {
@@ -3278,16 +3840,14 @@
             }
           },
           {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
+            "in": "query",
+            "name": "overwrite",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Overwrite",
+              "type": "boolean"
+            }
           }
         ],
         "requestBody": {
@@ -3318,6 +3878,9 @@
           "403": {
             "description": "Storage permission denied"
           },
+          "409": {
+            "description": "Agent already exists"
+          },
           "413": {
             "description": "Configured archive limit exceeded"
           },
@@ -3337,7 +3900,7 @@
     },
     "/agents/{name}/download-url": {
       "get": {
-        "description": "Return a 5-minute presigned URL to download agents/<name>.zip.",
+        "description": "Return a download URL for the authorized agent.",
         "operationId": "get_agent_download_url",
         "parameters": [
           {
@@ -3350,16 +3913,14 @@
             }
           },
           {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -3401,18 +3962,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "requestBody": {
@@ -3446,6 +3995,51 @@
           }
         },
         "summary": "Analyze Benchmark"
+      }
+    },
+    "/auth/cli": {
+      "get": {
+        "description": "Tell the CLI where to sign in; 404 when this Tracker has no CLI login.",
+        "operationId": "login_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [],
+        "summary": "Login Settings",
+        "tags": [
+          "login"
+        ]
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "description": "Return the organization and user behind the request's credential.",
+        "operationId": "current_identity",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Current Identity",
+        "tags": [
+          "login"
+        ]
       }
     },
     "/aws-runtime": {
@@ -3727,6 +4321,16 @@
               "title": "Path",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -3821,6 +4425,34 @@
           },
           {
             "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "maximum": 10000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
             "name": "query",
             "required": false,
             "schema": {
@@ -3872,34 +4504,6 @@
           },
           {
             "in": "query",
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Cursor"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 1000,
-              "maximum": 10000,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
             "name": "task_id",
             "required": false,
             "schema": {
@@ -3914,18 +4518,6 @@
               ],
               "title": "Task Id"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4028,18 +4620,6 @@
               "title": "Task Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4063,6 +4643,57 @@
           }
         },
         "summary": "Stream Task Logs"
+      }
+    },
+    "/benchmarks/{benchmark_id}/shed": {
+      "post": {
+        "description": "Lower an active run's concurrency and force stop the newest tasks above the new limit.",
+        "operationId": "shed_benchmark",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShedBenchmarkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShedBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Shed Benchmark"
       }
     },
     "/benchmarks/{benchmark_id}/tasks": {
@@ -4237,7 +4868,7 @@
     },
     "/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts": {
       "get": {
-        "description": "CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page.",
+        "description": "Return log and agent output locations for the task detail page.",
         "operationId": "get_task_artifacts",
         "parameters": [
           {
@@ -4258,18 +4889,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4311,18 +4930,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4378,18 +4985,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4460,20 +5055,6 @@
       "post": {
         "description": "Fetch all task ids for a benchmark dataset.",
         "operationId": "fetch_benchmark_tasks",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4779,18 +5360,6 @@
               ],
               "title": "Task Ids"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -4840,27 +5409,16 @@
         "summary": "Health Check"
       }
     },
-    "/init": {
-      "post": {
-        "description": "Initialize org for hosted mode. Validates Descope key and creates org if needed.",
-        "operationId": "init_org",
+    "/orgs": {
+      "get": {
+        "description": "List this login's organizations and the invitations waiting for its verified email.",
+        "operationId": "list_organizations",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "boolean"
-                      }
-                    ]
-                  },
-                  "title": "Response Init Org",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OrganizationsResponse"
                 }
               }
             },
@@ -4869,10 +5427,253 @@
         },
         "security": [
           {
-            "ApiKeyAuth": []
+            "BearerAuth": []
           }
         ],
-        "summary": "Init Org"
+        "summary": "List Organizations",
+        "tags": [
+          "organizations"
+        ]
+      },
+      "post": {
+        "description": "Create an organization with the caller as its admin.",
+        "operationId": "create_organization",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOrganizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Create Organization",
+        "tags": [
+          "organizations"
+        ]
+      }
+    },
+    "/orgs/invitations/{organization}": {
+      "delete": {
+        "description": "Decline an invitation to this login's verified email.",
+        "operationId": "decline_invitation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization",
+            "required": true,
+            "schema": {
+              "title": "Organization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Decline Invitation",
+        "tags": [
+          "organizations"
+        ]
+      }
+    },
+    "/orgs/invitations/{organization}/accept": {
+      "post": {
+        "description": "Join an organization that invited this login's verified email.",
+        "operationId": "accept_invitation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization",
+            "required": true,
+            "schema": {
+              "title": "Organization",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Accept Invitation",
+        "tags": [
+          "organizations"
+        ]
+      }
+    },
+    "/orgs/members": {
+      "get": {
+        "description": "List the members and pending invitations of the organization this login acts for.",
+        "operationId": "list_members",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List Members",
+        "tags": [
+          "organizations"
+        ]
+      },
+      "post": {
+        "description": "Invite someone to the organization this admin acts for. They join only after signing in and accepting.\n\nInviting again restarts the invitation's 14 days.",
+        "operationId": "invite_member",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Invite Member",
+        "tags": [
+          "organizations"
+        ]
+      }
+    },
+    "/orgs/members/{email}": {
+      "delete": {
+        "description": "Remove a member, or cancel an invitation, in the organization this admin acts for.\n\nA removed member's access keys for the organization are deleted and their login sessions ended.",
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "email",
+            "required": true,
+            "schema": {
+              "title": "Email",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Remove Member",
+        "tags": [
+          "organizations"
+        ]
       }
     },
     "/preview-results": {
@@ -4978,18 +5779,6 @@
               "title": "Benchmark Id",
               "type": "string"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "responses": {
@@ -5027,7 +5816,7 @@
     },
     "/retry-or-resume-benchmark/{benchmark_id}": {
       "post": {
-        "description": "Retry or resume a benchmark run by its id.\n\nUsage:\ncurl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20\n  -d '{\"task_ids\": [\"task_id_1\", \"task_id_2\"]}'\n\nArgs:\n    benchmark_id: The benchmark ID to retry/resume\n    retry: If true, retry failed tasks. If false, resume from where it left off\n    concurrency: Optional new concurrency level (overrides original value)\n    task_ids: Optional list of specific task IDs to run. If a task id is not yet\n        registered but is valid in the current dataset, a fresh PENDING row is created.\n    benchmark_url: Optional replacement benchmark service URL stored on the run.\n\nReturns:\n    RetryOrResumeBenchmarkResponse",
+        "description": "Retry or resume a benchmark run by its id.\n\nUsage:\ncurl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20\n  -d '{\"task_ids\": [\"task_id_1\", \"task_id_2\"]}'\n\nArgs:\n    benchmark_id: The benchmark ID to retry/resume\n    retry: If true, retry failed tasks. If false, resume from where it left off\n    update_agent: Refresh the saved agent bundle before recovering the run.\n    concurrency: Optional new concurrency level (overrides original value)\n    task_ids: Optional list of specific task IDs to run. If a task id is not yet\n        registered but is valid in the current dataset, a fresh PENDING row is created.\n    benchmark_url: Optional replacement benchmark service URL stored on the run.\n\nReturns:\n    RetryOrResumeBenchmarkResponse",
         "operationId": "retry_or_resume_benchmark",
         "parameters": [
           {
@@ -5061,6 +5850,16 @@
           },
           {
             "in": "query",
+            "name": "update_agent",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Update Agent",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
             "name": "concurrency",
             "required": false,
             "schema": {
@@ -5074,18 +5873,6 @@
               ],
               "title": "Concurrency"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "requestBody": {
@@ -5120,6 +5907,127 @@
           }
         },
         "summary": "Retry Or Resume Benchmark"
+      }
+    },
+    "/sandbox-providers": {
+      "get": {
+        "description": "List which secret holds each sandbox provider's configuration, by name.",
+        "operationId": "list_providers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvidersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Providers"
+      }
+    },
+    "/sandbox-providers/{provider}": {
+      "delete": {
+        "description": "Stop using a secret for this sandbox provider.",
+        "operationId": "remove_provider",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvidersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "This organization lets only signed-in admins change its secrets"
+          },
+          "404": {
+            "description": "Provider is not mapped"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Provider"
+      },
+      "put": {
+        "description": "Use the named secret for this sandbox provider's runs.",
+        "operationId": "set_provider",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvidersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "This organization lets only signed-in admins change its secrets"
+          },
+          "404": {
+            "description": "Secret does not exist"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Provider"
       }
     },
     "/scheduler/overview": {
@@ -5208,8 +6116,294 @@
         "summary": "Get Scheduler Overview"
       }
     },
+    "/secrets": {
+      "get": {
+        "description": "List the organization's secrets by name, never their values.",
+        "operationId": "list_secrets_endpoint",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Secrets Endpoint"
+      }
+    },
+    "/secrets/{name}": {
+      "delete": {
+        "description": "Delete the secret immediately; it cannot be recovered.\n\nWithout a tenant access role, AWS can't tell a missing name apart, so deleting one also succeeds.",
+        "operationId": "remove_secret_endpoint",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_+=.@-]{1,128}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "This organization lets only signed-in admins change its secrets"
+          },
+          "404": {
+            "description": "Secret does not exist"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Secret Endpoint"
+      },
+      "put": {
+        "description": "Create the secret or replace its value. Runs reference it by the returned reference.",
+        "operationId": "set_secret_endpoint",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_+=.@-]{1,128}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretValueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "Invalid secret value"
+          },
+          "403": {
+            "description": "This organization lets only signed-in admins change its secrets"
+          },
+          "409": {
+            "description": "A secret with this name is still being deleted"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Secret Endpoint"
+      }
+    },
+    "/settings": {
+      "get": {
+        "description": "Show the caller's default sandbox provider and benchmark services; empty for keys without a user.",
+        "operationId": "get_run_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Run Settings"
+      }
+    },
+    "/settings/benchmark-services/{benchmark}": {
+      "delete": {
+        "description": "Stop using a saved benchmark service URL.",
+        "operationId": "remove_benchmark_service",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark",
+            "required": true,
+            "schema": {
+              "title": "Benchmark",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Only a signed-in user can change run settings"
+          },
+          "404": {
+            "description": "No URL is saved for the benchmark"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Benchmark Service"
+      },
+      "put": {
+        "description": "Use this benchmark service URL for the benchmark's runs, sending the named secret's value as a header.",
+        "operationId": "set_benchmark_service",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark",
+            "required": true,
+            "schema": {
+              "title": "Benchmark",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BenchmarkServiceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Not a signed-in user, or the URL is not an allowed destination"
+          },
+          "404": {
+            "description": "Secret does not exist"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Benchmark Service"
+      }
+    },
+    "/settings/default-provider": {
+      "put": {
+        "description": "Run on this sandbox provider unless a run names another.",
+        "operationId": "set_default_provider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefaultProviderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Only a signed-in user can change run settings"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Default Provider"
+      }
+    },
     "/start-benchmark": {
       "post": {
+        "description": "Start a benchmark run from an uploaded agent or a complete contract.",
         "operationId": "start_benchmark",
         "requestBody": {
           "content": {
@@ -5243,55 +6437,7 @@
             "description": "Validation Error"
           }
         },
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
         "summary": "Start Benchmark"
-      }
-    },
-    "/start-benchmark-with-storage": {
-      "post": {
-        "operationId": "start_benchmark_with_storage",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ManagedStorageStartBenchmarkRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StartBenchmarkResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
-        "summary": "Start Benchmark With Storage"
       }
     },
     "/stop-benchmark/{benchmark_id}": {
@@ -5318,18 +6464,6 @@
               "title": "Force",
               "type": "boolean"
             }
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsAccessKeyId"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsSecretAccessKey"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessAwsDefaultRegion"
-          },
-          {
-            "$ref": "#/components/parameters/HarnessS3Bucket"
           }
         ],
         "requestBody": {

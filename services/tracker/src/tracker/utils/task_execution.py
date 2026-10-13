@@ -5,11 +5,11 @@ import json
 import socket
 import time
 import traceback
-from asyncio import Semaphore
-from collections.abc import Coroutine
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from asyncio import Semaphore, to_thread
+from collections.abc import AsyncGenerator, Coroutine
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import Enum
 from types import TracebackType
 from typing import Any, cast
@@ -29,14 +29,15 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
 from pydantic import ValidationError
 from sqlalchemy.engine import Connection
-from sqlmodel import Session, col, select, update
+from sqlalchemy.exc import OperationalError
+from sqlmodel import Session, col, func, select, update
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.aws.cloudwatch_logs import (
-    task_log_stream_name,
-)
+from tracker.runtime.logs import task_log_stream_name
+from tracker.runtime.secrets import resolve_secrets
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
+from tracker.runtime.model_gateway import task_scoped_gateway_key
 from tracker.runtime.task_logs import TaskLogBuffer
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
@@ -47,6 +48,7 @@ from tracker.database.models import (
     ErrorResult,
     ExecutorDispatch,
     EvaluationResult,
+    FailureCategory,
     Org,
     Task,
     TaskBreakdown,
@@ -56,6 +58,7 @@ from tracker.database.session import engine
 from tracker.exceptions import (
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
+    InvalidSandboxConfigurationError,
     OutputArtifactError,
     SandboxSetupError,
     TrackerServiceError,
@@ -63,12 +66,12 @@ from tracker.exceptions import (
 from tracker.egress import combine_run_egress_policies
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.logging import get_logger
-from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, error_span, incr
 from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
 from tracker.observability.tracing import observability_span
 from tracker.sandbox import (
     DependencySetupMode,
+    SandboxCreationState,
     apply_egress_policy,
     create_sandbox,
     install_agent_dependencies,
@@ -77,17 +80,24 @@ from tracker.sandbox import (
     upload_agent_artifacts,
 )
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
-from tracker.scheduler.store import PostgresAdvisoryLock, task_evaluation_lock
+from tracker.scheduler.store import PostgresAdvisoryLock, queued_sandbox_name, task_evaluation_lock
 from tracker.types import (
     StartBenchmarkRequest,
 )
 
+from tracker.utils.failure_classification import classify_failure
 from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
+_DIRECT_ADMISSION_POLL_SECONDS: float = 2
+# Nested-dockerd startup failures reported by the VCB and Terminal-Bench services.
+_DOCKER_NOT_READY_SIGNATURES = (
+    "docker daemon is not ready inside the sandbox",
+    "Docker daemon did not become ready inside the compose sandbox",
+)
 
 
 class BenchmarkServiceWebSocketDNSResolutionError(BenchmarkServiceError):
@@ -164,6 +174,7 @@ def _record_failure_before_retry(
                 producer="sandbox_provider",
                 operation="setup",
                 error_type=type(exc).__name__,
+                category=FailureCategory.INFRASTRUCTURE,
                 retry_scheduled=True,
                 failed_attempt_number=failed_attempt_number,
             )
@@ -178,7 +189,10 @@ def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> 
     """Emit the retry telemetry the Tenacity before_sleep hook owned before recovery
     moved into the benchmark-service client."""
     error_class = type(exc).__name__
-    with observability_span("task.retry", attempt=attempt.number, error_class=error_class):
+    failure_category = classify_failure(exc).value
+    with observability_span(
+        "task.retry", attempt=attempt.number, error_class=error_class, failure_category=failure_category
+    ):
         logger.warning(
             "retry.before_sleep",
             extra={
@@ -187,9 +201,13 @@ def _observe_task_retry(attempt: SandboxRecoveryAttempt, exc: BaseException) -> 
                 "attempt": attempt.number,
                 "idle_for": _SANDBOX_RETRY_DELAY_SECONDS,
                 "error_class": error_class,
+                "failure_category": failure_category,
             },
         )
-        incr(f"{_TASK_RETRY_METRIC}.retry", tags={"error_class": error_class})
+        incr(
+            f"{_TASK_RETRY_METRIC}.retry",
+            tags={"error_class": error_class, "failure_category": failure_category},
+        )
 
 
 class TrackedTaskStatus(str, Enum):
@@ -294,10 +312,13 @@ class TrackedTask:
                 # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
                 return {task_row.task_id: None}
             except Exception as e:
+                category = classify_failure(e)
                 error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
-                logger.error(error_message)
+                logger.error(error_message, extra={"failure_category": category.value})
                 logfire.exception("tracked_task_run failed")
-                capture_exception(e)
+                with sentry_sdk.new_scope() as scope:
+                    scope.set_tag("failure_category", category.value)
+                    capture_exception(e)
                 with Session(bind=engine) as session:
                     task = fetch_task_row(task_row.id, session, self._org)
                     commit_task_error(
@@ -307,6 +328,7 @@ class TrackedTask:
                         producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
                         operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
                         error_type=type(e).__name__,
+                        category=category,
                         expected_started_at=task_row.started_at,
                         authority=self._authority,
                     )
@@ -319,7 +341,6 @@ class TrackedTask:
 class TaskMonitor:
     _benchmark_id: UUID
     _task_tracking: dict[str, TrackedTask]
-    _notifier: SlackNotifier | None
     _org: Org
     _limiter: ResizableLimiter | None
     _coordinator_done: asyncio.Event | None
@@ -335,30 +356,29 @@ class TaskMonitor:
         limiter: ResizableLimiter | None,
         *,
         authority: ExecutionAuthority,
-        notifier: SlackNotifier | None = None,
         coordinator_done: asyncio.Event | None = None,
     ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
         self._org = org
-        self._notifier = notifier
         self._limiter = limiter
         self._coordinator_done = coordinator_done
         self._cancellation_requested = set()
         self._authority = authority
 
-    def _load_state(self, task_ids: list[str]) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            task_states = {
-                task_id: (TaskStatus(status), started_at)
-                for task_id, status, started_at in session.exec(
-                    select(Task.task_id, Task.status, Task.started_at)
-                    .where(col(Task.task_id).in_(task_ids))
-                    .where(Task.benchmark == self._benchmark_id)
-                    .where(Task.org_id == self._org.id)
-                ).all()
-            }
+    def _load_state(
+        self, session: Session, task_ids: list[str]
+    ) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
+        benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+        task_states = {
+            task_id: (TaskStatus(status), started_at)
+            for task_id, status, started_at in session.exec(
+                select(Task.task_id, Task.status, Task.started_at)
+                .where(col(Task.task_id).in_(task_ids))
+                .where(Task.benchmark == self._benchmark_id)
+                .where(Task.org_id == self._org.id)
+            ).all()
+        }
 
         for task_id in task_ids:
             if task_id not in task_states:
@@ -366,24 +386,21 @@ class TaskMonitor:
 
         return benchmark_row, task_states
 
-    def _authority_is_current(self) -> bool:
+    def _read_tick(self, task_ids: list[str]) -> tuple[bool, Benchmark | None, dict[str, tuple[TaskStatus, datetime]]]:
         with Session(bind=engine) as session:
             try:
                 lock_execution_authority(session, self._authority)
             except ExecutionAuthorityRevoked:
-                session.rollback()
-                return False
+                authority_current = False
+            else:
+                authority_current = True
             session.rollback()
-            return True
 
-    async def _check_notifications(self, benchmark_row: Benchmark) -> None:
-        """Check notification thresholds using DB task counts."""
-        if not self._notifier:
-            return
+            if task_ids:
+                benchmark_row, task_states = self._load_state(session, task_ids)
+                return authority_current, benchmark_row, task_states
 
-        with Session(bind=engine) as session:
-            notification_context = NotificationContext.from_benchmark(benchmark_row, session, self._org)
-            await self._notifier.check_and_notify(notification_context)
+        return authority_current, None, {}
 
     async def track_tasks(self) -> None:
         """
@@ -391,7 +408,18 @@ class TaskMonitor:
         """
 
         while self._task_tracking or (self._coordinator_done is not None and not self._coordinator_done.is_set()):
-            authority_current = self._authority_is_current()
+            tasks_to_check = [
+                task_id
+                for task_id, tracked_task in self._task_tracking.items()
+                if tracked_task.status != TrackedTaskStatus.DONE
+            ]
+            try:
+                authority_current, benchmark_row, task_states = self._read_tick(tasks_to_check)
+            except OperationalError:
+                logger.warning("Task monitor database read failed; retrying next tick", exc_info=True)
+                await asyncio.sleep(self._TRACK_INTERVAL)
+                continue
+
             for task_id, tracked_task in list(self._task_tracking.items()):
                 if tracked_task.status == TrackedTaskStatus.DONE:
                     del self._task_tracking[task_id]
@@ -403,8 +431,7 @@ class TaskMonitor:
                 await asyncio.sleep(self._TRACK_INTERVAL)
                 continue
 
-            tasks_to_check: list[str] = list(self._task_tracking.keys())
-            benchmark_row, task_states = self._load_state(tasks_to_check)
+            assert benchmark_row is not None
             if self._limiter is not None:
                 await self._limiter.resize(benchmark_row.arguments.concurrency)
 
@@ -422,7 +449,6 @@ class TaskMonitor:
                     self._cancellation_requested.add(task_id)
                     task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
-            await self._check_notifications(benchmark_row)
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 
@@ -618,6 +644,40 @@ async def process_task(
     return result
 
 
+def _admit_direct_task(task_row: Task, org: Org, authority: ExecutionAuthority) -> bool | None:
+    with Session(bind=engine) as session:
+        try:
+            benchmark = lock_execution_authority(session, authority)
+        except ExecutionAuthorityRevoked:
+            return None
+        task = fetch_task_row(task_row.id, session, org)
+        if task.started_at != task_row.started_at or task.status in (
+            TaskStatus.STOPPED,
+            TaskStatus.FINISHED,
+            TaskStatus.ERROR,
+        ):
+            return None
+        if task.status == TaskStatus.PENDING:
+            active = session.exec(
+                select(func.count(col(Task.id)))
+                .where(Task.benchmark == benchmark.id, Task.org_id == org.id)
+                .where(col(Task.status).in_((TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)))
+            ).one()
+            if active >= benchmark.arguments.concurrency:
+                return False
+        if commit_task_status_transition(
+            task.id,
+            session,
+            org,
+            TaskStatus.BUILDING,
+            expected_started_at=task.started_at,
+            expected_status=task.status,
+            authority=authority,
+        ):
+            return True
+        return None
+
+
 async def _process_task_attempt(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -711,7 +771,7 @@ async def _process_task_attempt(
             connection=evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else None,
         )
 
-    def execution_is_current() -> bool:
+    def execution_is_current(expected_status: TaskStatus | None = None) -> bool:
         with open_task_session() as task_session:
             try:
                 lock_execution_authority(task_session, authority)
@@ -719,7 +779,11 @@ async def _process_task_attempt(
                 task_session.rollback()
                 return False
             task = fetch_task_row(task_row.id, task_session, org)
-            is_current = task.status != TaskStatus.STOPPED and task.started_at == attempt_started_at
+            is_current = (
+                task.status != TaskStatus.STOPPED
+                and task.started_at == attempt_started_at
+                and (expected_status is None or task.status == expected_status)
+            )
             task_session.rollback()
             return is_current
 
@@ -747,6 +811,7 @@ async def _process_task_attempt(
         *,
         producer: str,
         operation: str,
+        category: FailureCategory,
         cause_code: str | None = None,
     ) -> dict[str, dict[str, Any] | None]:
         with error_span(
@@ -758,6 +823,7 @@ async def _process_task_attempt(
             operation=operation,
             error_type=type(exc).__name__,
             cause_code=cause_code or "",
+            failure_category=category.value,
         ):
             logger.error(
                 "Task execution failed",
@@ -769,9 +835,12 @@ async def _process_task_attempt(
                     "operation": operation,
                     "error_type": type(exc).__name__,
                     "cause_code": cause_code or "",
+                    "failure_category": category.value,
                 },
             )
-            capture_exception(exc)
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("failure_category", category.value)
+                capture_exception(exc)
         with open_task_session() as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(
@@ -781,6 +850,7 @@ async def _process_task_attempt(
                 producer=producer,
                 operation=operation,
                 error_type=type(exc).__name__,
+                category=category,
                 cause_code=cause_code,
                 expected_started_at=attempt_started_at,
                 expected_status=expected_failure_status,
@@ -824,6 +894,7 @@ async def _process_task_attempt(
                 terminal_error,
                 producer="benchmark_service",
                 operation="websocket_connect",
+                category=FailureCategory.BENCHMARK_SERVICE,
                 cause_code="websocket_dns_resolution",
             )
         except Exception as resume_error:
@@ -837,6 +908,7 @@ async def _process_task_attempt(
                 terminal_error,
                 producer="benchmark_service",
                 operation="resume_evaluation",
+                category=FailureCategory.BENCHMARK_SERVICE,
             )
 
         finished_at = time.perf_counter()
@@ -970,7 +1042,31 @@ async def _process_task_attempt(
 
                 raise e from e
 
+        if queue_context is None:
+            while not (admitted := await to_thread(_admit_direct_task, task_row, org, authority)):
+                if admitted is None:
+                    return {task_id: None}
+                await asyncio.sleep(_DIRECT_ADMISSION_POLL_SECONDS)
+
         task_data = await recovery_attempt.retrieve_task()
+        # Generation creates an unrestricted network; Docker cannot replace it between stages.
+        unrestricted_docker = sandbox_provider_config.type == "docker"
+        run_egress_policy = combine_run_egress_policies(
+            task_data.egress.run, start_benchmark_request.contract.egress_allowlist
+        )
+        if unrestricted_docker and any(
+            policy != "*"
+            for policy in (
+                start_benchmark_request.contract.install_egress_policy,
+                task_data.egress.setup_task,
+                run_egress_policy,
+                task_data.egress.evaluation,
+            )
+        ):
+            raise InvalidSandboxConfigurationError(
+                "Local Docker execution requires unrestricted egress for every stage; "
+                "egress allowlists and blocked-network policies are not supported"
+            )
         if sandbox_provider is None:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
@@ -985,17 +1081,8 @@ async def _process_task_attempt(
             "Task": task_row.task_id,
         }
 
-        if queue_context is None:
-            with Session(bind=engine) as task_session:
-                if not commit_task_status_transition(
-                    task_row.id,
-                    task_session,
-                    org,
-                    TaskStatus.BUILDING,
-                    expected_started_at=attempt_started_at,
-                    authority=authority,
-                ):
-                    return {task_id: None}
+        if queue_context is None and not execution_is_current(TaskStatus.BUILDING):
+            return {task_id: None}
 
         identity = {
             "benchmark_name": benchmark_name,
@@ -1005,7 +1092,7 @@ async def _process_task_attempt(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **(await runtime.resolve_secrets(start_benchmark_request.contract.secrets)),
+            **(await resolve_secrets(start_benchmark_request.contract.secrets, runtime.secrets)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             **_attested_inference_settings(start_benchmark_request.contract),
@@ -1024,27 +1111,41 @@ async def _process_task_attempt(
 
         start_sandbox_build_time = time.perf_counter()
         object_store = runtime.objects
+        creation_state = SandboxCreationState(cleanup_pending=False)
 
-        def sandbox_context() -> AbstractAsyncContextManager[Sandbox]:
+        @asynccontextmanager
+        async def sandbox_context() -> AsyncGenerator[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
-                task_row.task_id
-                if queue_context is None
-                else f"queued-{task_row.id.hex}-{int(_normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC).timestamp() * 1_000_000):x}"
+                task_row.task_id if queue_context is None else queued_sandbox_name(task_row.id, attempt_started_at)
             )
-            return create_sandbox(
-                provider=sandbox_provider,
-                sandbox_name=sandbox_name,
-                source=task_data.source,
-                labels=labels,
-                env_vars=env_vars,
-                sandbox_secrets=task_data.sandbox_secrets,
-                resources=task_data.resources,
-                volumes=task_data.volumes,
-                creation_semaphore=creation_semaphore,
-                unique_name=queue_context is None,
-            )
+            # Do not mint while the queued attempt waits for admission.
+            contract = start_benchmark_request.contract
+            async with task_scoped_gateway_key(
+                env_vars,
+                run_id=str(benchmark_id),
+                task_id=task_row.task_id,
+                attested_model=contract.model if contract.inference_settings_attested else None,
+                companion_models=contract.kwargs.get("companion_models"),
+                identity=identity,
+                org_name=org.name,
+                agent_timeout=task_data.agent_timeout,
+            ) as scoped_env_vars:
+                async with create_sandbox(
+                    provider=sandbox_provider,
+                    sandbox_name=sandbox_name,
+                    source=task_data.source,
+                    labels=labels,
+                    env_vars=scoped_env_vars,
+                    sandbox_secrets=task_data.sandbox_secrets,
+                    resources=task_data.resources,
+                    volumes=task_data.volumes,
+                    creation_semaphore=creation_semaphore,
+                    creation_state=creation_state,
+                    unique_name=queue_context is None,
+                ) as sandbox:
+                    yield sandbox
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
@@ -1058,6 +1159,7 @@ async def _process_task_attempt(
                     authority=authority,
                     source=task_data.source,
                     resources=task_data.resources,
+                    creation_state=creation_state,
                     create=sandbox_context,
                 )
                 if sandbox is None:
@@ -1090,10 +1192,11 @@ async def _process_task_attempt(
                 agent_sandbox = runtime_sandbox(sandbox, task_data.source)
 
                 async def install_agent() -> None:
-                    await apply_egress_policy(
-                        agent_sandbox,
-                        start_benchmark_request.contract.install_egress_policy,
-                    )
+                    if not unrestricted_docker:
+                        await apply_egress_policy(
+                            agent_sandbox,
+                            start_benchmark_request.contract.install_egress_policy,
+                        )
                     try:
                         await install_agent_dependencies(
                             agent_sandbox,
@@ -1113,7 +1216,8 @@ async def _process_task_attempt(
                 if not install_after_setup:
                     await install_agent()
 
-                await apply_egress_policy(sandbox, task_data.egress.setup_task)
+                if not unrestricted_docker:
+                    await apply_egress_policy(sandbox, task_data.egress.setup_task)
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
@@ -1142,13 +1246,8 @@ async def _process_task_attempt(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = task_artifact_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                await apply_egress_policy(
-                    agent_sandbox,
-                    combine_run_egress_policies(
-                        task_data.egress.run,
-                        start_benchmark_request.contract.egress_allowlist,
-                    ),
-                )
+                if not unrestricted_docker:
+                    await apply_egress_policy(agent_sandbox, run_egress_policy)
                 exit_reason, agent_run_time = await run_agent(
                     agent_sandbox,
                     start_benchmark_request.contract,
@@ -1201,7 +1300,8 @@ async def _process_task_attempt(
                     },
                 )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                await apply_egress_policy(sandbox, task_data.egress.evaluation)
+                if not unrestricted_docker:
+                    await apply_egress_policy(sandbox, task_data.egress.evaluation)
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
                 evaluation_result = await _run_benchmark_service_websocket(
@@ -1287,6 +1387,7 @@ async def _process_task_attempt(
             error_message,
             producer="sandbox_provider",
             operation="sandbox_recovery",
+            category=FailureCategory.INFRASTRUCTURE,
         )
     except OutputArtifactError as e:
         if task_is_stopped():
@@ -1300,6 +1401,7 @@ async def _process_task_attempt(
             error_message,
             producer="output_artifact",
             operation="upload_output_artifacts",
+            category=FailureCategory.INFRASTRUCTURE,
         )
     except BenchmarkServiceWebSocketDNSResolutionError as e:
         if task_is_stopped():
@@ -1313,6 +1415,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket_connect",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_dns_resolution",
         )
     except ConnectionClosedError as e:
@@ -1333,6 +1436,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_connection_closed",
         )
     except BenchmarkServiceStreamError as e:
@@ -1350,6 +1454,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_connection_closed",
         )
     except ValidationError as e:
@@ -1366,6 +1471,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="decode_task_response",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="incompatible_response",
         )
     except InvalidStatus as e:
@@ -1379,6 +1485,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="websocket_connect",
+            category=FailureCategory.BENCHMARK_SERVICE,
             cause_code="websocket_http_rejected",
         )
     except BenchmarkServiceError as e:
@@ -1387,7 +1494,7 @@ async def _process_task_attempt(
         error_message = _exception_message(e)
         # This is necessary because Daytona routes tasks to bad nodes. We should
         # remove this when Daytona fixes their infrastructure.
-        if "docker daemon is not ready inside the sandbox" in error_message:
+        if any(signature in error_message for signature in _DOCKER_NOT_READY_SIGNATURES):
             if not return_queued_task_to_pending():
                 return {task_id: None}
             log_output(f"\n[ERROR] {error_message}")
@@ -1399,6 +1506,7 @@ async def _process_task_attempt(
             error_message,
             producer="benchmark_service",
             operation="request",
+            category=FailureCategory.BENCHMARK_SERVICE,
         )
     except Exception as e:
         if task_is_stopped():
@@ -1414,6 +1522,7 @@ async def _process_task_attempt(
             error_message,
             producer="tracker",
             operation="process_task",
+            category=classify_failure(e),
         )
     finally:
         if evaluation_lock is not None:
@@ -1428,6 +1537,7 @@ def commit_task_error(
     producer: str,
     operation: str,
     error_type: str,
+    category: FailureCategory,
     authority: ExecutionAuthority,
     cause_code: str | None = None,
     expected_started_at: datetime | None = None,
@@ -1442,6 +1552,7 @@ def commit_task_error(
             operation=operation,
             error_type=error_type,
             cause_code=cause_code,
+            category=category,
         )
     )
     return _commit_task_status(

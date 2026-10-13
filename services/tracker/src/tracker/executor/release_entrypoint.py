@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from typing import Protocol, cast
 
@@ -40,10 +41,9 @@ class ReleaseTaskConfig(BaseModel):
     release_bucket: str
     release_prefix: str
     cluster_arn: str
-    executor_service_name: str
     tracker_service_name: str
-    executor_desired_count: int
     tracker_desired_count: int
+    runner_task_family: str
 
 
 class SecretsManagerClient(Protocol):
@@ -59,11 +59,12 @@ class EcsClient(Protocol):
 
     def list_tasks(self, **kwargs: object) -> Mapping[str, object]: ...
 
-    def update_task_protection(self, **kwargs: object) -> Mapping[str, object]: ...
-
     def stop_task(self, **kwargs: object) -> Mapping[str, object]: ...
 
     def update_service(self, **kwargs: object) -> Mapping[str, object]: ...
+
+    def describe_services(self, **kwargs: object) -> Mapping[str, object]: ...
+    def describe_tasks(self, **kwargs: object) -> Mapping[str, object]: ...
 
 
 class S3ArtifactClient(Protocol):
@@ -164,40 +165,61 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
         raise SystemExit(f"Executor release activation failed: {error}") from error
 
 
-def _executor_tasks(client: EcsClient, task: ReleaseTaskConfig) -> list[str]:
+MAINTENANCE_DRAIN_TIMEOUT_SECONDS = 600
+MAINTENANCE_DRAIN_POLL_SECONDS = 5
+
+
+def _runner_tasks(client: EcsClient, task: ReleaseTaskConfig, desired_status: str) -> list[str]:
     task_arns: list[str] = []
     next_token: str | None = None
     while True:
         arguments: dict[str, object] = {
             "cluster": task.cluster_arn,
-            "serviceName": task.executor_service_name,
-            "desiredStatus": "RUNNING",
+            "family": task.runner_task_family,
+            "desiredStatus": desired_status,
         }
         if next_token is not None:
             arguments["nextToken"] = next_token
         response = client.list_tasks(**arguments)
-        task_arns.extend(str(value) for value in cast(Sequence[object], response.get("taskArns", [])))
+        task_arns.extend(str(value) for value in cast(Sequence[object], response["taskArns"]))
         raw_next_token = response.get("nextToken")
         if raw_next_token is None:
             return task_arns
         next_token = str(raw_next_token)
 
 
-def _force_stop_executor_hosts(client: EcsClient, task: ReleaseTaskConfig) -> int:
-    task_arns = _executor_tasks(client, task)
-    for start in range(0, len(task_arns), 10):
-        client.update_task_protection(
-            cluster=task.cluster_arn,
-            tasks=task_arns[start : start + 10],
-            protectionEnabled=False,
-        )
+def _stop_runner_tasks(client: EcsClient, task: ReleaseTaskConfig, task_arns: Sequence[str], stopped: set[str]) -> None:
     for task_arn in task_arns:
-        client.stop_task(
-            cluster=task.cluster_arn,
-            task=task_arn,
-            reason="Deployment maintenance",
-        )
-    return len(task_arns)
+        if task_arn not in stopped:
+            client.stop_task(cluster=task.cluster_arn, task=task_arn, reason="Deployment maintenance")
+            stopped.add(task_arn)
+
+
+def _wait_for_maintenance_drain(client: EcsClient, task: ReleaseTaskConfig, stopped: set[str]) -> None:
+    deadline = time.monotonic() + MAINTENANCE_DRAIN_TIMEOUT_SECONDS
+    while True:
+        running = _runner_tasks(client, task, "RUNNING")
+        pending = _runner_tasks(client, task, "PENDING")
+        _stop_runner_tasks(client, task, [*running, *pending], stopped)
+        active_stopped_tasks = False
+        # Desired-STOPPED tasks include ones still shutting down, stopped before this call, so wait for them too.
+        # That list also has older finished tasks, which ECS can expire between list and describe. A task missing
+        # from describe keeps the drain polling; an expired one is gone from the next list.
+        stopped_arns = sorted(stopped | set(_runner_tasks(client, task, "STOPPED")))
+        for start in range(0, len(stopped_arns), 100):
+            batch = stopped_arns[start : start + 100]
+            response = client.describe_tasks(cluster=task.cluster_arn, tasks=batch)
+            tasks = cast(Sequence[Mapping[str, object]], response["tasks"])
+            described = {str(item["taskArn"]) for item in tasks}
+            active_stopped_tasks |= described != set(batch) or any(item["lastStatus"] != "STOPPED" for item in tasks)
+        services = client.describe_services(cluster=task.cluster_arn, services=[task.tracker_service_name])
+        tracker = cast(Sequence[Mapping[str, object]], services["services"])[0]
+        if not running and not pending and not active_stopped_tasks and tracker["runningCount"] == 0:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Maintenance drain timed out waiting for runner tasks and Tracker to stop")
+        time.sleep(min(MAINTENANCE_DRAIN_POLL_SECONDS, remaining))
 
 
 def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -> dict[str, int]:
@@ -214,18 +236,15 @@ def _begin_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) -
         raise SystemExit(f"Maintenance begin failed: {error}") from error
 
     client = create_ecs_client()
-    client.update_service(cluster=task.cluster_arn, service=task.executor_service_name, desiredCount=0)
     client.update_service(cluster=task.cluster_arn, service=task.tracker_service_name, desiredCount=0)
-    client.get_waiter("services_stable").wait(
-        cluster=task.cluster_arn,
-        services=[task.tracker_service_name],
-    )
-    stopped_hosts = _force_stop_executor_hosts(client, task)
+    stopped_tasks: set[str] = set()
+    _stop_runner_tasks(client, task, _runner_tasks(client, task, "RUNNING"), stopped_tasks)
+    _wait_for_maintenance_drain(client, task, stopped_tasks)
     return {
         "benchmarks": summary.benchmarks,
         "tasks": summary.tasks,
         "dispatches": summary.dispatches,
-        "executor_hosts": stopped_hosts,
+        "runner_tasks": len(stopped_tasks),
     }
 
 
@@ -238,17 +257,12 @@ def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) 
     client = create_ecs_client()
     client.update_service(
         cluster=task.cluster_arn,
-        service=task.executor_service_name,
-        desiredCount=task.executor_desired_count,
-    )
-    client.update_service(
-        cluster=task.cluster_arn,
         service=task.tracker_service_name,
         desiredCount=task.tracker_desired_count,
     )
     client.get_waiter("services_stable").wait(
         cluster=task.cluster_arn,
-        services=[task.executor_service_name, task.tracker_service_name],
+        services=[task.tracker_service_name],
     )
 
     try:
@@ -261,7 +275,7 @@ def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) 
 
 def main() -> None:
     arguments = sys.argv[1:]
-    if len(arguments) < 12:
+    if len(arguments) < 12 or arguments[9] != "--runner-task-family":
         raise SystemExit("Release task requires its sealed configuration and an operation")
     task = ReleaseTaskConfig(
         db_secret_arn=arguments[0],
@@ -271,10 +285,9 @@ def main() -> None:
         release_bucket=arguments[4],
         release_prefix=arguments[5],
         cluster_arn=arguments[6],
-        executor_service_name=arguments[7],
-        tracker_service_name=arguments[8],
-        executor_desired_count=int(arguments[9]),
-        tracker_desired_count=int(arguments[10]),
+        tracker_service_name=arguments[7],
+        tracker_desired_count=int(arguments[8]),
+        runner_task_family=arguments[10],
     )
     operation = arguments[11]
 

@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
 
 async def run_lifecycle(args: argparse.Namespace) -> None:
     """Start, observe, and retrieve one run."""
-    async with ValkyrieClient.from_config() as client:
+    async with ValkyrieClient() as client:
         run = await client.runs.start(
             agent=args.agent,
             benchmark=args.benchmark,

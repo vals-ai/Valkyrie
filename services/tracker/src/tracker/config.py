@@ -2,18 +2,11 @@
 
 from enum import Enum
 import os
-from typing import Any
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
-from executor_protocol import DEFAULT_STABLE_QUEUE_NAME
-from taskiq import InMemoryBroker, TaskiqEvents
-from taskiq_redis import RedisStreamBroker
-from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
-from tracker.middleware import LoggingContextMiddleware, TracingContextMiddleware
-from tracker.observability import configure_observability
 from tracker.outbound_security import validate_benchmark_name
 
 load_dotenv()
@@ -82,39 +75,24 @@ def _positive_int_setting(name: str, default: int) -> int:
     return value
 
 
-def _non_negative_int_setting(name: str, default: int) -> int:
-    value = int(os.environ.get(name, str(default)))
-    if value < 0:
-        raise ValueError(f"{name} must not be negative")
-
-    return value
-
-
+RUN_ACCESS_KEY_TTL_SECONDS = _positive_int_setting("RUN_ACCESS_KEY_TTL_SECONDS", 14 * 24 * 3600)
 AGENT_UPLOAD_MAX_BYTES = _positive_int_setting("AGENT_UPLOAD_MAX_BYTES", 1073741824)
 AGENT_ARCHIVE_MAX_EXPANDED_BYTES = _positive_int_setting("AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 5368709120)
 AGENT_ARCHIVE_MAX_ENTRIES = _positive_int_setting("AGENT_ARCHIVE_MAX_ENTRIES", 100000)
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 AWS_DEPLOYMENT_ROLE_ORG_IDS = os.environ.get("AWS_DEPLOYMENT_ROLE_ORG_IDS", "")
+AWS_SHARED_SECRET_TENANTS = os.environ.get("AWS_SHARED_SECRET_TENANTS", "")
+AWS_TENANT_ACCESS_ROLE_ARN = os.environ.get("AWS_TENANT_ACCESS_ROLE_ARN")
 AWS_DEPLOYMENT_ACCOUNT_ID = os.environ.get("AWS_DEPLOYMENT_ACCOUNT_ID")
 AWS_DEPLOYMENT_REGION = os.environ.get("AWS_DEPLOYMENT_REGION") or os.environ.get("AWS_REGION")
 AWS_DEPLOYMENT_S3_BUCKET = os.environ.get("AWS_DEPLOYMENT_S3_BUCKET")
+AWS_TENANT_BUCKET_PREFIX = os.environ.get("AWS_TENANT_BUCKET_PREFIX")
 AWS_DEPLOYMENT_LOG_GROUP = os.environ.get("AWS_DEPLOYMENT_LOG_GROUP")
 AWS_DEPLOYMENT_LOG_RETENTION_DAYS = os.environ.get("AWS_DEPLOYMENT_LOG_RETENTION_DAYS")
 AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLED", "false").lower() == "true"
-AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS = os.environ.get("AWS_MANAGED_STORAGE_ORG_ENVIRONMENTS", "{}")
-AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED = (
-    os.environ.get("AWS_MANAGED_STORAGE_SUBMISSIONS_ENABLED", "false").lower() == "true"
-)
-# Bucket-level S3 configuration APIs throttle far harder than object APIs, so reads
-# reuse a recent owner-bucket validation. Zero revalidates on every read.
-AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS = _non_negative_int_setting(
-    "AWS_MANAGED_STORAGE_VALIDATION_TTL_SECONDS", 300
-)
-BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
+DATASET_VERSION_PINNING_ENABLED = os.environ.get("DATASET_VERSION_PINNING_ENABLED", "false").lower() == "true"
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-STABLE_QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
 
 
 def _build_database_url() -> str:
@@ -131,39 +109,13 @@ def _build_database_url() -> str:
 
 
 DATABASE_URL = _build_database_url()
-DATABASE_POOL_SIZE = _positive_int_setting("DATABASE_POOL_SIZE", 50)
-DATABASE_MAX_OVERFLOW = int(os.environ.get("DATABASE_MAX_OVERFLOW", "10"))
-if DATABASE_MAX_OVERFLOW < 0:
-    raise ValueError("DATABASE_MAX_OVERFLOW must be a nonnegative integer")
-
-result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
-    redis_url=REDIS_URL,
-)
-
-# Tracing precedes Logging so that anything emitted after (logs, child spans
-# from middlewares or the task body) is captured under the propagated parent trace.
-_BROKER_MIDDLEWARES = (TracingContextMiddleware(), LoggingContextMiddleware())
-
-broker = (
-    InMemoryBroker().with_middlewares(*_BROKER_MIDDLEWARES)
-    if BROKER_ENVIRONMENT == "testing"
-    else RedisStreamBroker(
-        url=REDIS_URL,
-        queue_name=STABLE_QUEUE_NAME,
-        consumer_group_name=STABLE_QUEUE_NAME,
-        idle_timeout=86400000,  # 24 hours
-    )
-    .with_result_backend(result_backend)
-    .with_middlewares(*_BROKER_MIDDLEWARES)
-)
-
-
-@broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
-    configure_observability("valkyrie-worker", environment=ENVIRONMENT)
 
 
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
+VALKYRIE_STAGE = os.environ.get("VALKYRIE_STAGE", "")
 SANDBOX_QUEUE_ENABLED = os.environ.get("SANDBOX_QUEUE_ENABLED", "false").lower() == "true"
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
 DESCOPE_MANAGEMENT_KEY = os.environ.get("DESCOPE_MANAGEMENT_KEY", "")
+DESCOPE_BASE_URL = os.environ.get("DESCOPE_BASE_URL", "https://api.descope.com").rstrip("/")
+DESCOPE_CLI_CLIENT_ID = os.environ.get("DESCOPE_CLI_CLIENT_ID", "")
+DESCOPE_ORG_ADMIN_ROLE = os.environ.get("DESCOPE_ORG_ADMIN_ROLE", "Valkyrie Admin")

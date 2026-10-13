@@ -29,7 +29,7 @@ from tracker.database.models import (
     TaskBreakdown,
     TaskStatus,
 )
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import start_benchmark_request_to_benchmark
 
 process_benchmark = getattr(tracker_utils, "process_benchmark")
@@ -38,53 +38,60 @@ _TASK_ID: str = "astropy__astropy-12907"
 _TASK_IDS: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 _BENCHMARK: str = "swebench"
 
-pytestmark = pytest.mark.usefixtures("tracker_database")
+pytestmark = pytest.mark.usefixtures("tracker_database", "live_deployment")
 
 
 @pytest.fixture
-async def frozen_contract_keys(harness_config: HarnessConfig) -> AsyncGenerator[set[str], None]:
+async def frozen_contract_keys(live_aws_runtime: AWSRuntime) -> AsyncGenerator[set[str], None]:
     """Delete benchmark-scoped contract copies created by each live test."""
     keys: set[str] = set()
     try:
         yield keys
     finally:
         for key in sorted(keys):
-            await delete_from_s3(key, AWSRuntime.from_harness_config(harness_config))
+            await delete_from_s3(key, live_aws_runtime)
 
 
 async def _create_benchmark(
     contract: AgentContractRequest,
-    harness_config: HarnessConfig,
+    live_aws_runtime: AWSRuntime,
     frozen_contract_keys: set[str],
     session: Session,
     service_headers: dict[str, str],
+    provider_secret_name: str,
     task_ids: list[str] | None = None,
     concurrency: int = 5,
-) -> tuple[Benchmark, StartBenchmarkRequest]:
-    """Create an admitted benchmark and matching StartBenchmarkRequest."""
+) -> tuple[Benchmark, RunExecutionRequest]:
     request = StartBenchmarkRequest(
         benchmark_name=_BENCHMARK,
         contract=contract,
         concurrency=concurrency,
         task_ids=task_ids,
-        harness_config=harness_config,
+        properties=live_aws_runtime.resources,
         service_headers=service_headers,
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name=provider_secret_name,
     )
-    benchmark = start_benchmark_request_to_benchmark(
-        request,
-        RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
-        aws_managed=False,
-    )
+    benchmark = start_benchmark_request_to_benchmark(request, RequestIdentity(org=Org(id=TEST_ORG_ID, name="default")))
     copied = await copy_agent_to_benchmark(
         str(benchmark.id),
         contract.name,
-        AWSRuntime.from_harness_config(harness_config),
+        live_aws_runtime,
     )
     if copied:
         frozen_contract_keys.add(get_benchmark_contract_s3_key(str(benchmark.id), contract.name))
     session.add(benchmark)
     session.commit()
-    return benchmark, request
+    return benchmark, benchmark.managed_start_benchmark_request(service_headers)
+
+
+def _execution_context(request: RunExecutionRequest, benchmark: Benchmark, task_ids: list[str]) -> dict[str, Any]:
+    return ManagedExecutionContext(
+        version=3,
+        benchmark_id=benchmark.id,
+        verified_task_ids=task_ids,
+        start_benchmark_request=request,
+    ).model_dump(mode="json")
 
 
 def _task_rows(benchmark: Benchmark, session: Session) -> list[Task]:
@@ -109,9 +116,10 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         frozen_contract_keys: set[str],
         service_headers: dict[str, str],
+        daytona_secret_name: str,
         executor_authority_kwargs: Any,
     ) -> None:
         """Multiple tasks run concurrently and produce a complete benchmark result.
@@ -122,15 +130,18 @@ class TestProcessBenchmark:
         """
         benchmark, request = await _create_benchmark(
             contract,
-            harness_config,
+            live_aws_runtime,
             frozen_contract_keys,
             database_session,
             service_headers,
+            daytona_secret_name,
             task_ids=_TASK_IDS,
         )
 
         authority_kwargs = executor_authority_kwargs(benchmark)
-        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS, **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, _TASK_IDS), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED
@@ -154,10 +165,11 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         frozen_contract_keys: set[str],
         monkeypatch: pytest.MonkeyPatch,
         service_headers: dict[str, str],
+        daytona_secret_name: str,
         executor_authority_kwargs: Any,
     ) -> None:
         """Benchmark-level errors set the benchmark status and error message.
@@ -168,10 +180,11 @@ class TestProcessBenchmark:
         """
         benchmark, request = await _create_benchmark(
             contract,
-            harness_config,
+            live_aws_runtime,
             frozen_contract_keys,
             database_session,
             service_headers,
+            daytona_secret_name,
             task_ids=[_TASK_ID],
         )
 
@@ -189,7 +202,9 @@ class TestProcessBenchmark:
         authority_kwargs = executor_authority_kwargs(benchmark)
         monkeypatch.setattr(Session, "commit", failing_commit)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, [_TASK_ID]), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -199,10 +214,11 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         frozen_contract_keys: set[str],
         monkeypatch: pytest.MonkeyPatch,
         service_headers: dict[str, str],
+        daytona_secret_name: str,
         executor_authority_kwargs: Any,
     ) -> None:
         """One task can fail setup while the other still completes through the real service path.
@@ -216,10 +232,11 @@ class TestProcessBenchmark:
 
         benchmark, request = await _create_benchmark(
             contract,
-            harness_config,
+            live_aws_runtime,
             frozen_contract_keys,
             database_session,
             service_headers,
+            daytona_secret_name,
             task_ids=task_ids,
         )
 
@@ -248,7 +265,9 @@ class TestProcessBenchmark:
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task_with_failure)
         authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, task_ids), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
@@ -278,9 +297,10 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         frozen_contract_keys: set[str],
         service_headers: dict[str, str],
+        daytona_secret_name: str,
         executor_authority_kwargs: Any,
     ) -> None:
         """A run with no successful task results fails before final scoring.
@@ -292,15 +312,18 @@ class TestProcessBenchmark:
         failing_contract = contract.model_copy(update={"output_artifacts": ["missing-artifact.json"]})
         benchmark, request = await _create_benchmark(
             failing_contract,
-            harness_config,
+            live_aws_runtime,
             frozen_contract_keys,
             database_session,
             service_headers,
+            daytona_secret_name,
             task_ids=[_TASK_ID],
         )
         authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
+        await process_benchmark(
+            execution_context_json=_execution_context(request, benchmark, [_TASK_ID]), **authority_kwargs
+        )
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -321,9 +344,10 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         frozen_contract_keys: set[str],
         service_headers: dict[str, str],
+        daytona_secret_name: str,
         executor_authority_kwargs: Any,
     ) -> None:
         """Same task ID can run across two separate benchmarks concurrently without result collisions.
@@ -335,10 +359,11 @@ class TestProcessBenchmark:
         benchmark_requests = [
             await _create_benchmark(
                 contract,
-                harness_config,
+                live_aws_runtime,
                 frozen_contract_keys,
                 database_session,
                 service_headers,
+                daytona_secret_name,
                 task_ids=[_TASK_ID],
             )
             for _ in range(2)
@@ -350,12 +375,7 @@ class TestProcessBenchmark:
         await gather(
             *[
                 process_benchmark(
-                    benchmark.access_key_start_benchmark_request(
-                        harness_config,
-                        service_headers=service_headers,
-                    ).model_dump(),
-                    str(benchmark.id),
-                    [_TASK_ID],
+                    execution_context_json=_execution_context(request, benchmark, [_TASK_ID]),
                     **authority_by_benchmark[benchmark.id],
                 )
                 for benchmark, request in benchmark_requests

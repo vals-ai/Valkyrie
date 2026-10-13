@@ -6,9 +6,11 @@ Run: uv run pytest tests/integration/local/cli/test_write_commands.py
 import json
 from pathlib import Path
 
+
 from click.testing import CliRunner
 from sqlmodel import Session, select
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
+
 
 from valkyrie.cli.main import cli
 
@@ -203,15 +205,10 @@ async def test_sdk_updates_persisted_concurrency(
     seeded_runs: tuple[Benchmark, Benchmark], database_session: Session, local_tracker_app
 ) -> None:
     import httpx
-    from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
-    from valkyrie.cli.runtime_config import config_location
+    from valkyrie.sdk import ValkyrieClient
 
     running, _ = seeded_runs
-    async with ValkyrieClient(
-        ValkyrieConfig.from_yaml(config_location()),
-        base_url="http://tracker.test",
-        transport=httpx.ASGITransport(app=local_tracker_app),
-    ) as client:
+    async with ValkyrieClient(transport=httpx.ASGITransport(app=local_tracker_app)) as client:
         result = await client.runs.update_concurrency(running.id, concurrency=3)
     database_session.refresh(running)
     assert running.arguments.concurrency == result.concurrency == 3
@@ -222,7 +219,7 @@ def test_cli_downloads_run_artifacts_through_tracker(
 ) -> None:
     import httpx
     from unittest.mock import AsyncMock
-    from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
+    from tracker.aws.clients import AWSClientProvider
 
     running, _ = seeded_runs
     client = AsyncMock()
@@ -230,7 +227,8 @@ def test_cli_downloads_run_artifacts_through_tracker(
     client.list_objects_v2.return_value = {"Contents": [{"Key": f"benchmarks/{running.id}/task/result.txt", "Size": 6}]}
     client.head_object.return_value = {"ContentLength": 6}
     client.generate_presigned_url.return_value = "https://download.test/artifact"
-    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", lambda _: client)
+
+    monkeypatch.setattr(AWSClientProvider, "s3_client", lambda _: client)
 
     async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
         if request.url.host == "download.test":

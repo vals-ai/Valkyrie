@@ -28,10 +28,10 @@ The tool install is editable, so code changes take effect immediately. Run `uv t
 ## Point the CLI at a local tracker
 
 ```env
-TRACKER_SERVICE_URL=http://localhost:8000
+VALKYRIE_URL=http://localhost:8000
 ```
 
-Set this in `.env` or your shell before running CLI commands against a local tracker. The CLI still reads credentials from `~/.config/valkyrie/valkyrie.yaml`, created by `valkyrie config init`. See [Configure the CLI](/get-started/configuration).
+Set this in your shell before running CLI commands or SDK scripts against a local tracker; the CLI also reads it from `.env`. A local tracker without authentication needs no credentials. See [Configure the CLI and SDK](/get-started/configuration).
 
 ## Run the tracker locally
 
@@ -39,7 +39,84 @@ Set this in `.env` or your shell before running CLI commands against a local tra
 make tracker-service
 ```
 
-The API is available at `http://localhost:8000`. Local Compose runs the tracker, PostgreSQL, and Redis only. It does not execute benchmarks. See [Tracker service](/contributing/tracker-service) for the individual targets and test suites.
+The API is available at `http://localhost:8000`. Local Compose runs Tracker and PostgreSQL. Tracker uses `EXECUTOR_LAUNCHER=local` to spawn one runner subprocess per dispatch, but benchmark execution still requires an active executor release and its external services. See [Tracker service](/contributing/tracker-service) for targets and test suites.
+
+## Test local runtime adapters
+
+The local adapters compose filesystem artifacts, per-run JSONL logs, transient secrets,
+and the CBS Docker provider. Containerized services mount the data directory at the
+same absolute path as the host. Artifacts are scoped to the organization. Execution
+secrets stay in memory for each dispatch and are not stored in artifacts or the database.
+
+Run the Docker integration check from `services/tracker`:
+
+```bash
+DOCKER_HOST=unix:///var/run/docker.sock \
+  uv run pytest tests/integration/docker
+```
+
+Use your Docker context's Unix socket for `DOCKER_HOST` when it differs. The check
+creates a disposable container, transfers a frozen agent bundle, executes it, verifies
+its output, and deletes the container. Local transfers use provider file upload and
+preserve executable files without requiring curl or unzip in the image.
+
+Configure local execution in `/absolute/path/to/local-server.yaml`:
+
+```yaml
+data_root: /absolute/path/to/valkyrie-data
+secrets_file: /absolute/path/to/existing.env
+```
+
+`secrets_file` is optional for agents without secrets. The executor reads only
+keys declared by the agent contract, directly from that file, for each start or
+resume. Valkyrie stores the file path, not its contents. Keep the file outside the
+artifact directory. Tracker and each runner subprocess use the same filesystem paths and Docker daemon.
+
+Start PostgreSQL with `docker compose -f services/tracker/docker-compose.yml up -d postgres`.
+Set `DATABASE_URL` for Tracker, then run the existing migrations
+from `services/tracker` with `uv run alembic upgrade head`.
+
+Use the same Docker daemon for Tracker, its runner subprocesses, and your local benchmark
+service. Set `DOCKER_HOST` when needed to select it. Start Tracker from `services/tracker`:
+
+```bash
+uv run python -m tracker.serve --config /absolute/path/to/local-server.yaml
+```
+
+Supplying `--config` selects the local launcher, configures the checkout as the runner source root, and registers its source release. Tracker launches one runner subprocess per dispatch with a process-local payload encryption key; no ExecutorHost or executor build is needed. Every dispatch, including a retry or resume, runs the current checkout. The local payload key is regenerated on Tracker restart: already-spawned runners keep their inherited key, while a dispatch never claimed before its deadline expires and must be retried. Omit `--config` to use AWS execution. Tracker listens on `127.0.0.1:8000`; add `--port <port>` when 8000 is in use and set `VALKYRIE_URL` to match.
+
+Start your local benchmark service at its configured address with `AUTH_REQUIRED` unset or
+`false` and `CBS_DOCKER_ENABLED=true`. Build it with the `create-benchmark-service` version
+Tracker pins (`v0.44.0` in `services/tracker/pyproject.toml`); older versions reject Docker
+sandbox requests. The Docker opt-in lets that service use its local daemon for
+request-selected sandboxes; leave it unset on hosted services. For sandbox grading,
+also set `GRADING_SANDBOX_PROVIDER=docker`.
+
+Local Docker generation requires unrestricted (`"*"`) egress at every stage. Agent
+allowlists and restricted install, setup, run, or evaluation policies are rejected
+before a container is created because Docker cannot change egress rules between stages.
+
+Then point the CLI at the local Tracker, save your local benchmark service's URL there, and publish and run an agent:
+
+```bash
+export VALKYRIE_URL=http://127.0.0.1:8000
+valkyrie benchmark service set my-benchmark http://127.0.0.1:8001
+valkyrie agent push ./my-agent
+valkyrie run start --agent my-agent --benchmark my-benchmark --concurrency 1
+```
+
+Tracker saves the URL per user; without [hosted-mode authentication](#run-it-with-hosted-mode-authentication), every client shares the run settings of one user, `local`.
+
+Use the returned run ID with `run fetch`, `run logs`, `run results`, `run outputs`,
+`run stop`, `run retry`, and `run resume`. Tracker serves local agent and artifact
+downloads over HTTP. Clients do not need access to `data_root`. Local execution supports
+image-based Docker tasks; AWS callbacks and cloud secret references are unavailable.
+
+An executor that exits mid-run leaves its task containers running. Remove that run's containers with:
+
+```bash
+docker rm -f $(docker ps -aq --filter label=io.vals.cbs.managed=true --filter label=run-id=<run-id>)
+```
 
 ### Run it with hosted-mode authentication
 
@@ -64,7 +141,7 @@ make tracker-service
 }
 ```
 
-Then run `valkyrie config init` and choose hosted mode. Without these variables the service runs in self-hosted mode with no auth and a default organization.
+Then authenticate the CLI with `VALKYRIE_API_KEY`, or with `valkyrie login` if you also set `DESCOPE_CLI_CLIENT_ID`. Without these variables the service runs in self-hosted mode with no auth and a default organization.
 
 ## Check your changes
 

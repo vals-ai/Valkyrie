@@ -1,16 +1,19 @@
 """Tests for PostgreSQL-queued run coordination."""
 
 import asyncio
-from contextlib import nullcontext, suppress
-from datetime import datetime
+from contextlib import suppress
+from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
 from benchmark_service import SandboxProvider
+from benchmark_service.sandbox.daytona import DaytonaProviderConfig
 from benchmark_service.client import BenchmarkServiceClient
-from sqlmodel import Session, select
+from sqlalchemy import Select, event
+from sqlalchemy.orm import ORMExecuteState
+from sqlmodel import Session, col, select
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
@@ -18,16 +21,27 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     ExecutorDispatch,
+    FailureCategory,
     Org,
+    SandboxBuildReservation,
     Task,
     TaskStatus,
 )
 from tracker.scheduler.store import queue_pool_id
-from tracker.runtime.services import RuntimeServices
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.aws.runtime import AWSResources
+from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
+
+
+_RESOURCES = AWSResources(
+    region="us-east-1",
+    s3_bucket="test-bucket",
+    log_group="test-log-group",
+    log_retention_days=30,
+)
 
 
 def _persist_benchmark(
@@ -39,8 +53,7 @@ def _persist_benchmark(
     org = Org(id=TEST_ORG_ID, name="default")
     benchmark = start_benchmark_request_to_benchmark(
         request,
-        RequestIdentity(org=org, access_key_id=None, email=None, name=None),
-        aws_managed=False,
+        RequestIdentity(org=org),
         queue_pool_id=queued_pool_id,
     )
     session.add(benchmark)
@@ -50,7 +63,6 @@ def _persist_benchmark(
 
 def _queued_run(
     contract: AgentContractRequest,
-    harness_config: HarnessConfig,
     session: Session,
     task_ids: list[str],
     *,
@@ -63,9 +75,20 @@ def _queued_run(
         concurrency=concurrency,
         priority=3,
         task_ids=task_ids,
-        harness_config=harness_config,
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name="provider-secret",
+        properties=_RESOURCES,
     )
     return request, _persist_benchmark(request, session, queued_pool_id=queue_pool_id(pool_id))
+
+
+def _context(request: StartBenchmarkRequest, benchmark: Benchmark, task_ids: list[str]) -> dict[str, Any]:
+    return ManagedExecutionContext(
+        version=3,
+        benchmark_id=benchmark.id,
+        verified_task_ids=task_ids,
+        start_benchmark_request=RunExecutionRequest.model_validate(request.model_dump(mode="python")),
+    ).model_dump(mode="json")
 
 
 def _add_tasks(session: Session, benchmark: Benchmark, statuses: dict[str, TaskStatus]) -> None:
@@ -96,16 +119,69 @@ def _finish_task(session: Session, task_row: Task) -> dict[str, Any]:
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
-async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
+async def test_queued_coordinator_retries_abandoned_reservation_recovery(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     executor_authority_kwargs: Any,
 ) -> None:
+    request, benchmark = _queued_run(contract, database_session, ["recover"], pool_id="retry-recovery")
+    _add_tasks(database_session, benchmark, {"recover": TaskStatus.PENDING})
+    task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).one()
+    database_session.add(
+        SandboxBuildReservation(
+            task_row_id=task.id,
+            attempt_started_at=task.started_at,
+            pool_id=queue_pool_id("retry-recovery"),
+            requested_vcpu=1,
+            requested_memory=1,
+            requested_disk=1,
+        )
+    )
+    database_session.commit()
+    recoveries = 0
+
+    async def recover(_context: object) -> None:
+        nonlocal recoveries
+        recoveries += 1
+        if recoveries == 2:
+            with Session(database_session.bind) as session:
+                reservation = session.get(SandboxBuildReservation, task.id)
+                assert reservation is not None
+                session.delete(reservation)
+                session.commit()
+
+    async def process(task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, dict[str, Any]]:
+        return {task_row.task_id: _finish_task(database_session, task_row)}
+
+    provider = Mock(spec=SandboxProvider, admission_pool_id="retry-recovery")
+    monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover)
+    monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process)
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+
+    await asyncio.wait_for(
+        process_benchmark(execution_context_json=_context(request, benchmark, ["recover"]), **authority_kwargs),
+        timeout=4,
+    )
+
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.FINISHED
+    assert recoveries >= 2
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+@pytest.mark.parametrize("reserved_oldest", [False, True])
+async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
+    reserved_oldest: bool,
+) -> None:
     task_ids = ["evaluation_0", "evaluation_1", "evaluation_2", "pending_0", "pending_1"]
     provider_pool_id = "coordinator-pool"
-    request, benchmark = _queued_run(contract, harness_config, database_session, task_ids, concurrency=3)
+    request, benchmark = _queued_run(contract, database_session, task_ids, concurrency=3)
     _add_tasks(
         database_session,
         benchmark,
@@ -115,6 +191,22 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
             "existing_active": TaskStatus.IN_PROGRESS,
         },
     )
+    oldest_pending = database_session.exec(
+        select(Task).where(col(Task.task_id).in_(task_ids[3:])).order_by(col(Task.started_at), col(Task.id))
+    ).first()
+    assert oldest_pending is not None
+    if reserved_oldest:
+        database_session.add(
+            SandboxBuildReservation(
+                task_row_id=oldest_pending.id,
+                attempt_started_at=oldest_pending.started_at - timedelta(seconds=1),
+                pool_id=provider_pool_id,
+                requested_vcpu=1,
+                requested_memory=1,
+                requested_disk=1,
+            )
+        )
+        database_session.commit()
     evaluation_started: list[str] = []
     evaluation_finished: asyncio.Queue[str] = asyncio.Queue()
     release_evaluation = {task_id: asyncio.Event() for task_id in task_ids[:3]}
@@ -163,16 +255,28 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(sandbox_provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
     monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", controlled_sleep)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
-    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
+    reservation_selects: list[bool] = []
+    reservation_table = select(SandboxBuildReservation.task_row_id).get_final_froms()[0]
+
+    def observe_reservation_select(state: ORMExecuteState) -> None:
+        statement = state.statement
+        if state.is_select and isinstance(statement, Select) and reservation_table in statement.get_final_froms():
+            reservation_selects.append(True)
+
+    event.listen(Session, "do_orm_execute", observe_reservation_select)
+    run = asyncio.create_task(
+        process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs)
+    )
     try:
         await coordinator_polls.get()
         await asyncio.wait_for(two_evaluations_started.wait(), timeout=2)
 
         assert len(evaluation_started) == 2
         assert pending_started == []
+        assert reservation_selects == []
 
         set_concurrency(2)
         first_evaluation = evaluation_started[0]
@@ -183,6 +287,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
 
         assert len(evaluation_started) == 2
         assert pending_started == []
+        assert reservation_selects == []
 
         set_concurrency(3)
         continue_coordinator.put_nowait(None)
@@ -191,6 +296,7 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
 
         assert len(evaluation_started) == 3
         assert pending_started == []
+        assert reservation_selects == []
 
         for task_id in evaluation_started[1:]:
             release_evaluation[task_id].set()
@@ -200,30 +306,36 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
         await asyncio.wait_for(pending_contender_started.wait(), timeout=2)
 
         assert len(pending_started) == 1
+        assert reservation_selects
+        if reserved_oldest:
+            assert oldest_pending.task_id not in pending_started
+            assert database_session.get(SandboxBuildReservation, oldest_pending.id) is not None
+        reservation_selects.clear()
 
         continue_coordinator.put_nowait(None)
         await coordinator_polls.get()
 
         assert len(pending_started) == 1
+        assert reservation_selects == []
     finally:
         run.cancel()
-        with suppress(asyncio.CancelledError):
-            await run
+        try:
+            with suppress(asyncio.CancelledError):
+                await run
+        finally:
+            event.remove(Session, "do_orm_execute", observe_reservation_select)
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
 async def test_queued_process_benchmark_recovers_existing_work_before_finalizing(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["resume_eval", "recover_build"]
     provider_pool_id = "evaluation-pool"
-    request, benchmark = _queued_run(
-        contract, harness_config, database_session, task_ids, pool_id=provider_pool_id, concurrency=2
-    )
+    request, benchmark = _queued_run(contract, database_session, task_ids, pool_id=provider_pool_id, concurrency=2)
     _add_tasks(
         database_session,
         benchmark,
@@ -243,9 +355,9 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
             task = session.exec(
                 select(Task).where(Task.benchmark == benchmark.id).where(Task.task_id == "recover_build")
             ).one()
-            assert task.status == TaskStatus.BUILDING
-            task.status = TaskStatus.PENDING
-            session.commit()
+            if task.status == TaskStatus.BUILDING:
+                task.status = TaskStatus.PENDING
+                session.commit()
 
     async def process_task(task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, dict[str, Any]]:
         nonlocal resumed_at
@@ -259,9 +371,9 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
     monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover_queued_pool)
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
     monkeypatch.setattr(
-        RuntimeServices,
-        "get_sandbox_provider",
-        Mock(return_value=nullcontext(sandbox_provider)),
+        DaytonaProviderConfig,
+        "create_provider",
+        Mock(return_value=sandbox_provider),
     )
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
@@ -274,7 +386,7 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
     database_session.add(resumed_task)
     database_session.commit()
     await asyncio.wait_for(
-        process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs),
+        process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs),
         timeout=5,
     )
 
@@ -299,13 +411,11 @@ async def test_queued_process_benchmark_recovers_existing_work_before_finalizing
 async def test_queued_coordinator_retires_stale_evaluation_runner(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     executor_authority_kwargs: Any,
 ) -> None:
     request, benchmark = _queued_run(
         contract,
-        harness_config,
         database_session,
         ["resume_eval"],
         pool_id="stale-evaluation-pool",
@@ -325,7 +435,7 @@ async def test_queued_coordinator_retires_stale_evaluation_runner(
     provider = Mock(spec=SandboxProvider, admission_pool_id="stale-evaluation-pool")
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
     monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover_queued_pool)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
     dispatch = database_session.get(ExecutorDispatch, UUID(str(authority_kwargs["executor_dispatch_id"])))
     assert dispatch is not None
@@ -335,7 +445,7 @@ async def test_queued_coordinator_retires_stale_evaluation_runner(
     database_session.commit()
 
     await asyncio.wait_for(
-        process_benchmark(request.model_dump(), str(benchmark.id), ["resume_eval"], **authority_kwargs),
+        process_benchmark(execution_context_json=_context(request, benchmark, ["resume_eval"]), **authority_kwargs),
         timeout=2,
     )
 
@@ -351,7 +461,6 @@ async def test_queued_coordinator_retires_stale_evaluation_runner(
 async def test_direct_provider_setup_failure_closes_client(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     executor_authority_kwargs: Any,
     close_fails: bool,
@@ -360,21 +469,23 @@ async def test_direct_provider_setup_failure_closes_client(
         benchmark_name="swebench",
         contract=contract,
         task_ids=["task_0"],
-        harness_config=harness_config,
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name="provider-secret",
+        properties=_RESOURCES,
     )
     benchmark = _persist_benchmark(request, database_session)
     close_client = AsyncMock(side_effect=RuntimeError("client close failed") if close_fails else None)
     monkeypatch.setattr(
-        RuntimeServices, "get_sandbox_provider", Mock(side_effect=RuntimeError("provider setup failed"))
+        DaytonaProviderConfig, "create_provider", Mock(side_effect=RuntimeError("provider setup failed"))
     )
     monkeypatch.setattr(BenchmarkServiceClient, "close", close_client)
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
 
     if close_fails:
         with pytest.raises(RuntimeError, match="client close failed"):
-            await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
+            await process_benchmark(execution_context_json=_context(request, benchmark, ["task_0"]), **authority_kwargs)
     else:
-        await process_benchmark(request.model_dump(), str(benchmark.id), ["task_0"], **authority_kwargs)
+        await process_benchmark(execution_context_json=_context(request, benchmark, ["task_0"]), **authority_kwargs)
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
@@ -387,12 +498,11 @@ async def test_direct_provider_setup_failure_closes_client(
 async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["active", "pending"]
-    request, benchmark = _queued_run(contract, harness_config, database_session, task_ids)
+    request, benchmark = _queued_run(contract, database_session, task_ids)
     task_started = asyncio.Event()
     started_task_id: str | None = None
 
@@ -410,10 +520,12 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id="coordinator-pool")
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(sandbox_provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
-    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs))
+    run = asyncio.create_task(
+        process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs)
+    )
     await asyncio.wait_for(task_started.wait(), timeout=2)
     run.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -429,6 +541,50 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     assert started_task_id is not None
     assert task_statuses[started_task_id] == TaskStatus.ERROR
     assert list(task_statuses.values()).count(TaskStatus.PENDING) == 1
+    error_rows = database_session.exec(
+        select(ErrorResult).join(Task, col(Task.id) == ErrorResult.task).where(Task.benchmark == benchmark.id)
+    ).all()
+    assert [(row.error_message, row.category) for row in error_rows] == [
+        ("Run was interrupted", FailureCategory.CANCELLED)
+    ]
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+async def test_cancelled_shutdown_drains_provider(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
+) -> None:
+    """Repeated caller cancellation does not interrupt provider shutdown."""
+    started, release = asyncio.Event(), asyncio.Event()
+    finished = asyncio.Event()
+
+    async def close() -> None:
+        started.set()
+        await release.wait()
+        finished.set()
+
+    # The pool mismatch fails the run right after provider creation, so shutdown starts immediately.
+    request, benchmark = _queued_run(contract, database_session, ["task_0"], pool_id="expected-pool")
+    provider = Mock(spec=SandboxProvider, admission_pool_id="different-pool", close=AsyncMock(side_effect=close))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
+
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    closing = asyncio.create_task(
+        process_benchmark(execution_context_json=_context(request, benchmark, ["task_0"]), **authority_kwargs)
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+    for _ in range(2):
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert finished.is_set()
+    provider.close.assert_awaited_once()
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
@@ -436,13 +592,12 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
 async def test_queued_process_benchmark_reports_provider_configuration_drift(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
     provider_pool_id: str | None,
     executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["task_0", "task_1"]
-    request, benchmark = _queued_run(contract, harness_config, database_session, task_ids, pool_id="expected-pool")
+    request, benchmark = _queued_run(contract, database_session, task_ids, pool_id="expected-pool")
     _add_tasks(
         database_session,
         benchmark,
@@ -453,10 +608,10 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
         },
     )
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
-    monkeypatch.setattr(RuntimeServices, "get_sandbox_provider", Mock(return_value=nullcontext(sandbox_provider)))
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
 
     authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
-    await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
+    await process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs)
 
     database_session.refresh(benchmark)
     tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()

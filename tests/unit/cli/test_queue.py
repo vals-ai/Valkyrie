@@ -5,13 +5,13 @@ Run: uv run pytest tests/unit/cli/test_queue.py
 
 import json
 from collections.abc import Callable
-from pathlib import Path
+from functools import partial
 from uuid import UUID
 
 import httpx
 import pytest
 from click.testing import CliRunner, Result
-from valkyrie.sdk import SchedulerOverviewResponse, ValkyrieClient, ValkyrieConfig
+from valkyrie.sdk import SchedulerOverviewResponse, ValkyrieClient
 
 from valkyrie.cli.main import cli
 
@@ -56,25 +56,14 @@ def overview() -> dict[str, object]:
 
 
 @pytest.fixture
-def invoke_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., Result]:
-    """Use a config without AWS credentials and replace only the SDK's HTTP transport."""
-    config_path = tmp_path / "queue.yaml"
-    config_path.write_text(
-        "api_key: test-key\nAWS_DEFAULT_REGION: us-east-1\nS3_BUCKET: test-bucket\n"
-        "sandbox_providers:\n  daytona: test-provider\n"
-    )
-    monkeypatch.setenv("VALKYRIE_CONFIG_PATH", str(config_path))
-    monkeypatch.setenv("TRACKER_SERVICE_URL", "https://tracker.test")
+def invoke_queue(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Result]:
+    """Use an access key and replace only the SDK's HTTP transport."""
+    monkeypatch.setenv("VALKYRIE_API_KEY", "test-key")
+    monkeypatch.setenv("VALKYRIE_URL", "https://tracker.test")
 
     def invoke(handler: Callable[[httpx.Request], httpx.Response], *arguments: str) -> Result:
-        def from_config(path: Path, *, base_url: str) -> ValkyrieClient:
-            return ValkyrieClient(
-                ValkyrieConfig.from_yaml(path),
-                base_url=base_url,
-                transport=httpx.MockTransport(handler),
-            )
-
-        monkeypatch.setattr(ValkyrieClient, "from_config", from_config)
+        client = partial(ValkyrieClient, transport=httpx.MockTransport(handler))
+        monkeypatch.setattr("valkyrie.cli.queue.ValkyrieClient", client)
         return CliRunner().invoke(cli, ["queue", "status", *arguments])
 
     return invoke

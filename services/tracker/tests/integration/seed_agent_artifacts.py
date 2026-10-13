@@ -7,8 +7,8 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_s3 import S3Client
 
-from tracker.aws.s3 import get_contract_s3_key
-from tracker.types import AWSCredentials
+from tracker.runtime.artifacts import agent_bundle_key
+from tracker.aws.runtime import AWSRuntime
 
 
 def integration_test_agent_name(worker_id: str) -> str:
@@ -24,19 +24,16 @@ def build_test_agent_zip(contract_name: str) -> bytes:
     return buffer.getvalue()
 
 
-def create_s3_client(aws: AWSCredentials) -> S3Client:
+def create_s3_client(runtime: AWSRuntime) -> S3Client:
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "s3",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
-        region_name=aws.aws_default_region,
+        region_name=runtime.resources.region,
         config=Config(max_pool_connections=20),
     )
 
 
 def seed_test_agent_artifact(s3_client: S3Client, s3_bucket: str, contract_name: str) -> str:
-    key = get_contract_s3_key(contract_name)
+    key = agent_bundle_key(contract_name)
 
     try:
         s3_client.put_object(

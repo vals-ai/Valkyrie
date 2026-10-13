@@ -12,15 +12,11 @@ from uuid import UUID
 
 from valkyrie.sdk.output_archive import extract_output_archive
 from valkyrie.sdk.errors import (
-    ValkyrieAPIError,
-    ValkyrieConfigError,
-    ValkyrieRunAcceptedError,
     ValkyrieRunError,
     ValkyrieStreamError,
     handle_httpx_stream_errors,
 )
 from valkyrie.sdk.models import (
-    AWSResources,
     AgentContractRequest,
     AnalyzeBenchmarkRequest,
     AnalyzeEvent,
@@ -39,37 +35,14 @@ from valkyrie.sdk.models import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    ShedBenchmarkRequest,
+    ShedBenchmarkResponse,
     UpdateBenchmarkConcurrencyRequest,
     UpdateBenchmarkConcurrencyResponse,
 )
 
 if TYPE_CHECKING:
     from valkyrie.sdk.client import ValkyrieClient
-
-
-def _accepted_managed_run_id(error: ValkyrieAPIError) -> UUID | None:
-    if error.status_code != 503 or not isinstance(error.detail, dict):
-        return None
-
-    detail = cast(dict[str, object], error.detail)
-    if set(detail) != {"message", "benchmark_id", "executor_dispatch_id"}:
-        return None
-
-    if detail["message"] != "Executor dispatch enqueue acknowledgement failed; use Retry to continue":
-        return None
-
-    benchmark_id = detail["benchmark_id"]
-    dispatch_id = detail["executor_dispatch_id"]
-    if not isinstance(benchmark_id, str) or not isinstance(dispatch_id, str):
-        return None
-
-    try:
-        run_id = UUID(benchmark_id)
-        UUID(dispatch_id)
-    except ValueError:
-        return None
-
-    return run_id
 
 
 class RunsResource:
@@ -86,18 +59,16 @@ class RunsResource:
         model: str | None = None,
         concurrency: int = 5,
         priority: int | None = None,
-        properties: AWSResources | None = None,
-        managed_s3_bucket: str | None = None,
         task_ids: Sequence[str] | None = None,
         slice_str: str | None = None,
         dataset: str | None = None,
+        dataset_version: str | None = None,
         label: str | None = None,
         lambda_function: str | None = None,
         provider: str | None = None,
         agent_kwargs: Mapping[str, str] | None = None,
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
-        webhook_intervals: Sequence[int] | None = None,
         ignore_custom_services: bool = False,
     ) -> StartBenchmarkResponse:
         """Start a run from an uploaded agent name or complete contract."""
@@ -109,77 +80,30 @@ class RunsResource:
             raise ValkyrieRunError("benchmark must not be blank")
         if task_ids and slice_str:
             raise ValkyrieRunError("task_ids and slice_str are mutually exclusive")
-        if managed_s3_bucket is not None and properties is not None:
-            raise ValkyrieRunError("managed_s3_bucket and properties are mutually exclusive")
-
-        if managed_s3_bucket is not None and self._sdk.config.aws_access_key_id is not None:
-            raise ValkyrieRunError("managed_s3_bucket requires deployment-managed AWS access")
 
         contract = self._normalize_contract(agent, model=model, agent_kwargs=agent_kwargs, secrets=secrets)
-        provider_name, provider_secret_name = self._sdk.config.resolve_sandbox_provider(provider)
-        intervals = self._resolve_webhook_intervals(webhook_intervals)
-        effective_service_headers = self._service_headers(benchmark, service_headers)
-        access_key_harness_config = (
-            self._sdk.config.harness_config(provider_secret_name)
-            if self._sdk.config.aws_access_key_id is not None
-            else None
-        )
 
         payload = StartBenchmarkRequest(
             contract=contract,
             benchmark_name=benchmark,
             concurrency=concurrency,
             priority=priority,
-            properties=properties,
-            managed_s3_bucket=managed_s3_bucket,
             task_ids=list(task_ids) if task_ids else None,
             slice_str=slice_str,
             dataset=dataset,
+            dataset_version=dataset_version,
             label=label,
             lambda_function=lambda_function,
-            harness_config=access_key_harness_config,
-            custom_benchmark_service=(
-                None if ignore_custom_services else self._sdk.config.custom_benchmark_services.get(benchmark)
-            ),
-            service_headers=effective_service_headers,
-            sandbox_provider=provider_name,
-            sandbox_provider_secret_name=(provider_secret_name if access_key_harness_config is None else None),
-            webhook_secret_name=self._sdk.config.webhook if intervals else None,
-            webhook_intervals=intervals,
+            service_headers=dict(service_headers or {}),
+            sandbox_provider=provider,
+            ignore_custom_services=ignore_custom_services,
         )
-        try:
-            response = await self._sdk.request_model(
-                "POST",
-                "/start-benchmark-with-storage" if managed_s3_bucket is not None else "/start-benchmark",
-                StartBenchmarkResponse,
-                json=payload.model_dump(
-                    mode="json",
-                    exclude={"environment"}
-                    | {
-                        name
-                        for name in ("priority", "properties", "managed_s3_bucket")
-                        if getattr(payload, name) is None
-                    },
-                ),
-            )
-        except ValkyrieAPIError as error:
-            run_id = _accepted_managed_run_id(error) if managed_s3_bucket is not None else None
-            if run_id is None:
-                raise
-
-            raise ValkyrieRunAcceptedError(
-                f"Run {run_id} was accepted but dispatch was not confirmed; "
-                "use the existing run ID to reconcile or retry execution",
-                run_id=run_id,
-            ) from error
-
-        if managed_s3_bucket is not None and response.storage_bucket != managed_s3_bucket:
-            raise ValkyrieRunError(
-                f"Run {response.benchmark_id} did not confirm requested storage bucket {managed_s3_bucket!r}",
-                run_id=response.benchmark_id,
-            )
-
-        return response
+        return await self._sdk.request_model(
+            "POST",
+            "/start-benchmark",
+            StartBenchmarkResponse,
+            json=payload.model_dump(mode="json", exclude={"environment"}, exclude_none=True),
+        )
 
     async def fetch(self, run_id: UUID) -> FetchBenchmarkResponse:
         """Fetch the latest state of a run."""
@@ -473,6 +397,16 @@ class RunsResource:
             json=request.model_dump(mode="json"),
         )
 
+    async def shed(self, run_id: UUID, *, concurrency: int, dry_run: bool = False) -> ShedBenchmarkResponse:
+        """Lower an active run's concurrency and force stop the newest tasks above the new limit."""
+        request = ShedBenchmarkRequest(concurrency=concurrency, dry_run=dry_run)
+        return await self._sdk.request_model(
+            "POST",
+            f"/benchmarks/{run_id}/shed",
+            ShedBenchmarkResponse,
+            json=request.model_dump(mode="json"),
+        )
+
     async def stop(
         self,
         run_id: UUID,
@@ -498,6 +432,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        update_agent: bool = False,
         benchmark_url: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Resume unfinished work for a run."""
@@ -509,6 +444,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            update_agent=update_agent,
             benchmark_url=benchmark_url,
         )
 
@@ -521,6 +457,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
+        update_agent: bool = False,
         benchmark_url: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Retry failed or selected work for a run."""
@@ -532,6 +469,7 @@ class RunsResource:
             secrets=secrets,
             service_headers=service_headers,
             from_scratch=from_scratch,
+            update_agent=update_agent,
             benchmark_url=benchmark_url,
         )
 
@@ -545,16 +483,16 @@ class RunsResource:
         secrets: Mapping[str, str] | None,
         service_headers: Mapping[str, str] | None,
         from_scratch: bool,
+        update_agent: bool,
         benchmark_url: str | None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Send a retry or resume request."""
         if concurrency is not None and concurrency < 1:
             raise ValkyrieRunError("concurrency must be greater than 0")
 
-        run = await self.fetch(run_id)
-        effective_headers = self._service_headers(run.benchmark_name, service_headers)
         params: dict[str, Any] = {
             "retry": retry,
+            "update_agent": update_agent,
             "retry_mode": RetryMode.FROM_SCRATCH.value if from_scratch else RetryMode.AUTO.value,
         }
         if concurrency is not None:
@@ -562,7 +500,7 @@ class RunsResource:
 
         body: dict[str, Any] = {
             "task_ids": list(task_ids or []),
-            "service_headers": effective_headers,
+            "service_headers": dict(service_headers or {}),
             "secrets": dict(secrets or {}),
         }
         if benchmark_url is not None:
@@ -575,27 +513,6 @@ class RunsResource:
             params=params,
             json=body,
         )
-
-    def _service_headers(self, benchmark: str, explicit_headers: Mapping[str, str] | None) -> dict[str, str]:
-        """Merge configured and explicit service headers."""
-        headers: dict[str, str] = {}
-        if credential := self._sdk.config.benchmark_auth.get(benchmark):
-            headers["Authorization"] = credential.get_secret_value()
-        headers.update(explicit_headers or {})
-        return headers
-
-    def _resolve_webhook_intervals(self, intervals: Sequence[int] | None) -> list[int] | None:
-        """Resolve and validate webhook intervals."""
-        if intervals and not self._sdk.config.webhook:
-            raise ValkyrieConfigError("webhook_intervals require a webhook secret in ValkyrieConfig")
-        resolved = list(intervals) if intervals else ([100] if self._sdk.config.webhook else None)
-        if resolved is None:
-            return None
-        if len(resolved) > 3:
-            raise ValkyrieRunError("a maximum of 3 webhook intervals is allowed")
-        if any(value < 5 or value > 100 or value % 5 != 0 for value in resolved):
-            raise ValkyrieRunError("webhook intervals must be divisible by 5 and between 5 and 100")
-        return resolved
 
     @staticmethod
     def _normalize_contract(

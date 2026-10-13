@@ -5,9 +5,10 @@ from uuid import UUID
 
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    FailureCategory,
     TaskStatus,
 )
 from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse, FinalViewResponse
@@ -50,7 +51,7 @@ def make_fetch_metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse:
     return FetchBenchmarkMetadataResponse(
         benchmark_id=run_id,
         benchmark_name="swebench",
-        benchmark_arguments=BenchmarkArguments(
+        benchmark_arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="mini_sweagent",
                 model="openai/gpt-5",
@@ -70,6 +71,7 @@ def make_final_view(
     status: BenchmarkStatus = BenchmarkStatus.ERROR,
     error_message: str | None = "No tasks were completed successfully",
     task_errors: dict[str, str] | None = None,
+    task_failure_categories: dict[str, FailureCategory] | None = None,
     evaluation_results: dict[str, dict[str, object]] | None = None,
 ) -> FinalViewResponse:
     """Build a complete final-view response for CLI behavior tests."""
@@ -80,7 +82,7 @@ def make_final_view(
         finished_at=datetime(2026, 7, 10, 12, 5, tzinfo=timezone.utc),
         status=status,
         error_message=error_message,
-        benchmark_arguments=BenchmarkArguments(
+        benchmark_arguments=AWSBenchmarkArguments(
             contract=AgentContractRequest(
                 name="demo-agent",
                 secrets={"SYNTHETIC_KEY": "excluded-secret-name"},
@@ -93,4 +95,5 @@ def make_final_view(
         average_task_breakdown=None,
         evaluation_results=evaluation_results or {"successful-task": {"private": "excluded-evaluation-value"}},
         task_errors=task_errors,
+        task_failure_categories=task_failure_categories,
     )

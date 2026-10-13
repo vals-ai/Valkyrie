@@ -4,7 +4,6 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
-from uuid import UUID
 
 import httpx
 
@@ -18,22 +17,11 @@ class ValkyrieSDKError(Exception):
 
 
 class ValkyrieConfigError(ValkyrieSDKError):
-    """The supplied Valkyrie configuration is missing or invalid."""
+    """A saved Valkyrie login could not be read, or signing in or refreshing it failed."""
 
 
 class ValkyrieRunError(ValkyrieSDKError):
-    """A run operation received invalid input or an unconfirmed start response."""
-
-    def __init__(self, message: str, *, run_id: UUID | None = None) -> None:
-        self.run_id = run_id
-        super().__init__(message)
-
-
-class ValkyrieRunAcceptedError(ValkyrieRunError):
-    """The run exists with the requested storage, but its dispatch was not acknowledged.
-
-    The run is safe to reconcile or retry by ``run_id``. It is not a storage rejection.
-    """
+    """A run operation received invalid input."""
 
 
 class ValkyrieTransportError(ValkyrieSDKError):

@@ -28,14 +28,17 @@ _FORBIDDEN_HEADER_NAMES = {
     "transfer-encoding",
     "upgrade",
     "x-api-key",
+    "x-benchmark-dataset-version",
     "x-real-ip",
 }
 _FORBIDDEN_HEADER_PREFIXES = ("forwarded", "proxy-", "sec-websocket-", "x-forwarded-")
-_VALS_TENANT_ID = "vals.ai"
+_VALS_DOMAIN = "vals.ai"
 _RESTRICTED_HOSTNAMES = {"internal", "local", "localhost"}
 _RESTRICTED_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal")
 _IDNA_SEPARATOR_TRANSLATION = str.maketrans({"。": ".", "．": ".", "｡": "."})
 _CUSTOM_DESTINATION_DENIED = "Custom benchmark destination is not allowed"
+_INVALID_URL_CHARACTERS_RE = re.compile(r"[\s\x00-\x1f\x7f\\]")
+_INVALID_SERVICE_URL = "Invalid benchmark service URL"
 
 
 def validate_benchmark_name(value: str) -> str:
@@ -58,6 +61,12 @@ def validate_service_headers(headers: Mapping[str, str]) -> None:
             raise ValueError("Unsupported benchmark service header")
 
 
+def validate_service_header_name(name: str) -> str:
+    """Accept a header name that validate_service_headers allows."""
+    validate_service_headers({name: ""})
+    return name
+
+
 def validate_custom_service_destination(
     value: str,
     *,
@@ -66,15 +75,16 @@ def validate_custom_service_destination(
     restrict_vals_hosts: bool = True,
 ) -> None:
     """Keep private and optionally Vals-owned custom destinations limited to trusted callers."""
-    if not auth_required or org_name == _VALS_TENANT_ID:
+    from tracker.secret_access import may_use_shared_secrets
+
+    if not auth_required or may_use_shared_secrets(org_name):
         return
 
     hostname = urlsplit(value).hostname
     assert hostname is not None
     normalized_host = hostname.translate(_IDNA_SEPARATOR_TRANSLATION).lower().rstrip(".")
     if (
-        (restrict_vals_hosts and normalized_host == _VALS_TENANT_ID)
-        or (restrict_vals_hosts and normalized_host.endswith(f".{_VALS_TENANT_ID}"))
+        (restrict_vals_hosts and (normalized_host == _VALS_DOMAIN or normalized_host.endswith(f".{_VALS_DOMAIN}")))
         or normalized_host in _RESTRICTED_HOSTNAMES
         or normalized_host.endswith(_RESTRICTED_HOSTNAME_SUFFIXES)
     ):
@@ -93,21 +103,22 @@ def validate_custom_service_destination(
 
 def validate_service_url_syntax(value: str) -> str:
     """Validate and normalize a caller-provided benchmark-service base URL."""
-    if (
-        any(character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F for character in value)
-        or "\\" in value
-    ):
-        raise ValueError("Invalid benchmark service URL")
+    if _INVALID_URL_CHARACTERS_RE.search(value):
+        raise ValueError(_INVALID_SERVICE_URL)
 
     parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("Invalid benchmark service URL")
-    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
-        raise ValueError("Invalid benchmark service URL")
-
     try:
         parsed.port
     except ValueError as exc:
-        raise ValueError("Invalid benchmark service URL") from exc
+        raise ValueError(_INVALID_SERVICE_URL) from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(_INVALID_SERVICE_URL)
 
     return value.rstrip("/")

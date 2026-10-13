@@ -49,12 +49,6 @@ def install(github_url: str, name: str | None):
     help="Agent name (defaults to the contract name)",
 )
 def push(agent_path: Path, name: str | None):
-    """Push a local agent to the shared library through Tracker.
-
-    Example:
-        valkyrie agent push ./agents/my-agent
-        valkyrie agent push ./agents/my-agent --name my-agent
-    """
     try:
         agent_name = asyncio.run(push_agent(name or None, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
@@ -67,11 +61,6 @@ def push(agent_path: Path, name: str | None):
 @click.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
 def agent_remove(agent_name: str):
-    """Remove an agent from the shared library through Tracker.
-
-    Example:
-        valkyrie agent remove my-agent
-    """
     try:
         if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
             click.echo("Cancelled.")
@@ -175,21 +164,9 @@ def _format_agents_response(
 
 def paginate_agents(agents: list[tuple[str, datetime | None]], limit: int = 10) -> None:
     """Interactively page through installed agents."""
-
-    def load_page(offset: int, page_limit: int) -> tuple[int, list[tuple[str, datetime | None]]]:
-        return len(agents), agents[offset : offset + page_limit]
-
-    def render_page(
-        page_agents: list[tuple[str, datetime | None]],
-        current_page: int,
-        total_pages: int,
-        total_count: int,
-    ) -> None:
-        _format_agents_response(page_agents, current_page, total_pages, total_count)
-
     paginate_cli_pages(
-        load_page,
-        render_page,
+        lambda offset, page_limit: (len(agents), agents[offset : offset + page_limit]),
+        _format_agents_response,
         limit=limit,
         render_empty=lambda: click.echo(click.style("No agents found.", fg="yellow")),
     )

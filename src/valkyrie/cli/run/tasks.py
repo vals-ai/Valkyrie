@@ -17,7 +17,6 @@ from valkyrie.sdk.models import (
 )
 
 from valkyrie.cli.display import format_table, terminal_safe
-from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
 
 @click.command(name="tasks")
@@ -77,15 +76,16 @@ def tasks(
         {
             "Task": terminal_safe(task.task_id, preserve_newlines=False),
             "Status": task.status.value,
+            "Category": task.failure_category.value if task.failure_category else "",
             "Error": terminal_safe(task.error_message or "", preserve_newlines=False),
         }
         for task in response.tasks
     ]
-    format_table(rows, ["Task", "Status", "Error"], total_count=response.total_count, item_name="task")
+    format_table(rows, ["Task", "Status", "Category", "Error"], total_count=response.total_count, item_name="task")
 
 
 async def _tasks(run_id: UUID, request: FetchTasksRequest) -> TasksResponse:
-    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+    async with ValkyrieClient() as client:
         return await client.benchmarks.tasks(run_id, request)
 
 
@@ -137,7 +137,7 @@ def _print_detail(response: BaseModel, output_format: str) -> None:
 
 
 async def _task(run_id: UUID, task_id: str, *, artifacts: bool) -> SingleTaskResponse | TaskArtifactsResponse:
-    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+    async with ValkyrieClient() as client:
         if artifacts:
             return await client.benchmarks.artifacts(run_id, task_id)
         return await client.benchmarks.task(run_id, task_id)

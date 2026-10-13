@@ -6,7 +6,6 @@ import click
 from valkyrie.sdk import FilterOptionsResponse, ValkyrieClient, ValkyrieSDKError
 
 from valkyrie.cli.display import terminal_safe
-from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
 
 @click.command(name="filter-options")
@@ -32,5 +31,5 @@ def filter_options(output_format: str) -> None:
 
 
 async def _filter_options() -> FilterOptionsResponse:
-    async with ValkyrieClient.from_config(config_location(), base_url=tracker_service_url()) as client:
+    async with ValkyrieClient() as client:
         return await client.runs.filter_options()

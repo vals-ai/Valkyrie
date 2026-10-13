@@ -61,23 +61,16 @@ class BenchmarkServicesResource:
         if not benchmark.strip():
             raise ValueError("benchmark must not be blank")
 
-        headers: dict[str, str] = {}
-        if credential := self._sdk.config.benchmark_auth.get(benchmark):
-            headers["Authorization"] = credential.get_secret_value()
-        headers.update(service_headers or {})
-
         payload = FetchBenchmarkTasksRequest(
             benchmark_name=benchmark,
             dataset=dataset,
-            custom_benchmark_service=(
-                None if ignore_custom_services else self._sdk.config.custom_benchmark_services.get(benchmark)
-            ),
-            service_headers=headers,
+            service_headers=dict(service_headers or {}),
+            ignore_custom_services=ignore_custom_services,
         )
         response = await self._sdk.request_model(
             "POST",
             "/fetch-benchmark-tasks",
             TaskIDsResponse,
-            json=payload.model_dump(mode="json"),
+            json=payload.model_dump(mode="json", exclude_defaults=True),
         )
         return response.task_ids

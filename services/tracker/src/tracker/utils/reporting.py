@@ -8,19 +8,15 @@ import io
 import json
 from collections.abc import AsyncGenerator, Buffer
 from datetime import datetime
-from functools import cached_property
-from typing import Any, NamedTuple, Sequence, cast
+from typing import Any, Sequence, cast
 from uuid import UUID
 
 from sqlalchemy import JSON, literal, tuple_, type_coerce
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import selectinload
-from sqlmodel import Session, asc, case, col, desc, func, or_, select
+from sqlmodel import Session, asc, col, desc, func, or_, select
 
-from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import (
-    S3_BENCHMARKS_PREFIX,
-    create_benchmark_url,
-)
+from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -48,86 +44,52 @@ from tracker.types import (
 logger = get_logger(__name__)
 
 
-def _history_result(created_at: datetime, result: dict[str, Any]) -> dict[str, Any]:
-    return {"created_at": created_at.isoformat(), "result": dict(result)}
+_FINISHED_BENCHMARK_STATUSES = (BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED)
+_FINISHED_STATUSES = (TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED)
 
 
-def _history_error(created_at: datetime, error_message: str) -> dict[str, Any]:
-    return {"created_at": created_at.isoformat(), "error_message": error_message}
-
-
-class TaskCounts(NamedTuple):
-    total_tasks: int
-    finished_tasks: int
-    failed_tasks: int
-
-
-class BenchmarkContext:
-    _benchmark_row: Benchmark
-    _session: Session
-    _org: Org
-
-    def __init__(self, benchmark_row: Benchmark, session: Session, org: Org):
-        self._benchmark_row = benchmark_row
-        self._session = session
-        self._org = org
-
-    @property
-    def _status(self) -> BenchmarkStatus:
-        return self._benchmark_row.status
-
-    @cached_property
-    def _task_counts(self) -> TaskCounts:
-        finished_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-
-        statement = (
-            select(
-                func.count().label("total_tasks"),
-                func.count(case((col(Task.status).in_(finished_statuses), 1))).label("finished_tasks"),
-                func.count(case((Task.status == TaskStatus.ERROR, 1))).label("failed_tasks"),
-            )
-            .select_from(Task)
-            .where(Task.benchmark == self._benchmark_row.id)
-            .where(Task.org_id == self._org.id)
-        )
-
-        result = self._session.exec(statement).one()
-
-        task_counts = TaskCounts(total_tasks=result[0], finished_tasks=result[1], failed_tasks=result[2])
-
-        return task_counts
-
-    @property
-    def _task_breakdown(self) -> dict[TaskStatus, int]:
-        """
-        Returns a mapping between the task status and the number of tasks in that status
-
-        Provides a breakdown of the benchmark.
-        """
-        statement = (
-            select(Task.status, func.count(col(Task.id)))
-            .select_from(Task)
-            .where(Task.benchmark == self._benchmark_row.id)
-            .where(Task.org_id == self._org.id)
+def fetch_benchmark_details(benchmark_row: Benchmark, session: Session, org_id: UUID) -> BenchmarkDetails:
+    breakdown = {
+        TaskStatus(status): count
+        for status, count in session.exec(
+            select(Task.status, func.count())
+            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.org_id == org_id)
             .group_by(Task.status)
-            .having(func.count(col(Task.id)) > 0)  # Exclude all with count of 0
-        )
+        ).all()
+    }
+    return BenchmarkDetails(
+        status=benchmark_row.status,
+        started_at=benchmark_row.started_at,
+        total_tasks=sum(breakdown.values()),
+        finished_tasks=sum(breakdown.get(status, 0) for status in _FINISHED_STATUSES),
+        task_breakdown=breakdown,
+        docent_reading_status=benchmark_row.docent_reading_status,
+        docent_reading_url=benchmark_row.docent_reading_url,
+    )
 
-        result = self._session.exec(statement).all()
 
-        return {TaskStatus(status): count for status, count in result}
-
-    @cached_property
-    def benchmark_details(self) -> BenchmarkDetails:
-        return BenchmarkDetails(
-            status=self._status,
-            started_at=self._benchmark_row.started_at,
-            total_tasks=self._task_counts.total_tasks,
-            finished_tasks=self._task_counts.finished_tasks,
-            task_breakdown=self._task_breakdown,
-            docent_reading_status=self._benchmark_row.docent_reading_status,
-            docent_reading_url=self._benchmark_row.docent_reading_url,
-        )
+def fetch_benchmark_response(
+    benchmark_row: Benchmark,
+    session: Session,
+    org_id: UUID,
+    s3_bucket_url: str,
+    storage_bucket: str | None,
+) -> FetchBenchmarkResponse:
+    return FetchBenchmarkResponse(
+        benchmark_name=benchmark_row.name,
+        benchmark_id=benchmark_row.id,
+        details=fetch_benchmark_details(benchmark_row, session, org_id),
+        s3_bucket_url=s3_bucket_url,
+        storage_bucket=storage_bucket,
+        label=benchmark_row.label,
+        executor_release_id=benchmark_row.executor_release_id,
+        current_execution_release_id=benchmark_row.current_execution_release_id,
+        executor_artifact_digest=benchmark_row.executor_artifact_digest,
+        executor_protocol_version=benchmark_row.executor_protocol_version,
+        final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
+        error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
+    )
 
 
 def _fetch_result_histories(
@@ -138,7 +100,7 @@ def _fetch_result_histories(
 ) -> dict[UUID, list[dict[str, Any]]]:
     """Combine previously loaded evaluation attempts with non-retry errors."""
     error_rows = session.exec(
-        select(ErrorResult.task, ErrorResult.created_at, ErrorResult.error_message)
+        select(ErrorResult.task, ErrorResult.created_at, col(ErrorResult.error_message), col(ErrorResult.category))
         .where(col(ErrorResult.task).in_(task_row_ids))
         .where(col(ErrorResult.org_id) == org_id)
         .where(col(ErrorResult.retry_scheduled).is_(False))
@@ -146,15 +108,19 @@ def _fetch_result_histories(
 
     histories: dict[UUID, list[dict[str, Any]]] = {}
     for task_row_id, created_at, result in evaluation_rows:
-        histories.setdefault(task_row_id, []).append(_history_result(created_at, result))
-    for task_row_id, created_at, error_message in error_rows:
-        histories.setdefault(task_row_id, []).append(_history_error(created_at, error_message))
+        histories.setdefault(task_row_id, []).append({"created_at": created_at.isoformat(), "result": dict(result)})
+    for task_row_id, created_at, error_message, category in error_rows:
+        histories.setdefault(task_row_id, []).append(
+            {
+                "created_at": created_at.isoformat(),
+                "error_message": error_message,
+                "failure_category": category.value if category else None,
+            }
+        )
 
-    return {
-        task_row_id: sorted(entries, key=lambda entry: entry["created_at"], reverse=True)
-        for task_row_id, entries in histories.items()
-        if entries
-    }
+    for entries in histories.values():
+        entries.sort(key=lambda entry: entry["created_at"], reverse=True)
+    return histories
 
 
 def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
@@ -247,7 +213,12 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, aws_runtime: AWSRuntime, org: Org
+    benchmark_id: UUID,
+    bind: Engine | Connection | None,
+    s3_bucket_url: str,
+    org_id: UUID,
+    *,
+    storage_bucket: str | None,
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -267,42 +238,22 @@ async def stream_benchmark_results(
 
     try:
         while True:
-            with Session(bind=session.bind) as fresh_session:
-                fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
-                if not fresh_benchmark or fresh_benchmark.org_id != org.id:
+            with Session(bind=bind) as fresh_session:
+                benchmark_row = fresh_session.get(Benchmark, benchmark_id)
+                if benchmark_row is None or benchmark_row.org_id != org_id:
                     yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
                     break
 
-                fresh_session.refresh(fresh_benchmark)
-                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org)
+                fresh_session.refresh(benchmark_row)
+                response = fetch_benchmark_response(benchmark_row, fresh_session, org_id, s3_bucket_url, storage_bucket)
+                complete = benchmark_row.status in _FINISHED_BENCHMARK_STATUSES
 
-                response_data = FetchBenchmarkResponse(
-                    benchmark_name=fresh_benchmark.name,
-                    benchmark_id=fresh_benchmark.id,
-                    details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), aws_runtime.resources),
-                    storage_bucket=aws_runtime.resources.s3_bucket,
-                    label=fresh_benchmark.label,
-                    executor_release_id=fresh_benchmark.executor_release_id,
-                    current_execution_release_id=fresh_benchmark.current_execution_release_id,
-                    executor_artifact_digest=fresh_benchmark.executor_artifact_digest,
-                    executor_protocol_version=fresh_benchmark.executor_protocol_version,
-                    final_score=fresh_benchmark.final_evaluation.final_score
-                    if fresh_benchmark.final_evaluation
-                    else None,
-                    error_message=fresh_benchmark.error_message
-                    if fresh_benchmark.status == BenchmarkStatus.ERROR
-                    else None,
-                )
-
-                yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
-
-                if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
-                    yield EVENT_COMPLETE
-                    break
+            yield f"{DATA_PREFIX} {response.model_dump_json()}\n\n"
+            if complete:
+                yield EVENT_COMPLETE
+                break
 
             await asyncio.sleep(PULL_INTERVAL)
-
     except CancelledError:
         logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
         yield DISCONNECT
@@ -350,10 +301,7 @@ def fetch_filtered_benchmark_rows(
     arguments_json = type_coerce(col(Benchmark.arguments), JSON)
 
     if request.agent_name:
-        if len(request.agent_name) == 1:
-            query = query.where(arguments_json["contract"]["name"].as_string() == request.agent_name[0])
-        else:
-            query = query.where(col(arguments_json["contract"]["name"].as_string()).in_(request.agent_name))
+        query = query.where(arguments_json["contract"]["name"].as_string().in_(request.agent_name))
 
     if request.model:
         query = query.where(arguments_json["contract"]["model"].as_string() == request.model)
@@ -369,16 +317,10 @@ def fetch_filtered_benchmark_rows(
         query = query.where(func.lower(Benchmark.label) == request.label.lower())
 
     if request.benchmark_name:
-        if len(request.benchmark_name) == 1:
-            query = query.where(Benchmark.name == request.benchmark_name[0])
-        else:
-            query = query.where(col(Benchmark.name).in_(request.benchmark_name))
+        query = query.where(col(Benchmark.name).in_(request.benchmark_name))
 
     if request.status:
-        if len(request.status) == 1:
-            query = query.where(Benchmark.status == request.status[0])
-        else:
-            query = query.where(col(Benchmark.status).in_(request.status))
+        query = query.where(col(Benchmark.status).in_(request.status))
 
     if request.started_after is not None:
         query = query.where(Benchmark.started_at > request.started_after)
@@ -391,10 +333,8 @@ def fetch_filtered_benchmark_rows(
         if normalized_emails:
             query = query.where(col(Benchmark.started_by_email).in_(normalized_emails))
 
-    if request.order_by == Order.DESC:
-        query = query.order_by(desc(Benchmark.started_at), desc(Benchmark.id))
-    else:
-        query = query.order_by(asc(Benchmark.started_at), asc(Benchmark.id))
+    direction = desc if request.order_by == Order.DESC else asc
+    query = query.order_by(direction(Benchmark.started_at), direction(Benchmark.id))
 
     # Keyset cursor path — skip offset/limit and total_count computation.
     # cursor="" means first page of keyset mode; non-empty cursor means subsequent page.
@@ -402,16 +342,11 @@ def fetch_filtered_benchmark_rows(
         if request.cursor:
             cursor_started_at, cursor_id = decode_cursor(request.cursor)
 
-            if request.order_by == Order.DESC:
-                query = query.where(
-                    tuple_(col(Benchmark.started_at), col(Benchmark.id))
-                    < tuple_(literal(cursor_started_at), literal(str(cursor_id)))
-                )
-            else:
-                query = query.where(
-                    tuple_(col(Benchmark.started_at), col(Benchmark.id))
-                    > tuple_(literal(cursor_started_at), literal(str(cursor_id)))
-                )
+            position = tuple_(col(Benchmark.started_at), col(Benchmark.id))
+            cursor_position = tuple_(literal(cursor_started_at), literal(str(cursor_id)))
+            query = query.where(
+                position < cursor_position if request.order_by == Order.DESC else position > cursor_position
+            )
 
         # Fetch one extra row to detect whether there is a next page
         query = query.limit(request.limit + 1)
@@ -478,11 +413,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 finished_at=b.finished_at,
                 status=b.status,
                 total_tasks=sum(counts.values()),
-                finished_tasks=(
-                    counts.get(TaskStatus.FINISHED, 0)
-                    + counts.get(TaskStatus.ERROR, 0)
-                    + counts.get(TaskStatus.STOPPED, 0)
-                ),
+                finished_tasks=sum(counts.get(status, 0) for status in _FINISHED_STATUSES),
                 task_state_counts={k.value: v for k, v in counts.items()},
                 final_score=b.final_evaluation.final_score if b.final_evaluation else None,
             )
@@ -527,7 +458,8 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         .where(col(Task.status) == TaskStatus.STOPPED)
     ).one()
 
-    final_view: FinalViewResponse = FinalViewResponse(
+    task_failures = benchmark_row.fetch_task_failures(session)
+    return FinalViewResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
         error_message=benchmark_row.error_message,
@@ -538,11 +470,14 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
-        task_errors=benchmark_row.fetch_tasks_with_errors(session),
+        task_errors={task_id: message for task_id, (message, _) in task_failures.items()} if task_failures else None,
+        task_failure_categories=(
+            {task_id: category for task_id, (_, category) in task_failures.items() if category is not None}
+            if task_failures
+            else None
+        ),
         average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
     )
-
-    return final_view
 
 
 def final_view_s3_key(benchmark_row: Benchmark) -> str:

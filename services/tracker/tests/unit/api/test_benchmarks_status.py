@@ -13,10 +13,11 @@ from sqlmodel import Session
 from main import app
 from tests.utils import TEST_ORG_ID
 from tracker.api.parsing import parse_csv
+from tracker.aws.s3 import S3ObjectStore
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
+    AWSBenchmarkArguments,
     BenchmarkStatus,
     Task,
     TaskStatus,
@@ -58,19 +59,15 @@ class TestBenchmarkStatusQueries:
         database_session: Session,
         example_benchmark_object: Benchmark,
         monkeypatch: pytest.MonkeyPatch,
-        harness_headers: dict[str, str],
     ) -> None:
         """Result existence must check the canonical results S3 key."""
         example_benchmark_object.id = _RESULTS_RUN_ID
         database_session.add(example_benchmark_object)
         database_session.commit()
         exists_mock = AsyncMock(return_value=True)
-        monkeypatch.setattr("main.s3_object_exists", exists_mock)
+        monkeypatch.setattr(S3ObjectStore, "exists", exists_mock)
 
-        response = _client.get(
-            f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}",
-            headers=harness_headers,
-        )
+        response = _client.get(f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}")
 
         assert response.status_code == 200
         assert response.json() == {"exists": True}
@@ -95,7 +92,7 @@ class TestBenchmarkStatusQueries:
                 id=benchmark_id,
                 name="swebench",
                 status=BenchmarkStatus.IN_PROGRESS,
-                arguments=BenchmarkArguments(contract=contract, concurrency=1),
+                arguments=AWSBenchmarkArguments(contract=contract, concurrency=1),
             )
         )
         database_session.add_all(

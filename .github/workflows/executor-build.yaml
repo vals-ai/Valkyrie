@@ -10,10 +10,8 @@ on:
       - "infra/executor_stack.py"
       - "infra/tracker_stack.py"
       - "services/executor_artifact/**"
-      - "services/executor_host/**"
       - "services/tracker/**"
       - "tests/integration/observability/**"
-      - "tests/unit/executor_host/**"
   # Runs on every PR so the required check is always reported; the guard below
   # skips the (slow) build when the PR does not touch executor-related paths.
   pull_request:
@@ -45,7 +43,7 @@ jobs:
             echo "Could not compute the PR diff; running the build to be safe."
             echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if printf '%s\n' "$changed" | grep -qE '^(\.dockerignore|\.github/workflows/(executor-build|deploy)\.yaml|infra/(executor_stack|tracker_stack)\.py|services/(executor_artifact|executor_host|tracker)/|tests/(integration/observability|unit/executor_host)/)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(\.dockerignore|\.github/workflows/(executor-build|deploy)\.yaml|infra/(executor_stack|tracker_stack)\.py|services/(executor_artifact|tracker)/|tests/integration/observability/)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "No executor-related changes; skipping build."
@@ -67,30 +65,19 @@ jobs:
             uv.lock
             services/executor_artifact/uv.lock
             services/tracker/uv.lock
-            services/executor_host/uv.lock
 
       - name: Verify locked service dependencies
         if: steps.rel.outputs.relevant == 'true'
         run: |
           uv lock --project services/executor_artifact --check
           uv lock --project services/tracker --check
-          uv lock --project services/executor_host --check
-          uv export \
-            --project services/executor_host \
-            --locked \
-            --no-dev \
-            --no-emit-project \
-            --format requirements.txt \
-            --output-file services/executor_host/requirements.txt
-          git diff --exit-code -- services/executor_host/requirements.txt
-
-      - name: Install ExecutorHost test dependencies
+      - name: Install executor test dependencies
         if: steps.rel.outputs.relevant == 'true'
         run: uv sync --frozen
 
       - name: Run executor support tests
         if: steps.rel.outputs.relevant == 'true'
-        run: uv run pytest tests/unit/executor_host tests/integration/observability services/executor_artifact/tests
+        run: uv run pytest services/tracker/tests/unit/executor tests/integration/observability services/executor_artifact/tests
 
       - name: Build and inspect immutable executor PEX
         if: steps.rel.outputs.relevant == 'true'
@@ -105,12 +92,7 @@ jobs:
         if: steps.rel.outputs.relevant == 'true'
         run: docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker
 
-      - name: Build ARM64 ExecutorHost image
-        if: steps.rel.outputs.relevant == 'true'
-        run: docker build --platform linux/arm64 -f services/executor_host/Dockerfile -t valkyrie-executor-host:ci .
-
-      - name: Verify image architectures
+      - name: Verify tracker image architecture
         if: steps.rel.outputs.relevant == 'true'
         run: |
           test "$(docker image inspect valkyrie-tracker:ci --format '{{.Architecture}}')" = "arm64"
-          test "$(docker image inspect valkyrie-executor-host:ci --format '{{.Architecture}}')" = "arm64"

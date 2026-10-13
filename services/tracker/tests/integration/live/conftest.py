@@ -11,32 +11,61 @@ from tests.utils import TEST_ORG_ID
 from tracker.auth import get_current_org
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
-from tracker.types import HarnessConfig
+from tracker import config
+from tracker.aws.runtime import AWSRuntime
+from tracker.database.models import AWSBenchmarkArguments, AgentContractRequest, Benchmark
+from tests.factories import make_benchmark
 
 
 @pytest.fixture
-def harness_headers(harness_config: HarnessConfig) -> dict[str, str]:
-    """Build complete access-key request headers from the live configuration."""
-    headers = {
-        "X-Harness-AWS-Access-Key-Id": harness_config.aws.aws_access_key_id,
-        "X-Harness-AWS-Secret-Access-Key": harness_config.aws.aws_secret_access_key,
-        "X-Harness-AWS-Default-Region": harness_config.aws.aws_default_region,
-        "X-Harness-S3-Bucket": harness_config.s3_bucket,
-        "X-Harness-Log-Group": harness_config.log_group,
-        "X-Harness-Log-Retention-Policy": str(harness_config.log_retention_policy),
-        "X-Harness-Sandbox-Provider-Secret-Name": harness_config.sandbox_provider_secret_name,
-    }
-    if harness_config.aws.aws_session_token:
-        headers["X-Harness-AWS-Session-Token"] = harness_config.aws.aws_session_token
-    return headers
+def api_headers() -> dict[str, str]:
+    return {"X-Api-Key": "test-api-key"}
+
+
+@pytest.fixture
+def database_session(database_session: Session, live_aws_runtime: AWSRuntime) -> Session:
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    org.storage_key = live_aws_runtime.resources.s3_bucket
+    database_session.add(org)
+    database_session.commit()
+    return database_session
+
+
+@pytest.fixture
+def live_deployment(live_aws_runtime: AWSRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
+    resources = live_aws_runtime.resources
+    for name, value in {
+        "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
+        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
+        "AWS_DEPLOYMENT_ACCOUNT_ID": live_aws_runtime.expected_bucket_owner,
+        "AWS_DEPLOYMENT_REGION": resources.region,
+        "AWS_DEPLOYMENT_S3_BUCKET": resources.s3_bucket,
+        "AWS_DEPLOYMENT_LOG_GROUP": resources.log_group,
+        "AWS_DEPLOYMENT_LOG_RETENTION_DAYS": str(resources.log_retention_days),
+    }.items():
+        monkeypatch.setattr(config, name, value)
+
+
+@pytest.fixture
+def example_benchmark_object(
+    contract: AgentContractRequest, live_aws_runtime: AWSRuntime, daytona_secret_name: str, live_deployment: None
+) -> Benchmark:
+    benchmark = make_benchmark(contract=contract, concurrency=5)
+    assert isinstance(benchmark.arguments, AWSBenchmarkArguments)
+    benchmark.arguments.properties = live_aws_runtime.resources
+    benchmark.arguments.sandbox_provider = "daytona"
+    benchmark.arguments.sandbox_provider_secret_name = daytona_secret_name
+    return benchmark
 
 
 @pytest.fixture
 def live_api_client(
     tracker_database: Session,
+    live_aws_runtime: AWSRuntime,
+    live_deployment: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[TestClient, None, None]:
-    """Route the app through local persistence and real harness credentials."""
 
     def get_test_session() -> Generator[Session, None, None]:
         yield tracker_database
@@ -45,7 +74,7 @@ def live_api_client(
     monkeypatch.setitem(
         app.dependency_overrides,
         get_current_org,
-        lambda: Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME),
+        lambda: Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME, storage_key=live_aws_runtime.resources.s3_bucket),
     )
 
     with TestClient(app) as client:

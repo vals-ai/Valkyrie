@@ -283,6 +283,19 @@ The model is passed separately from kwargs via `--model` on the CLI:
 valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
 ```
 
+### Companion models
+
+Each task's Model Gateway key only allows the run's model. If other agents in the sandbox call their own models alongside the main one, such as an auditor or a user simulator, declare a `companion_models` kwarg: a comma-separated list of model keys the key also allows.
+
+```yaml
+run_cmd: "my_agent --task {problem_statement_path} --model {model} --auditor-model {companion_models}"
+defaults:
+  companion_models:
+    type: str
+    required: false
+    default: openai/gpt-5-2025-08-07
+```
+
 ## Installation scripts
 
 The `install_cmd` runs inside the sandbox with the working directory set to `/bundle/<agent_name>/`. Use it to install dependencies and set up your agent.

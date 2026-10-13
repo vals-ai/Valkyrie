@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from uuid import uuid4
@@ -23,7 +24,7 @@ from tracker.api import logs as logs_api
 from tracker.api.dependencies import get_run_runtime
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchLogProvider
-from tracker.database.models import Benchmark, Org
+from tracker.database.models import Benchmark, LocalBenchmarkArguments, Org
 from tracker.runtime.logs import LogEvent, LogPage, LogProvider, RunLogReference, RunTaskLogReference, TaskLogReference
 
 _client = TestClient(app)
@@ -112,7 +113,6 @@ def _override_provider(monkeypatch: pytest.MonkeyPatch, provider: LogProvider) -
 def test_client_construction_failure_uses_snapshot_and_sse_error_paths(
     database_session: Session,
     example_benchmark_object: Benchmark,
-    harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Client construction failures must remain provider-neutral in snapshots and streams."""
@@ -123,11 +123,10 @@ def test_client_construction_failure_uses_snapshot_and_sse_error_paths(
     provider = CloudWatchLogProvider(cast(AWSClientProvider, FailingClients()), "benchmarks")
     _override_provider(monkeypatch, provider)
 
-    snapshot_response = _client.get(f"/benchmarks/{benchmark.id}/logs", headers=harness_headers)
+    snapshot_response = _client.get(f"/benchmarks/{benchmark.id}/logs")
     stream_response = _client.get(
         f"/benchmarks/{benchmark.id}/logs/stream",
         params={"task_id": task.task_id},
-        headers=harness_headers,
     )
 
     assert snapshot_response.status_code == 502
@@ -140,7 +139,6 @@ def test_client_construction_failure_uses_snapshot_and_sse_error_paths(
 def test_task_and_run_logs_use_scoped_provider_references(
     database_session: Session,
     example_benchmark_object: Benchmark,
-    harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Task and aggregate endpoints must resolve scoped identities without exposing AWS locations."""
@@ -160,12 +158,10 @@ def test_task_and_run_logs_use_scoped_provider_references(
             "start_time": "2026-01-01T00:00:00+00:00",
             "end_time": "2026-01-01T01:00:00+00:00",
         },
-        headers=harness_headers,
     )
     run_response = _client.get(
         f"/benchmarks/{benchmark.id}/logs",
         params={"query": "aggregate"},
-        headers=harness_headers,
     )
 
     assert task_response.status_code == 200
@@ -193,7 +189,6 @@ def test_task_and_run_logs_use_scoped_provider_references(
 def test_log_routes_validate_time_and_prevent_cross_org_access(
     database_session: Session,
     example_benchmark_object: Benchmark,
-    harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Log endpoints must reject ambiguous bounds and runs outside the active organization."""
@@ -209,7 +204,6 @@ def test_log_routes_validate_time_and_prevent_cross_org_access(
     naive_response = _client.get(
         f"/benchmarks/{benchmark.id}/logs",
         params={"start_time": "2026-01-01T00:00:00"},
-        headers=harness_headers,
     )
     reversed_response = _client.get(
         f"/benchmarks/{benchmark.id}/logs",
@@ -217,7 +211,6 @@ def test_log_routes_validate_time_and_prevent_cross_org_access(
             "start_time": "2026-01-01T01:00:00+00:00",
             "end_time": "2026-01-01T00:00:00+00:00",
         },
-        headers=harness_headers,
     )
     equal_response = _client.get(
         f"/benchmarks/{benchmark.id}/logs",
@@ -225,9 +218,8 @@ def test_log_routes_validate_time_and_prevent_cross_org_access(
             "start_time": "2026-01-01T00:00:00+00:00",
             "end_time": "2026-01-01T00:00:00+00:00",
         },
-        headers=harness_headers,
     )
-    other_response = _client.get(f"/benchmarks/{other_benchmark.id}/logs", headers=harness_headers)
+    other_response = _client.get(f"/benchmarks/{other_benchmark.id}/logs")
 
     assert naive_response.status_code == 422
     assert reversed_response.status_code == 422
@@ -239,7 +231,6 @@ def test_log_routes_validate_time_and_prevent_cross_org_access(
 def test_task_log_stream_returns_sse_events(
     database_session: Session,
     example_benchmark_object: Benchmark,
-    harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The task stream must release its transaction before yielding typed log events.
@@ -258,7 +249,6 @@ def test_task_log_stream_returns_sse_events(
     response = _client.get(
         f"/benchmarks/{benchmark.id}/logs/stream",
         params={"task_id": task.task_id, "query": "needle"},
-        headers=harness_headers,
     )
 
     assert response.status_code == 200
@@ -297,3 +287,36 @@ async def test_task_log_stream_sends_keep_alives_without_closing_pending_provide
     await events.aclose()
 
     assert provider.stream_closed
+
+
+def test_local_logs_use_filesystem_without_aws_resolution(
+    tmp_path: Path, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tracker.local.logs import FilesystemLogs
+    from tracker.local.resources import LocalResources
+    from tracker.runtime.logs import task_log_stream_name
+
+    benchmark = example_benchmark_object
+    benchmark.arguments = LocalBenchmarkArguments.model_validate(
+        {
+            **benchmark.arguments.model_dump(),
+            "environment": "local",
+            "properties": LocalResources(data_root=tmp_path),
+            "sandbox_provider": "docker",
+        }
+    )
+    task = make_task(benchmark, "local-task")
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+    logs = FilesystemLogs(tmp_path / "orgs" / str(benchmark.org_id) / "logs")
+    asyncio.run(logs.create_benchmark(str(benchmark.id), retention_days=0))
+    logs.write(f"{benchmark.id}:{task_log_stream_name(task.task_id, task.started_at)}", "local execution output")
+
+    def unexpected_aws(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Local log access resolved AWS credentials")
+
+    monkeypatch.setattr("tracker.api.dependencies.resolve_run_aws_runtime", unexpected_aws)
+    for params in ({}, {"task_id": task.task_id}):
+        response = _client.get(f"/benchmarks/{benchmark.id}/logs", params=params)
+        assert response.status_code == 200, response.text
+        assert response.json()["events"][0]["message"] == "local execution output"

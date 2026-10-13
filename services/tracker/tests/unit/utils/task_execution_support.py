@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.runtime.services import RuntimeServices
@@ -26,11 +27,12 @@ from tracker.database.models import (
 )
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.scheduler.admission import SandboxQueueContext
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.aws.runtime import AWSResources
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
-_TEST_STARTER = RequestIdentity(org=TEST_ORG, access_key_id=None, email=None, name=None)
+_TEST_STARTER = RequestIdentity(org=TEST_ORG)
 
 
 class _UnitEvaluationLock:
@@ -63,17 +65,14 @@ def install_sqlite_evaluation_lock(database_session: Session, monkeypatch: pytes
     monkeypatch.setattr("tracker.utils.task_execution.task_evaluation_lock", evaluation_lock)
 
 
-class MockKicker:
-    """Record task dispatches without starting a worker."""
+class MockLauncher:
+    """Record dispatch launches after admission commits."""
 
     def __init__(self) -> None:
         self.queued_calls: list[dict[str, Any]] = []
 
-    def with_labels(self, **_labels: str) -> "MockKicker":
-        return self
-
-    async def kiq(self, **kwargs: Any) -> None:
-        self.queued_calls.append(kwargs)
+    def record(self, payload: dict[str, Any]) -> None:
+        self.queued_calls.append(payload)
 
 
 def make_retrieve_task_response(problem_path: str = "/tmp/problem_statement.txt") -> RetrieveTaskResponse:
@@ -89,7 +88,6 @@ def make_retrieve_task_response(problem_path: str = "/tmp/problem_statement.txt"
 def create_task_environment(
     contract: AgentContractRequest,
     database_session: Session,
-    harness_config: HarnessConfig,
     run_starter: RequestIdentity | None = None,
 ) -> tuple[StartBenchmarkRequest, Task, UUID, ExecutionAuthority]:
     """Persist the benchmark and task rows required by process-task tests.
@@ -97,7 +95,6 @@ def create_task_environment(
     Arguments
     - contract: Agent contract used by the benchmark request.
     - database_session: Test database session receiving the rows.
-    - harness_config: Harness configuration stored with the request.
     - run_starter: Optional identity that started the benchmark.
 
     Returns
@@ -108,12 +105,18 @@ def create_task_environment(
         contract=contract,
         concurrency=1,
         task_ids=["task_0"],
-        harness_config=harness_config,
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name="test-daytona-secret",
+        properties=AWSResources(
+            region="us-east-1",
+            s3_bucket="test-bucket",
+            log_group="test-log-group",
+            log_retention_days=30,
+        ),
     )
     benchmark_row = start_benchmark_request_to_benchmark(
         start_benchmark_request,
         run_starter or _TEST_STARTER,
-        aws_managed=False,
     )
     benchmark_row.status = BenchmarkStatus.IN_PROGRESS
     database_session.add(benchmark_row)
@@ -127,7 +130,7 @@ def create_task_environment(
         id="task-execution-test-release",
         artifact_uri="s3://artifacts/task-execution-test.pex",
         artifact_digest="a" * 64,
-        protocol_version="1",
+        protocol_version=SUPPORTED_PROTOCOL_VERSION,
         readiness_verified=True,
     )
     database_session.add(release)
@@ -183,7 +186,7 @@ async def run_process_task(
     sandbox_provider_config = await runtime_services.get_sandbox_provider_config()
     async with (
         start_benchmark_request.benchmark_service as benchmark_service,
-        runtime_services.get_sandbox_provider(sandbox_provider_config) as sandbox_provider,
+        sandbox_provider_config.create_provider() as sandbox_provider,
     ):
         return await process_task(
             task_row=task_row,

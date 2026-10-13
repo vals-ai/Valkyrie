@@ -13,9 +13,6 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from pydantic import ValidationError
-
-from valkyrie.sdk.models import AWSResources
 
 from valkyrie.sdk import (
     AgentContractRequest,
@@ -25,8 +22,6 @@ from valkyrie.sdk import (
     ValkyrieAPIError,
     ValkyrieClient,
     ValkyrieConfig,
-    ValkyrieConfigError,
-    ValkyrieRunAcceptedError,
     ValkyrieRunError,
     ValkyrieSDKError,
     ValkyrieStreamError,
@@ -40,145 +35,20 @@ def load_sdk_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def test_config_loads_existing_yaml_shape_and_builds_headers(tmp_path: Path) -> None:
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        """
-api_key: vals-key
-AWS_ACCESS_KEY_ID: aws-key
-AWS_SECRET_ACCESS_KEY: aws-secret
-AWS_DEFAULT_REGION: us-west-2
-S3_BUCKET: runs-bucket
-sandbox_providers:
-  daytona: DaytonaSecret
-default_sandbox_provider: daytona
-""".strip(),
-        encoding="utf-8",
-    )
-
-    config = ValkyrieConfig.from_yaml(config_path)
-
-    assert config.resolve_sandbox_provider() == ("daytona", "DaytonaSecret")
-    assert config.request_headers()["X-Api-Key"] == "vals-key"
-    assert config.request_headers()["X-Harness-Aws-Access-Key-Id"] == "aws-key"
-
-
-def test_config_environment_selects_tracker_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_config) -> None:
-    monkeypatch.delenv("TRACKER_SERVICE_URL", raising=False)
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        """
-environment: prod
-api_key: vals-key
-AWS_DEFAULT_REGION: us-west-2
-S3_BUCKET: runs-bucket
-sandbox_providers:
-  daytona: DaytonaSecret
-""".strip(),
-        encoding="utf-8",
-    )
-
-    client = ValkyrieClient.from_config(config_path)
-
-    assert client.config.tracker_url == "https://benchmark-tracker-prod.vals.ai"
-    assert str(client._client.base_url) == "https://benchmark-tracker-prod.vals.ai"
-    assert sdk_config().tracker_url == "https://benchmark-tracker.vals.ai"
-    with pytest.raises(ValidationError, match="environment"):
-        sdk_config(environment="staging")
-
-
 def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> None:
     config = sdk_config()
 
-    rendered_config = f"{config!r}\n{config.model_dump_json(by_alias=True)}"
-    for secret in ("vals-key", "aws-key", "aws-secret", "aws-session", "benchmark-token"):
-        assert secret not in rendered_config
+    rendered_config = f"{config!r}\n{config.model_dump_json()}"
+    assert "vals-key" not in rendered_config
 
-    headers = config.request_headers()
-    assert headers["X-Api-Key"] == "vals-key"
-    assert headers["X-Harness-Aws-Access-Key-Id"] == "aws-key"
-    assert headers["X-Harness-Aws-Secret-Access-Key"] == "aws-secret"
-    assert headers["X-Harness-Aws-Session-Token"] == "aws-session"
-
-    harness = config.harness_config("ModalSecret")
-    assert harness.aws.aws_access_key_id == "aws-key"
-    assert harness.aws.aws_secret_access_key == "aws-secret"
-    assert harness.aws.aws_session_token == "aws-session"
-
-
-def test_config_omits_optional_secret_headers(sdk_config) -> None:
-    config = sdk_config(api_key=None, AWS_SESSION_TOKEN=None)
-
-    headers = config.request_headers()
-
-    assert "X-Api-Key" not in headers
-    assert "X-Harness-Aws-Session-Token" not in headers
-    assert config.harness_config("ModalSecret").aws.aws_session_token is None
+    assert config.api_key is not None and config.api_key.get_secret_value() == "vals-key"
 
 
 def test_run_error_is_a_public_sdk_error() -> None:
     assert issubclass(ValkyrieRunError, ValkyrieSDKError)
 
 
-def test_config_rejects_missing_required_values_and_invalid_provider(config_values, sdk_config) -> None:
-    values = config_values()
-    values.pop("S3_BUCKET")
-    with pytest.raises(ValidationError):
-        ValkyrieConfig.model_validate(values)
-    with pytest.raises(ValidationError):
-        sdk_config(sandbox_providers={})
-    with pytest.raises(ValidationError):
-        sdk_config(LOG_GROUP=" ")
-    with pytest.raises(ValidationError):
-        sdk_config(AWS_SECRET_ACCESS_KEY=" ")
-    with pytest.raises(ValidationError, match="configured together"):
-        sdk_config(AWS_SECRET_ACCESS_KEY=None)
-    with pytest.raises(ValidationError, match="configured together"):
-        sdk_config(AWS_ACCESS_KEY_ID=None)
-    with pytest.raises(ValidationError, match="AWS_SESSION_TOKEN requires"):
-        sdk_config(AWS_ACCESS_KEY_ID=None, AWS_SECRET_ACCESS_KEY=None)
-
-    config = sdk_config()
-    with pytest.raises(ValkyrieConfigError, match="Unknown sandbox provider"):
-        config.resolve_sandbox_provider("unknown")
-
-
-def test_config_rejects_unknown_keys_and_legacy_daytona(config_values, sdk_config) -> None:
-    with pytest.raises(ValidationError, match="extra_forbidden"):
-        sdk_config(S3_BUKET="typo")
-
-    with pytest.raises(ValidationError, match="DAYTONA_SECRET_NAME"):
-        sdk_config(DAYTONA_SECRET_NAME="LegacyDaytonaSecret")
-
-    legacy_values = config_values()
-    legacy_values.pop("sandbox_providers")
-    legacy_values.pop("default_sandbox_provider")
-    legacy_values["DAYTONA_SECRET_NAME"] = "LegacyDaytonaSecret"
-    with pytest.raises(ValidationError, match="DAYTONA_SECRET_NAME"):
-        ValkyrieConfig.model_validate(legacy_values)
-
-
-def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
-    with pytest.raises(ValkyrieConfigError, match="Could not read"):
-        ValkyrieClient.from_config(tmp_path / "missing.yaml")
-
-    invalid_path = tmp_path / "invalid.yaml"
-    invalid_path.write_text("- not\n- a\n- mapping\n", encoding="utf-8")
-    with pytest.raises(ValkyrieConfigError, match="must contain a YAML mapping"):
-        ValkyrieClient.from_config(invalid_path)
-
-    malformed_path = tmp_path / "malformed.yaml"
-    malformed_path.write_text("[", encoding="utf-8")
-    with pytest.raises(ValkyrieConfigError, match="Invalid YAML"):
-        ValkyrieClient.from_config(malformed_path)
-
-    incomplete_path = tmp_path / "incomplete.yaml"
-    incomplete_path.write_text("api_key: key\n", encoding="utf-8")
-    with pytest.raises(ValkyrieConfigError, match="Invalid Valkyrie config"):
-        ValkyrieClient.from_config(incomplete_path)
-
-
-async def test_start_normalizes_agent_and_builds_configured_payload(make_client) -> None:
+async def test_start_normalizes_agent_and_builds_payload(make_client) -> None:
     requests: list[httpx.Request] = []
     run_id = uuid4()
 
@@ -211,7 +81,7 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
             agent_kwargs={"temperature": "0"},
             secrets={"ANTHROPIC_API_KEY": "AnthropicSecret"},
             service_headers={"X-Custom": "explicit"},
-            webhook_intervals=[25, 100],
+            ignore_custom_services=True,
         )
 
     assert response.benchmark_id == run_id
@@ -219,109 +89,16 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     body = json.loads(request.content)
     assert request.url.path == "/start-benchmark"
     assert request.headers["x-api-key"] == "vals-key"
-    assert request.headers["x-harness-aws-session-token"] == "aws-session"
     contract = body["contract"]
     assert contract["name"] == "sweagent"
     assert contract["model"] == "claude-sonnet"
     assert contract["secrets"] == {"ANTHROPIC_API_KEY": "AnthropicSecret"}
     assert contract["kwargs"] == {"temperature": "0"}
-    assert body["custom_benchmark_service"] == "https://local.swebench"
-    assert body["service_headers"] == {"Authorization": "benchmark-token", "X-Custom": "explicit"}
-    assert body["sandbox_provider"] == "modal"
-    assert body["harness_config"]["sandbox_provider_secret_name"] == "ModalSecret"
-    assert body["webhook_secret_name"] == "SlackWebhook"
-    assert body["webhook_intervals"] == [25, 100]
+    assert body["ignore_custom_services"] is True
+    assert body["service_headers"] == {"X-Custom": "explicit"}
 
 
-async def test_start_without_static_keys_builds_managed_request(make_client, sdk_config) -> None:
-    """Managed SDK starts must omit every harness credential surface."""
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "benchmark_name": "swebench",
-                "agent_name": "sweagent",
-                "benchmark_id": str(uuid4()),
-                "concurrency": 1,
-                "started_at": "2026-07-08T12:00:00Z",
-                "task_count": 1,
-                "cloudwatch_url": "https://logs.test",
-                "s3_bucket_url": "s3://runs-bucket/run",
-            },
-        )
-
-    config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
-        default_sandbox_provider="daytona",
-    )
-    client = make_client(handler, config=config)
-    async with client:
-        await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
-
-    request = requests[0]
-
-    assert request.headers["x-api-key"] == "vals-key"
-    assert not any(name.lower().startswith("x-harness-") for name in request.headers)
-
-    body = json.loads(request.content)
-
-    assert body["harness_config"] is None
-    assert body["sandbox_provider"] == "daytona"
-    assert body["sandbox_provider_secret_name"] == "DaytonaSecret"
-
-
-async def test_start_with_managed_storage_uses_guarded_route(make_client, sdk_config) -> None:
-    run_id = uuid4()
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "benchmark_name": "swebench",
-                "agent_name": "sweagent",
-                "benchmark_id": str(run_id),
-                "concurrency": 1,
-                "started_at": "2026-07-08T12:00:00Z",
-                "task_count": 1,
-                "cloudwatch_url": "https://logs.test",
-                "s3_bucket_url": "s3://vs-dev-acme-123/benchmarks/run",
-                "storage_bucket": "vs-dev-acme-123",
-            },
-        )
-
-    config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
-        default_sandbox_provider="daytona",
-    )
-    client = make_client(handler, config=config)
-    async with client:
-        response = await client.runs.start(
-            "sweagent",
-            "swebench",
-            managed_s3_bucket="vs-dev-acme-123",
-            ignore_custom_services=True,
-        )
-
-    assert response.storage_bucket == "vs-dev-acme-123"
-    assert len(requests) == 1
-    request = requests[0]
-    assert request.url.path == "/start-benchmark-with-storage"
-    body = json.loads(request.content)
-    assert body["managed_s3_bucket"] == "vs-dev-acme-123"
-    assert "properties" not in body
-    assert "harness_config" not in body or body["harness_config"] is None
-
-
-async def test_start_without_managed_storage_uses_ordinary_route(make_client) -> None:
+async def test_start_uses_the_start_route(make_client) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -347,84 +124,7 @@ async def test_start_without_managed_storage_uses_ordinary_route(make_client) ->
     assert [request.url.path for request in requests] == ["/start-benchmark"]
 
 
-@pytest.mark.parametrize("returned_bucket", [None, "vs-dev-other-456"])
-async def test_start_with_managed_storage_rejects_unconfirmed_bucket(
-    make_client,
-    sdk_config,
-    returned_bucket: str | None,
-) -> None:
-    run_id = uuid4()
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "benchmark_name": "swebench",
-                "agent_name": "sweagent",
-                "benchmark_id": str(run_id),
-                "concurrency": 1,
-                "started_at": "2026-07-08T12:00:00Z",
-                "task_count": 1,
-                "cloudwatch_url": "https://logs.test",
-                "s3_bucket_url": "s3://runs-bucket/run",
-                "storage_bucket": returned_bucket,
-            },
-        )
-
-    config = sdk_config(
-        AWS_ACCESS_KEY_ID=None,
-        AWS_SECRET_ACCESS_KEY=None,
-        AWS_SESSION_TOKEN=None,
-    )
-    async with make_client(handler, config=config) as client:
-        with pytest.raises(ValkyrieRunError, match=str(run_id)) as error:
-            await client.runs.start(
-                "sweagent",
-                "swebench",
-                managed_s3_bucket="vs-dev-acme-123",
-            )
-
-    assert error.value.run_id == run_id
-    assert not isinstance(error.value, ValkyrieRunAcceptedError)
-    assert ValkyrieRunError("invalid input").run_id is None
-    assert str(ValkyrieRunError("invalid input")) == "invalid input"
-
-
-@pytest.mark.parametrize("conflict", ["properties", "access_keys"])
-async def test_start_with_managed_storage_rejects_conflicting_aws_configuration_before_request(
-    make_client,
-    sdk_config,
-    conflict: str,
-) -> None:
-    requests: list[httpx.Request] = []
-    config = sdk_config()
-    properties = None
-    if conflict == "properties":
-        config = sdk_config(
-            AWS_ACCESS_KEY_ID=None,
-            AWS_SECRET_ACCESS_KEY=None,
-            AWS_SESSION_TOKEN=None,
-        )
-        properties = AWSResources(
-            region="us-east-1",
-            s3_bucket="custom-bucket",
-            log_group="custom-logs",
-            log_retention_days=7,
-        )
-
-    async with make_client(lambda request: requests.append(request), config=config) as client:
-        with pytest.raises(ValkyrieRunError):
-            await client.runs.start(
-                "sweagent",
-                "swebench",
-                managed_s3_bucket="vs-dev-acme-123",
-                properties=properties,
-            )
-
-    assert requests == []
-
-
-async def test_start_can_omit_optional_run_configuration(make_client, sdk_config) -> None:
+async def test_start_can_omit_optional_run_configuration(make_client) -> None:
     captured_body: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -443,33 +143,19 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
             },
         )
 
-    client = make_client(handler, config=sdk_config(webhook=None, benchmark_auth={}))
+    client = make_client(handler)
     async with client:
-        await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
+        await client.runs.start("sweagent", "swebench")
 
-    assert captured_body["custom_benchmark_service"] is None
+    assert "custom_benchmark_service" not in captured_body
     assert captured_body["service_headers"] == {}
-    assert captured_body["webhook_secret_name"] is None
-    assert captured_body["webhook_intervals"] is None
     assert captured_body["concurrency"] == 5
     assert "priority" not in captured_body
     assert "environment" not in captured_body
     assert "properties" not in captured_body
 
 
-@pytest.mark.parametrize(
-    "properties",
-    [
-        None,
-        AWSResources(
-            region="us-east-1",
-            s3_bucket="custom-bucket",
-            log_group="custom-logs",
-            log_retention_days=7,
-        ),
-    ],
-)
-async def test_start_serializes_explicit_queue_priority(make_client, sdk_config, properties) -> None:
+async def test_start_serializes_explicit_queue_priority(make_client, sdk_config) -> None:
     captured_body: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -488,15 +174,12 @@ async def test_start_serializes_explicit_queue_priority(make_client, sdk_config,
             },
         )
 
-    client = make_client(handler, config=sdk_config(default_sandbox_provider="daytona"))
+    client = make_client(handler, config=sdk_config())
     async with client:
-        await client.runs.start("sweagent", "swebench", priority=3, properties=properties)
+        await client.runs.start("sweagent", "swebench", priority=3)
 
     assert captured_body["priority"] == 3
-    if properties is None:
-        assert "properties" not in captured_body
-    else:
-        assert captured_body["properties"] == properties.model_dump(mode="json")
+    assert "properties" not in captured_body
 
 
 async def test_start_overlays_a_supplied_contract_without_mutating_it(make_client) -> None:
@@ -574,6 +257,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
                         "status": "FINISHED",
                         "error_message": None,
                         "benchmark_arguments": {
+                            "environment": "aws",
                             "contract": {"name": "sweagent"},
                             "concurrency": 1,
                         },
@@ -624,16 +308,12 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
 
 
 @pytest.mark.parametrize(("method_name", "retry"), [("resume", "false"), ("retry", "true")])
-async def test_resume_and_retry_resolve_run_service_auth(
-    method_name: str, retry: str, make_client, fetch_response
-) -> None:
+async def test_resume_and_retry_send_their_options(method_name: str, retry: str, make_client) -> None:
     run_id = uuid4()
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/fetch-benchmark":
-            return httpx.Response(200, json=fetch_response(run_id))
         return httpx.Response(200, json={"status": "success"})
 
     client = make_client(handler)
@@ -646,11 +326,13 @@ async def test_resume_and_retry_resolve_run_service_auth(
             secrets={"KEY": "SecretName"},
             service_headers={"Authorization": "override"},
             from_scratch=True,
+            update_agent=True,
             benchmark_url="https://new.example",
         )
 
     assert response.status == "success"
-    request = requests[1]
+    (request,) = requests
+    assert request.url.params["update_agent"] == "true"
     assert request.url.params["retry"] == retry
     assert request.url.params["retry_mode"] == "from_scratch"
     assert request.url.params["concurrency"] == "4"
@@ -662,49 +344,42 @@ async def test_resume_and_retry_resolve_run_service_auth(
     }
 
 
-async def test_resume_without_optional_overrides_uses_empty_payload(make_client, fetch_response, sdk_config) -> None:
+async def test_resume_without_optional_overrides_uses_empty_payload(make_client) -> None:
     run_id = uuid4()
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/fetch-benchmark":
-            return httpx.Response(200, json=fetch_response(run_id))
         return httpx.Response(200, json={"status": "success"})
 
-    client = make_client(handler, config=sdk_config(benchmark_auth={}))
-    async with client:
+    async with make_client(handler) as client:
         await client.runs.resume(run_id)
 
-    request = requests[1]
+    (request,) = requests
+    assert request.url.params["update_agent"] == "false"
     assert "concurrency" not in request.url.params
     assert json.loads(request.content) == {"task_ids": [], "service_headers": {}, "secrets": {}}
 
 
-async def test_resume_request_matches_canonical_wire_fixture(make_client, sdk_config) -> None:
+async def test_resume_request_matches_canonical_wire_fixture(make_client) -> None:
     fixture = load_sdk_fixture("retry_resume.json")
-    run_id = uuid4()
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/fetch-benchmark":
-            response = load_sdk_fixture("fetch.json")["response"]
-            response["benchmark_id"] = str(run_id)
-            return httpx.Response(200, json=response)
         return httpx.Response(200, json=fixture["response"])
 
-    client = make_client(handler, config=sdk_config(benchmark_auth={}))
-    async with client:
+    async with make_client(handler) as client:
         await client.runs.resume(
-            run_id,
+            uuid4(),
             concurrency=fixture["query"]["concurrency"],
             task_ids=fixture["body"]["task_ids"],
         )
 
-    request = requests[1]
+    (request,) = requests
     assert dict(request.url.params) == {
         "retry": str(fixture["query"]["retry"]).lower(),
+        "update_agent": str(fixture["query"]["update_agent"]).lower(),
         "retry_mode": fixture["query"]["retry_mode"],
         "concurrency": str(fixture["query"]["concurrency"]),
     }
@@ -866,18 +541,30 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.retry(uuid4(), concurrency=0)
         assert isinstance(exc_info.value, ValkyrieRunError)
-    no_webhook_client = make_client(handler, config=sdk_config(webhook=None))
-    async with no_webhook_client:
-        with pytest.raises(ValkyrieConfigError, match="webhook_intervals require"):
-            await no_webhook_client.runs.start("agent", "swebench", webhook_intervals=[50])
-
-    invalid_interval_client = make_client(handler)
-    async with invalid_interval_client:
-        with pytest.raises(ValkyrieSDKError, match="divisible by 5") as exc_info:
-            await invalid_interval_client.runs.start("agent", "swebench", webhook_intervals=[23])
-        assert isinstance(exc_info.value, ValkyrieRunError)
-        with pytest.raises(ValkyrieSDKError, match="maximum of 3") as exc_info:
-            await invalid_interval_client.runs.start("agent", "swebench", webhook_intervals=[5, 10, 15, 20])
-        assert isinstance(exc_info.value, ValkyrieRunError)
-
     assert request_count == 0
+
+
+@pytest.mark.parametrize("provider", [None, "modal"])
+async def test_tracker_url_only_start_sends_the_provider_only_when_given(provider: str | None) -> None:
+    config = ValkyrieConfig(url="http://127.0.0.1:8765")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload.get("sandbox_provider") == provider
+        assert ("sandbox_provider" in payload) is (provider is not None)
+        assert "execution_secrets" not in payload
+        assert "properties" not in payload
+        assert "environment" not in payload
+        assert request.url.host == "127.0.0.1"
+        assert "sandbox_provider_secret_name" not in payload
+        assert "x-api-key" not in request.headers
+        return httpx.Response(200, json=load_sdk_fixture("start.json")["response"])
+
+    async with ValkyrieClient(config, transport=httpx.MockTransport(handler)) as client:
+        await client.runs.start("agent", "test", provider=provider)
+
+
+async def test_a_client_without_a_config_uses_the_default_config() -> None:
+    async with ValkyrieClient() as client:
+        assert client.config == ValkyrieConfig()
+        assert str(client._client.base_url) == "https://benchmark-tracker.vals.ai"

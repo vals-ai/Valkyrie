@@ -11,6 +11,7 @@ from pathlib import Path
 from .collect import collect_cli_commands, collect_sdk_reference
 from .model import (
     CLI_CARDS,
+    CLI_PAGE_GROUPS,
     CLI_INDEX,
     CLI_NAVIGATION,
     CLI_ROOT,
@@ -76,7 +77,7 @@ def _summary(value: str, fallback: str) -> tuple[str, tuple[str, ...]]:
 def _groups(commands: Sequence[CLICommandReference]) -> dict[str, list[CLICommandReference]]:
     groups: dict[str, list[CLICommandReference]] = {}
     for command in commands:
-        groups.setdefault(command.path[0], []).append(command)
+        groups.setdefault(CLI_PAGE_GROUPS.get(command.path[0], command.path[0]), []).append(command)
     return groups
 
 
@@ -230,18 +231,16 @@ def _example(command: CLICommandReference) -> str | None:
     example = command.example
     if command.path == ("run", "stop"):
         example = "valkyrie run stop $RUN_ID"
-    elif command.path == ("config", "auth", "set"):
-        example = "valkyrie config auth set benchmark-name $BENCHMARK_CREDENTIAL"
     if command.path not in READ_ONLY_COMMANDS:
         example = "# Example only, review before running\n" + example
     return _format_example(command, example)
 
 
-def _command_section(command: CLICommandReference) -> str:
+def _command_section(command: CLICommandReference, group: str) -> str:
     name = "valkyrie " + " ".join(command.path)
     summary, paragraphs = _summary(command.summary, f"Reference for {name}.")
     blocks = [
-        f"## `{name}` {{#{'-'.join(command.path[1:])}}}",
+        f"## `{name}` {{#{'-'.join(command.path[1:]) or command.path[0]}}}",
         summary,
         *paragraphs,
         f"```bash Syntax\n{_usage(command)}\n```",
@@ -256,7 +255,7 @@ def _command_section(command: CLICommandReference) -> str:
         (
             _cli_parameters(command.parameters, "argument"),
             _cli_parameters(command.parameters, "option"),
-            f"Task guidance: [{command.path[0].title()} guides]({GUIDE_LINKS[command.path[0]]}).",
+            f"Task guidance: [{group.title()} guides]({GUIDE_LINKS[group]}).",
         )
     )
     return _join_blocks(*blocks)
@@ -279,7 +278,7 @@ def _cli_pages(commands: Sequence[CLICommandReference]) -> dict[Path, str]:
             )
         )
         sections = _join_blocks(
-            *(_command_section(command) for command in group_commands),
+            *(_command_section(command, group) for command in group_commands),
             separator="\n\n---\n\n",
         )
         pages[_page_path(CLI_ROOT, group)] = _page(
@@ -415,7 +414,7 @@ def _sdk_pages(reference: SDKReference) -> dict[Path, str]:
         *client_sections,
         "## Async context manager",
         "The client closes its connection pool when an `async with` block exits.",
-        '```python\nasync with ValkyrieClient(config) as client:\n    run = await client.runs.start(agent="sweagent", benchmark="swebench")\n```',
+        '```python\nasync with ValkyrieClient() as client:\n    run = await client.runs.start(agent="sweagent", benchmark="swebench")\n```',
     )
     type_cards: list[str] = []
     type_pages: dict[Path, str] = {}
@@ -480,6 +479,7 @@ def _redirects(commands: Sequence[CLICommandReference], reference: SDKReference)
             "destination": f"/{_route(_page_path(CLI_ROOT, command.path[0]))}#{'-'.join(command.path[1:])}",
         }
         for command in commands
+        if len(command.path) > 1
     ]
     methods = [
         {

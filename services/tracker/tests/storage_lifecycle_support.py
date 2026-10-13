@@ -6,8 +6,6 @@ from unittest.mock import AsyncMock
 
 from botocore.exceptions import ClientError
 
-from tests.utils import TEST_ORG_ID
-
 
 class MemoryS3:
     def __init__(self) -> None:
@@ -23,25 +21,6 @@ class MemoryS3:
     def record(self, operation: str, arguments: dict[str, Any]) -> None:
         self.calls.append((operation, arguments))
         assert arguments["ExpectedBucketOwner"] == "123456789012"
-
-    async def head_bucket(self, **arguments: Any) -> dict[str, str]:
-        self.record("head_bucket", arguments)
-        return {"BucketRegion": "us-east-1"}
-
-    async def get_bucket_tagging(self, **arguments: Any) -> dict[str, Any]:
-        self.record("tags", arguments)
-        return {
-            "TagSet": [
-                {"Key": "valsmith:environment", "Value": "dev"},
-                {"Key": "valsmith:owner-account-id", "Value": "123"},
-                {"Key": "valsmith:backup", "Value": "true"},
-                {"Key": "valsmith:valkyrie-org-id", "Value": str(TEST_ORG_ID)},
-            ]
-        }
-
-    async def get_bucket_versioning(self, **arguments: Any) -> dict[str, str]:
-        self.record("versioning", arguments)
-        return {"Status": "Enabled"}
 
     async def head_object(self, **arguments: Any) -> dict[str, Any]:
         self.record("head", arguments)

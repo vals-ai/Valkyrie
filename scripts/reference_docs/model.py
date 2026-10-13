@@ -25,23 +25,51 @@ SDK_ERRORS = SDK_ROOT / "errors.mdx"
 
 STATIC_REDIRECTS = [
     {"source": "/introduction", "destination": "/get-started/overview"},
+    # `config provider` and `config service` moved to `provider` and `benchmark service`.
+    {"source": "/reference/cli/config/provider/set", "destination": "/reference/cli/provider#set"},
+    {"source": "/reference/cli/config/provider/default", "destination": "/reference/cli/provider#default"},
+    {"source": "/reference/cli/config/provider/remove", "destination": "/reference/cli/provider#remove"},
+    {"source": "/reference/cli/config/provider/list", "destination": "/reference/cli/provider#list"},
+    {"source": "/reference/cli/config/service/set", "destination": "/reference/cli/benchmark#service-set"},
+    {"source": "/reference/cli/config/service/remove", "destination": "/reference/cli/benchmark#service-remove"},
+    {"source": "/reference/cli/config/service/list", "destination": "/reference/cli/benchmark#service-list"},
+    # `config auth` credentials moved to organization secrets named by `benchmark service set --auth-secret`.
+    {"source": "/reference/cli/config/auth/set", "destination": "/reference/cli/benchmark#service-set"},
+    {"source": "/reference/cli/config/auth/remove", "destination": "/reference/cli/benchmark#service-set"},
+    {"source": "/reference/cli/config/auth/list", "destination": "/reference/cli/benchmark#service-list"},
+    # `valkyrie config` is gone: the CLI and SDK read no config file.
+    {"source": "/reference/cli/config", "destination": "/get-started/configuration"},
+    {"source": "/reference/cli/config/set", "destination": "/get-started/configuration"},
+    {"source": "/reference/cli/config/remove", "destination": "/get-started/configuration"},
 ]
 
 GUIDE_LINKS = {
     "run": "/runs/start",
     "agent": "/agents/manage-agents",
     "benchmark": "/benchmarks/custom-services",
-    "config": "/get-started/configuration",
     "queue": "/runs/monitor#inspect-the-priority-queue",
+    "secret": "/get-started/sandbox-providers",
+    "provider": "/get-started/sandbox-providers",
+    "login": "/get-started/configuration#log-in",
+    "token": "/get-started/configuration#access-keys-for-ci",
+    "org": "/get-started/configuration#organizations",
 }
 
 CLI_CARDS = {
     "run": ("play", "starting, monitoring, managing, and retrieving runs"),
     "agent": ("package", "installing, uploading, listing, downloading, and removing agent bundles"),
-    "benchmark": ("flask-conical", "exporting the task IDs in a benchmark dataset"),
-    "config": ("sliders-horizontal", "credentials, sandbox providers, and benchmark services"),
+    "benchmark": (
+        "flask-conical",
+        "exporting the task IDs in a benchmark dataset and listing or saving benchmark services",
+    ),
     "queue": ("list-ordered", "inspecting sandbox queue priorities, positions, and active tasks"),
+    "secret": ("key-round", "storing, listing, and removing the secrets your runs reference"),
+    "provider": ("server", "choosing the secret behind each sandbox provider and your default provider"),
+    "login": ("log-in", "signing in, signing out, and checking which account your requests use"),
+    "token": ("key-round", "creating and revoking access keys for CI and other headless use"),
+    "org": ("building-2", "creating, joining and switching organizations, and managing their members"),
 }
+CLI_PAGE_GROUPS = {"logout": "login", "whoami": "login"}
 
 RESOURCE_CARDS = {
     "ArtifactsResource": ("Artifacts", "folder", "listing and downloading run artifact paths"),
@@ -55,6 +83,13 @@ RESOURCE_CARDS = {
     ),
     "LogsResource": ("Logs", "scroll-text", "fetching, filtering, and following benchmark logs"),
     "SchedulerResource": ("Scheduler", "list-ordered", "inspecting queue positions and active tasks"),
+    "SecretsResource": ("Secrets", "key-round", "storing, listing, and removing the secrets your runs reference"),
+    "ProvidersResource": ("Providers", "server", "choosing the secret behind each sandbox provider"),
+    "SettingsResource": (
+        "Settings",
+        "sliders-horizontal",
+        "choosing your default provider and saving benchmark service URLs",
+    ),
 }
 
 TYPE_CARDS = {
@@ -66,6 +101,8 @@ TYPE_CARDS = {
     "Config": ("sliders-horizontal", "validated SDK configuration and field aliases"),
     "Logs": ("scroll-text", "benchmark log events and paginated responses"),
     "Scheduler": ("list-ordered", "sandbox queue totals, positions, and active task responses"),
+    "Secrets": ("key-round", "stored secret names and references"),
+    "Settings": ("sliders-horizontal", "sandbox provider mappings and saved run settings"),
 }
 
 READ_ONLY_COMMANDS = frozenset(
@@ -77,9 +114,7 @@ READ_ONLY_COMMANDS = frozenset(
         ("run", "tasks"),
         ("agent", "list"),
         ("benchmark", "tasks"),
-        ("config", "auth", "list"),
-        ("config", "provider", "list"),
-        ("config", "service", "list"),
+        ("benchmark", "service", "list"),
         ("run", "errors"),
         ("run", "fetch"),
         ("run", "list"),
@@ -89,6 +124,8 @@ READ_ONLY_COMMANDS = frozenset(
         ("run", "results"),
         ("run", "status"),
         ("queue", "status"),
+        ("secret", "list"),
+        ("provider", "list"),
     }
 )
 

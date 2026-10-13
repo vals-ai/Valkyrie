@@ -3,29 +3,31 @@ title: Configure sandbox providers
 description: Store sandbox-provider credentials and select a provider for runs.
 ---
 
-Valkyrie resolves sandbox-provider credentials from AWS Secrets Manager. Register each secret under a provider name in the CLI configuration. Full syntax is in the [`config provider set`](/reference/cli/config#provider-set) and [`config provider default`](/reference/cli/config#provider-default) reference.
+Valkyrie resolves sandbox-provider credentials from AWS Secrets Manager. Store them with [`valkyrie secret set`](/reference/cli/secret#set), which prints the reference to use, then map a provider name to that secret with [`valkyrie provider set`](/reference/cli/provider#set). The Tracker keeps the mapping for your organization, so every member's runs on that provider use it. The secret has to exist in your organization's secrets first; a self-hosted Tracker without authentication can map the name of a secret created directly in AWS. Full syntax is in the [`provider set`](/reference/cli/provider#set), [`provider list`](/reference/cli/provider#list), and [`provider default`](/reference/cli/provider#default) reference.
 
 ## Select a provider
 
-The first configured provider becomes the default. Set the default explicitly with:
+A run uses the provider you pass with `--provider`, otherwise your default provider, otherwise `daytona`. Choose your own default with:
 
 ```bash
-valkyrie config provider default daytona
+valkyrie provider default daytona
 ```
 
-Select a configured provider for one run:
+The default is yours alone in the current organization; it does not change what other members run on. `valkyrie provider list` shows each provider's secret and marks your default.
+
+Select a provider for one run:
 
 ```bash
 valkyrie run start --agent sweagent --benchmark swebench --provider daytona
 ```
 
-Provider secret schemas are provider-specific. Registering a name does not make one provider's secret shape valid for another provider.
+Provider secret schemas are provider-specific. Mapping a name does not make one provider's secret shape valid for another provider.
 
 ## Daytona
 
 1. [Create a Daytona API key](https://app.daytona.io/dashboard/keys) with read, write, and delete access to sandboxes and snapshots.
 2. Choose a target from Daytona's [shared regions](https://www.daytona.io/docs/regions#shared-regions).
-3. Store the following JSON as an AWS Secrets Manager secret:
+3. Store the following JSON as a secret, for example with `valkyrie secret set daytona < daytona.json`:
 
 ```json
 {
@@ -35,15 +37,11 @@ Provider secret schemas are provider-specific. Registering a name does not make 
 }
 ```
 
-Register the secret:
+Map the provider to the secret by the name `secret set` printed:
 
 ```bash
-valkyrie config provider set daytona DaytonaSecrets
+valkyrie provider set daytona daytona
 ```
-
-<Note>
-  The legacy `DAYTONA_SECRET_NAME` configuration key remains supported only when `sandbox_providers` is not configured.
-</Note>
 
 ## Modal
 
@@ -53,7 +51,7 @@ valkyrie config provider set daytona DaytonaSecrets
 modal token set --token-id ak-... --token-secret as-... --profile=your-profile
 ```
 
-2. Store the token id and secret from that command as an AWS Secrets Manager secret:
+2. Store the token id and secret from that command as a secret, for example with `valkyrie secret set modal < modal.json`:
 
 ```json
 {
@@ -62,13 +60,13 @@ modal token set --token-id ak-... --token-secret as-... --profile=your-profile
 }
 ```
 
-Register the secret under the name `modal`:
+Map the secret to the provider `modal`:
 
 ```bash
-valkyrie config provider set modal ModalSecrets
+valkyrie provider set modal modal
 ```
 
-The provider name is sent to the benchmark service as the provider type, so Modal credentials must be registered under `modal`.
+The provider name is sent to the benchmark service as the provider type, so Modal credentials must be mapped under `modal`.
 
 <Note>
   Modal support comes from the benchmark service, not the CLI. The service must pin `create-benchmark-service` `v0.14.0` or later; earlier releases fail the run with `Modal sandbox provider is not implemented`.

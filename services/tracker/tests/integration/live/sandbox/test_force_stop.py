@@ -16,10 +16,11 @@ import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID, random_task_id
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import SecretsManagerStore
+from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
-from tracker.sandbox import create_sandbox
-from tracker.types import HarnessConfig
+from tracker.sandbox import SandboxCreationState, create_sandbox
+from tracker.types import ManagedExecutionContext
 from tracker.utils import fetch_sandbox_provider_config, force_stop_sandboxes
 
 process_benchmark = getattr(tracker_utils, "process_benchmark")
@@ -109,7 +110,7 @@ class TestForceStop:
         benchmark_service: BenchmarkServiceClient,
         test_resources: Resources,
         daytona_secret_name: str,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         test_image: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
@@ -137,8 +138,8 @@ class TestForceStop:
             force=True,
             org=Org(id=TEST_ORG_ID, name="default"),
         )
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(
+        aws_runtime = live_aws_runtime
+        provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
         provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -157,10 +158,12 @@ class TestForceStop:
             try:
                 await force_stop_sandboxes(
                     example_benchmark_object,
-                    daytona_secret_name,
-                    aws_runtime,
+                    CloudRuntimeFactory.create_runtime(
+                        aws_runtime,
+                        sandbox_provider="daytona",
+                        sandbox_provider_secret_name=daytona_secret_name,
+                    ),
                     Org(id=TEST_ORG_ID, name="default"),
-                    sandbox_provider="daytona",
                 )
             finally:
                 release_sandbox.set()
@@ -174,6 +177,7 @@ class TestForceStop:
                 ImageSource(image=test_image),
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
+                creation_state=SandboxCreationState(cleanup_pending=False),
                 labels=labels,
             ) as sandbox:
                 created_sandbox_name.append(sandbox.name)
@@ -202,7 +206,7 @@ class TestForceStop:
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        harness_config: HarnessConfig,
+        live_aws_runtime: AWSRuntime,
         daytona_secret_name: str,
         benchmark_service: BenchmarkServiceClient,
         test_image: str,
@@ -219,8 +223,8 @@ class TestForceStop:
         example_benchmark_object.status = BenchmarkStatus.IN_PROGRESS
         database_session.add(example_benchmark_object)
         database_session.commit()
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
-        provider_config = fetch_sandbox_provider_config(
+        aws_runtime = live_aws_runtime
+        provider_config = await fetch_sandbox_provider_config(
             daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
         )
         provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -242,6 +246,7 @@ class TestForceStop:
                     source=ImageSource(image=test_image),
                     resources=test_resources,
                     creation_semaphore=creation_semaphore,
+                    creation_state=SandboxCreationState(cleanup_pending=False),
                     labels=labels,
                 ) as sandbox:
                     result = await sandbox.exec("true")
@@ -279,10 +284,12 @@ class TestForceStop:
             await _wait_for_sandbox_setup(all_sandboxes_created, sandbox_creation_failed)
             await force_stop_sandboxes(
                 example_benchmark_object,
-                daytona_secret_name,
-                aws_runtime,
+                CloudRuntimeFactory.create_runtime(
+                    aws_runtime,
+                    sandbox_provider="daytona",
+                    sandbox_provider_secret_name=daytona_secret_name,
+                ),
                 Org(id=TEST_ORG_ID, name="default"),
-                sandbox_provider="daytona",
             )
         finally:
             release_sandboxes.set()
@@ -308,8 +315,8 @@ class TestForceStop:
         example_benchmark_object: Benchmark,
         database_session: Session,
         daytona_secret_name: str,
-        harness_config: HarnessConfig,
-        harness_headers: dict[str, str],
+        live_aws_runtime: AWSRuntime,
+        api_headers: dict[str, str],
         service_headers: dict[str, str],
         live_api_client: TestClient,
         executor_authority_kwargs: Any,
@@ -329,7 +336,7 @@ class TestForceStop:
         benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
         benchmark_task: Optional[asyncio.Task[None]] = None
         provider: Optional[SandboxProvider] = None
-        aws_runtime = AWSRuntime.from_harness_config(harness_config)
+        aws_runtime = live_aws_runtime
 
         try:
             verify_response = await benchmark_service.verify_task_ids(
@@ -340,16 +347,19 @@ class TestForceStop:
             authority_kwargs = executor_authority_kwargs(example_benchmark_object)
             benchmark_task = asyncio.create_task(
                 process_benchmark(
-                    start_benchmark_request_json=example_benchmark_object.access_key_start_benchmark_request(
-                        harness_config, service_headers=service_headers
-                    ).model_dump(),
-                    benchmark_id_str=str(example_benchmark_object.id),
-                    verified_task_ids=verify_response.task_ids,
+                    execution_context_json=ManagedExecutionContext(
+                        version=3,
+                        benchmark_id=example_benchmark_object.id,
+                        verified_task_ids=verify_response.task_ids,
+                        start_benchmark_request=example_benchmark_object.managed_start_benchmark_request(
+                            service_headers=service_headers
+                        ),
+                    ).model_dump(mode="json"),
                     **authority_kwargs,
                 )
             )
 
-            provider_config = fetch_sandbox_provider_config(
+            provider_config = await fetch_sandbox_provider_config(
                 daytona_secret_name, SecretsManagerStore(aws_runtime.clients), "daytona"
             )
             provider = benchmark_service.get_sandbox_provider(provider_config)
@@ -357,7 +367,7 @@ class TestForceStop:
 
             response = live_api_client.post(
                 f"/stop-benchmark/{example_benchmark_object.id}?force=true",
-                headers=harness_headers,
+                headers=api_headers,
             )
             assert response.status_code == 200
             assert response.json() == {"status": "success"}
@@ -402,10 +412,12 @@ class TestForceStop:
                 if provider is not None and await _sandboxes_for_benchmark(example_benchmark_object, provider):
                     await force_stop_sandboxes(
                         example_benchmark_object,
-                        daytona_secret_name,
-                        aws_runtime,
+                        CloudRuntimeFactory.create_runtime(
+                            aws_runtime,
+                            sandbox_provider="daytona",
+                            sandbox_provider_secret_name=daytona_secret_name,
+                        ),
                         Org(id=TEST_ORG_ID, name="default"),
-                        sandbox_provider="daytona",
                     )
                     await _wait_until_no_sandboxes(example_benchmark_object, provider)
             finally:
