@@ -14,7 +14,16 @@ Tracker and executor processes use their server IAM roles for artifact storage, 
 
 Scope each server role to its configured buckets, log groups, functions, and secret names. The default sandbox-provider secret must match an allowed Tracker secret-name prefix.
 
-A self-hosted Tracker without authentication stores everything in its one bucket (`AWS_DEPLOYMENT_S3_BUCKET`). When Tracker requires authentication and `AWS_TENANT_BUCKET_PREFIX` is set, it creates a bucket for each organization the first time the organization needs one. Its role then also needs `s3:CreateBucket`, `s3:TagResource`, `s3:GetBucketTagging`, `s3:PutBucketVersioning`, `s3:PutLifecycleConfiguration`, and `s3:PutBucketABAC` on `$AWS_TENANT_BUCKET_PREFIX-*`, plus the S3 permissions above on those buckets. Tracker creates each bucket tagged `valkyrie:org-id=<organization id>` and turns on attribute-based access control (ABAC) for it.
+A self-hosted Tracker without authentication stores everything in its one bucket (`AWS_DEPLOYMENT_S3_BUCKET`). When Tracker requires authentication and `AWS_TENANT_BUCKET_PREFIX` is set, it creates a bucket for each organization the first time the organization needs one. Its role then also needs these on `$AWS_TENANT_BUCKET_PREFIX-*`, plus the S3 permissions above on those buckets:
+
+- `s3:CreateBucket`
+- `s3:TagResource`
+- `s3:GetBucketTagging`
+- `s3:PutBucketVersioning`
+- `s3:PutLifecycleConfiguration`
+- `s3:PutBucketABAC`
+
+ Tracker creates each bucket tagged `valkyrie:org-id=<organization id>` and turns on attribute-based access control (ABAC) for it.
 
 ## Tenant access roles
 

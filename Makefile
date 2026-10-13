@@ -1,5 +1,5 @@
 .PHONY: help install style format format-check lint typecheck \
-	tracker-service venv_check tool-install build test unit-test docs-reference docs-reference-check
+	tracker-service local-tracker venv_check tool-install build test unit-test docs-reference docs-reference-check
 
 PYTHON_VERSION := 3.12
 
@@ -23,6 +23,7 @@ help:
 	@echo ""
 	@echo "Services:"
 	@echo "  make tracker-service     Start tracker service docker container"
+	@echo "  make local-tracker [CONFIG=<path>]  Run Tracker on this machine without AWS"
 
 venv_check:
 	@if [ ! -f .venv/bin/activate ]; then \
@@ -80,3 +81,6 @@ typecheck: venv_check
 
 tracker-service:
 	cd services/tracker && make tracker-service
+
+local-tracker:
+	cd services/tracker && make local-tracker $(if $(CONFIG),CONFIG=$(abspath $(CONFIG)))

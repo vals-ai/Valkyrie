@@ -12,7 +12,11 @@ resources: LocalResources | None = None
 
 def configure(path: Path) -> None:
     global resources
-    config = LocalResources.model_validate(yaml.safe_load(path.read_text()))
+    values = yaml.safe_load(path.read_text())
+    for key in ("data_root", "secrets_file"):
+        if values.get(key) is not None:
+            values[key] = path.parent.resolve() / values[key]
+    config = LocalResources.model_validate(values)
     if config.secrets_file is not None and not config.secrets_file.is_file():
-        raise ValueError("secrets_file must name an existing file")
+        raise ValueError(f"secrets_file must name an existing file: {config.secrets_file}")
     resources = config

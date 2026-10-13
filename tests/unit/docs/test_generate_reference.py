@@ -259,7 +259,7 @@ class TestCLIReference:
         assert secrets.type_name == "tuple[text, text]"
         assert count.constraints == (">= 1", "<= 10")
         assert _option(_command(commands, "run errors"), "output_format").constraints == (
-            "one of `text`, `json`",
+            "one of text, json",
             "case-insensitive",
         )
 

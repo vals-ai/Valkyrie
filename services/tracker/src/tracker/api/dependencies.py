@@ -52,7 +52,7 @@ async def get_run_runtime(
     """Compose services for one authorized run operation."""
     arguments = benchmark.arguments
     if arguments.environment == "local":
-        return LocalRuntimeFactory.create_runtime(arguments.properties.data_root, org.id)
+        return LocalRuntimeFactory.create_runtime(arguments.properties, org.id)
 
     aws_runtime = resolve_run_aws_runtime(
         properties=arguments.properties,
@@ -73,7 +73,7 @@ def get_agent_library_runtime(
 ) -> RuntimeServices:
     """Open agent storage without constructing sandbox access."""
     if local_config.resources is not None:
-        return LocalRuntimeFactory.create_runtime(local_config.resources.data_root, org.id)
+        return LocalRuntimeFactory.create_runtime(local_config.resources, org.id)
     aws_runtime = resolve_org_aws_runtime(org)
 
     return CloudRuntimeFactory.create_runtime(aws_runtime)

@@ -53,6 +53,7 @@ valkyrie run start \
 | Hosting your own benchmark service | [benchmarks/custom-services](https://docs.valkyrie.vals.ai/benchmarks/custom-services) |
 | Every CLI command | [reference/cli/index](https://docs.valkyrie.vals.ai/reference/cli/index) |
 | Python SDK | [sdk/quickstart](https://docs.valkyrie.vals.ai/sdk/quickstart) |
+| Running Tracker locally without AWS | [self-hosting/local-tracker](https://docs.valkyrie.vals.ai/self-hosting/local-tracker) |
 | Local development | [contributing/local-development](https://docs.valkyrie.vals.ai/contributing/local-development) |
 
 ## Citation

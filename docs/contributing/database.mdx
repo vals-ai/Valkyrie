@@ -55,8 +55,7 @@ make test-alembic
 Alembic sometimes generates a migration that refers to a custom type by its module path without importing it, which fails on upgrade:
 
 ```text
-sa.Column('arguments', tracker.database.models.BenchmarkArgumentsType(), nullable=True),
-                           ^^^^^^^
+sa.Column('arguments', tracker.database.models.BenchmarkArgumentsType(), ...),
 NameError: name 'tracker' is not defined
 ```
 

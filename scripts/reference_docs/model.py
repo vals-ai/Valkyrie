@@ -25,6 +25,8 @@ SDK_ERRORS = SDK_ROOT / "errors.mdx"
 
 STATIC_REDIRECTS = [
     {"source": "/introduction", "destination": "/get-started/overview"},
+    # The CDK infrastructure guide left the public docs with `infra/`.
+    {"source": "/self-hosting/infrastructure", "destination": "/get-started/hosting"},
     # `config provider` and `config service` moved to `provider` and `benchmark service`.
     {"source": "/reference/cli/config/provider/set", "destination": "/reference/cli/provider#set"},
     {"source": "/reference/cli/config/provider/default", "destination": "/reference/cli/provider#default"},

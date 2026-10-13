@@ -4,6 +4,7 @@ Cover the routes an organization uses to store its own run secrets.
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -107,12 +108,28 @@ def test_remove_reports_a_missing_secret_as_not_existing(store: MagicMock, delet
         assert response.json()["detail"] == "Secret 'daytona' does not exist"
 
 
-def test_local_runs_have_no_secret_storage(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_local_runs_have_no_secret_storage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
 
-    response = _client.get("/secrets")
+    response = TestClient(app, base_url="http://localhost").get("/secrets")
 
-    assert response.status_code == 400
+    assert (response.status_code, response.json()["detail"]) == (
+        400,
+        "This Tracker reads secrets from its secrets file",
+    )
+
+
+def test_local_secrets_manager_tracker_lists_its_secrets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, store: MagicMock
+) -> None:
+    monkeypatch.setattr(
+        local_config, "resources", LocalResources(data_root=tmp_path, secrets_manager_region="us-east-1")
+    )
+
+    response = TestClient(app, base_url="http://localhost").get("/secrets")
+
+    assert response.status_code == 200, response.text
+    store.list_names.assert_called_once()
 
 
 @pytest.mark.parametrize(

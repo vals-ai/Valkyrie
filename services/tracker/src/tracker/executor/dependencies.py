@@ -6,6 +6,7 @@ from tracker.aws.runtime import AWSResources
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.database.models import Benchmark, Org
 from tracker.exceptions import SecretsError, TrackerServiceError
+from tracker.local.resources import reads_secrets_file
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.local.secrets import InMemorySecretStore, load_execution_secrets
 from tracker.runtime.services import RuntimeServices
@@ -24,9 +25,17 @@ async def get_execution_runtime(
         raise SecretsError("Queued runtime environment does not match the saved run")
     if arguments.environment == "local":
         properties = arguments.properties
-        values = await to_thread(load_execution_secrets, properties.secrets_file, request.contract.secrets)
-        secrets = InMemorySecretStore(request.contract.secrets, values)
-        runtime = LocalRuntimeFactory.create_runtime(properties.data_root, org.id, secrets=secrets)
+        secrets = None
+        if reads_secrets_file(properties):
+            values = await to_thread(load_execution_secrets, properties.secrets_file, request.contract.secrets)
+            secrets = InMemorySecretStore(request.contract.secrets, values)
+        runtime = LocalRuntimeFactory.create_runtime(
+            properties,
+            org.id,
+            secrets=secrets,
+            sandbox_provider=arguments.sandbox_provider,
+            sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
+        )
         await runtime.prepare_execution(request, benchmark.id)
         return runtime
 

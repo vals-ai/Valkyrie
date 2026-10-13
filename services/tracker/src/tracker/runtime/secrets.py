@@ -3,6 +3,7 @@
 from typing import Protocol, TypeAlias
 
 from benchmark_service import SandboxProviderConfig, sandbox_provider_config_from_mapping
+from pydantic import ValidationError
 
 from tracker.exceptions import InvalidSandboxConfigurationError, SecretsError
 
@@ -24,7 +25,13 @@ def sandbox_provider_config_from_secret(secret: SecretValue, provider_type: str)
     """Validate a provider secret and apply the selected provider type."""
     if not isinstance(secret, dict):
         raise InvalidSandboxConfigurationError("Expected sandbox provider secret to be a JSON object")
-    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+    try:
+        return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+    except ValidationError as error:
+        details = "; ".join(
+            f"{'.'.join(map(str, detail['loc']))}: {detail['msg']}" for detail in error.errors(include_input=False)
+        )
+        raise InvalidSandboxConfigurationError(f"Invalid {provider_type} settings: {details}") from None
 
 
 class SecretStore(Protocol):

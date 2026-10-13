@@ -1,6 +1,6 @@
 ---
 title: Choose a hosting mode
-description: Compare hosted and self-hosted Valkyrie deployments.
+description: Compare hosted, self-hosted, and local Valkyrie deployments.
 ---
 
 ## Hosted mode
@@ -13,7 +13,13 @@ Sign in:
 valkyrie login
 ```
 
-The CLI uses the bench Tracker, `https://benchmark-tracker.vals.ai`, by default. To use the prod Tracker, sign in with `VALKYRIE_URL=https://benchmark-tracker-prod.vals.ai valkyrie login`; later commands use it until you sign in elsewhere. Execution uses server IAM, your organization's own storage bucket, and server-configured logs. Before starting a run, [configure a sandbox provider](/get-started/sandbox-providers) with a secret the deployment can read. Contact [contact@vals.ai](mailto:contact@vals.ai) if the organization is not enabled for hosted execution.
+The CLI uses the bench Tracker, `https://benchmark-tracker.vals.ai`, by default. To use the prod Tracker, sign in with:
+
+```bash
+VALKYRIE_URL=https://benchmark-tracker-prod.vals.ai valkyrie login
+```
+
+Later commands use it until you sign in elsewhere. Execution uses server IAM, your organization's own storage bucket, and server-configured logs. Before starting a run, [configure a sandbox provider](/get-started/sandbox-providers) with a secret the deployment can read. Contact [contact@vals.ai](mailto:contact@vals.ai) if the organization is not enabled for hosted execution.
 
 Agent uploads, downloads, and run analysis use the authenticated Tracker API.
 
@@ -29,4 +35,6 @@ export VALKYRIE_URL=https://your-tracker.example.com
 
 A Tracker with `AUTH_REQUIRED=false` assigns requests to its default organization and needs no credentials or login, so keep the export in your shell profile. Authenticated deployments use Descope: sign in with `valkyrie login` when the deployment sets `DESCOPE_CLI_CLIENT_ID`, or set `VALKYRIE_API_KEY` to an access key. See [Choose a Tracker](/get-started/configuration#choose-a-tracker).
 
-Read the [infrastructure guide](/self-hosting/infrastructure) before deploying the included AWS CDK application.
+## Local mode
+
+Run Tracker on your machine with no AWS account. Runs use Daytona, Modal, or Docker sandboxes, read secrets from a `.env` file, and keep artifacts on disk. See [Run Tracker locally](/self-hosting/local-tracker).

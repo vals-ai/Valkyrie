@@ -91,7 +91,8 @@ View logs for a run, or filter them by text and time:
 
 ```bash
 valkyrie run logs <run-id>
-valkyrie run logs <run-id> --query "rate limit" --since 2026-01-01T00:00:00Z --until 2026-01-01T01:00:00Z
+valkyrie run logs <run-id> --query "rate limit" \
+  --since 2026-01-01T00:00:00Z --until 2026-01-01T01:00:00Z
 ```
 
 Use `--task-id` to view one task. Add `--follow` to watch for new logs, or `--format jsonl` for machine-readable output:

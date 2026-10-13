@@ -1832,6 +1832,17 @@
               }
             ],
             "title": "Secrets File"
+          },
+          "secrets_manager_region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secrets Manager Region"
           }
         },
         "required": [

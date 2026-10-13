@@ -3,10 +3,16 @@
 from collections.abc import Mapping
 from pathlib import Path
 
+from benchmark_service import SandboxProviderConfig
+from benchmark_service.sandbox import DaytonaProviderConfig, ModalProviderConfig
 from dotenv import dotenv_values
 
-from tracker.exceptions import SecretsError
-from tracker.runtime.secrets import SecretValue
+from tracker.exceptions import InvalidSandboxConfigurationError, SecretsError
+from tracker.runtime.secrets import SecretValue, sandbox_provider_config_from_secret
+
+PROVIDER_SETTING_NAMES = frozenset(
+    name for config in (DaytonaProviderConfig, ModalProviderConfig) for name in config.model_fields if name.isupper()
+)
 
 
 class InMemorySecretStore:
@@ -31,7 +37,19 @@ def load_execution_secrets(path: Path | None, references: Mapping[str, str]) -> 
     """Read only contract-declared values from the configured source file."""
     if not references or path is None:
         return {}
+    if reserved := sorted(references.keys() & PROVIDER_SETTING_NAMES):
+        raise SecretsError(f"Agent secrets cannot read sandbox provider settings: {', '.join(reserved)}")
     if not path.is_file():
         raise SecretsError("Configured local secrets file does not exist")
     values = dotenv_values(path, interpolate=False)
     return {name: value for name in references if (value := values.get(name)) is not None}
+
+
+def load_sandbox_provider_config(path: Path | None, provider: str) -> SandboxProviderConfig:
+    """Read the selected provider's settings from the configured source file."""
+    if path is None:
+        raise InvalidSandboxConfigurationError(f"Local {provider} execution requires a secrets_file")
+    values: dict[str, SecretValue] = {
+        name: value for name, value in dotenv_values(path, interpolate=False).items() if value is not None
+    }
+    return sandbox_provider_config_from_secret(values, provider)

@@ -1,0 +1,155 @@
+---
+title: Run Tracker locally
+description: Run Tracker on your machine without AWS, with sandboxes on Daytona, Modal, or Docker.
+---
+
+A local Tracker keeps run state in a local PostgreSQL database and writes artifacts and logs
+to a directory on your machine. Sandboxes run on Daytona, Modal, or your own Docker daemon.
+You need no AWS account.
+
+## Prerequisites
+
+- A Valkyrie checkout [installed from source](/contributing/local-development#install-the-cli-from-source)
+- Docker, for PostgreSQL
+- A Daytona API key or Modal token, unless you only use Docker sandboxes
+
+## 1. Add your secrets
+
+Create `.env` at the repository root with your provider settings and the secrets your
+agents declare:
+
+```env .env
+DAYTONA_API_KEY=<key>
+DAYTONA_API_URL=<api-url>
+DAYTONA_TARGET=<region>
+# Optional
+DAYTONA_ORGANIZATION_ID=<id>
+# Modal
+MODAL_TOKEN_ID=<id>
+MODAL_TOKEN_SECRET=<secret>
+# Example agent secret
+OPENAI_API_KEY=<key>
+```
+
+Each dispatch reads only the keys its agent contract declares, plus the selected
+provider's settings. Valkyrie stores the file's path, never its values. Contracts cannot
+declare the `DAYTONA_*` or `MODAL_TOKEN_*` names.
+
+## 2. Start Tracker
+
+From the repository root:
+
+```bash
+make local-tracker
+```
+
+The default config, `local-server.yaml` at the repository root, reads `.env` and writes
+run data to `.local/data`:
+
+```yaml local-server.yaml
+data_root: .local/data
+secrets_file: .env
+```
+
+To use other locations, pass your own file with `make local-tracker CONFIG=<path>`.
+Relative paths resolve from the config file's folder.
+
+This starts PostgreSQL in Docker, applies migrations, and serves Tracker on
+`127.0.0.1:8000`. Each dispatch runs as a subprocess from this checkout, so no executor
+build or release is needed, and retries and resumes use the current code. A dispatch
+still queued when Tracker restarts expires and must be retried.
+
+## 3. Choose a benchmark service
+
+- **Hosted by Vals**: start Tracker with the service domain set:
+
+  ```bash
+  BENCHMARK_SERVICE_BASE_URL=benchmarks.vals.ai make local-tracker
+  ```
+
+  Then set `VALKYRIE_API_KEY` in the CLI's environment to an access key that can read the
+  benchmark's dataset. Tracker forwards it to the service as `X-Descope-Api-Key`. Use a
+  key that belongs to one organization; services that grade through the Vals platform,
+  such as IOI, reject keys that belong to several.
+- **Your own**: run a [benchmark service](/benchmarks/custom-services) locally or at any
+  URL with `AUTH_REQUIRED` unset, then save it:
+
+  ```bash
+  valkyrie benchmark service set my-benchmark http://127.0.0.1:8001
+  ```
+
+## 4. Start a run
+
+```bash
+export VALKYRIE_URL=http://127.0.0.1:8000
+valkyrie agent push ./my-agent
+valkyrie run start --agent my-agent --benchmark my-benchmark --provider daytona --concurrency 1
+```
+
+Without `--provider` or a [`valkyrie provider default`](/reference/cli/provider#default),
+runs use `daytona`. Missing or invalid provider settings fail `run start` with HTTP 400 and
+name the missing fields.
+
+Use the run ID with `run fetch`, `run logs`, `run results`, `run outputs`, `run stop`,
+`run retry`, and `run resume`. Tracker serves artifacts over HTTP, so clients do not need
+access to `data_root`. `retry`, `resume`, and `stop --force` reuse the provider and
+secrets source saved on the run; `stop --force` also deletes its sandboxes.
+
+## Options
+
+Artifacts and logs always stay under `data_root`. Pick each option independently:
+
+| Choice | Option | Select it with |
+| --- | --- | --- |
+| Benchmark service | Hosted by Vals | `BENCHMARK_SERVICE_BASE_URL=benchmarks.vals.ai` on Tracker, `VALKYRIE_API_KEY` on the CLI |
+| | Your own, local or at any URL | `valkyrie benchmark service set <benchmark> <url>` |
+| Secrets | `.env` file | `secrets_file: <path>` |
+| | AWS Secrets Manager | `secrets_manager_region: <region>` instead of `secrets_file` |
+| Sandbox provider | `daytona` (default), `modal`, or `docker` | `--provider` or `valkyrie provider default` |
+
+**AWS Secrets Manager** reads named secrets as in AWS execution, with the AWS credentials
+in Tracker's environment. Map the provider secret with `valkyrie provider set <provider>
+<secret>`. Only this source supports services saved with `--auth-secret`.
+
+## Docker sandboxes
+
+Docker runs tasks on the daemon Tracker, its runners, and your benchmark service share;
+set `DOCKER_HOST` to select it. Pass `--provider docker`, or set it with `valkyrie provider default docker`. Hosted benchmark services cannot use Docker sandboxes.
+
+- Start your benchmark service with `CBS_DOCKER_ENABLED=true`, and with
+  `GRADING_SANDBOX_PROVIDER=docker` for sandbox grading. Build it with the
+  `create-benchmark-service` version Tracker pins in `services/tracker/pyproject.toml`.
+- Docker cannot change egress between stages, so every stage needs unrestricted (`"*"`)
+  egress. Agent allowlists and restricted policies are rejected before a container starts.
+- An executor that exits mid-run leaves its containers running. Remove them with:
+
+  ```bash
+  docker rm -f $(docker ps -aq --filter label=io.vals.cbs.managed=true --filter label=run-id=<run-id>)
+  ```
+
+## Limits
+
+- Lambda callbacks, S3 export, previews, and Docent analysis need S3 storage and are
+  unavailable.
+- Some hosted benchmarks create sandboxes from snapshots or images that only Vals'
+  Daytona organization can read, so they fail with another Daytona account.
+
+## Reset local state
+
+Run records live in the PostgreSQL Docker volume and run files under `data_root`. Delete
+both together, or the remaining records point at missing files:
+
+```bash
+docker compose -f services/tracker/docker-compose.yml down -v
+rm -rf .local
+```
+
+## Troubleshooting
+
+| Error | Fix |
+| --- | --- |
+| `daytona.DAYTONA_TARGET: Field required` | Add the named key to `secrets_file`. |
+| `Local daytona execution requires a secrets_file` | Set `secrets_file`, or pass `--provider docker`. |
+| `Agent secrets cannot read sandbox provider settings` | Remove `DAYTONA_*` and `MODAL_TOKEN_*` names from the agent contract. |
+| `User session is associated with multiple organizations` | Use an access key that belongs to one organization. |
+| `Snapshot quota exceeded` | Delete unused snapshots in your Daytona organization. |

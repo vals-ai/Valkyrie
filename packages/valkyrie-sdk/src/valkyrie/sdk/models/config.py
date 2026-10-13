@@ -15,6 +15,7 @@ class AWSResources(BaseModel, frozen=True):
 class LocalResources(BaseModel, frozen=True):
     data_root: Path
     secrets_file: Path | None = None
+    secrets_manager_region: str | None = None
 
     @field_validator("data_root", "secrets_file")
     @classmethod

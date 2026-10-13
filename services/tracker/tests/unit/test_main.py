@@ -834,7 +834,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("main.resolve_run_aws_runtime", resolver)
         local_response = client.post(f"/analyze-benchmark/{example_benchmark_object.id}", json={})
         assert local_response.status_code == 400
-        assert local_response.json()["detail"] == "This operation requires an AWS run"
+        assert local_response.json()["detail"] == "Docent analysis requires S3 storage"
         resolver.assert_not_called()
 
     async def test_tracker_service_error_hides_internal_detail(
@@ -3597,7 +3597,7 @@ async def test_local_start_persists_server_root_without_credentials(
     database_session: Session,
     mock_launcher: Any,
 ) -> None:
-    """A local Tracker starts a Docker run from a client that still sends its cloud configuration."""
+    """A local Tracker starts a Docker run and drops the client's cloud configuration."""
     from tracker.local import config as local_config
     from tracker.local.resources import LocalResources
 
@@ -3608,10 +3608,11 @@ async def test_local_start_persists_server_root_without_credentials(
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
     monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
     contract = contract.model_copy(update={"secrets": {"MODEL_KEY": "model-key"}})
+    _save_service(database_session, "http://localhost:8001")
     request = StartBenchmarkRequest(
         contract=contract,
         benchmark_name="swebench",
-        sandbox_provider="daytona",
+        sandbox_provider="docker",
         sandbox_provider_secret_name="DaytonaSecrets",
     )
 
@@ -3650,12 +3651,14 @@ async def test_local_start_rejects_invalid_root_before_admission(
     monkeypatch.setattr(
         local_config, "resources", None if failure == "server-unconfigured" else LocalResources(data_root=tmp_path)
     )
+    _save_service(database_session, "http://localhost:8001")
     request = {
         "benchmark_name": "swebench",
         "contract": contract.model_dump(mode="json"),
+        "sandbox_provider": "docker",
     }
     if failure == "server-unconfigured":
-        request.update(environment="local", sandbox_provider="docker")
+        request.update(environment="local")
     elif failure == "caller-root":
         request["properties"] = {"data_root": str(tmp_path / "caller-root")}
     elif failure == "missing-agent":
@@ -3688,6 +3691,7 @@ async def test_local_resume_updates_agent_from_the_local_library(
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
     benchmark = example_benchmark_object
     benchmark.status = BenchmarkStatus.STOPPED
+    benchmark.custom_benchmark_service = "http://localhost:8001"
     benchmark.arguments = benchmark.arguments.model_copy(
         update={
             "environment": "local",
@@ -3699,7 +3703,7 @@ async def test_local_resume_updates_agent_from_the_local_library(
     database_session.add(benchmark)
     database_session.commit()
     agent_name = benchmark.arguments.contract.name
-    objects = LocalRuntimeFactory.create_runtime(root.data_root, benchmark.org_id).objects
+    objects = LocalRuntimeFactory.create_runtime(root, benchmark.org_id).objects
     await objects.put_bytes(agent_bundle_key(agent_name), b"updated agent")
 
     response = local_client.post(
@@ -3713,13 +3717,24 @@ async def test_local_resume_updates_agent_from_the_local_library(
 
 
 @pytest.mark.parametrize(
-    "field",
-    [{"lambda_function": "callback-fn"}, {"service_auth_secret_name": "ServiceSecret"}],
-    ids=["lambda-function", "service-auth-secret"],
+    ("field", "message"),
+    [
+        ({"lambda_function": "callback-fn"}, "Lambda callbacks require S3 storage"),
+        (
+            {"service_auth_secret_name": "ServiceSecret"},
+            "Runs reading the secrets file cannot reference named secrets",
+        ),
+        (
+            {"sandbox_provider_secret_name": "ProviderSecret"},
+            "Runs reading the secrets file cannot reference named secrets",
+        ),
+    ],
+    ids=["lambda-function", "service-auth-secret", "provider-secret"],
 )
 async def test_local_start_rejects_cloud_callbacks_and_service_secrets(
     contract: AgentContractRequest,
     field: dict[str, str],
+    message: str,
 ) -> None:
     response = local_client.post(
         "/start-benchmark",
@@ -3733,24 +3748,28 @@ async def test_local_start_rejects_cloud_callbacks_and_service_secrets(
     )
 
     assert response.status_code == 422, response.text
-    assert "Local execution does not support cloud callbacks or service secret references" in response.text
+    assert message in response.text
 
 
 async def test_local_run_metadata_ignores_client_aws_headers(
     tmp_path: Path,
     contract: AgentContractRequest,
     monkeypatch: MonkeyPatch,
+    database_session: Session,
     mock_launcher: Any,
 ) -> None:
     from tracker.local import config as local_config
     from tracker.local.resources import LocalResources
 
     monkeypatch.setattr(local_config, "resources", LocalResources(data_root=tmp_path))
+    _save_service(database_session, "http://localhost:8001")
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
     monkeypatch.setattr(main_module, "SANDBOX_QUEUE_ENABLED", False)
     started = local_client.post(
         "/start-benchmark",
-        json=StartBenchmarkRequest(contract=contract, benchmark_name="swebench").model_dump(mode="json"),
+        json=StartBenchmarkRequest(contract=contract, benchmark_name="swebench", sandbox_provider="docker").model_dump(
+            mode="json"
+        ),
     )
     assert started.status_code == 200, started.text
     benchmark_id = started.json()["benchmark_id"]

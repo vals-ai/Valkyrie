@@ -16,7 +16,11 @@ valkyrie benchmark service set swebench https://benchmark.example.com --auth-sec
 
 The Tracker sends the secret's value as the `Authorization` header on every request to that service, for your runs and task listings. Store the value exactly as the header should carry it, such as `Bearer <token>`. Services built from create-benchmark-service read a Descope access key from `X-Descope-Api-Key` instead; see [Save the endpoint](/benchmarks/custom-services#save-the-endpoint).
 
-The secret has to exist in your organization's secrets when you save the service. Saving the service again replaces its URL and credential, so leave out `--auth-secret` to stop sending one; `valkyrie secret set` changes the credential's value without saving the service again. Headers the Tracker controls, such as `X-Api-Key` and `Host`, are refused. Runs and task listings with `--ignore-custom-services` use the hosted service and don't send the saved credential, and a local Tracker, which has no organization secrets, refuses it. Resuming or retrying a run doesn't send it again; pass the credential with `-H` to `valkyrie run resume`.
+- The secret has to exist in your organization's secrets when you save the service.
+- Saving the service again replaces its URL and credential, so leave out `--auth-secret` to stop sending one; `valkyrie secret set` changes the credential's value without saving the service again.
+- Headers the Tracker controls, such as `X-Api-Key` and `Host`, are refused.
+- Runs and task listings with `--ignore-custom-services` use the hosted service and don't send the saved credential, and a local Tracker, which has no organization secrets, refuses it.
+- Resuming or retrying a run doesn't send it again; pass the credential with `-H` to `valkyrie run resume`.
 
 See the [`benchmark service set`](/reference/cli/benchmark#service-set) and [`secret set`](/reference/cli/secret#set) reference for full syntax.
 

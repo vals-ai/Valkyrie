@@ -1,0 +1,3 @@
+# Default config for `make local-tracker`. Relative paths resolve from this file's folder.
+data_root: .local/data
+secrets_file: .env

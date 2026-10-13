@@ -23,7 +23,7 @@ from pydantic import (
 )
 
 from tracker.aws.runtime import AWSResources
-from tracker.local.resources import LocalResources
+from tracker.local.resources import LocalResources, reads_secrets_file
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -113,10 +113,12 @@ class StartBenchmarkRequest(FetchBenchmarkTasksRequest):
             return self
         if isinstance(self.properties, AWSResources):
             raise ValueError("Local execution cannot include AWS configuration")
-        if self.sandbox_provider != "docker" or self.sandbox_provider_secret_name is not None:
-            raise ValueError("Local execution requires Docker without a provider secret")
-        if self.lambda_function or self.service_auth_secret_name:
-            raise ValueError("Local execution does not support cloud callbacks or service secret references")
+        if self.lambda_function:
+            raise ValueError("Lambda callbacks require S3 storage")
+        if (self.properties is None or reads_secrets_file(self.properties)) and (
+            self.sandbox_provider_secret_name or self.service_auth_secret_name
+        ):
+            raise ValueError("Runs reading the secrets file cannot reference named secrets")
         return self
 
     def use_settings(self, settings: RunSettingsResponse, provider_secrets: dict[str, str]) -> None:

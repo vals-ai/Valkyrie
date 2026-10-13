@@ -16,6 +16,7 @@ from benchmark_service import ImageSource, Resources, SandboxQuery
 from tracker.database.models import AgentContractRequest, OutputArtifact
 from tracker.exceptions import AgentRunFailedError
 from tracker.runtime.secrets import resolve_secrets
+from tracker.local.resources import LocalResources
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.local.secrets import InMemorySecretStore
 from tracker.runtime.artifacts import agent_bundle_key, copy_agent_to_benchmark, task_artifact_key
@@ -56,7 +57,7 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path,
             f"exit {exit_code}\n",
         )
     secrets = InMemorySecretStore(contract.secrets, {"LOCAL_TEST_KEY": "transient-value"})
-    runtime = LocalRuntimeFactory.create_runtime(tmp_path, org_id, secrets=secrets)
+    runtime = LocalRuntimeFactory.create_runtime(LocalResources(data_root=tmp_path), org_id, secrets=secrets)
     await runtime.objects.put_bytes(agent_bundle_key(contract.name), stream.getvalue())
     await copy_agent_to_benchmark(runtime.objects, benchmark_id, contract.name)
     await runtime.objects.put_bytes(agent_bundle_key(contract.name), b"replacement bundle")

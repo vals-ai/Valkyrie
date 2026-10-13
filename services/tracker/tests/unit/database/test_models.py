@@ -43,6 +43,7 @@ def test_local_arguments_round_trip_preserves_resources_and_scheduler_fields() -
     assert stored["properties"] == {
         "data_root": str(arguments.properties.data_root),
         "secrets_file": str(arguments.properties.secrets_file),
+        "secrets_manager_region": None,
     }
     restored = column.process_result_value(stored, DefaultDialect())
 

@@ -13,6 +13,7 @@ from executor_protocol import source_executor_artifact_uri
 from tracker.database.models import ExecutorAdmission, ExecutorRelease
 from tracker.exceptions import SecretsError
 from tracker.runtime.secrets import resolve_secrets
+from tracker.local.resources import LocalResources
 from tracker.local.runtime import LocalRuntimeFactory
 from tracker.local.secrets import InMemorySecretStore
 
@@ -72,22 +73,27 @@ async def test_local_runtime_scopes_files_and_keeps_secrets_in_memory(tmp_path: 
     org_id = uuid4()
     references = {"API_KEY": "agent-key"}
     secrets = InMemorySecretStore(references, {"API_KEY": "transient-value"})
-    runtime = LocalRuntimeFactory.create_runtime(tmp_path, org_id, secrets=secrets)
+    runtime = LocalRuntimeFactory.create_runtime(LocalResources(data_root=tmp_path), org_id, secrets=secrets)
     await runtime.objects.put_bytes("agent.zip", b"agent")
     assert await resolve_secrets(references, runtime.secrets) == {"API_KEY": "transient-value"}
     assert runtime.artifacts.object_location("agent.zip") == str(tmp_path / "orgs" / str(org_id) / "objects/agent.zip")
     assert (await runtime.get_sandbox_provider_config()).type == "docker"
-    reopened = LocalRuntimeFactory.create_runtime(tmp_path, org_id)
+    reopened = LocalRuntimeFactory.create_runtime(LocalResources(data_root=tmp_path), org_id)
     assert await reopened.objects.get_bytes("agent.zip") == b"agent"
-    other = LocalRuntimeFactory.create_runtime(tmp_path, uuid4())
+    other = LocalRuntimeFactory.create_runtime(LocalResources(data_root=tmp_path), uuid4())
     assert not await other.objects.exists("agent.zip")
     assert all(b"transient-value" not in path.read_bytes() for path in tmp_path.rglob("*") if path.is_file())
+
+
+def test_local_resources_accept_one_secrets_source(tmp_path: Path) -> None:
+    """Reject a configuration that names both a secrets file and Secrets Manager."""
+    with pytest.raises(ValueError, match="not both"):
+        LocalResources(data_root=tmp_path, secrets_file=tmp_path / "a.env", secrets_manager_region="us-east-1")
 
 
 async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(tmp_path: Path) -> None:
     from tracker.database.models import AgentContractRequest, Benchmark, LocalBenchmarkArguments, Org
     from tracker.executor.dependencies import get_execution_runtime
-    from tracker.local.resources import LocalResources
     from tracker.types import StartBenchmarkRequest
 
     source = tmp_path / "existing.env"
@@ -117,3 +123,6 @@ async def test_executor_reads_only_declared_credentials_fresh_for_each_dispatch(
     source.write_text("UNRELATED_KEY=present\n", encoding="utf-8")
     with pytest.raises(SecretsError, match="missing keys: MODEL_KEY"):
         await get_execution_runtime(request, benchmark, org)
+    provider_contract = AgentContractRequest(name="agent", secrets={"DAYTONA_API_KEY": "provider-key"})
+    with pytest.raises(SecretsError, match="sandbox provider settings: DAYTONA_API_KEY"):
+        await get_execution_runtime(request.model_copy(update={"contract": provider_contract}), benchmark, org)

@@ -547,3 +547,16 @@ pre code .line {
 #table-of-contents-content {
   margin-top: 12px;
 }
+
+:is(h1, h2, h3, h4) code,
+.dark :is(h1, h2, h3, h4) code {
+  font-size: inherit !important;
+  line-height: inherit !important;
+  padding: 0 !important;
+  background-color: transparent !important;
+  border: none !important;
+}
+
+td > code:only-child {
+  white-space: nowrap;
+}

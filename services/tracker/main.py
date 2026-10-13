@@ -82,6 +82,7 @@ from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
     SANDBOX_QUEUE_ENABLED,
+    BenchmarkServiceDestination,
     classify_benchmark_service_destination,
     create_benchmark_service_url,
 )
@@ -114,9 +115,9 @@ from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
-from tracker.exceptions import SecretNotFoundError, TrackerServiceError
+from tracker.exceptions import InvalidSandboxConfigurationError, SecretNotFoundError, TrackerServiceError
 from tracker.local import config as local_config
-from tracker.local.resources import LocalResources
+from tracker.local.resources import LocalResources, reads_secrets_file
 from tracker.local.runtime import LocalRuntimeFactory
 from executor_protocol import ExecutorTelemetryContext
 from tracker.logging import configure_logging, get_logger, request_id_var
@@ -555,6 +556,11 @@ def _authorize_secret_names(request: StartBenchmarkRequest, org: Org) -> StartBe
     return request
 
 
+def _reject_docker_with_hosted_service(sandbox_provider: str, destination: BenchmarkServiceDestination) -> None:
+    if sandbox_provider == "docker" and destination == BenchmarkServiceDestination.HOSTED:
+        raise HTTPException(status_code=400, detail="The Docker sandbox provider requires a local benchmark service")
+
+
 class _StartAdmissionRollbackError(Exception):
     """Rollback was not confirmed; the copied agent must be retained."""
 
@@ -631,14 +637,24 @@ async def start_benchmark(
                 {
                     **request.model_dump(),
                     "environment": "local",
-                    "sandbox_provider": "docker",
                     "properties": local_config.resources,
-                    "sandbox_provider_secret_name": None,
+                    **({"sandbox_provider_secret_name": None} if reads_secrets_file(local_config.resources) else {}),
                 }
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        runtime = LocalRuntimeFactory.create_runtime(local_config.resources.data_root, run_starter.org.id)
+        if not reads_secrets_file(local_config.resources):
+            request = _authorize_secret_names(request, run_starter.org)
+        runtime = LocalRuntimeFactory.create_runtime(
+            local_config.resources,
+            run_starter.org.id,
+            sandbox_provider=request.sandbox_provider,
+            sandbox_provider_secret_name=request.sandbox_provider_secret_name,
+        )
+        try:
+            await runtime.get_sandbox_provider_config()
+        except InvalidSandboxConfigurationError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
     else:
         if request.environment == "local":
             raise HTTPException(status_code=400, detail="Server has no local configuration")
@@ -677,6 +693,7 @@ async def start_benchmark(
         service_headers = _replace_headers(service_headers, resolved)
 
     destination = classify_benchmark_service_destination(request.benchmark_name, request.custom_benchmark_service)
+    _reject_docker_with_hosted_service(request.sandbox_provider, destination)
     run_key = await run_service_key(http_request, run_starter.org, destination, service_headers, issued_keys)
     request = request.model_copy(
         update={
@@ -710,13 +727,16 @@ async def start_benchmark(
                 detail="Queue priority requires a sandbox provider configured for admission",
             )
     else:
-        provider_secret_name = request.sandbox_provider_secret_name
-        assert provider_secret_name is not None
-        provider_config = await fetch_sandbox_provider_config(
-            provider_secret_name,
-            runtime.secrets,
-            request.sandbox_provider,
-        )
+        if request.environment == "local":
+            provider_config = await runtime.get_sandbox_provider_config()
+        else:
+            provider_secret_name = request.sandbox_provider_secret_name
+            assert provider_secret_name is not None
+            provider_config = await fetch_sandbox_provider_config(
+                provider_secret_name,
+                runtime.secrets,
+                request.sandbox_provider,
+            )
         provider = provider_config.create_provider()
         try:
             provider_pool_id = provider.admission_pool_id
@@ -747,6 +767,7 @@ async def start_benchmark(
                 validate_managed_execution_request(request)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not reads_secrets_file(request.properties):
             request = _authorize_secret_names(request, run_starter.org)
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
@@ -1048,8 +1069,8 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    if benchmark_row.arguments.environment == "local":
-        raise HTTPException(status_code=400, detail="This operation requires an AWS run")
+    if isinstance(benchmark_row.arguments.properties, LocalResources):
+        raise HTTPException(status_code=400, detail="Docent analysis requires S3 storage")
     aws_runtime = resolve_run_aws_runtime(
         org=org,
         properties=benchmark_row.arguments.properties,
@@ -1237,10 +1258,8 @@ async def _retrieve_results(
     if not s3:
         return final_view
 
-    if benchmark_row.arguments.environment == "local":
-        raise HTTPException(
-            status_code=400, detail="Local results are available directly; S3 export requires an AWS run"
-        )
+    if isinstance(benchmark_row.arguments.properties, LocalResources):
+        raise HTTPException(status_code=400, detail="S3 export requires S3 storage")
     aws_runtime = resolve_run_aws_runtime(
         properties=benchmark_row.arguments.properties,
         org=org,
@@ -1416,7 +1435,12 @@ def _update_benchmark_concurrency(
 def _force_stop_runtime(benchmark_row: Benchmark, org: Org) -> RuntimeServices:
     """Resolve the runtime that can send force-stop signals to the run's sandboxes."""
     if benchmark_row.arguments.environment == "local":
-        return LocalRuntimeFactory.create_runtime(benchmark_row.arguments.properties.data_root, org.id)
+        return LocalRuntimeFactory.create_runtime(
+            benchmark_row.arguments.properties,
+            org.id,
+            sandbox_provider=benchmark_row.arguments.sandbox_provider,
+            sandbox_provider_secret_name=benchmark_row.arguments.sandbox_provider_secret_name,
+        )
     aws_runtime = resolve_run_aws_runtime(
         properties=benchmark_row.arguments.properties,
         org=org,
@@ -1514,6 +1538,7 @@ class RecoveryPreparation:
     dataset_version: DatasetVersion | None
     queued_recovery: bool
     agent_name: str
+    sandbox_provider: str
     properties: AWSResources | LocalResources | None = None
     resolved_properties: AWSResources | None = None
 
@@ -1563,6 +1588,7 @@ def _prepare_recovery(
             benchmark.arguments.dataset_version,
             queued,
             benchmark.arguments.contract.name,
+            benchmark.arguments.sandbox_provider,
             benchmark.arguments.properties,
         )
 
@@ -1713,7 +1739,7 @@ async def retry_or_resume_benchmark(
         if local_config.resources is None:
             raise HTTPException(status_code=400, detail="Server has no local configuration")
         if lambda_function:
-            raise HTTPException(status_code=400, detail="Local execution does not support AWS callbacks")
+            raise HTTPException(status_code=400, detail="Lambda callbacks require S3 storage")
     else:
         aws_runtime = resolve_run_aws_runtime(
             properties=preparation.properties,
@@ -1721,6 +1747,7 @@ async def retry_or_resume_benchmark(
         )
         preparation = replace(preparation, resolved_properties=aws_runtime.resources)
     destination = classify_benchmark_service_destination(preparation.benchmark_name, preparation.benchmark_url)
+    _reject_docker_with_hosted_service(preparation.sandbox_provider, destination)
     run_key = await run_service_key(http_request, org, destination, service_headers, issued_keys)
     effective_headers = forward_tracker_api_key(service_headers, run_key, destination=destination)
     verified_task_ids = list(preparation.state.task_ids) if preparation.state is not None else []
@@ -1740,7 +1767,7 @@ async def retry_or_resume_benchmark(
     if update_agent:
         if isinstance(preparation.properties, LocalResources):
             # A local run's agent aliases and frozen bundle share its data root.
-            library_store = LocalRuntimeFactory.create_runtime(preparation.properties.data_root, org_id).objects
+            library_store = LocalRuntimeFactory.create_runtime(preparation.properties, org_id).objects
         else:
             assert aws_runtime is not None
             library_store = S3ObjectStore(aws_runtime)
@@ -1964,7 +1991,7 @@ def _apply_recovery(
                 )
             recovery_task_ids = [task_row.task_id for task_row in scheduler_rows]
 
-        if benchmark_row.arguments.environment == "aws":
+        if not reads_secrets_file(benchmark_row.arguments.properties):
             prospective_request = benchmark_row.managed_start_benchmark_request(
                 service_headers=service_headers,
             )
@@ -1978,7 +2005,7 @@ def _apply_recovery(
                     validate_managed_execution_request(prospective_request)
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
-                _ = _authorize_secret_names(prospective_request, org)
+            _ = _authorize_secret_names(prospective_request, org)
 
         if recovery_task_ids is not None:
             verified_task_ids = recovery_task_ids

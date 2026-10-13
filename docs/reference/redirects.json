@@ -4,6 +4,10 @@
     "destination": "/get-started/overview"
   },
   {
+    "source": "/self-hosting/infrastructure",
+    "destination": "/get-started/hosting"
+  },
+  {
     "source": "/reference/cli/config/provider/set",
     "destination": "/reference/cli/provider#set"
   },

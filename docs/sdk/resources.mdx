@@ -12,7 +12,10 @@ Inspect your organization's sandbox queue using [`client.scheduler.overview`](/r
 ```python
 waiting_offset = 0
 while True:
-    page = await client.scheduler.overview(waiting_limit=200, waiting_offset=waiting_offset)
+    page = await client.scheduler.overview(
+        waiting_limit=200,
+        waiting_offset=waiting_offset,
+    )
     for entry in page.waiting_entries:
         print(entry.benchmark_uuid, entry.external_task_id, entry.priority, entry.position)
     if page.waiting_next_offset is None:

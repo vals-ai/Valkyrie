@@ -4,4 +4,3 @@ The local development guide is published at [docs.valkyrie.vals.ai/contributing/
 
 - [Tracker service](https://docs.valkyrie.vals.ai/contributing/tracker-service)
 - [Database and migrations](https://docs.valkyrie.vals.ai/contributing/database)
-- [Infrastructure operations](infra/README.md)

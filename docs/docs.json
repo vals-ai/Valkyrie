@@ -115,7 +115,7 @@
       {
         "group": "Self-hosting",
         "pages": [
-          "self-hosting/infrastructure",
+          "self-hosting/local-tracker",
           "self-hosting/aws-permissions"
         ]
       },

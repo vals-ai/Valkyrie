@@ -1,10 +1,12 @@
-.PHONY: help build run stop clean logs tracker-service \
+.PHONY: help build run stop clean logs tracker-service local-tracker \
         test test-integration-local test-integration-live test-unit test-alembic \
         migrate-gen venv-check
 
 PYTHON_VERSION := 3.12
 PYTEST := uv run pytest
 COMPOSE := docker compose
+CONFIG ?= $(abspath ../../local-server.yaml)
+LOCAL_DATABASE_URL ?= postgresql://tracker:tracker@localhost:5432/tracker
 
 help:
 	@echo "Available commands:"
@@ -15,6 +17,7 @@ help:
 	@echo "  make clean           - Stop services and remove images"
 	@echo "  make logs            - View container logs"
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
+	@echo "  make local-tracker [CONFIG=<path>] - Start PostgreSQL, migrate, and run Tracker on this machine"
 	@echo "  make migrate-gen     - Generate a new migration from model changes"
 
 # --- Setup ---
@@ -47,6 +50,10 @@ clean:
 logs:
 	@$(COMPOSE) logs -f tracker
 tracker-service: build run logs
+local-tracker: venv-check
+	@$(COMPOSE) up -d --wait postgres
+	DATABASE_URL=$(LOCAL_DATABASE_URL) uv run alembic upgrade head
+	DATABASE_URL=$(LOCAL_DATABASE_URL) uv run python -m tracker.serve --config $(CONFIG)
 
 # --- Tests ---
 test: venv-check

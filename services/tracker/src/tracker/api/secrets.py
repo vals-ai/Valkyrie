@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 
 from tracker.auth import get_current_login, get_current_org
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.resolver import resolve_org_aws_runtime
 from tracker.aws.secrets import SecretBeingDeletedError, SecretsManagerStore
 from tracker.aws.tags import ORG_ID_TAG
@@ -68,9 +69,12 @@ def _entry(name: str, org: Org) -> SecretEntry:
 
 
 def secret_store(org: Org) -> SecretsManagerStore:
-    if local_config.resources is not None:
-        raise HTTPException(status_code=400, detail="Local runs read secrets from their secrets file")
-    return SecretsManagerStore(resolve_org_aws_runtime(org).clients)
+    resources = local_config.resources
+    if resources is None:
+        return SecretsManagerStore(resolve_org_aws_runtime(org).clients)
+    if resources.secrets_manager_region is None:
+        raise HTTPException(status_code=400, detail="This Tracker reads secrets from its secrets file")
+    return SecretsManagerStore(AWSClientProvider(resources.secrets_manager_region))
 
 
 async def require_own_secret(name: str, org: Org) -> None:

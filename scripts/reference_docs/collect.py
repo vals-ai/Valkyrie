@@ -64,7 +64,7 @@ def _format_click_type(parameter_type: click.ParamType) -> tuple[str, tuple[str,
         return f"tuple[{item_types}]", ()
     if isinstance(parameter_type, click.Choice):
         choices = tuple(str(choice) for choice in typing.cast(Sequence[object], parameter_type.choices))
-        constraints.append("one of " + ", ".join(f"`{choice}`" for choice in choices))
+        constraints.append("one of " + ", ".join(choices))
         if not parameter_type.case_sensitive:
             constraints.append("case-insensitive")
         return "choice", tuple(constraints)

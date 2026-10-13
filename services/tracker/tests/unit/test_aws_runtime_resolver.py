@@ -426,7 +426,8 @@ def test_local_start_is_rejected_before_aws_resolution(monkeypatch: pytest.Monke
         "/start-benchmark",
         json={"environment": "local", "benchmark_name": "test", "contract": {"name": "agent", "run_cmd": "run"}},
     )
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Server has no local configuration"
     resolve.assert_not_called()
 
 
