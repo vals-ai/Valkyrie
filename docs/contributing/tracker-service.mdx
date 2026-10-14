@@ -39,7 +39,7 @@ Organizations are Descope tenants. Any signed-in user with a verified email can 
 
 On bench (`VALKYRIE_STAGE=bench`), `PUT` and `DELETE /secrets/{name}` and `PUT` and `DELETE /sandbox-providers/{provider}` for `vals.ai` need a login session whose live Descope user record holds `DESCOPE_ORG_ADMIN_ROLE` in `vals.ai`. Other members and access keys, including CI keys, can still list its secrets and provider mappings.
 
-Existing organization IDs and tenant names, reserved names, IDs starting with `vals` or `valkyrie`, and IDs that `AWS_SHARED_SECRET_TENANTS` matches are refused. A login can be the admin of at most five organizations. The Tracker never sets self-provisioning domains; an operator sets them in Descope for domains they have verified, such as `vals.ai`, so sign-ups from that domain join its organization.
+Existing organization IDs and tenant names, reserved names, IDs starting with `vals` or `valkyrie` or the operator-reserved `interview-` prefix, and IDs that `AWS_SHARED_SECRET_TENANTS` matches are refused for self-service creation. Operator-created `interview-` tenants can still invite members, who accept and select them normally. A login can be the admin of at most five organizations. The Tracker never sets self-provisioning domains; an operator sets them in Descope for domains they have verified, such as `vals.ai`, so sign-ups from that domain join its organization.
 
 Membership and roles are read from the Descope user record on every organization request, not from the session token. A login in several organizations must choose one with the `X-Valkyrie-Tenant` header or Descope's current tenant.
 

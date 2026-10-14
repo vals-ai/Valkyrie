@@ -155,16 +155,17 @@ def _invite(database_session: Session, email: str, organization: str = "acme", a
     database_session.commit()
 
 
+@pytest.mark.parametrize("organization", ["acme", "interview"])
 def test_creating_an_organization_makes_the_creator_its_admin(
-    monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace
+    monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace, organization: str
 ) -> None:
     _as(monkeypatch, {}, None)
 
-    response = _client.post("/orgs", json={"id": "acme", "name": "Acme"})
+    response = _client.post("/orgs", json={"id": organization, "name": "Acme"})
 
     assert response.status_code == 201, response.text
-    assert response.json() == {"id": "acme", "name": "Acme"}
-    assert descope.user.users["google-alice"]["userTenants"] == [{"tenantId": "acme", "roleNames": [ADMIN]}]
+    assert response.json() == {"id": organization, "name": "Acme"}
+    assert descope.user.users["google-alice"]["userTenants"] == [{"tenantId": organization, "roleNames": [ADMIN]}]
 
 
 def test_unverified_logins_cannot_create_organizations(
@@ -176,7 +177,9 @@ def test_unverified_logins_cannot_create_organizations(
     assert descope.tenant.tenants == {}
 
 
-@pytest.mark.parametrize("organization", ["default", "valkyrie-ci", "partner-evil", "legacy-team"])
+@pytest.mark.parametrize(
+    "organization", ["default", "valkyrie-ci", "partner-evil", "legacy-team", "interview-candidate"]
+)
 def test_existing_and_reserved_organizations_cannot_be_taken_over(
     monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace, database_session: Session, organization: str
 ) -> None:
@@ -260,6 +263,34 @@ def test_invites_need_the_invitees_acceptance(
     assert descope.user.users["carol-sso"]["userTenants"] == [{"tenantId": "acme", "roleNames": []}]
     remaining = database_session.exec(select(OrganizationInvite.email)).all()
     assert remaining == ["bob@gmail.com"]
+
+
+@pytest.mark.usefixtures("bob")
+def test_operator_created_interview_organization_can_be_joined_and_selected(
+    monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace, database_session: Session
+) -> None:
+    organization = "interview-candidate"
+    descope.tenant.create(name="Interview Candidate", id=organization)
+    descope.user.add_tenant("google-alice", organization)
+    descope.user.add_tenant_roles("google-alice", organization, [ADMIN])
+    _as(monkeypatch, {organization: (ADMIN,)}, organization)
+
+    invited = _client.post("/orgs/members", json={"email": BOB})
+    assert (invited.status_code, invited.json()) == (200, {"organization": organization, "email": BOB})
+
+    _as_bob(monkeypatch)
+    assert _client.get("/orgs").json()["invitations"] == [organization]
+    accepted = _client.post(f"/orgs/invitations/{organization}/accept")
+    assert accepted.status_code == 204, accepted.text
+    assert descope.user.users[BOB]["userTenants"] == [{"tenantId": organization, "roleNames": []}]
+
+    _as(monkeypatch, {organization: ()}, organization, email=BOB, user_id="U-bob", login_id=BOB)
+    listed = _client.get("/orgs")
+    members = _client.get("/orgs/members")
+    assert listed.status_code == 200
+    assert listed.json()["organizations"] == [{"id": organization, "admin": False, "current": True}]
+    assert members.status_code == 200
+    assert members.json()["organization"] == organization
 
 
 @pytest.mark.usefixtures("bob")

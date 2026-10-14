@@ -23,6 +23,8 @@ Runs, agents, secrets and keys belong to an organization. If you sign up and are
 valkyrie org create acme --name "Acme"
 ```
 
+IDs starting with `interview-` are reserved from self-service creation. If an operator-created interview organization invites you, accept its invitation and select it like any other organization.
+
 Admins invite people with `valkyrie org invite EMAIL`. The invitee signs in with `valkyrie login` using that address, sees the invitation, and joins with:
 
 ```bash

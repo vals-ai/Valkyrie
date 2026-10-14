@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["organizations"])
 
 _RESERVED_IDS = frozenset({DEFAULT_ORG_NAME, "admin", "api", "root", "support", "system"})
-_RESERVED_PREFIXES = ("vals", "valkyrie")
+_RESERVED_PREFIXES = ("vals", "valkyrie", "interview-")
 _MEMBERS_PAGE_SIZE = 100
 _MAX_ADMIN_ORGANIZATIONS = 5
 _INVITATION_LIFETIME = timedelta(days=14)
