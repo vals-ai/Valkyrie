@@ -6,7 +6,7 @@ import socket
 import time
 import traceback
 from asyncio import Semaphore, to_thread
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -73,6 +73,7 @@ from tracker.sandbox import (
     DependencySetupMode,
     SandboxCreationState,
     apply_egress_policy,
+    create_agent_error_redactor,
     create_sandbox,
     install_agent_dependencies,
     run_agent,
@@ -133,8 +134,43 @@ def _normalized_attempt_time(value: datetime) -> datetime:
     return value.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
+def task_attempt_id(task_row_id: UUID, started_at: datetime) -> str:
+    """Return the opaque identity of one task execution.
+
+    It is derived from the task row and its started_at generation, so every
+    sandbox within one execution shares it and a whole-task rerun changes it.
+    """
+    return queued_sandbox_name(task_row_id, started_at).removeprefix("queued-")
+
+
 def _exception_message(exc: BaseException) -> str:
-    return str(exc).strip() or type(exc).__name__
+    """Keep exception types and Python's visible cause/context chain in task views."""
+
+    def describe(error: BaseException) -> str:
+        detail = str(error).strip()
+        name = type(error).__name__
+        return f"{name}: {detail}" if detail else name
+
+    message = describe(exc)
+    seen = {id(exc)}
+    current = exc
+    while True:
+        if isinstance(current, TrackerServiceError) and not current.include_cause_in_task_error:
+            break
+        if current.__cause__ is not None:
+            next_error = current.__cause__
+            relation = "caused by"
+        elif not current.__suppress_context__:
+            next_error = current.__context__
+            relation = "during handling of"
+        else:
+            break
+        if next_error is None or id(next_error) in seen:
+            break
+        seen.add(id(next_error))
+        message = f"{message} ({relation} {describe(next_error)})"
+        current = next_error
+    return message
 
 
 def _record_failure_before_retry(
@@ -1095,6 +1131,7 @@ async def _process_task_attempt(
             **(await resolve_secrets(start_benchmark_request.contract.secrets, runtime.secrets)),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
+            "ATTEMPT_ID": task_attempt_id(task_row.id, attempt_started_at),
             **_attested_inference_settings(start_benchmark_request.contract),
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
@@ -1105,6 +1142,12 @@ async def _process_task_attempt(
             ),
             **recovery_attempt.environment,
         }
+        redact_error: Callable[[str], str] | None = None
+        # Mask both sets together so a provider value cannot hide part of a
+        # longer contract value from the later Tracker-side pass.
+        secret_env_names = (
+            (*start_benchmark_request.contract.secrets, *task_data.sandbox_secrets) if task_data.sandbox_secrets else ()
+        )
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -1115,7 +1158,7 @@ async def _process_task_attempt(
 
         @asynccontextmanager
         async def sandbox_context() -> AsyncGenerator[Sandbox]:
-            nonlocal start_sandbox_build_time
+            nonlocal start_sandbox_build_time, redact_error
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
                 task_row.task_id if queue_context is None else queued_sandbox_name(task_row.id, attempt_started_at)
@@ -1132,6 +1175,10 @@ async def _process_task_attempt(
                 org_name=org.name,
                 agent_timeout=task_data.agent_timeout,
             ) as scoped_env_vars:
+                # Mask the values actually supplied to this sandbox, including
+                # its newly minted gateway token. Provider-managed values are
+                # masked inside the sandbox before the optional report returns.
+                redact_error = create_agent_error_redactor(scoped_env_vars[name] for name in contract.secrets)
                 async with create_sandbox(
                     provider=sandbox_provider,
                     sandbox_name=sandbox_name,
@@ -1203,6 +1250,8 @@ async def _process_task_attempt(
                             start_benchmark_request.contract,
                             log_output,
                             dependency_setup_recovery.mode,
+                            redact_error=redact_error,
+                            secret_env_names=secret_env_names,
                         )
                     except DependencySetupExhaustedError:
                         dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
@@ -1260,6 +1309,8 @@ async def _process_task_attempt(
                     agent_timeout=task_data.agent_timeout,
                     benchmark_id=str(benchmark_id),
                     execution_is_current=execution_is_current,
+                    redact_error=redact_error,
+                    secret_env_names=secret_env_names,
                 )
                 logger.info(
                     "agent.run.complete",
@@ -1423,7 +1474,8 @@ async def _process_task_attempt(
             return {task_id: None}
         seconds = int(time.monotonic() - task_logs.last_log_time)
         error_message = (
-            f"Benchmark service WebSocket disconnected: {e}; last application message received {seconds}s ago"
+            f"Benchmark service WebSocket disconnected: {_exception_message(e)}; "
+            f"last application message received {seconds}s ago"
         )
         recovered = await recover_evaluation_stream_failure(error_message)
         if recovered is not None:
@@ -1460,9 +1512,14 @@ async def _process_task_attempt(
     except ValidationError as e:
         if task_is_stopped():
             return {task_id: None}
-        field_names = ", ".join(".".join(str(loc) for loc in err["loc"]) for err in e.errors())
+        # str(ValidationError) embeds the rejected input values, so only locations and error types are kept.
+        field_errors = ", ".join(
+            f"{'.'.join(str(loc) for loc in err['loc'])} ({err['type']})"
+            for err in e.errors(include_url=False, include_context=False, include_input=False)
+        )
         error_message = (
-            f"Benchmark service returned an incompatible task response. Missing or invalid fields: {field_names}"
+            "Benchmark service returned an incompatible task response. "
+            f"Missing or invalid fields: ValidationError: {field_errors}"
         )
         log_output(f"\n[ERROR] {error_message}")
 
@@ -1477,7 +1534,10 @@ async def _process_task_attempt(
     except InvalidStatus as e:
         if task_is_stopped():
             return {task_id: None}
-        error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
+        error_message = (
+            f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code}): "
+            f"{_exception_message(e)}"
+        )
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(
@@ -1498,7 +1558,7 @@ async def _process_task_attempt(
             if not return_queued_task_to_pending():
                 return {task_id: None}
             log_output(f"\n[ERROR] {error_message}")
-            raise SandboxSetupError(error_message) from e
+            raise SandboxSetupError(str(e)) from e
         log_output(f"\n[ERROR] {error_message}")
 
         return commit_terminal_error(

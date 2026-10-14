@@ -1,18 +1,26 @@
 import click
 
-from valkyrie.cli.agent.lifecycle import agent_remove, download, install, list_installed_agents, push
+from valkyrie.cli.lazy import LazyGroup
 
 
-@click.group()
+@click.group(
+    cls=LazyGroup,
+    lazy_commands={
+        "install": (
+            "valkyrie.cli.agent.lifecycle:install",
+            "Install a GitHub agent through Tracker, replacing an existing alias.",
+        ),
+        "push": (
+            "valkyrie.cli.agent.lifecycle:push",
+            "Upload a local agent through Tracker, replacing an existing alias.",
+        ),
+        "remove": ("valkyrie.cli.agent.lifecycle:agent_remove", "Remove an installed agent"),
+        "download": ("valkyrie.cli.agent.lifecycle:download", "Download an installed agent"),
+        "list": ("valkyrie.cli.agent.lifecycle:list_installed_agents", "List installed agents"),
+    },
+)
 def agent():
-    """Agent command group"""
-    pass
+    """Install, upload, list, download, and remove agents."""
 
-
-agent.add_command(install)
-agent.add_command(push)
-agent.add_command(agent_remove)
-agent.add_command(download)
-agent.add_command(list_installed_agents)
 
 __all__ = ["agent"]

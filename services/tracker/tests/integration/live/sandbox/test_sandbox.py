@@ -18,16 +18,19 @@ from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundEr
 
 from tests.utils import random_task_id
 from tests.integration.seed_agent_artifacts import create_s3_client
+from tracker import sandbox as sandbox_module
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key
 from tracker.runtime.artifacts import agent_bundle_key
 from tracker.database.models import AgentContractRequest
 from tracker.egress import combine_run_egress_policies
-from tracker.exceptions import SandboxError
+from tracker.exceptions import AgentRunFailedError, OutputArtifactError, SandboxError
 from tracker.sandbox import (
     SandboxCreationState,
     apply_egress_policy,
     create_sandbox,
+    create_agent_error_redactor,
+    DependencySetupMode,
     install_agent_dependencies,
     run_agent,
     stream_command_output,
@@ -59,6 +62,9 @@ async def test_sandbox(
         creation_state=SandboxCreationState(cleanup_pending=False),
     ) as sandbox:
         yield sandbox
+
+    with pytest.raises(SandboxNotFoundError):
+        await sandbox_provider.get_sandbox(sandbox.name)
 
 
 @pytest.fixture
@@ -110,6 +116,127 @@ with urllib.request.urlopen(request, timeout=5) as response:
 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
+
+    async def test_reported_error_survives_live_command(self, test_sandbox: Sandbox) -> None:
+        """Preserve a report while excluding stdout and masking a configured secret."""
+        output: list[str] = []
+        command = 'sh -c \'printf "AgentError: failed with fixture-secret\\n" > "$VALKYRIE_ERROR_PATH"; echo stdout-only-sentinel; exit 1\''
+
+        with pytest.raises(AgentRunFailedError) as failure:
+            await stream_command_output(
+                test_sandbox,
+                command,
+                on_output=output.append,
+                redact_error=create_agent_error_redactor(["fixture-secret"]),
+            )
+
+        assert "AgentError: failed with [REDACTED]" in str(failure.value)
+        assert "fixture-secret" not in str(failure.value)
+        assert "stdout-only-sentinel" not in str(failure.value)
+        assert "stdout-only-sentinel" in "".join(output)
+
+        remaining = await test_sandbox.exec("find /tmp/.valkyrie -type f")
+
+        assert remaining.exit_code == 0
+        assert not remaining.stdout.strip()
+
+    @pytest.mark.parametrize(
+        "report_command",
+        [
+            "true",
+            ': > "$VALKYRIE_ERROR_PATH"',
+            'printf "AgentError: %2049s" x > "$VALKYRIE_ERROR_PATH"',
+        ],
+        ids=["missing", "empty", "oversized"],
+    )
+    async def test_unusable_report_keeps_exit_code(self, test_sandbox: Sandbox, report_command: str) -> None:
+        """An unusable report retains the exit code and does not substitute stdout."""
+        output: list[str] = []
+        command = f"sh -c {shlex.quote(report_command + '; echo stdout-only-sentinel; exit 41')}"
+
+        with pytest.raises(AgentRunFailedError) as failure:
+            await stream_command_output(
+                test_sandbox, command, output.append, redact_error=create_agent_error_redactor([])
+            )
+
+        assert str(failure.value) == "Sandbox error: Agent command failed with exit code 41"
+        assert "stdout-only-sentinel" in "".join(output)
+        remaining = await test_sandbox.exec("find /tmp/.valkyrie -type f")
+        assert remaining.exit_code == 0
+        assert not remaining.stdout.strip()
+
+    async def test_install_preserves_reported_error(self, test_sandbox: Sandbox) -> None:
+        """The final install attempt retains the report and masks the configured value."""
+        contract = AgentContractRequest(
+            name="test_agent",
+            install_cmd='printf "InstallError: fixture-secret\\n" > "$VALKYRIE_ERROR_PATH"; exit 42',
+            run_cmd="true",
+        )
+        setup = await test_sandbox.exec("mkdir -p /bundle/test_agent")
+        assert setup.exit_code == 0
+
+        with pytest.raises(AgentRunFailedError) as failure:
+            await install_agent_dependencies(
+                test_sandbox,
+                contract,
+                lambda _message: None,
+                mode=DependencySetupMode.FINAL_FRESH_SANDBOX,
+                redact_error=create_agent_error_redactor(["fixture-secret"]),
+            )
+
+        assert str(failure.value) == (
+            "Sandbox error: Dependency installation for contract test_agent failed with exit code 42: "
+            "InstallError: [REDACTED]"
+        )
+
+    async def test_run_preserves_error_when_required_artifact_is_missing(
+        self,
+        test_sandbox: Sandbox,
+        live_aws_runtime: AWSRuntime,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Retain the agent failure and log the secondary collection failure with its context."""
+        contract = AgentContractRequest(
+            name="test_agent",
+            install_cmd="true",
+            run_cmd='sh -c \'printf "AgentError: controlled failure\\n" > "$VALKYRIE_ERROR_PATH"; exit 41\'',
+            output_artifacts=["artifacts/missing.json"],
+        )
+        object_store = S3ObjectStore(live_aws_runtime)
+        task_id = random_task_id()
+
+        # Tracker's logger does not propagate to pytest's root capture handler.
+        sandbox_module.logger.addHandler(caplog.handler)
+        try:
+            with pytest.raises(AgentRunFailedError) as failure:
+                await run_agent(
+                    test_sandbox,
+                    contract,
+                    "/tmp/problem.txt",
+                    task_id,
+                    lambda _message: None,
+                    cwd="/",
+                    object_store=object_store,
+                    benchmark_id="live-error-preservation",
+                    redact_error=create_agent_error_redactor([]),
+                )
+        finally:
+            sandbox_module.logger.removeHandler(caplog.handler)
+
+        assert (
+            str(failure.value)
+            == "Sandbox error: Agent command failed with exit code 41: AgentError: controlled failure"
+        )
+        collection_errors = [
+            record for record in caplog.records if record.getMessage() == "Failed to collect declared agent artifacts"
+        ]
+        assert len(collection_errors) == 1
+        record = collection_errors[0]
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], OutputArtifactError)
+        assert "Required output artifact missing:" in str(record.exc_info[1])
+        assert record.exc_info[1].__context__ is failure.value
+        assert getattr(record, "task_id") == task_id
 
     async def test_create_and_cleanup_sandbox(
         self,

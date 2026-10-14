@@ -37,7 +37,6 @@ def live_deployment(live_aws_runtime: AWSRuntime, monkeypatch: pytest.MonkeyPatc
     resources = live_aws_runtime.resources
     for name, value in {
         "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
-        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
         "AWS_DEPLOYMENT_ACCOUNT_ID": live_aws_runtime.expected_bucket_owner,
         "AWS_DEPLOYMENT_REGION": resources.region,
         "AWS_DEPLOYMENT_S3_BUCKET": resources.s3_bucket,

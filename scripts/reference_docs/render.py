@@ -12,6 +12,7 @@ from .collect import collect_cli_commands, collect_sdk_reference
 from .model import (
     CLI_CARDS,
     CLI_PAGE_GROUPS,
+    CLI_TITLES,
     CLI_INDEX,
     CLI_NAVIGATION,
     CLI_ROOT,
@@ -255,7 +256,7 @@ def _command_section(command: CLICommandReference, group: str) -> str:
         (
             _cli_parameters(command.parameters, "argument"),
             _cli_parameters(command.parameters, "option"),
-            f"Task guidance: [{group.title()} guides]({GUIDE_LINKS[group]}).",
+            f"Task guidance: [{CLI_TITLES.get(group, group.title())} guides]({GUIDE_LINKS[group]}).",
         )
     )
     return _join_blocks(*blocks)
@@ -271,7 +272,7 @@ def _cli_pages(commands: Sequence[CLICommandReference]) -> dict[Path, str]:
         noun = "command" if count == 1 else "commands"
         cards.append(
             _card(
-                f"{group.title()} commands",
+                f"{CLI_TITLES.get(group, group.title())} commands",
                 icon,
                 _page_path(CLI_ROOT, group),
                 f"{count} {noun} for {purpose}.",
@@ -281,12 +282,13 @@ def _cli_pages(commands: Sequence[CLICommandReference]) -> dict[Path, str]:
             *(_command_section(command, group) for command in group_commands),
             separator="\n\n---\n\n",
         )
-        pages[_page_path(CLI_ROOT, group)] = _page(
-            f"valkyrie {group}",
-            f"Complete generated reference for every `valkyrie {group}` command.",
-            f"This page documents all {count} commands in the `{group}` group in registration order. Use the table of contents to jump to a command.",
-            sections,
-        )
+        if [command.path for command in group_commands] == [(group,)]:
+            description = f"Complete generated reference for `valkyrie {group}`."
+            intro = f"This page documents the `valkyrie {group}` command."
+        else:
+            description = f"Complete generated reference for every `valkyrie {group}` command."
+            intro = f"This page documents all {count} commands in the `{group}` group in registration order. Use the table of contents to jump to a command."
+        pages[_page_path(CLI_ROOT, group)] = _page(f"valkyrie {group}", description, intro, sections)
     index = _page(
         "CLI reference",
         "Complete generated reference for every Valkyrie CLI command.",

@@ -191,7 +191,9 @@ For examples, see the [Python SDK guide](/sdk/resources).
 
 ## `client.logs.stream_task` {#stream-task}
 
-Yield events from one task stream, including task IDs containing `/`.
+Yield events from one task's log stream until the server sends its `end` event.
+
+Task IDs may contain `/`. Raises ValkyrieStreamError when the server reports an error or the body ends without `end`.
 
 ```python Signature
 async def stream_task(

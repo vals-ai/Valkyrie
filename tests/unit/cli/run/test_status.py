@@ -5,17 +5,17 @@ Run: uv run pytest tests/unit/cli/run/test_status.py
 
 import json
 from datetime import datetime, timezone
-from importlib import import_module
 from uuid import UUID
 
+import httpx
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import BenchmarkStatus
-from tracker.types import BenchmarkStatusEntry, BenchmarkStatusResponse
+from valkyrie.sdk.models import BenchmarkStatus, BenchmarkStatusEntry, BenchmarkStatusResponse
 
 from valkyrie.cli.run.status import status_runs
 
-status_module = import_module("valkyrie.cli.run.status")
+from tests.unit.cli.conftest import MockTracker
+from tests.unit.cli.factories import ok
 
 
 def make_entry(index: int, *, status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS) -> BenchmarkStatusEntry:
@@ -29,37 +29,27 @@ def make_entry(index: int, *, status: BenchmarkStatus = BenchmarkStatus.IN_PROGR
     )
 
 
-class StubStatusTracker:
-    def __init__(self, entries: list[BenchmarkStatusEntry]) -> None:
-        self.entries = entries
-        self.calls: list[list[UUID]] = []
+def invoke_with_entries(tracker: MockTracker, entries: list[BenchmarkStatusEntry], args: list[str]) -> Result:
+    """Answer status requests with the known entries among the requested IDs."""
 
-    def __enter__(self) -> "StubStatusTracker":
-        return self
+    def statuses(request: httpx.Request) -> httpx.Response:
+        requested = set(request.url.params["ids"].split(","))
+        return ok(BenchmarkStatusResponse(entries=[entry for entry in entries if str(entry.id) in requested]))
 
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def fetch_benchmark_statuses(self, run_ids: list[UUID]) -> BenchmarkStatusResponse:
-        self.calls.append(run_ids)
-        requested = set(run_ids)
-        return BenchmarkStatusResponse(entries=[entry for entry in self.entries if entry.id in requested])
-
-
-def invoke_with_tracker(monkeypatch: pytest.MonkeyPatch, tracker: StubStatusTracker, args: list[str]) -> Result:
-    monkeypatch.setattr(status_module, "TrackerService", lambda: tracker)
+    tracker.reply("GET", "/benchmarks/status", statuses)
     return CliRunner().invoke(status_runs, args)
 
 
-def test_status_json_deduplicates_and_restores_requested_order(monkeypatch: pytest.MonkeyPatch) -> None:
+def _requested_ids(tracker: MockTracker) -> list[list[str]]:
+    return [request.url.params["ids"].split(",") for request in tracker.requests]
+
+
+def test_status_json_deduplicates_and_restores_requested_order(tracker: MockTracker) -> None:
     first = make_entry(0)
     second = make_entry(1, status=BenchmarkStatus.FINISHED)
-    tracker = StubStatusTracker([second, first])
 
-    result = invoke_with_tracker(
-        monkeypatch,
-        tracker,
-        ["--ids", f" {first.id}, {second.id}, {first.id} ", "--format", "json"],
+    result = invoke_with_entries(
+        tracker, [second, first], ["--ids", f" {first.id}, {second.id}, {first.id} ", "--format", "json"]
     )
 
     assert result.exit_code == 0, result.output
@@ -74,19 +64,14 @@ def test_status_json_deduplicates_and_restores_requested_order(monkeypatch: pyte
     assert [entry["run_id"] for entry in payload["runs"]] == [str(first.id), str(second.id)]
     assert payload["runs"][0]["progress_percent"] == 25.0
     assert payload["runs"][1]["finished_at"] == "2026-07-09T13:00:00Z"
-    assert tracker.calls == [[first.id, second.id]]
+    assert _requested_ids(tracker) == [[str(first.id), str(second.id)]]
 
 
-def test_status_json_reports_missing_ids_and_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_json_reports_missing_ids_and_exits_nonzero(tracker: MockTracker) -> None:
     found = make_entry(0)
     missing = UUID(int=2)
-    tracker = StubStatusTracker([found])
 
-    result = invoke_with_tracker(
-        monkeypatch,
-        tracker,
-        ["--ids", f"{found.id},{missing}", "--format", "json"],
-    )
+    result = invoke_with_entries(tracker, [found], ["--ids", f"{found.id},{missing}", "--format", "json"])
 
     assert result.exit_code != 0
     payload = json.loads(result.stdout)
@@ -95,32 +80,22 @@ def test_status_json_reports_missing_ids_and_exits_nonzero(monkeypatch: pytest.M
     assert "not found or are not accessible" in result.stderr
 
 
-def test_status_json_chunks_large_id_sets(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_json_chunks_large_id_sets(tracker: MockTracker) -> None:
     entries = [make_entry(index) for index in range(51)]
-    tracker = StubStatusTracker(entries)
 
-    result = invoke_with_tracker(
-        monkeypatch,
-        tracker,
-        ["--ids", ",".join(str(entry.id) for entry in entries), "--format", "json"],
+    result = invoke_with_entries(
+        tracker, entries, ["--ids", ",".join(str(entry.id) for entry in entries), "--format", "json"]
     )
 
     assert result.exit_code == 0, result.output
-    assert [len(call) for call in tracker.calls] == [50, 1]
+    assert [len(ids) for ids in _requested_ids(tracker)] == [50, 1]
     assert json.loads(result.stdout)["returned_count"] == 51
 
 
 @pytest.mark.parametrize("ids_value", ["", " , ", "not-a-uuid"])
-def test_status_rejects_invalid_ids_before_tracker_construction(
-    monkeypatch: pytest.MonkeyPatch,
-    ids_value: str,
-) -> None:
-    def unexpected_tracker():
-        raise AssertionError("ID validation should happen before constructing the tracker")
-
-    monkeypatch.setattr(status_module, "TrackerService", unexpected_tracker)
-
+def test_status_rejects_invalid_ids_before_any_request(tracker: MockTracker, ids_value: str) -> None:
     result = CliRunner().invoke(status_runs, ["--ids", ids_value, "--format", "json"])
 
     assert result.exit_code == 2
     assert "--ids" in result.output
+    assert tracker.requests == []

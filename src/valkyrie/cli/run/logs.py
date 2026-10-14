@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
-import click  # pyright: ignore[reportMissingImports]
-from valkyrie.sdk import ValkyrieClient
-from valkyrie.sdk.errors import ValkyrieSDKError  # pyright: ignore[reportMissingImports]
-from valkyrie.sdk.models.logs import LogEvent  # pyright: ignore[reportMissingImports]
+import click
+from valkyrie.sdk import LogEvent, ValkyrieClient, ValkyrieStreamError
+
+from valkyrie.cli.client import call
 
 
 @click.command(help="Fetch or follow logs for a run or one task.")
@@ -47,45 +46,11 @@ def logs(
     if start_time is not None and end_time is not None and end_time <= start_time:
         raise click.UsageError("--until must be later than --since")
 
-    try:
-        asyncio.run(
-            _run_logs(
-                run_id,
-                task_id=task_id,
-                query=query,
-                start_time=start_time,
-                end_time=end_time,
-                follow=follow,
-                output_format=output_format,
-            )
-        )
-    except KeyboardInterrupt:
-        return
-    except ValkyrieSDKError as error:
-        raise click.ClickException(str(error)) from error
-
-
-async def _run_logs(
-    run_id: UUID,
-    *,
-    task_id: str | None,
-    query: str | None,
-    start_time: datetime | None,
-    end_time: datetime | None,
-    follow: bool,
-    output_format: str,
-) -> None:
-    client = ValkyrieClient()
-    async with client:
+    async def write_logs(client: ValkyrieClient) -> None:
         if follow:
-            if task_id is None:
-                raise ValkyrieSDKError("follow requires a task ID")
+            assert task_id is not None
             async for event in client.logs.stream_task(
-                run_id,
-                task_id,
-                query=query,
-                start_time=start_time,
-                end_time=end_time,
+                run_id, task_id, query=query, start_time=start_time, end_time=end_time
             ):
                 _write_event(event, output_format)
             return
@@ -93,22 +58,14 @@ async def _run_logs(
         cursor: str | None = None
         seen_cursors: set[str] = set()
         while True:
+            # Pages are written as they arrive so long runs start printing before pagination ends.
             if task_id is not None:
                 page = await client.logs.page_task(
-                    run_id,
-                    task_id,
-                    query=query,
-                    start_time=start_time,
-                    end_time=end_time,
-                    cursor=cursor,
+                    run_id, task_id, query=query, start_time=start_time, end_time=end_time, cursor=cursor
                 )
             else:
                 page = await client.logs.page_run(
-                    run_id,
-                    query=query,
-                    start_time=start_time,
-                    end_time=end_time,
-                    cursor=cursor,
+                    run_id, query=query, start_time=start_time, end_time=end_time, cursor=cursor
                 )
             for event in page.events:
                 _write_event(event, output_format)
@@ -117,8 +74,13 @@ async def _run_logs(
             if cursor is None:
                 return
             if cursor in seen_cursors:
-                raise ValkyrieSDKError("Valkyrie log pagination returned a repeated cursor")
+                raise ValkyrieStreamError("Valkyrie log pagination returned a repeated cursor")
             seen_cursors.add(cursor)
+
+    try:
+        call(write_logs)
+    except KeyboardInterrupt:
+        return
 
 
 def _parse_timestamp(value: str | None, parameter: str) -> datetime | None:

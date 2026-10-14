@@ -1,10 +1,9 @@
 """Inspect the organization's sandbox admission queue."""
 
-import asyncio
-
 import click
-from valkyrie.sdk import SchedulerOverviewResponse, ValkyrieClient, ValkyrieSDKError
+from valkyrie.sdk import SchedulerOverviewResponse
 
+from valkyrie.cli.client import call
 from valkyrie.cli.display import format_table, terminal_safe
 
 
@@ -36,10 +35,14 @@ def queue() -> None:
 )
 def status(waiting_limit: int, active_limit: int, waiting_offset: int, active_offset: int, output_format: str) -> None:
     """Show live queue priorities, positions, and active tasks for your organization."""
-    try:
-        response = asyncio.run(_fetch_overview(waiting_limit, active_limit, waiting_offset, active_offset))
-    except (ValkyrieSDKError, ValueError) as error:
-        raise click.ClickException(str(error)) from error
+    response = call(
+        lambda client: client.scheduler.overview(
+            waiting_limit=waiting_limit,
+            active_limit=active_limit,
+            waiting_offset=waiting_offset,
+            active_offset=active_offset,
+        )
+    )
 
     if output_format == "json":
         click.echo(
@@ -51,18 +54,6 @@ def status(waiting_limit: int, active_limit: int, waiting_offset: int, active_of
         return
 
     _format_overview(response)
-
-
-async def _fetch_overview(
-    waiting_limit: int, active_limit: int, waiting_offset: int, active_offset: int
-) -> SchedulerOverviewResponse:
-    async with ValkyrieClient() as client:
-        return await client.scheduler.overview(
-            waiting_limit=waiting_limit,
-            active_limit=active_limit,
-            waiting_offset=waiting_offset,
-            active_offset=active_offset,
-        )
 
 
 def _format_overview(response: SchedulerOverviewResponse) -> None:

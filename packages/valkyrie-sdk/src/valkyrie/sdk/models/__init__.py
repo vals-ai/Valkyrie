@@ -1,12 +1,14 @@
 """Models owned by the standalone Valkyrie SDK."""
 
 from valkyrie.sdk.models.agents import (
+    AgentContract,
     AgentContractRequest,
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
     OutputArtifact,
     OutputArtifactSpec,
+    Parameter,
 )
 from valkyrie.sdk.models.benchmarks import (
     BenchmarkStatusEntry,
@@ -45,6 +47,7 @@ from valkyrie.sdk.models.runs import (
     ResultsExistResponse,
     RetryMode,
     RetryOrResumeBenchmarkResponse,
+    RunStreamEvent,
     S3UploadResultsResponse,
     ShedBenchmarkRequest,
     ShedBenchmarkResponse,
@@ -84,6 +87,7 @@ __all__ = [
     "RunArtifactDownloadResponse",
     "AWSResources",
     "LocalResources",
+    "AgentContract",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
@@ -121,10 +125,12 @@ __all__ = [
     "Order",
     "OutputArtifact",
     "OutputArtifactSpec",
+    "Parameter",
     "RetrieveResultsResponse",
     "ResultsExistResponse",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
+    "RunStreamEvent",
     "S3UploadResultsResponse",
     "SchedulerActiveEntryResponse",
     "SchedulerActiveStatus",

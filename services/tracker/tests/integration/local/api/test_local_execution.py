@@ -10,7 +10,7 @@ from uuid import UUID
 import httpx
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import VerifyTaskIdsResponse
+from benchmark_service.schemas import VerifyTaskIdsResponse, VersionResponse
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
@@ -42,6 +42,10 @@ PROVIDER_SETTINGS = {
     "daytona": "DAYTONA_API_KEY=daytona-key\nDAYTONA_API_URL=https://daytona.test/api\nDAYTONA_TARGET=us\n",
     "modal": "MODAL_TOKEN_ID=modal-id\nMODAL_TOKEN_SECRET=modal-secret\n",
 }
+
+
+async def _version(*_args: Any, **_kwargs: Any) -> VersionResponse:
+    return VersionResponse(framework_version="test")
 
 
 @pytest.fixture
@@ -78,6 +82,7 @@ def local_tracker(tracker_database: Session, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setitem(overrides, main_module.get_current_starter, lambda: RequestIdentity(org=ORG))
     monkeypatch.setattr(BenchmarkServiceClient, "health_check", health_check)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+    monkeypatch.setattr(BenchmarkServiceClient, "version", _version)
     monkeypatch.setattr(BenchmarkServiceClient, "close", noop)
     monkeypatch.setattr(main_module, "copy_agent_to_benchmark", noop)
     monkeypatch.setattr(main_module, "launch_dispatch", noop)

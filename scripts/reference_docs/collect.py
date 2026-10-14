@@ -121,15 +121,22 @@ def _collect_click_parameter(parameter: click.Parameter) -> CLIParameterReferenc
 
 def collect_cli_commands() -> tuple[CLICommandReference, ...]:
     """Collect registered leaf commands without invoking callbacks."""
+    from valkyrie.cli.lazy import LazyGroup
     from valkyrie.cli.main import cli
 
     commands: list[CLICommandReference] = []
+
+    def subcommands(group: click.Group) -> dict[str, click.Command]:
+        if not isinstance(group, LazyGroup):
+            return group.commands
+        ctx = click.Context(group)
+        return {name: typing.cast(click.Command, group.get_command(ctx, name)) for name in group.lazy_commands}
 
     def visit(command: click.Command, path: tuple[str, ...]) -> None:
         if command.hidden:
             return
         if isinstance(command, click.Group):
-            for name, child in command.commands.items():
+            for name, child in subcommands(command).items():
                 visit(child, (*path, name))
             return
 

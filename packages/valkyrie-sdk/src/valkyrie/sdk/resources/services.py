@@ -32,8 +32,8 @@ class BenchmarkServicesResource:
             BenchmarkServiceCatalogResponse,
         )
 
-    async def _check(self, services: Sequence[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
-        """Health-check services returned by the Tracker catalog."""
+    async def check(self, services: Sequence[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
+        """Health-check services through Tracker, such as custom URLs alongside catalog entries."""
         payload = BenchmarkServicesRequest(services=list(services))
         return await self._sdk.request_model(
             "POST",
@@ -47,7 +47,7 @@ class BenchmarkServicesResource:
         catalog = await self.catalog()
         if not catalog.services:
             return BenchmarkServicesResponse(services=[])
-        return await self._check(catalog.services)
+        return await self.check(catalog.services)
 
     async def task_ids(
         self,

@@ -2,10 +2,9 @@ from uuid import UUID
 
 import click
 
-from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.client import call
 from valkyrie.cli.run.progress import echo_next_steps
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.tracker_client import TrackerService
 
 
 @click.command(
@@ -40,11 +39,7 @@ def stop(run_id: UUID, task_ids: str | None, task_ids_file: str | None, force: b
         click.echo("Cancelled.")
         return
 
-    try:
-        with TrackerService() as tracker:
-            tracker.stop_benchmark(run_id, force, task_ids=selected_task_ids)
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
+    call(lambda client: client.runs.stop(run_id, force=force, task_ids=selected_task_ids))
 
     subject = "Selected tasks" if selected_task_ids else "Run"
     if force:

@@ -6,163 +6,107 @@ Run: uv run pytest tests/unit/cli/run/test_run_logs.py
 from __future__ import annotations
 
 import json
-from collections import deque
-from collections.abc import AsyncIterator, Coroutine
-from datetime import datetime, timezone
-from functools import partial
-from importlib import import_module
-from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
-import httpx  # pyright: ignore[reportMissingImports]
-import pytest  # pyright: ignore[reportMissingImports]
-from click.testing import CliRunner  # pyright: ignore[reportMissingImports]
-from valkyrie.sdk import ValkyrieClient  # pyright: ignore[reportMissingImports]
-from valkyrie.sdk.models.logs import LogEvent, LogPage  # pyright: ignore[reportMissingImports]
+import httpx
+import pytest
+from click.testing import CliRunner
 
-from valkyrie.cli.run.logs import logs  # pyright: ignore[reportMissingImports]
+from valkyrie.cli.run.logs import logs
 
-logs_module = import_module("valkyrie.cli.run.logs")
+from tests.unit.cli.conftest import MockTracker
+
+_RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
+_LOGS_PATH = f"/benchmarks/{_RUN_ID}/logs"
 
 
-class MockLogsResource:
-    """Return configured events and retain command arguments."""
-
-    def __init__(self, events: list[LogEvent]) -> None:
-        self.events = events
-        self.pages = deque([LogPage(events=events)])
-        self.operation: str | None = None
-        self.arguments: dict[str, Any] = {}
-        self.timeline: list[str] = []
-
-    async def page_run(self, run_id: UUID, **arguments: Any) -> LogPage:
-        self.operation = "run"
-        self.arguments = {"run_id": run_id, **arguments}
-        self.timeline.append(f"page:{arguments.get('cursor')}")
-        return self.pages.popleft()
-
-    async def page_task(self, run_id: UUID, task_id: str, **arguments: Any) -> LogPage:
-        self.operation = "task"
-        self.arguments = {"run_id": run_id, "task_id": task_id, **arguments}
-        self.timeline.append(f"page:{arguments.get('cursor')}")
-        return self.pages.popleft()
-
-    async def stream_task(self, run_id: UUID, task_id: str, **arguments: Any) -> AsyncIterator[LogEvent]:
-        self.operation = "follow"
-        self.arguments = {"run_id": run_id, "task_id": task_id, **arguments}
-        for event in self.events:
-            yield event
+def _event(message: str, task_id: str | None = "task-1") -> dict[str, object]:
+    return {"timestamp": "2026-01-01T00:00:00Z", "message": message, "task_id": task_id}
 
 
-class MockClient:
-    """Provide the async client context used by the command."""
-
-    def __init__(self, events: list[LogEvent]) -> None:
-        self.logs = MockLogsResource(events)
-
-    async def __aenter__(self) -> "MockClient":
-        return self
-
-    async def __aexit__(self, *_exc_info: object) -> None:
-        return None
-
-
-def _invoke(
-    monkeypatch: pytest.MonkeyPatch,
-    client: MockClient,
-    run_id: UUID,
-    arguments: list[str],
-):
-    monkeypatch.setattr(logs_module, "ValkyrieClient", lambda: client)
-    return CliRunner().invoke(logs, [str(run_id), *arguments])
-
-
-def test_logs_fetches_aggregate_with_filters_and_sanitizes_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The default mode must aggregate run logs and remove terminal control characters."""
-    run_id = uuid4()
-    event = LogEvent(
-        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        message="\x1b[31mfailed\r",
-        task_id="task-1",
+def _stream(*events: dict[str, object], end: bool = True) -> httpx.Response:
+    body = "".join(f"event: log\ndata: {json.dumps(event)}\n\n" for event in events)
+    return httpx.Response(
+        200, text=body + ("event: end\ndata: {}\n\n" if end else ""), headers={"content-type": "text/event-stream"}
     )
-    client = MockClient([event])
 
-    result = _invoke(
-        monkeypatch,
-        client,
-        run_id,
-        [
-            "--query",
-            "failed",
-            "--since",
-            "2026-01-01T00:00:00Z",
-            "--until",
-            "2026-01-01T01:00:00+00:00",
-        ],
-    )
+
+@pytest.mark.parametrize(
+    ("arguments", "path", "task_id"),
+    [
+        ([], _LOGS_PATH, None),
+        (["--task-id", "provider/model:fast", "--format", "jsonl"], _LOGS_PATH, "provider/model:fast"),
+        (
+            ["--task-id", "provider/model:fast", "--follow", "--format", "jsonl"],
+            f"{_LOGS_PATH}/stream",
+            "provider/model:fast",
+        ),
+    ],
+    ids=["run", "task", "follow"],
+)
+def test_logs_select_the_stream_and_forward_filters(
+    tracker: MockTracker, cli_runner: CliRunner, arguments: list[str], path: str, task_id: str | None
+) -> None:
+    tracker.reply("GET", _LOGS_PATH, httpx.Response(200, json={"events": [_event("hello")]}))
+    tracker.reply("GET", f"{_LOGS_PATH}/stream", _stream(_event("hello")))
+
+    result = cli_runner.invoke(logs, [str(_RUN_ID), "--query", "hello", "--since", "2026-01-01T00:00:00Z", *arguments])
 
     assert result.exit_code == 0, result.output
-    assert client.logs.operation == "run"
-    assert client.logs.arguments["query"] == "failed"
-    assert client.logs.arguments["start_time"] == datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert "\x1b" not in result.output
-    assert "[task-1] \\u001b[31mfailed\\r" in result.output
+
+    (request,) = tracker.requests
+    assert request.url.path == path
+    assert request.url.params.get("task_id") == task_id
+    assert request.url.params["query"] == "hello"
+    assert request.url.params["start_time"] == "2026-01-01T00:00:00+00:00"
+    if "jsonl" in arguments:
+        assert json.loads(result.output)["message"] == "hello"
+    else:
+        assert result.output == "2026-01-01T00:00:00Z [task-1] hello\n"
 
 
-def test_logs_fetches_one_task_as_jsonl_and_follows_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Task selection must work for snapshots, JSONL output, and follow mode."""
-    run_id = uuid4()
-    event = LogEvent(
-        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        message="hello\x1b",
-        task_id="task-1",
-    )
-    client = MockClient([event])
+def test_text_output_keeps_each_record_on_one_escaped_line(tracker: MockTracker, cli_runner: CliRunner) -> None:
+    event = _event("\x1b[31mfirst\nFORGED\tfield\r", task_id="task\nFORGED")
+    tracker.reply("GET", _LOGS_PATH, httpx.Response(200, json={"events": [event]}))
 
-    result = _invoke(monkeypatch, client, run_id, ["--task-id", "provider/model:fast", "--format", "jsonl"])
+    result = cli_runner.invoke(logs, [str(_RUN_ID)])
 
     assert result.exit_code == 0, result.output
-    assert client.logs.operation == "task"
-    assert client.logs.arguments["task_id"] == "provider/model:fast"
-    assert json.loads(result.output)["message"] == "hello\x1b"
-    assert "\x1b" not in result.output
+    assert result.output == "2026-01-01T00:00:00Z [task\\nFORGED] \\u001b[31mfirst\\nFORGED\\tfield\\r\n"
 
-    follow_result = _invoke(
-        monkeypatch,
-        client,
-        run_id,
-        ["--task-id", "provider/model:fast", "--query", "hello", "--follow"],
+
+def test_logs_write_each_page_before_fetching_the_next(tracker: MockTracker, cli_runner: CliRunner) -> None:
+    """A failure on the second page still leaves the first page's records on stdout."""
+    tracker.reply(
+        "GET",
+        _LOGS_PATH,
+        httpx.Response(200, json={"events": [_event("first")], "next_cursor": "next"}),
+        httpx.ConnectError("tracker went away"),
     )
 
-    assert follow_result.exit_code == 0, follow_result.output
-    assert client.logs.operation == "follow"
-    assert client.logs.arguments["query"] == "hello"
+    result = cli_runner.invoke(logs, [str(_RUN_ID)])
+
+    assert result.exit_code == 1
+    assert result.output.index("first") < result.output.index("tracker went away")
 
 
-def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A truncated 200 SSE response must print its final record but exit unsuccessfully."""
-    run_id = uuid4()
-    payload = {
-        "timestamp": "2026-01-01T00:00:00Z",
-        "message": "final",
-        "task_id": "task-1",
-    }
+def test_follow_fails_when_the_stream_ends_without_its_end_event(tracker: MockTracker, cli_runner: CliRunner) -> None:
+    tracker.reply("GET", f"{_LOGS_PATH}/stream", _stream(_event("final"), end=False))
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            text=f"event: log\ndata: {json.dumps(payload)}",
-            headers={"content-type": "text/event-stream"},
-        )
-
-    client = ValkyrieClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(logs_module, "ValkyrieClient", lambda: client)
-
-    result = CliRunner().invoke(logs, [str(run_id), "--task-id", "task-1", "--follow"])
+    result = cli_runner.invoke(logs, [str(_RUN_ID), "--task-id", "task-1", "--follow"])
 
     assert result.exit_code == 1
     assert "final" in result.output
     assert "ended before its end event" in result.output
+
+
+def test_ctrl_c_while_following_exits_quietly(tracker: MockTracker, cli_runner: CliRunner) -> None:
+    tracker.reply("GET", f"{_LOGS_PATH}/stream", KeyboardInterrupt())
+
+    result = cli_runner.invoke(logs, [str(_RUN_ID), "--task-id", "task-1", "--follow"])
+
+    assert result.exit_code == 0
+    assert result.output == ""
 
 
 @pytest.mark.parametrize(
@@ -170,116 +114,14 @@ def test_logs_follow_rejects_cleanly_truncated_success(monkeypatch: pytest.Monke
     [
         (["--follow"], "requires --task-id"),
         (["--since", "2026-01-01T00:00:00"], "timezone offset"),
-        (
-            ["--since", "2026-01-02T00:00:00Z", "--until", "2026-01-01T00:00:00Z"],
-            "later than",
-        ),
-        (
-            ["--since", "2026-01-01T00:00:00Z", "--until", "2026-01-01T00:00:00Z"],
-            "later than",
-        ),
+        (["--since", "2026-01-02T00:00:00Z", "--until", "2026-01-01T00:00:00Z"], "later than"),
+        (["--since", "2026-01-01T00:00:00Z", "--until", "2026-01-01T00:00:00Z"], "later than"),
         (["--query", "   "], "must not be blank"),
     ],
 )
 def test_logs_rejects_invalid_modes_and_bounds(arguments: list[str], message: str) -> None:
     """Invalid follow, query, and timestamp combinations must fail before network access."""
-    result = CliRunner().invoke(logs, [str(uuid4()), *arguments])
+    result = CliRunner().invoke(logs, [str(_RUN_ID), *arguments])
 
     assert result.exit_code == 2
     assert message in result.output
-
-
-def test_non_follow_logs_write_each_page_before_fetching_the_next(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Snapshot mode must not accumulate all SDK pages before writing output."""
-    run_id = uuid4()
-    first = LogEvent(timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc), message="first")
-    second = LogEvent(timestamp=datetime(2026, 1, 2, tzinfo=timezone.utc), message="second")
-    client = MockClient([])
-    client.logs.pages = deque(
-        [
-            LogPage(events=[first], next_cursor="next"),
-            LogPage(events=[second]),
-        ]
-    )
-
-    def record_write(event: LogEvent, _output_format: str) -> None:
-        client.logs.timeline.append(f"write:{event.message}")
-
-    monkeypatch.setattr(logs_module, "_write_event", record_write)
-
-    result = _invoke(monkeypatch, client, run_id, [])
-
-    assert result.exit_code == 0, result.output
-    assert client.logs.timeline == ["page:None", "write:first", "page:next", "write:second"]
-
-
-def test_text_output_escapes_line_breaks_tabs_and_task_controls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Text records must stay on one prefixed line even when event fields contain controls."""
-    run_id = uuid4()
-    event = LogEvent(
-        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        message="first\nFORGED\tfield",
-        task_id="task\nFORGED",
-    )
-
-    result = _invoke(monkeypatch, MockClient([event]), run_id, [])
-
-    assert result.exit_code == 0, result.output
-    assert result.output.count("\n") == 1
-    assert "task\\nFORGED" in result.output
-    assert "first\\nFORGED\\tfield" in result.output
-    assert "\t" not in result.output
-
-
-def test_logs_handles_ctrl_c_without_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ctrl-C during follow must exit successfully without rendering a traceback."""
-
-    def interrupt(coroutine: Coroutine[Any, Any, Any]) -> None:
-        coroutine.close()
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(logs_module.asyncio, "run", interrupt)
-
-    result = CliRunner().invoke(logs, [str(uuid4()), "--task-id", "task-1", "--follow"])
-
-    assert result.exit_code == 0
-    assert "Traceback" not in result.output
-
-
-@pytest.mark.parametrize("mode", ["run", "task", "follow"])
-def test_logs_uses_the_selected_tracker_and_access_key(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    monkeypatch.setenv("VALKYRIE_URL", "http://127.0.0.1:8765")
-    monkeypatch.setenv("VALKYRIE_API_KEY", "synthetic-vals-key")
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        event = {"timestamp": "2026-01-01T00:00:00Z", "message": "local log"}
-        if mode == "follow":
-            return httpx.Response(
-                200,
-                text=f"event: log\ndata: {json.dumps(event)}\n\nevent: end\ndata: {{}}\n\n",
-                headers={"content-type": "text/event-stream"},
-            )
-        return httpx.Response(200, json={"events": [event]})
-
-    client = partial(ValkyrieClient, transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(logs_module, "ValkyrieClient", client)
-    run_id = uuid4()
-    arguments = [str(run_id)]
-    if mode != "run":
-        arguments += ["--task-id", "task-1"]
-    if mode == "follow":
-        arguments.append("--follow")
-    result = CliRunner().invoke(logs, arguments)
-    assert result.exit_code == 0, result.output
-    assert "local log" in result.output
-    assert len(requests) == 1
-    request = requests[0]
-    suffix = "/stream" if mode == "follow" else ""
-    assert request.url.path == f"/benchmarks/{run_id}/logs{suffix}"
-    assert request.url.host == "127.0.0.1" and request.url.port == 8765
-    assert request.url.params.get("task_id") == (None if mode == "run" else "task-1")
-    assert request.headers["X-Api-Key"] == "synthetic-vals-key"

@@ -214,7 +214,6 @@ def test_single_benchmark_returns_saved_bucket_after_default_changes(
     )
     database_session.add(benchmark)
     database_session.commit()
-    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "changed-default")
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "changed-log-default")
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")

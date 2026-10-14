@@ -24,6 +24,7 @@ EXPECTED_ALL = [
     "RunArtifactEntry",
     "RunArtifactsResponse",
     "RunArtifactDownloadResponse",
+    "AgentContract",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
@@ -48,8 +49,10 @@ EXPECTED_ALL = [
     "LogEvent",
     "LogPage",
     "Order",
+    "Parameter",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
+    "RunStreamEvent",
     "ResultsExistResponse",
     "S3UploadResultsResponse",
     "SchedulerActiveEntryResponse",
@@ -82,6 +85,7 @@ EXPECTED_ALL = [
     "ValkyrieClient",
     "ValkyrieConfig",
     "ValkyrieConfigError",
+    "ValkyrieContractError",
     "ValkyrieRunError",
     "ValkyrieSDKError",
     "ValkyrieStreamError",
@@ -109,12 +113,13 @@ EXPECTED_SIGNATURES = {
     RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "update_agent=False, benchmark_url=None"
+        "update_agent=False, benchmark_url=None, lambda_function=None"
     ),
     RunsResource.retry: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False, "
-        "update_agent=False, benchmark_url=None"
+        "update_agent=False, benchmark_url=None, lambda_function=None"
     ),
+    RunsResource.events: "self, run_id",
     LogsResource.page_task: (
         "self, run_id, task_id, *, query=None, start_time=None, end_time=None, cursor=None, limit=1000"
     ),
@@ -144,6 +149,7 @@ EXPECTED_SIGNATURES = {
     SettingsResource.remove_benchmark_service: "self, benchmark",
     BenchmarkServicesResource.catalog: "self",
     BenchmarkServicesResource.list: "self",
+    BenchmarkServicesResource.check: "self, services",
     BenchmarkServicesResource.task_ids: (
         "self, benchmark, *, dataset=None, service_headers=None, ignore_custom_services=False"
     ),
@@ -206,4 +212,3 @@ async def test_client_exposes_v2_resource_namespaces(make_client) -> None:
         assert isinstance(client.secrets, SecretsResource)
         assert isinstance(client.providers, ProvidersResource)
         assert isinstance(client.settings, SettingsResource)
-        assert not hasattr(client.services, "check")

@@ -4,11 +4,11 @@ from collections.abc import Callable, Sequence
 from urllib.parse import quote, urlparse
 
 import click
-from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth
+from valkyrie.sdk import BenchmarkServiceEntry, BenchmarkServiceHealth
 
+from valkyrie.cli.client import call
 from valkyrie.cli.display import format_table, paginate_cli_pages
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_client import TrackerService, request_tracker
+from valkyrie.cli.client import request_tracker
 
 
 @click.group()
@@ -63,24 +63,17 @@ def service_list() -> None:
     """
     saved: dict[str, dict[str, str]] = request_tracker("GET", "/settings")["benchmark_services"]
 
-    try:
-        with TrackerService() as tracker:
-            services_by_name: dict[str, BenchmarkServiceEntry | BenchmarkServiceHealth] = {
-                service.name: service for service in tracker.catalog_benchmark_services()
-            }
-            services_by_name.update(
-                {name: BenchmarkServiceEntry(name=name, url=entry["url"]) for name, entry in saved.items()}
-            )
-            if not services_by_name:
-                click.echo(click.style("No benchmark services configured.", fg="yellow"))
-                return
+    catalog = call(lambda client: client.services.catalog())
+    services_by_name = {service.name: service for service in catalog.services}
+    services_by_name.update({name: BenchmarkServiceEntry(name=name, url=entry["url"]) for name, entry in saved.items()})
+    if not services_by_name:
+        click.echo(click.style("No benchmark services configured.", fg="yellow"))
+        return
 
-            paginate_services(
-                list(services_by_name.values()),
-                check_services=lambda entries: tracker.check_benchmark_services(entries).services,
-            )
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e)) from e
+    paginate_services(
+        list(services_by_name.values()),
+        check_services=lambda entries: call(lambda client: client.services.check(entries)).services,
+    )
 
 
 def _service_source_domain(service: BenchmarkServiceHealth) -> str:

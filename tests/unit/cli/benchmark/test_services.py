@@ -1,83 +1,67 @@
-"""Benchmark service list against a fake Tracker.
+"""Benchmark service list against fake and mock Trackers.
 
 Run: uv run pytest tests/unit/cli/benchmark/test_services.py
 """
 
-from collections.abc import Callable
+import json
 from importlib import import_module
 
+import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth, BenchmarkServicesResponse
+from valkyrie.sdk import BenchmarkServiceEntry, BenchmarkServiceHealth
 
-from tests.unit.cli.fake_tracker import FakeTracker
 from valkyrie.cli.benchmark.services import paginate_services
 from valkyrie.cli.main import cli
+
+from tests.unit.cli.conftest import MockTracker
+from tests.unit.cli.fake_tracker import FakeTracker
 
 services_module = import_module("valkyrie.cli.benchmark.services")
 
 
-class HostedTracker:
-    """Stand in for TrackerService: a hosted catalog whose services answer health checks."""
-
-    catalog = [
-        BenchmarkServiceEntry(name="swebench", url="https://swebench.benchmarks.vals.ai"),
-        BenchmarkServiceEntry(name="fab", url="https://fab.benchmarks.vals.ai"),
-    ]
-
-    def __enter__(self) -> "HostedTracker":
-        return self
-
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def catalog_benchmark_services(self) -> list[BenchmarkServiceEntry]:
-        return self.catalog
-
-    def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
-        return BenchmarkServicesResponse(
-            services=[
-                BenchmarkServiceHealth(name=service.name, url=service.url, healthy=True, latency_ms=1)
-                for service in services
-            ]
-        )
-
-
 def test_list_merges_hosted_services_with_the_saved_urls(
-    fake_tracker: FakeTracker, monkeypatch: pytest.MonkeyPatch
+    tracker: MockTracker, fake_tracker: FakeTracker, cli_runner: CliRunner
 ) -> None:
-    """Saved URLs replace hosted services of the same name, and every row is health-checked."""
+    """A saved URL replaces the hosted service of the same name, others are added, and each row shows its latency."""
     fake_tracker.benchmark_services = {
-        "swebench": {"url": "http://local-swebench"},
+        "swebench": {"url": "http://localhost:9000"},
         "custombench": {"url": "http://custombench"},
     }
-    checked: list[tuple[str, str]] = []
+    catalog = [
+        {"name": "swebench", "url": "https://swebench.benchmarks.vals.ai"},
+        {"name": "fab", "url": "https://fab.benchmarks.vals.ai"},
+    ]
+    tracker.reply("GET", "/benchmark-services", httpx.Response(200, json={"services": catalog}))
 
-    def capture_paginated_services(
-        services: list[BenchmarkServiceEntry],
-        *,
-        check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]],
-    ) -> None:
-        checked.extend((service.name, service.url) for service in check_services(services))
+    def check(request: httpx.Request) -> httpx.Response:
+        services = json.loads(request.content)["services"]
+        health = [
+            {**entry, "healthy": entry["name"] == "fab", "latency_ms": 23 if entry["name"] == "fab" else None}
+            for entry in services
+        ]
+        return httpx.Response(200, json={"services": health})
 
-    monkeypatch.setattr(services_module, "TrackerService", HostedTracker)
-    monkeypatch.setattr(services_module, "paginate_services", capture_paginated_services)
+    tracker.reply("POST", "/benchmark-services", check)
 
-    result = CliRunner().invoke(cli, ["benchmark", "service", "list"])
+    result = cli_runner.invoke(cli, ["benchmark", "service", "list"])
 
     assert result.exit_code == 0, result.output
-    assert checked == [
-        ("swebench", "http://local-swebench"),
+    (checked,) = tracker.requested("POST", "/benchmark-services")
+    assert [(entry["name"], entry["url"]) for entry in json.loads(checked.content)["services"]] == [
+        ("swebench", "http://localhost:9000"),
         ("fab", "https://fab.benchmarks.vals.ai"),
         ("custombench", "http://custombench"),
     ]
+    rows = {line.split()[0]: line.split()[2:] for line in result.output.splitlines() if line.startswith(("sw", "fab"))}
+    assert rows["swebench"] == ["localhost:9000", "-"]
+    assert rows["fab"] == ["benchmarks.vals.ai", "23", "ms"]
 
 
-def test_list_without_any_services(fake_tracker: FakeTracker, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(services_module, "TrackerService", HostedTracker)
-    monkeypatch.setattr(HostedTracker, "catalog", [])
+def test_list_without_any_services(tracker: MockTracker, fake_tracker: FakeTracker, cli_runner: CliRunner) -> None:
+    tracker.reply("GET", "/benchmark-services", httpx.Response(200, json={"services": []}))
 
-    result = CliRunner().invoke(cli, ["benchmark", "service", "list"])
+    result = cli_runner.invoke(cli, ["benchmark", "service", "list"])
 
     assert result.exit_code == 0, result.output
     assert result.output == "No benchmark services configured.\n"

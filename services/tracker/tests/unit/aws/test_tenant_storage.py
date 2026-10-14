@@ -211,21 +211,11 @@ def test_recorded_storage_key_is_used_as_is(database_session: Session, s3: Magic
     s3.create_bucket.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("prefix", "eligible"),
-    [(None, True), (_PREFIX, False)],
-    ids=["no-prefix", "not-eligible"],
-)
-def test_managed_bucket_is_only_created_for_eligible_orgs_in_hosted_deployments(
-    database_session: Session,
-    s3: MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-    prefix: str | None,
-    eligible: bool,
+def test_no_bucket_is_created_without_a_tenant_bucket_prefix(
+    database_session: Session, s3: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     org = _org(database_session, "acme.example")
-    monkeypatch.setattr(config, "AWS_TENANT_BUCKET_PREFIX", prefix)
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(org.id) if eligible else "")
+    monkeypatch.setattr(config, "AWS_TENANT_BUCKET_PREFIX", None)
 
     ensure_managed_org_bucket(database_session, org)
 
@@ -233,24 +223,12 @@ def test_managed_bucket_is_only_created_for_eligible_orgs_in_hosted_deployments(
     assert org.storage_key is None
 
 
-def test_managed_bucket_is_created_for_an_eligible_org(
+def test_every_org_gets_a_bucket_on_its_first_request(
     database_session: Session, s3: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     org = _org(database_session, "acme.example")
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(org.id))
+    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", "")
 
     ensure_managed_org_bucket(database_session, org)
 
     assert org.storage_key == tenant_bucket_name("acme.example")
-
-
-def test_managed_bucket_is_created_for_a_shared_secret_tenant(
-    database_session: Session, s3: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    org = _org(database_session, "partner-acme")
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", "")
-    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", "partner-*")
-
-    ensure_managed_org_bucket(database_session, org)
-
-    assert org.storage_key == tenant_bucket_name("partner-acme")

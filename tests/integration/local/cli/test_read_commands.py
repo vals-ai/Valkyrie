@@ -4,7 +4,6 @@ Run: uv run pytest tests/integration/local/cli/test_read_commands.py
 """
 
 import json
-from functools import partial
 
 import httpx
 import pytest
@@ -69,17 +68,12 @@ def test_queue_status_reads_persisted_scheduler_state(
     cli_runner: CliRunner,
     seeded_runs: tuple[Benchmark, Benchmark],
     database_session: Session,
-    local_tracker_app: FastAPI,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Read a queued task through CLI, SDK, real tracker routing, and database queries."""
     running, _ = seeded_runs
     running.arguments = running.arguments.model_copy(update={"priority": 1, "queue_pool_id": "shared"})
     database_session.add(running)
     database_session.commit()
-
-    client = partial(ValkyrieClient, transport=httpx.ASGITransport(app=local_tracker_app))
-    monkeypatch.setattr("valkyrie.cli.queue.ValkyrieClient", client)
 
     result = cli_runner.invoke(cli, ["queue", "status", "--format", "json"])
 
@@ -122,7 +116,6 @@ async def test_queue_api_rejects_invalid_page_bounds(local_tracker_app: FastAPI,
     assert response.json()["detail"][0]["loc"] == ["query", parameter]
 
 
-@pytest.mark.usefixtures("sdk_tracker_transport")
 def test_cli_task_inspection(cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark]) -> None:
     running, finished = seeded_runs
     result = cli_runner.invoke(
@@ -194,7 +187,6 @@ async def test_sdk_iterates_run_and_task_pages(
     assert request.cursor is None
 
 
-@pytest.mark.usefixtures("sdk_tracker_transport")
 def test_cli_discovers_run_filters(cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark]) -> None:
     result = cli_runner.invoke(cli, ["run", "filter-options", "--format", "json"])
     assert result.exit_code == 0, result.output

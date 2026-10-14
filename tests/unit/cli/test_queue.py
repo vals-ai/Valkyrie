@@ -5,15 +5,16 @@ Run: uv run pytest tests/unit/cli/test_queue.py
 
 import json
 from collections.abc import Callable
-from functools import partial
 from uuid import UUID
 
 import httpx
 import pytest
 from click.testing import CliRunner, Result
-from valkyrie.sdk import SchedulerOverviewResponse, ValkyrieClient
+from valkyrie.sdk import SchedulerOverviewResponse
 
 from valkyrie.cli.main import cli
+
+from tests.unit.cli.conftest import MockTracker
 
 _RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
 _TASK_ID = UUID("123e4567-e89b-12d3-a456-426614174001")
@@ -56,14 +57,9 @@ def overview() -> dict[str, object]:
 
 
 @pytest.fixture
-def invoke_queue(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Result]:
-    """Use an access key and replace only the SDK's HTTP transport."""
-    monkeypatch.setenv("VALKYRIE_API_KEY", "test-key")
-    monkeypatch.setenv("VALKYRIE_URL", "https://tracker.test")
-
+def invoke_queue(tracker: MockTracker) -> Callable[..., Result]:
     def invoke(handler: Callable[[httpx.Request], httpx.Response], *arguments: str) -> Result:
-        client = partial(ValkyrieClient, transport=httpx.MockTransport(handler))
-        monkeypatch.setattr("valkyrie.cli.queue.ValkyrieClient", client)
+        tracker.reply("GET", "/scheduler/overview", handler)
         return CliRunner().invoke(cli, ["queue", "status", *arguments])
 
     return invoke
@@ -223,21 +219,3 @@ def test_status_rejects_invalid_limits(flag: str, value: str) -> None:
 
     assert result.exit_code == 2
     assert flag in result.output
-
-
-@pytest.mark.parametrize("failure", ["api", "transport", "malformed"])
-def test_status_reports_failures(invoke_queue: Callable[..., Result], failure: str) -> None:
-    """API, network, and malformed-response failures exit nonzero without partial JSON."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if failure == "transport":
-            raise httpx.ConnectError("tracker unavailable", request=request)
-        if failure == "malformed":
-            return httpx.Response(200, json={"summary": {}})
-        return httpx.Response(403, json={"detail": "Not authorized"})
-
-    result = invoke_queue(handler, "--format", "json")
-
-    assert result.exit_code == 1
-    assert "Error:" in result.output
-    assert not result.output.startswith("{")

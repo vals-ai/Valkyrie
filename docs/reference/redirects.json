@@ -284,6 +284,10 @@
     "destination": "/reference/sdk/runs#stream"
   },
   {
+    "source": "/reference/sdk/runs/events",
+    "destination": "/reference/sdk/runs#events"
+  },
+  {
     "source": "/reference/sdk/runs/results",
     "destination": "/reference/sdk/runs#results"
   },
@@ -384,6 +388,10 @@
     "destination": "/reference/sdk/services#catalog"
   },
   {
+    "source": "/reference/sdk/services/check",
+    "destination": "/reference/sdk/services#check"
+  },
+  {
     "source": "/reference/sdk/services/list",
     "destination": "/reference/sdk/services#list"
   },
@@ -466,6 +474,10 @@
   {
     "source": "/reference/sdk/models/artifacts/run-artifact-download-response",
     "destination": "/reference/sdk/models/artifacts#run-artifact-download-response"
+  },
+  {
+    "source": "/reference/sdk/models/agents/agent-contract",
+    "destination": "/reference/sdk/models/agents#agent-contract"
   },
   {
     "source": "/reference/sdk/models/agents/agent-contract-request",
@@ -564,12 +576,20 @@
     "destination": "/reference/sdk/models/runs#order"
   },
   {
+    "source": "/reference/sdk/models/agents/parameter",
+    "destination": "/reference/sdk/models/agents#parameter"
+  },
+  {
     "source": "/reference/sdk/models/runs/retry-mode",
     "destination": "/reference/sdk/models/runs#retry-mode"
   },
   {
     "source": "/reference/sdk/models/runs/retry-or-resume-benchmark-response",
     "destination": "/reference/sdk/models/runs#retry-or-resume-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/runs/run-stream-event",
+    "destination": "/reference/sdk/models/runs#run-stream-event"
   },
   {
     "source": "/reference/sdk/models/runs/results-exist-response",

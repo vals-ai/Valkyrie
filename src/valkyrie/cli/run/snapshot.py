@@ -7,26 +7,26 @@ from math import isfinite
 from typing import Any, Literal
 from uuid import UUID
 
-from tracker.database.models import BenchmarkStatus, TaskStatus
-from tracker.types import (
+from valkyrie.sdk import ValkyrieClient, ValkyrieSDKError
+from valkyrie.sdk.models import (
+    BenchmarkStatus,
     BenchmarkStatusEntry,
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
+    TaskStatus,
 )
 
 from valkyrie.cli.display import progress_percent, utc_isoformat
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_client import TrackerService
 
 RunEvent = Literal["snapshot", "update", "complete", "error", "stopped", "disconnect", "interrupted"]
 
 
-def fetch_run_metadata(tracker: TrackerService, run_id: UUID) -> FetchBenchmarkMetadataResponse | None:
+async def fetch_run_metadata(client: ValkyrieClient, run_id: UUID) -> FetchBenchmarkMetadataResponse | None:
     """Fetch optional identity metadata without making status monitoring fail."""
     try:
-        return tracker.fetch_benchmark_metadata(run_id)
-    except TrackerServiceError:
+        return await client.runs.metadata(run_id)
+    except ValkyrieSDKError:
         return None
 
 

@@ -1,18 +1,14 @@
 """Inspect stored run errors without downloading a results file."""
 
 import json
-from collections import defaultdict
-from collections.abc import Mapping
 from datetime import datetime
 from uuid import UUID
 
 import click
-from tracker.database.models import FailureCategory
-from tracker.types import FinalViewResponse
+from valkyrie.sdk.models import FinalViewResponse
 
-from valkyrie.cli.display import terminal_safe, utc_isoformat
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_client import TrackerService
+from valkyrie.cli.client import call
+from valkyrie.cli.display import group_task_errors, terminal_safe, utc_isoformat
 
 _TASK_ID_PREVIEW_LIMIT = 5
 
@@ -36,20 +32,6 @@ def _format_task_id_preview(task_ids: tuple[str, ...]) -> str:
     preview = ", ".join(terminal_safe(task_id, preserve_newlines=False) for task_id in visible_ids)
     omitted_count = len(task_ids) - len(visible_ids)
     return f"{preview} (+{omitted_count} more)" if omitted_count else preview
-
-
-def group_task_errors(
-    task_errors: Mapping[str, str],
-    task_failure_categories: Mapping[str, FailureCategory] | None = None,
-) -> list[tuple[FailureCategory | None, str, tuple[str, ...]]]:
-    """Group task IDs by identical (category, raw message) in deterministic display order."""
-    categories = task_failure_categories or {}
-    grouped: defaultdict[tuple[FailureCategory | None, str], list[str]] = defaultdict(list)
-    for task_id, message in task_errors.items():
-        grouped[(categories.get(task_id), message)].append(task_id)
-
-    groups = [(category, message, tuple(sorted(task_ids))) for (category, message), task_ids in grouped.items()]
-    return sorted(groups, key=lambda group: (-len(group[2]), group[2][0]))
 
 
 def build_run_errors_payload(
@@ -141,15 +123,7 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
 )
 def errors(run_id: UUID, output_format: str) -> None:
     """Show stored run and current task error messages."""
-    try:
-        with TrackerService() as tracker:
-            response = tracker.retrieve_results(run_id, s3=False)
-        if not isinstance(response, FinalViewResponse):
-            raise TrackerServiceError("Tracker returned an unexpected response while fetching run errors")
-    except TrackerServiceError as error:
-        safe_error = terminal_safe(str(error), preserve_newlines=False)
-        raise click.ClickException(safe_error) from error
-
+    response = call(lambda client: client.runs.results(run_id))
     if output_format == "json":
         click.echo(format_run_errors_json(response))
     else:

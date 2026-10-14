@@ -13,7 +13,7 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
-from tracker.aws.resolver import ManagedAWSEligibilityError
+from tracker.aws.resolver import ManagedAWSStorageUnavailableError
 from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.services import CloudRuntimeFactory
 from tracker.runtime.services import RuntimeServices
@@ -231,7 +231,7 @@ async def test_access_key_execution_for_managed_row_marks_run_error(
     assert "benchmark request requires an execution context" in (benchmark.error_message or "")
 
 
-async def test_ineligible_managed_execution_marks_run_error(
+async def test_unavailable_managed_storage_marks_run_error(
     contract: AgentContractRequest,
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -243,7 +243,7 @@ async def test_ineligible_managed_execution_marks_run_error(
     spans: list[tuple[str, dict[str, Any]]] = []
 
     def reject_managed_runtime(_org_id: UUID, properties: AWSResources | None = None) -> AWSRuntime:
-        raise ManagedAWSEligibilityError("Managed AWS access is not available for this organization")
+        raise ManagedAWSStorageUnavailableError("This run's storage is no longer available.")
 
     def record_span(name: str, **attributes: Any) -> MagicMock:
         spans.append((name, attributes))
@@ -259,7 +259,7 @@ async def test_ineligible_managed_execution_marks_run_error(
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Managed AWS access is not available for this organization" in (benchmark.error_message or "")
+    assert "This run's storage is no longer available." in (benchmark.error_message or "")
     finalized_span = next(attributes for name, attributes in spans if name == "run.finalized")
     assert finalized_span["benchmark_id"] == str(benchmark.id)
     assert finalized_span["status"] == "ERROR"

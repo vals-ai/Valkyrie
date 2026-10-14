@@ -1,16 +1,20 @@
 import click
 
-from valkyrie.cli.benchmark.services import service
-from valkyrie.cli.benchmark.tasks import tasks
+from valkyrie.cli.lazy import LazyGroup
 
 
-@click.group()
+@click.group(
+    cls=LazyGroup,
+    lazy_commands={
+        "tasks": ("valkyrie.cli.benchmark.tasks:tasks", "Save task IDs for a benchmark dataset."),
+        "service": (
+            "valkyrie.cli.benchmark.services:service",
+            "Save benchmark service URLs that your runs use instead of the hosted services.",
+        ),
+    },
+)
 def benchmark():
-    """Benchmark command group"""
-    pass
+    """Export the task IDs in a benchmark dataset, and save benchmark services."""
 
-
-benchmark.add_command(tasks)
-benchmark.add_command(service)
 
 __all__ = ["benchmark"]

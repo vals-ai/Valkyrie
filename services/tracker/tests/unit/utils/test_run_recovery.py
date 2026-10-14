@@ -1690,7 +1690,6 @@ class TestRunRecovery:
         database_session.add_all([benchmark_row, pending_task])
         database_session.commit()
 
-        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
@@ -1732,7 +1731,6 @@ class TestRunRecovery:
         database_session.add(org)
         benchmark_row.org_id = org_id
         monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: org)
-        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(org_id))
         benchmark_row.status = BenchmarkStatus.STOPPED
         database_session.add(benchmark_row)
         database_session.commit()
@@ -3348,7 +3346,6 @@ def managed_recovery_run(
         Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id="task-1", status=TaskStatus.STOPPED)
     )
     database_session.commit()
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "us-east-1")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "legacy-bucket")

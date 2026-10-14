@@ -5447,7 +5447,7 @@
         ]
       },
       "post": {
-        "description": "Create an organization with the caller as its admin.",
+        "description": "Create an organization with the caller as its admin, on a Tracker that allows self-serve organizations.",
         "operationId": "create_organization",
         "requestBody": {
           "content": {

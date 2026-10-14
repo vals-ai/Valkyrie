@@ -1,21 +1,14 @@
-import asyncio
+from collections.abc import Iterable
 from pathlib import Path
 from uuid import UUID
 
 import click
-from tracker.agent.contract import get_contract
-from tracker.agent.schemas import AgentConfig
-from tracker.database.models import AgentContractRequest
-from tracker.types import StartBenchmarkResponse
+from valkyrie.sdk import AgentContract, StartBenchmarkResponse, ValkyrieAPIError, ValkyrieClient, ValkyrieSDKError
 
-from valkyrie.sdk.errors import ValkyrieSDKError
-
-from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
+from valkyrie.cli.client import call
+from valkyrie.cli.display import local_time
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.agent.storage import push_agent_if_absent
-from valkyrie.cli.display import local_time
-from valkyrie.cli.tracker_client import TrackerService, response_error_detail
 
 
 BOX_WIDTH = 80
@@ -58,7 +51,7 @@ def format_agent_start_details(
     model: str | None,
     secrets: tuple[tuple[str, str], ...],
     kwargs: tuple[tuple[str, str], ...],
-    service_headers: dict[str, str],
+    header_names: Iterable[str],
 ) -> None:
     """Format and display the start details of an agent."""
     click.echo("┌─ Agent ".ljust(BOX_WIDTH, "─"))
@@ -69,8 +62,8 @@ def format_agent_start_details(
         click.echo(row("Secrets:" if index == 0 else "", f"{env_var} → {secret_name}"))
     if kwargs:
         click.echo(row("Kwargs:", ", ".join(f"{key}={value}" for key, value in kwargs)))
-    if service_headers:
-        click.echo(row("Headers:", ", ".join(service_headers)))
+    if header_names := list(header_names):
+        click.echo(row("Headers:", ", ".join(header_names)))
     click.echo("└".ljust(BOX_WIDTH, "─"))
     click.echo()
 
@@ -289,76 +282,77 @@ def start(
         raise click.UsageError("--connect cannot be used when --count is greater than 1")
 
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
+    agent_path = Path(agent)
 
-    service_headers = dict(headers)
+    async def start_runs(client: ValkyrieClient) -> None:
+        task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
+        format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display, priority)
+        format_agent_start_details(agent, model, secrets, kwargs, dict(headers))
 
-    task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
-    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display, priority)
-
-    format_agent_start_details(agent, model, secrets, kwargs, service_headers)
-
-    try:
-        agent_path = Path(agent)
-        if agent_path.is_dir():
-            candidates = (agent_path / "contract.yaml", agent_path / "contract.yml")
-            contract_file = next(filter(Path.exists, candidates), candidates[0])
-            local_contract = get_contract(contract_file, AgentConfig(model=model, kwargs=dict(kwargs)))
-            if not asyncio.run(push_agent_if_absent(local_contract.name, agent_path)):
-                raise click.UsageError(
-                    f"A published agent named '{local_contract.name}' already exists. "
-                    "Refusing to overwrite it as a side effect of run start. "
-                    f"Use --agent {local_contract.name} to run the published release, "
-                    "or explicitly publish the local directory under a different name first."
-                )
-            agent = local_contract.name
-
-        contract = AgentContractRequest(name=agent, model=model, kwargs=dict(kwargs), secrets=dict(secrets))
-
+        agent_name = await _publish_local_agent(client, agent_path, model, kwargs) if agent_path.is_dir() else agent
         confirmed_run_ids: list[UUID] = []
-        with TrackerService() as tracker:
-            for _ in range(count):
-                click.echo(f"{_CLEAR_LINE}Starting run for: {contract.name}...", nl=False)
-
-                try:
-                    response = tracker.start_benchmark(
-                        contract,
-                        benchmark,
-                        concurrency,
-                        ignore_custom_services,
-                        formatted_task_ids,
-                        slice_str,
-                        label,
-                        lambda_function,
-                        dataset,
-                        dataset_version,
-                        priority=priority,
-                        service_headers=service_headers,
-                        provider=provider,
-                    )
-                except TrackerServiceError as error:
-                    click.echo(_CLEAR_LINE, nl=False)
-                    format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=True)
-                    raise click.ClickException(str(error)) from error
-
+        for _ in range(count):
+            click.echo(f"{_CLEAR_LINE}Starting run for: {agent_name}...", nl=False)
+            try:
+                response = await client.runs.start(
+                    agent_name,
+                    benchmark,
+                    model=model,
+                    concurrency=concurrency,
+                    priority=priority,
+                    task_ids=formatted_task_ids,
+                    slice_str=slice_str,
+                    dataset=dataset,
+                    dataset_version=dataset_version,
+                    label=label,
+                    lambda_function=lambda_function,
+                    provider=provider,
+                    agent_kwargs=dict(kwargs),
+                    secrets=dict(secrets),
+                    service_headers=dict(headers),
+                    ignore_custom_services=ignore_custom_services,
+                )
+            except ValkyrieAPIError as error:
                 click.echo(_CLEAR_LINE, nl=False)
-                if response.status_code != 200:
-                    click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                    format_confirmed_start_summary(
-                        confirmed_run_ids, count, outcome_unknown=response.status_code >= 500
-                    )
-                    raise click.ClickException(str(response_error_detail(response)))
+                click.echo(click.style("Run failed to start!", fg="red", bold=True))
+                format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=error.status_code >= 500)
+                raise click.ClickException(str(error.detail)) from error
+            except (ValkyrieSDKError, ValueError):
+                click.echo(_CLEAR_LINE, nl=False)
+                format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=True)
+                raise
 
-                try:
-                    start_response = StartBenchmarkResponse.model_validate(response.json())
-                except ValueError as error:
-                    format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=True)
-                    raise click.ClickException("Tracker returned a malformed 200 start response.") from error
-
-                confirmed_run_ids.append(start_response.benchmark_id)
-                format_start_benchmark_response(start_response, connect)
-                if connect:
-                    stream_benchmark_status(tracker, start_response.benchmark_id)
+            click.echo(_CLEAR_LINE, nl=False)
+            confirmed_run_ids.append(response.benchmark_id)
+            format_start_benchmark_response(response, connect)
+            if connect:
+                await stream_benchmark_status(client, response.benchmark_id)
 
         format_confirmed_start_summary(confirmed_run_ids, count)
-    except (BundlerError, TrackerServiceError, ContractValidationError, ValkyrieSDKError) as e:
-        raise click.ClickException(str(e))
+
+    call(start_runs)
+
+
+async def _publish_local_agent(
+    client: ValkyrieClient, agent_path: Path, model: str | None, kwargs: tuple[tuple[str, str], ...]
+) -> str:
+    """Validate a local agent directory and its run kwargs, then publish it under its contract name.
+
+    Tracker renders the run from the published bundle, so a published agent with the same name
+    is never replaced here.
+    """
+    contract = AgentContract.from_directory(agent_path)
+    contract.validate_kwargs(dict(kwargs), model=model)
+    try:
+        await client.agents.push(agent_path, name=contract.name, overwrite=False)
+    except ValkyrieAPIError as error:
+        if error.status_code != 409:
+            raise
+        raise click.UsageError(
+            f"A published agent named '{contract.name}' already exists. "
+            "Refusing to overwrite it as a side effect of run start. "
+            f"Use --agent {contract.name} to run the published release, "
+            "or explicitly publish the local directory under a different name first."
+        ) from error
+
+    return contract.name

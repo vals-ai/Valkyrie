@@ -1,11 +1,11 @@
 from uuid import UUID
 
 import click
+from valkyrie.sdk import ValkyrieClient
 
-from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.client import call
 from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
-from valkyrie.cli.tracker_client import TrackerService
 
 
 @click.command(
@@ -39,19 +39,16 @@ def fetch(run_id: UUID, connect: bool, output_format: str):
     if not connect and output_format == "jsonl":
         raise click.UsageError("--format jsonl requires --connect.")
 
-    try:
-        with TrackerService() as tracker:
-            if connect:
-                if output_format == "jsonl":
-                    stream_benchmark_status(tracker, run_id, output_format="jsonl")
-                else:
-                    stream_benchmark_status(tracker, run_id, show_identity=True)
-            else:
-                response = tracker.fetch_benchmark(run_id)
-                if output_format == "json":
-                    metadata = fetch_run_metadata(tracker, run_id)
-                    click.echo(format_run_snapshot_json(response, metadata, event="snapshot"))
-                else:
-                    format_benchmark_status(response)
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
+    async def show(client: ValkyrieClient) -> None:
+        if connect and output_format == "jsonl":
+            await stream_benchmark_status(client, run_id, output_format="jsonl")
+        elif connect:
+            await stream_benchmark_status(client, run_id, show_identity=True)
+        elif output_format == "json":
+            response = await client.runs.fetch(run_id)
+            metadata = await fetch_run_metadata(client, run_id)
+            click.echo(format_run_snapshot_json(response, metadata, event="snapshot"))
+        else:
+            format_benchmark_status(await client.runs.fetch(run_id))
+
+    call(show)

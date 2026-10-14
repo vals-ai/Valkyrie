@@ -4,9 +4,8 @@ from uuid import UUID
 
 import click
 
+from valkyrie.cli.client import call
 from valkyrie.cli.display import terminal_safe
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_client import TrackerService
 
 
 @click.command(
@@ -26,21 +25,17 @@ from valkyrie.cli.tracker_client import TrackerService
 @click.option("--dry-run", is_flag=True, help="Show the tasks that would be stopped without changing the run")
 def shed(run_id: UUID, concurrency: int, dry_run: bool) -> None:
     """Lower concurrency, then force stop the newest tasks above the new limit."""
-    try:
-        with TrackerService() as tracker:
-            planned = tracker.shed_benchmark(run_id, concurrency, dry_run=True).task_ids
-            _print_tasks(planned, "Would force stop")
-            if dry_run:
-                return
-            if not click.confirm(f"Lower run {run_id} concurrency to {concurrency} and force stop the tasks above it?"):
-                click.echo("Cancelled.")
-                return
+    planned = call(lambda client: client.runs.shed(run_id, concurrency=concurrency, dry_run=True))
+    _print_tasks(planned.task_ids, "Would force stop")
+    if dry_run:
+        return
+    if not click.confirm(f"Lower run {run_id} concurrency to {concurrency} and force stop the tasks above it?"):
+        click.echo("Cancelled.")
+        return
 
-            response = tracker.shed_benchmark(run_id, concurrency, dry_run=False)
-        click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
-        _print_tasks(response.task_ids, "Force stopped")
-    except TrackerServiceError as error:
-        raise click.ClickException(str(error)) from error
+    response = call(lambda client: client.runs.shed(run_id, concurrency=concurrency))
+    click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
+    _print_tasks(response.task_ids, "Force stopped")
 
 
 def _print_tasks(task_ids: list[str], action: str) -> None:

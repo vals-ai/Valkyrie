@@ -21,6 +21,26 @@ async def catalog() -> BenchmarkServiceCatalogResponse
 
 For examples, see the [Python SDK guide](/sdk/resources).
 
+## `client.services.check` {#check}
+
+Health-check services through Tracker, such as custom URLs alongside catalog entries.
+
+```python Signature
+async def check(services: Sequence[BenchmarkServiceEntry]) -> BenchmarkServicesResponse
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"services"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · Sequence[<a href="/reference/sdk/models/services#benchmark-service-entry"><code>BenchmarkServiceEntry</code></a>]</span></div>
+</div>
+
+**Returns**
+
+<a href="/reference/sdk/models/services#benchmark-services-response"><code>BenchmarkServicesResponse</code></a>
+
+For examples, see the [Python SDK guide](/sdk/resources).
+
 ## `client.services.list` {#list}
 
 List hosted services and return their current health.

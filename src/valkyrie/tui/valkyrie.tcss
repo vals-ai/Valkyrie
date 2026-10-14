@@ -1,0 +1,183 @@
+Screen {
+    background: $background;
+}
+
+TopBar {
+    height: 1;
+    padding: 0 1;
+    background: $surface;
+}
+
+#body {
+    height: 1fr;
+}
+
+.panel {
+    border: round $border-blurred;
+    border-title-color: $text-muted;
+    border-title-align: left;
+    padding: 0 1;
+    background: $background;
+}
+
+.panel:focus,
+.panel:focus-within {
+    border: round $border;
+    border-title-color: $accent;
+    border-title-style: bold;
+}
+
+#runs {
+    width: 1fr;
+    height: 1fr;
+    padding: 0;
+}
+
+#preview {
+    width: 40;
+    height: 1fr;
+}
+
+Screen.-narrow #preview {
+    display: none;
+}
+
+#summary {
+    height: auto;
+    padding: 0 2;
+    margin-top: 1;
+}
+
+#tasks {
+    width: 50;
+    height: 1fr;
+    padding: 0;
+}
+
+#task-pane {
+    width: 1fr;
+    height: 1fr;
+}
+
+Screen.-zoomed #tasks {
+    display: none;
+}
+
+#error-groups {
+    width: 1fr;
+    height: 1fr;
+    padding: 0;
+    overflow-x: hidden;
+}
+
+#error-pane {
+    width: 48;
+    height: 1fr;
+}
+
+Screen.-narrow #error-pane {
+    display: none;
+}
+
+TaskLog {
+    background: $background;
+    scrollbar-size-vertical: 1;
+}
+
+#detail {
+    padding: 0 1;
+}
+
+KeyBar {
+    height: 1;
+    padding: 0 1;
+}
+
+CommandLine {
+    height: 1;
+    padding: 0 1;
+    background: $surface;
+}
+
+DataTable {
+    background: $background;
+    scrollbar-size-vertical: 1;
+}
+
+DataTable:focus {
+    background-tint: $foreground 0%;
+}
+
+DataTable > .datatable--header {
+    background: $background;
+    color: $text-muted;
+    text-style: none;
+}
+
+DataTable > .datatable--header-hover {
+    background: $background;
+}
+
+#filter-bar,
+#search-bar {
+    display: none;
+    height: 1;
+    background: $surface;
+}
+
+Screen.-filtering #filter-bar,
+Screen.-searching #search-bar {
+    display: block;
+}
+
+Screen.-filtering KeyBar,
+Screen.-searching KeyBar {
+    display: none;
+}
+
+#filter-prompt,
+#search-prompt {
+    width: 2;
+    padding-left: 1;
+    color: $accent;
+    text-style: bold;
+}
+
+#filter,
+#search {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: $surface;
+}
+
+KeysScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+#keys {
+    width: auto;
+    height: auto;
+    padding: 1 2;
+    border: round $border;
+    border-title-color: $accent;
+    border-title-style: bold;
+    border-subtitle-color: $text-muted;
+}
+
+EnvironmentScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+#environments {
+    width: auto;
+    height: auto;
+    padding: 1 2;
+    border: round $border;
+    border-title-color: $accent;
+    border-title-style: bold;
+    border-subtitle-color: $text-muted;
+}
+

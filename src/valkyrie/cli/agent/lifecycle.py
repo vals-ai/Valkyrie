@@ -1,12 +1,11 @@
-import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
 
 import click
-from valkyrie.sdk import ValkyrieSDKError
+from valkyrie.sdk import ValkyrieClient
 
-from valkyrie.cli.agent.storage import download_agent, install_agent, list_agents, push_agent, remove_agent
+from valkyrie.cli.client import call
 from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
 
 
@@ -30,13 +29,8 @@ def install(github_url: str, name: str | None):
         valkyrie agent install https://github.com/org/registry/tree/main/agents/codex
         valkyrie agent install https://github.com/org/registry/tree/main/agents/codex --name my-agent
     """
-    try:
-        resolved_name = asyncio.run(install_agent(name, github_url))
-        click.echo(click.style(f"✓ Agent '{resolved_name}' installed successfully!", fg="green", bold=True))
-    except (ValkyrieSDKError, ValueError, OSError) as e:
-        raise click.ClickException(str(e))
-    except Exception as e:
-        raise click.ClickException(f"Unexpected error: {str(e)}")
+    entry = call(lambda client: client.agents.install(github_url, name=name))
+    click.echo(click.style(f"✓ Agent '{entry.name}' installed successfully!", fg="green", bold=True))
 
 
 @click.command(name="push", help="Upload a local agent through Tracker, replacing an existing alias.")
@@ -49,29 +43,19 @@ def install(github_url: str, name: str | None):
     help="Agent name (defaults to the contract name)",
 )
 def push(agent_path: Path, name: str | None):
-    try:
-        agent_name = asyncio.run(push_agent(name or None, agent_path))
-        click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
-    except (ValkyrieSDKError, ValueError, OSError) as e:
-        raise click.ClickException(str(e))
-    except Exception as e:
-        raise click.ClickException(f"Unexpected error: {str(e)}")
+    entry = call(lambda client: client.agents.push(agent_path, name=name or None))
+    click.echo(click.style(f"✓ Agent '{entry.name}' pushed successfully!", fg="green", bold=True))
 
 
 @click.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
 def agent_remove(agent_name: str):
-    try:
-        if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
-            click.echo("Cancelled.")
-            return
+    if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
+        click.echo("Cancelled.")
+        return
 
-        asyncio.run(remove_agent(agent_name))
-        click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
-    except (ValkyrieSDKError, ValueError, OSError) as e:
-        raise click.ClickException(str(e))
-    except Exception as e:
-        raise click.ClickException(f"Unexpected error: {str(e)}")
+    call(lambda client: client.agents.remove(agent_name))
+    click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
 
 
 @click.command(name="download", help="Download an installed agent")
@@ -91,13 +75,8 @@ def download(agent_name: str, output_dir: Path | None, overwrite: bool):
     Example:
         valkyrie agent download my-agent
     """
-    try:
-        asyncio.run(download_agent(agent_name, output_dir, overwrite=overwrite))
-        click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
-    except (ValkyrieSDKError, ValueError, OSError) as e:
-        raise click.ClickException(str(e))
-    except Exception as e:
-        raise click.ClickException(f"Unexpected error: {str(e)}")
+    call(lambda client: client.agents.download(agent_name, output_dir, overwrite=overwrite))
+    click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
 
 
 @click.command(name="list", help="List installed agents")
@@ -118,34 +97,37 @@ def list_installed_agents(all_agents: bool, output_format: str):
     Example:
         valkyrie agent list
     """
-    try:
-        agents = asyncio.run(list_agents())
 
-        if output_format == "json":
-            click.echo(
-                json.dumps(
-                    {
-                        "agents": [
-                            {"name": name, "last_modified": modified.isoformat() if modified else None}
-                            for name, modified in agents
-                        ]
-                    }
-                )
+    async def list_agents(client: ValkyrieClient) -> list[tuple[str, datetime | None]]:
+        response = await client.agents.list()
+        return [
+            (agent.name, datetime.fromisoformat(agent.last_modified) if agent.last_modified else None)
+            for agent in response.agents
+        ]
+
+    agents = call(list_agents)
+
+    if output_format == "json":
+        click.echo(
+            json.dumps(
+                {
+                    "agents": [
+                        {"name": name, "last_modified": modified.isoformat() if modified else None}
+                        for name, modified in agents
+                    ]
+                }
             )
-            return
+        )
+        return
 
-        if not agents:
-            click.echo(click.style("No agents found.", fg="yellow"))
-            return
+    if not agents:
+        click.echo(click.style("No agents found.", fg="yellow"))
+        return
 
-        if all_agents:
-            _format_agents_response(agents, 1, 1, len(agents))
-        else:
-            paginate_agents(agents)
-    except (ValkyrieSDKError, ValueError, OSError) as e:
-        raise click.ClickException(str(e))
-    except Exception as e:
-        raise click.ClickException(f"Unexpected error: {str(e)}")
+    if all_agents:
+        _format_agents_response(agents, 1, 1, len(agents))
+    else:
+        paginate_agents(agents)
 
 
 def _format_agents_response(

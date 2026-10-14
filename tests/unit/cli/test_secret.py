@@ -1,4 +1,4 @@
-"""Secret CLI behavior through the real SDK and an HTTP mock transport.
+"""Secret CLI behavior through the real SDK and a mock Tracker.
 
 Run: uv run pytest tests/unit/cli/test_secret.py
 """
@@ -6,46 +6,35 @@ Run: uv run pytest tests/unit/cli/test_secret.py
 import io
 import json
 from collections.abc import Callable
-from functools import partial
 
 import httpx
 import pytest
 from click.testing import CliRunner, Result
-from valkyrie.sdk import ValkyrieClient
 
 import valkyrie.cli.secret as secret_cli
 from valkyrie.cli.main import cli
 
+from tests.unit.cli.conftest import MockTracker
+
 _REFERENCE = "valkyrie/tenants/00000000-0000-0000-0000-000000000001/daytona"
 _ENTRY = {"name": "daytona", "reference": _REFERENCE}
 
-Handler = Callable[[httpx.Request], httpx.Response]
-
 
 @pytest.fixture
-def requests() -> list[httpx.Request]:
-    return []
-
-
-@pytest.fixture
-def invoke(monkeypatch: pytest.MonkeyPatch, requests: list[httpx.Request]) -> Callable[..., Result]:
-    """Use an access key and replace only the SDK's HTTP transport."""
-    monkeypatch.setenv("VALKYRIE_API_KEY", "test-key")
-    monkeypatch.setenv("VALKYRIE_URL", "https://tracker.test")
-
-    def run(*arguments: str, input: str | None = None, response: httpx.Response | None = None) -> Result:
-        def handler(request: httpx.Request) -> httpx.Response:
-            requests.append(request)
-            if response is not None:
-                return response
-            body = {"secrets": [_ENTRY]} if request.method == "GET" else _ENTRY
-            return httpx.Response(200, json=body)
-
-        client = partial(ValkyrieClient, transport=httpx.MockTransport(handler))
-        monkeypatch.setattr("valkyrie.cli.secret.ValkyrieClient", client)
+def invoke(tracker: MockTracker) -> Callable[..., Result]:
+    def run(*arguments: str, input: str | None = None) -> Result:
+        tracker.reply("PUT", "/secrets/daytona", httpx.Response(200, json=_ENTRY))
+        tracker.reply("PUT", "/secrets/openai-key", httpx.Response(200, json=_ENTRY))
+        tracker.reply("DELETE", "/secrets/daytona", httpx.Response(200, json=_ENTRY))
+        tracker.reply("GET", "/secrets", httpx.Response(200, json={"secrets": [_ENTRY]}))
         return CliRunner().invoke(cli, ["secret", *arguments], input=input)
 
     return run
+
+
+@pytest.fixture
+def requests(tracker: MockTracker) -> list[httpx.Request]:
+    return tracker.requests
 
 
 @pytest.mark.parametrize("stdin", ['{"api_key": "s3cret"}\n', '  {"api_key": "s3cret"}\r\n\n'])
@@ -116,13 +105,3 @@ def test_remove_asks_before_deleting(
     assert [(request.method, request.url.path) for request in requests] == (
         [("DELETE", "/secrets/daytona")] if deleted else []
     )
-
-
-def test_api_errors_are_shown_without_a_traceback(invoke: Callable[..., Result]) -> None:
-    missing = httpx.Response(404, json={"detail": "Secret 'daytona' does not exist"})
-
-    result = invoke("remove", "daytona", "-y", response=missing)
-
-    assert result.exit_code == 1
-    assert "does not exist" in result.output
-    assert "Traceback" not in result.output

@@ -49,7 +49,7 @@ TENANT_HEADER = "x-valkyrie-tenant"
 NOT_A_MEMBER = "This login is not a member of the requested organization"
 SEVERAL_ORGANIZATIONS = "This login belongs to several organizations. Choose one with `valkyrie org use NAME`."
 NO_ORGANIZATION = (
-    "This login is not in an organization yet. Create one with `valkyrie org create ID`, "
+    "This login is not in an organization yet. Ask Vals AI to add you, "
     "or ask an organization admin to run `valkyrie org invite EMAIL`."
 )
 LOGIN_REQUIRED = "This needs a `valkyrie login` session; unset VALKYRIE_API_KEY if it is set."
@@ -274,7 +274,7 @@ def _require_org(tenant_name: str, session: Session) -> Org:
 
 
 def prepare_org_storage(session: Session, org: Org) -> None:
-    """Give an organization that may use managed AWS its own bucket before its first request needs it."""
+    """Give the organization its own bucket before its first request needs it."""
     try:
         ensure_managed_org_bucket(session, org)
     except TenantBucketError as exc:

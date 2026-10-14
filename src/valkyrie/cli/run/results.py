@@ -2,11 +2,11 @@ from pathlib import Path
 from uuid import UUID
 
 import click
-from tracker.types import FinalViewResponse, RetrieveResultsResponse
+from valkyrie.sdk import ValkyrieClient
+from valkyrie.sdk.models import FinalViewResponse, RetrieveResultsResponse
 
-from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.client import call
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.tracker_client import TrackerService
 
 
 def _format_expiration(seconds: int) -> str:
@@ -75,51 +75,40 @@ def results(
         raise click.UsageError("--preview cannot be combined with --path")
 
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
-    save_to_s3 = s3 or preview
 
     click.echo(f"Retrieving results for run: {run_id}")
 
-    try:
-        with TrackerService() as tracker:
-            if s3 and not preview:
-                if tracker.check_results_exist_in_s3(run_id):
-                    if not click.confirm("Results already exist in S3. Overwrite?"):
-                        raise click.Abort()
+    async def retrieve(client: ValkyrieClient) -> RetrieveResultsResponse:
+        if preview:
+            return await client.runs.preview(run_id, task_ids=subset_task_ids)
+        if s3 and (await client.runs.results_exist(run_id)).exists:
+            if not click.confirm("Results already exist in S3. Overwrite?"):
+                raise click.Abort()
+        return await client.runs.results(run_id, task_ids=subset_task_ids, upload_to_s3=s3)
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(
-                run_id,
-                save_to_s3,
-                task_ids=subset_task_ids,
-                preview=preview,
-            )
-
-            if isinstance(results_response, FinalViewResponse):
-                if subset_task_ids:
-                    scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
-                    click.echo(
-                        click.style(
-                            f"Scored over {scored} of {len(subset_task_ids)} subset task ids.",
-                            fg="yellow" if scored < len(subset_task_ids) else "green",
-                        )
-                    )
-                default_path: Path = Path(f"./results-{run_id}.json")
-
-                download_final_view(path or default_path, results_response)
-            else:
-                click.echo(
-                    click.style(
-                        f"Download (expires in {_format_expiration(results_response.expires_in)}):",
-                        fg="cyan",
-                        bold=True,
-                    )
+    results_response = call(retrieve)
+    if isinstance(results_response, FinalViewResponse):
+        if subset_task_ids:
+            scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
+            click.echo(
+                click.style(
+                    f"Scored over {scored} of {len(subset_task_ids)} subset task ids.",
+                    fg="yellow" if scored < len(subset_task_ids) else "green",
                 )
-                click.echo(f"  {results_response.presigned_url}")
-                click.echo()
-                click.echo(click.style("AWS Console:", fg="cyan", bold=True))
-                click.echo(f"  {results_response.console_url}")
-
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
+            )
+        download_final_view(path or Path(f"./results-{run_id}.json"), results_response)
+    else:
+        click.echo(
+            click.style(
+                f"Download (expires in {_format_expiration(results_response.expires_in)}):",
+                fg="cyan",
+                bold=True,
+            )
+        )
+        click.echo(f"  {results_response.presigned_url}")
+        click.echo()
+        click.echo(click.style("AWS Console:", fg="cyan", bold=True))
+        click.echo(f"  {results_response.console_url}")
 
 
 def download_final_view(path: Path, final_view: FinalViewResponse) -> None:

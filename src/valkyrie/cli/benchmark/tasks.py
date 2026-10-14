@@ -2,8 +2,7 @@ from pathlib import Path
 
 import click
 
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_client import TrackerService
+from valkyrie.cli.client import call
 
 
 @click.command(
@@ -51,16 +50,14 @@ def tasks(
     """
     Save task IDs for a benchmark dataset.
     """
-    try:
-        with TrackerService() as tracker:
-            response = tracker.fetch_benchmark_tasks(
-                benchmark_name,
-                dataset=dataset,
-                ignore_custom_services=ignore_custom_services,
-                service_headers=dict(headers),
-            )
-            output_path = output or Path(f"{benchmark_name}-{dataset or 'default'}-tasks.txt")
-            output_path.write_text("\n".join(response) + "\n", encoding="utf-8")
-            click.echo(f"Wrote {len(response)} task IDs to {output_path}")
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
+    task_ids = call(
+        lambda client: client.services.task_ids(
+            benchmark_name,
+            dataset=dataset,
+            service_headers=dict(headers),
+            ignore_custom_services=ignore_custom_services,
+        )
+    )
+    output_path = output or Path(f"{benchmark_name}-{dataset or 'default'}-tasks.txt")
+    output_path.write_text("\n".join(task_ids) + "\n", encoding="utf-8")
+    click.echo(f"Wrote {len(task_ids)} task IDs to {output_path}")

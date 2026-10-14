@@ -6,7 +6,7 @@ from urllib.parse import quote
 import click
 import httpx
 
-from valkyrie.cli.tracker_client import request_tracker
+from valkyrie.cli.client import request_tracker
 from valkyrie.sdk import ValkyrieConfig
 from valkyrie.sdk.login import LoginSession, SessionAuth, device_login
 
@@ -14,7 +14,7 @@ from valkyrie.sdk.login import LoginSession, SessionAuth, device_login
 def show_organizations(listing: dict[str, Any]) -> None:
     if not listing["organizations"] and not listing["invitations"]:
         click.echo(
-            "You're not in an organization yet. Create one with `valkyrie org create ID`, "
+            "You're not in an organization yet. Ask Vals AI to add you, "
             "or ask an organization admin to run `valkyrie org invite EMAIL`."
         )
     for entry in listing["organizations"]:

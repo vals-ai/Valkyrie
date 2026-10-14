@@ -1,6 +1,7 @@
 """Fixtures for local CLI-to-tracker integration tests."""
 
 from collections.abc import Generator
+from functools import partial
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -8,7 +9,6 @@ import httpx
 import pytest
 from click.testing import CliRunner
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from services.tracker import main as tracker_main
@@ -30,6 +30,9 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
+from valkyrie.sdk import ValkyrieClient
+
+from valkyrie.cli import client as cli_client
 
 TEST_ORG_ID = UUID("c15649d2-6ec4-4b4a-974a-cc00ea80bbf7")
 
@@ -80,7 +83,6 @@ def local_tracker_app(
     assert org is not None
     tracker_main.app.dependency_overrides[get_session] = get_test_session
     tracker_main.app.dependency_overrides[get_current_org] = lambda: org
-    monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "test-bucket")
     monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_LOG_GROUP", "test-log-group")
@@ -100,16 +102,11 @@ def route_cli_to_local_tracker(
     local_tracker_app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Route production tracker clients through the local FastAPI app."""
+    """Send the CLI's real SDK requests through the local FastAPI app."""
     monkeypatch.setenv("VALKYRIE_URL", "http://tracker.test")
-
-    def build_client(*, timeout: int, auth: httpx.Auth | None) -> TestClient:
-        del timeout
-        client = TestClient(local_tracker_app)
-        client.auth = auth
-        return client
-
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+    monkeypatch.setattr(
+        cli_client, "ValkyrieClient", partial(ValkyrieClient, transport=httpx.ASGITransport(app=local_tracker_app))
+    )
 
 
 @pytest.fixture
@@ -180,14 +177,3 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
     database_session.commit()
     database_session.expire_all()
     return running, finished
-
-
-@pytest.fixture
-def sdk_tracker_transport(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Send real SDK requests through the local Tracker app."""
-
-    async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-        async with httpx.ASGITransport(app=local_tracker_app) as transport:
-            return await transport.handle_async_request(request)
-
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)

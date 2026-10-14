@@ -1,15 +1,13 @@
 """Exceptions raised by the Valkyrie SDK."""
 
-import logging
-from collections.abc import AsyncIterator, Callable
-from functools import wraps
-from typing import Any, ParamSpec, TypeVar
+from typing import Any
 
-import httpx
+from pydantic import ValidationError
 
-logger = logging.getLogger(__name__)
-Params = ParamSpec("Params")
-StreamItem = TypeVar("StreamItem")
+_FIELD_ERROR_TEMPLATES = {
+    "missing": "'{field}' is required but was not provided",
+    "literal_error": "'{field}' has an invalid value. {msg}",
+}
 
 
 class ValkyrieSDKError(Exception):
@@ -41,23 +39,20 @@ class ValkyrieStreamError(ValkyrieSDKError):
     """A run update stream returned an error or invalid event."""
 
 
-def handle_httpx_stream_errors(
-    message: str,
-) -> Callable[[Callable[Params, AsyncIterator[StreamItem]]], Callable[Params, AsyncIterator[StreamItem]]]:
-    """Log and translate HTTPX failures from an async stream."""
+class ValkyrieContractError(ValkyrieSDKError):
+    """Raised when an agent contract, or the kwargs passed to it, fails validation."""
 
-    def decorator(
-        function: Callable[Params, AsyncIterator[StreamItem]],
-    ) -> Callable[Params, AsyncIterator[StreamItem]]:
-        @wraps(function)
-        async def wrapped(*args: Params.args, **kwargs: Params.kwargs) -> AsyncIterator[StreamItem]:
-            try:
-                async for item in function(*args, **kwargs):
-                    yield item
-            except httpx.HTTPError as exc:
-                logger.warning("%s: %s", message, exc)
-                raise ValkyrieTransportError(f"{message}: {exc}") from exc
+    @classmethod
+    def from_validation_error(cls, error: ValidationError, context: str = "") -> "ValkyrieContractError":
+        """Build one from a pydantic ValidationError: `context` first when given, then one line per invalid field.
 
-        return wrapped
+        Fields are worded the way Tracker words them, so the CLI and the server report a bad contract alike.
+        """
+        lines: list[str] = []
+        for detail in error.errors():
+            field = ".".join(str(location) for location in detail["loc"])
+            template = _FIELD_ERROR_TEMPLATES.get(detail["type"], "'{field}': {msg}")
+            lines.append(f"  - {template.format(field=field, msg=detail['msg'])}")
 
-    return decorator
+        message = "\n".join(lines)
+        return cls(f"{context}\n{message}" if context else message)

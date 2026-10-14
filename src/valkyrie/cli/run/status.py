@@ -1,13 +1,13 @@
 from uuid import UUID
 
 import click
-from tracker.types import BenchmarkStatusEntry
+from valkyrie.sdk import ValkyrieClient
+from valkyrie.sdk.models import BenchmarkStatusEntry
 
+from valkyrie.cli.client import call
 from valkyrie.cli.display import format_table, progress_percent
-from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.progress import styled_status
 from valkyrie.cli.run.snapshot import format_run_status_json
-from valkyrie.cli.tracker_client import TrackerService
 
 _STATUS_BATCH_SIZE = 50
 
@@ -39,11 +39,7 @@ def status_runs(run_ids_value: str, output_format: str) -> None:
     """Fetch lightweight progress for a deterministic set of run IDs."""
     run_ids = parse_run_ids(run_ids_value)
 
-    try:
-        with TrackerService() as tracker:
-            entries = fetch_status_entries(tracker, run_ids)
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
+    entries = call(lambda client: fetch_status_entries(client, run_ids))
 
     entries_by_id = {entry.id: entry for entry in entries}
     ordered_entries = [entries_by_id[run_id] for run_id in run_ids if run_id in entries_by_id]
@@ -83,11 +79,11 @@ def parse_run_ids(value: str) -> list[UUID]:
     return run_ids
 
 
-def fetch_status_entries(tracker: TrackerService, run_ids: list[UUID]) -> list[BenchmarkStatusEntry]:
+async def fetch_status_entries(client: ValkyrieClient, run_ids: list[UUID]) -> list[BenchmarkStatusEntry]:
     """Fetch status entries in URL-safe batches without writing partial output."""
     entries: list[BenchmarkStatusEntry] = []
     for start in range(0, len(run_ids), _STATUS_BATCH_SIZE):
-        response = tracker.fetch_benchmark_statuses(run_ids[start : start + _STATUS_BATCH_SIZE])
+        response = await client.benchmarks.statuses(run_ids[start : start + _STATUS_BATCH_SIZE])
         entries.extend(response.entries)
     return entries
 

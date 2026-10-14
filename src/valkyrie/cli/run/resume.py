@@ -2,12 +2,11 @@ from copy import copy
 from uuid import UUID
 
 import click
-from tracker.database.models import RetryMode
+from valkyrie.sdk import ValkyrieClient
 
-from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.client import call
 from valkyrie.cli.run.progress import echo_next_steps, stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.tracker_client import TrackerService
 
 
 @click.command(
@@ -104,32 +103,30 @@ def resume(
     lambda_function: str | None,
     connect: bool,
 ):
-    retry_task_ids = resolve_task_ids(task_ids, task_ids_file) or []
+    retry_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
-    # NOTE: workaround for auto retrying tasks when using the retry command
+    # The retry alias shares this callback and always retries errored tasks.
     if ctx.info_name == "retry":
         retry = True
 
-    try:
-        with TrackerService() as tracker:
-            _ = tracker.retry_or_resume_benchmark(
-                run_id,
-                retry,
-                RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
-                concurrency,
-                retry_task_ids,
-                service_headers=dict(headers),
-                secrets=dict(secrets),
-                benchmark_url=benchmark_url,
-                lambda_function=lambda_function,
-                update_agent=update_agent,
-            )
-            click.echo(click.style(f"✓ Run {'retried' if retry else 'resumed'} successfully!", fg="green", bold=True))
-            echo_next_steps(run_id, track=not connect)
-            if connect:
-                stream_benchmark_status(tracker, run_id)
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
+    async def restart(client: ValkyrieClient) -> None:
+        await (client.runs.retry if retry else client.runs.resume)(
+            run_id,
+            concurrency=concurrency,
+            task_ids=retry_task_ids,
+            secrets=dict(secrets),
+            service_headers=dict(headers),
+            from_scratch=from_scratch,
+            update_agent=update_agent,
+            benchmark_url=benchmark_url,
+            lambda_function=lambda_function,
+        )
+        click.echo(click.style(f"✓ Run {'retried' if retry else 'resumed'} successfully!", fg="green", bold=True))
+        echo_next_steps(run_id, track=not connect)
+        if connect:
+            await stream_benchmark_status(client, run_id)
+
+    call(restart)
 
 
 def _retry_alias_params() -> list[click.Parameter]:

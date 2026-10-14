@@ -4,60 +4,25 @@ Run: uv run pytest tests/unit/cli/run/test_results.py
 """
 
 import json
-from importlib import import_module
 from pathlib import Path
 from uuid import UUID
 
+import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import BenchmarkStatus
-from tracker.types import FinalViewResponse, RetrieveResultsResponse, S3UploadResultsResponse
+from valkyrie.sdk.models import BenchmarkStatus, S3UploadResultsResponse
 
-from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.results import results
 
-from tests.unit.cli.factories import make_final_view
-
-results_module = import_module("valkyrie.cli.run.results")
+from tests.unit.cli.conftest import MockTracker
+from tests.unit.cli.factories import make_final_view, ok
 
 _RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
-
-
-class MockResultsTracker:
-    """Return configured result payloads and record retrieval choices."""
-
-    def __init__(
-        self,
-        response: RetrieveResultsResponse | TrackerServiceError,
-        *,
-        results_exist: bool = False,
-    ) -> None:
-        self.response = response
-        self.results_exist = results_exist
-        self.retrieve_calls: list[tuple[UUID, bool, list[str] | None, bool]] = []
-
-    def __enter__(self) -> "MockResultsTracker":
-        return self
-
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def check_results_exist_in_s3(self, _run_id: UUID) -> bool:
-        return self.results_exist
-
-    def retrieve_results(
-        self,
-        run_id: UUID,
-        s3: bool,
-        task_ids: list[str] | None = None,
-        *,
-        preview: bool = False,
-    ) -> RetrieveResultsResponse:
-        self.retrieve_calls.append((run_id, s3, task_ids, preview))
-        if isinstance(self.response, TrackerServiceError):
-            raise self.response
-
-        return self.response
+_S3_RESULTS = S3UploadResultsResponse(
+    s3_url="s3://bucket/results.json",
+    presigned_url="https://download.example/results",
+    console_url="https://console.aws.amazon.com/s3/object/results",
+)
 
 
 class TestResultsCommand:
@@ -66,7 +31,7 @@ class TestResultsCommand:
     def test_local_results_write_complete_payload_and_subset_summary(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        tracker: MockTracker,
         cli_runner: CliRunner,
     ) -> None:
         """Local result retrieval must persist the tracker payload and explain partial subsets.
@@ -84,9 +49,8 @@ class TestResultsCommand:
             task_errors={"task-b": "evaluation failed"},
             evaluation_results={"task-a": {"score": 1}},
         )
-        tracker = MockResultsTracker(response)
+        tracker.reply("GET", "/retrieve-results", ok(response))
         output_path = tmp_path / "results.json"
-        monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
 
         result = cli_runner.invoke(
             results,
@@ -95,7 +59,9 @@ class TestResultsCommand:
 
         assert result.exit_code == 0, result.output
         assert "Scored over 2 of 3 subset task ids" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"], False)]
+        (request,) = tracker.requests
+        assert request.url.params["s3"] == "false"
+        assert request.url.params.get_list("task_ids") == ["task-a", "task-b", "missing"]
 
         saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
         assert saved_payload["benchmark_id"] == str(_RUN_ID)
@@ -104,61 +70,43 @@ class TestResultsCommand:
         assert "secrets" not in saved_payload["benchmark_arguments"]["contract"]
         assert "kwargs" not in saved_payload["benchmark_arguments"]["contract"]
 
+    @pytest.mark.parametrize(
+        ("arguments", "results_exist", "answer", "requested_path", "expires"),
+        [
+            (["--s3"], False, None, "/retrieve-results", "1 day"),
+            (["--s3"], True, "y\n", "/retrieve-results", "1 day"),
+            (["--s3"], True, "n\n", None, None),
+            (["--preview", "--task-ids", "task-a,task-b"], True, None, "/preview-results", "1 hour"),
+        ],
+        ids=["new-upload", "confirmed-overwrite", "declined-overwrite", "preview-skips-the-prompt"],
+    )
     def test_s3_results_render_links_and_protect_existing_uploads(
         self,
-        monkeypatch: pytest.MonkeyPatch,
+        tracker: MockTracker,
         cli_runner: CliRunner,
+        arguments: list[str],
+        results_exist: bool,
+        answer: str | None,
+        requested_path: str | None,
+        expires: str | None,
     ) -> None:
-        """S3 result retrieval must show usable links without silently overwriting existing data.
+        """S3 uploads print usable links, and only an explicit yes replaces results already in S3."""
+        tracker.reply("GET", "/check-results-exist", httpx.Response(200, json={"exists": results_exist}))
+        tracker.reply("GET", "/retrieve-results", ok(_S3_RESULTS))
+        tracker.reply("GET", "/preview-results", ok(_S3_RESULTS.model_copy(update={"expires_in": 3600})))
 
-        Test cases:
-        - A new S3 result prints its presigned and console URLs.
-        - Declining an existing-result overwrite aborts before retrieval.
-        """
-        response = S3UploadResultsResponse(
-            s3_url="s3://bucket/results.json",
-            presigned_url="https://download.example/results",
-            console_url="https://console.aws.amazon.com/s3/object/results",
-        )
-        tracker = MockResultsTracker(response)
-        monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
+        result = cli_runner.invoke(results, [str(_RUN_ID), *arguments], input=answer)
 
-        result = cli_runner.invoke(results, [str(_RUN_ID), "--s3"])
-
+        uploads = [request for request in tracker.requests if request.url.path != "/check-results-exist"]
+        if requested_path is None:
+            assert result.exit_code == 1
+            assert uploads == []
+            return
         assert result.exit_code == 0, result.output
-        assert "Download (expires in 1 day):" in result.output
+        assert [request.url.path for request in uploads] == [requested_path]
+        assert f"Download (expires in {expires}):" in result.output
         assert "https://download.example/results" in result.output
         assert "https://console.aws.amazon.com/s3/object/results" in result.output
-        assert tracker.retrieve_calls == [(_RUN_ID, True, None, False)]
-
-        managed_tracker = MockResultsTracker(response.model_copy(update={"expires_in": 3600}))
-        monkeypatch.setattr(results_module, "TrackerService", lambda: managed_tracker)
-
-        managed_result = cli_runner.invoke(results, [str(_RUN_ID), "--s3"])
-
-        assert managed_result.exit_code == 0, managed_result.output
-        assert "Download (expires in 1 hour):" in managed_result.output
-
-        existing_tracker = MockResultsTracker(response, results_exist=True)
-        monkeypatch.setattr(results_module, "TrackerService", lambda: existing_tracker)
-
-        declined_result = cli_runner.invoke(results, [str(_RUN_ID), "--s3"], input="n\n")
-
-        assert declined_result.exit_code == 1
-        assert "Overwrite" in declined_result.output
-        assert existing_tracker.retrieve_calls == []
-
-        preview_tracker = MockResultsTracker(response, results_exist=True)
-        monkeypatch.setattr(results_module, "TrackerService", lambda: preview_tracker)
-
-        preview_result = cli_runner.invoke(
-            results,
-            [str(_RUN_ID), "--preview", "--task-ids", "task-a,task-b"],
-        )
-
-        assert preview_result.exit_code == 0, preview_result.output
-        assert "Overwrite" not in preview_result.output
-        assert preview_tracker.retrieve_calls == [(_RUN_ID, True, ["task-a", "task-b"], True)]
 
     @pytest.mark.parametrize(
         ("path", "expected_message"),
@@ -172,7 +120,7 @@ class TestResultsCommand:
         path: str,
         expected_message: str,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        tracker: MockTracker,
         cli_runner: CliRunner,
     ) -> None:
         """Result files must not be created in missing directories or overwrite without consent.
@@ -181,12 +129,10 @@ class TestResultsCommand:
         - A missing parent directory returns an actionable error.
         - Declining overwrite preserves the existing file contents.
         """
-        response: FinalViewResponse = make_final_view(_RUN_ID)
-        tracker = MockResultsTracker(response)
+        tracker.reply("GET", "/retrieve-results", ok(make_final_view(_RUN_ID)))
         output_path = tmp_path / path
         if output_path.name == "existing.json":
             output_path.write_text("original", encoding="utf-8")
-        monkeypatch.setattr(results_module, "TrackerService", lambda: tracker)
 
         result = cli_runner.invoke(
             results,

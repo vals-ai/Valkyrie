@@ -1,77 +1,36 @@
 """Tests for run fetch output contracts.
 
 Run: uv run pytest tests/unit/cli/run/test_fetch.py
+
+Covers the JSON snapshot, the JSONL stream records, and the text stream's identity and outcome.
 """
 
 import json
-from collections.abc import Generator
 from datetime import datetime, timezone
-from importlib import import_module
-from uuid import UUID, uuid4
+from uuid import UUID
 
+import httpx
 import pytest
-from click.testing import CliRunner, Result
-from tracker.database.models import BenchmarkStatus
-from tracker.types import FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
+from click.testing import CliRunner
+from valkyrie.sdk.models import BenchmarkStatus, TaskStatus
 
-from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.fetch import fetch
 from valkyrie.cli.run.snapshot import build_run_snapshot, format_run_snapshot_json
 
-from tests.unit.cli.factories import make_fetch_metadata, make_fetch_response
+from tests.unit.cli.conftest import MockTracker
+from tests.unit.cli.factories import make_fetch_metadata, make_fetch_response, run_stream, serve_run
 
-fetch_module = import_module("valkyrie.cli.run.fetch")
-
-
-class StubFetchTracker:
-    def __init__(
-        self,
-        response: FetchBenchmarkResponse,
-        metadata: FetchBenchmarkMetadataResponse | TrackerServiceError,
-        events: list[str] | None = None,
-        *,
-        interrupt: bool = False,
-    ) -> None:
-        self.response = response
-        self.metadata = metadata
-        self.events = events or []
-        self.interrupt = interrupt
-        self.metadata_calls = 0
-
-    def __enter__(self) -> "StubFetchTracker":
-        return self
-
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def fetch_benchmark(self, _run_id: UUID) -> FetchBenchmarkResponse:
-        return self.response
-
-    def fetch_benchmark_metadata(self, _run_id: UUID) -> FetchBenchmarkMetadataResponse:
-        self.metadata_calls += 1
-        if isinstance(self.metadata, TrackerServiceError):
-            raise self.metadata
-        return self.metadata
-
-    def stream_benchmark(self, _run_id: UUID) -> Generator[str, None, None]:
-        if self.interrupt:
-            raise KeyboardInterrupt
-        yield from self.events
+_RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
+_SECRETS = ("MODEL_API_KEY", "classified-secret-name", "temperature")
 
 
-def invoke_with_tracker(
-    monkeypatch: pytest.MonkeyPatch,
-    tracker: StubFetchTracker,
-    args: list[str],
-) -> Result:
-    monkeypatch.setattr(fetch_module, "TrackerService", lambda: tracker)
-    return CliRunner().invoke(fetch, args)
+def _records(output: str) -> list[dict[str, object]]:
+    return [json.loads(line) for line in output.splitlines()]
 
 
 def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
-    run_id = uuid4()
-    response = make_fetch_response(run_id)
-    metadata = make_fetch_metadata(run_id)
+    response = make_fetch_response(_RUN_ID)
+    metadata = make_fetch_metadata(_RUN_ID)
     observed_at = datetime(2026, 7, 9, 13, 0, tzinfo=timezone.utc)
 
     snapshot = build_run_snapshot(response, metadata, event="snapshot", observed_at=observed_at)
@@ -80,8 +39,7 @@ def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
     assert snapshot["schema_version"] == 1
     assert snapshot["event"] == "snapshot"
     assert snapshot["observed_at"] == "2026-07-09T13:00:00Z"
-    assert snapshot["run_id"] == str(run_id)
-    assert snapshot["benchmark_name"] == "swebench"
+    assert snapshot["run_id"] == str(_RUN_ID)
     assert snapshot["agent_name"] == "mini_sweagent"
     assert snapshot["model"] == "openai/gpt-5"
     assert snapshot["dataset"] == "verified"
@@ -95,172 +53,125 @@ def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
         "FINISHED": 1,
         "ERROR": 0,
     }
-    assert "MODEL_API_KEY" not in serialized
-    assert "classified-secret-name" not in serialized
-    assert "temperature" not in serialized
+    assert not any(secret in serialized for secret in _SECRETS)
 
 
-def test_fetch_json_outputs_one_clean_object(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubFetchTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
+@pytest.mark.parametrize(
+    ("final_score", "metadata_available"),
+    [(None, True), (float("nan"), True), (float("inf"), True), (float("-inf"), True), (None, False)],
+)
+def test_fetch_json_outputs_one_clean_object(
+    tracker: MockTracker, cli_runner: CliRunner, final_score: float | None, metadata_available: bool
+) -> None:
+    """Non-finite scores become null, and missing metadata nulls the identity instead of failing."""
+    metadata = make_fetch_metadata(_RUN_ID) if metadata_available else None
+    serve_run(tracker, make_fetch_response(_RUN_ID, final_score=final_score), metadata=metadata)
 
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--format", "json"])
 
     assert result.exit_code == 0, result.output
     assert len(result.output.splitlines()) == 1
-    assert "\x1b" not in result.output
-    assert "Run Status" not in result.output
+    assert not any(token in result.output for token in ("\x1b", "NaN", "Infinity"))
+
     payload = json.loads(result.output)
     assert payload["event"] == "snapshot"
-    assert payload["run_id"] == str(run_id)
-    assert payload["agent_name"] == "mini_sweagent"
-    assert tracker.metadata_calls == 1
+    assert payload["run_id"] == str(_RUN_ID)
+    assert payload["final_score"] is None
+    assert payload["metadata_available"] is metadata_available
+    assert payload["agent_name"] == ("mini_sweagent" if metadata_available else None)
 
 
-@pytest.mark.parametrize("final_score", [float("nan"), float("inf"), float("-inf")])
-def test_fetch_json_normalizes_non_finite_scores(
-    monkeypatch: pytest.MonkeyPatch,
-    final_score: float,
+def test_fetch_jsonl_writes_snapshot_updates_and_the_terminal_record(
+    tracker: MockTracker, cli_runner: CliRunner
 ) -> None:
-    run_id = uuid4()
-    tracker = StubFetchTracker(make_fetch_response(run_id, final_score=final_score), make_fetch_metadata(run_id))
+    finished = make_fetch_response(_RUN_ID, status=BenchmarkStatus.FINISHED, finished_tasks=4, final_score=75.0)
+    serve_run(tracker, make_fetch_response(_RUN_ID), stream=run_stream(finished), metadata=make_fetch_metadata(_RUN_ID))
 
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
-
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["final_score"] is None
-    assert not any(token in result.stdout for token in ["NaN", "Infinity"])
-
-
-def test_fetch_json_uses_null_identity_when_metadata_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubFetchTracker(make_fetch_response(run_id), TrackerServiceError("metadata unavailable"))
-
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["metadata_available"] is False
-    assert payload["agent_name"] is None
-    assert payload["model"] is None
-    assert payload["dataset"] is None
-
-
-def test_fetch_jsonl_outputs_only_snapshot_update_and_terminal_records(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    finished = make_fetch_response(run_id, status=BenchmarkStatus.FINISHED, finished_tasks=4, final_score=75.0)
-    tracker = StubFetchTracker(
-        make_fetch_response(run_id),
-        make_fetch_metadata(run_id),
-        events=[f"data: {finished.model_dump_json()}", "event: complete"],
-    )
-
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--connect", "--format", "jsonl"])
 
     assert result.exit_code == 0, result.output
     assert "\x1b" not in result.output
-    assert "Streaming run updates" not in result.output
-    assert "Next Steps" not in result.output
-    assert "MODEL_API_KEY" not in result.output
-    records = [json.loads(line) for line in result.output.splitlines()]
+    assert not any(secret in result.output for secret in _SECRETS)
+
+    records = _records(result.output)
     assert [record["event"] for record in records] == ["snapshot", "update", "complete"]
-    assert all(record["schema_version"] == 1 for record in records)
-    assert all(record["run_id"] == str(run_id) for record in records)
+    assert all(record["schema_version"] == 1 and record["run_id"] == str(_RUN_ID) for record in records)
     assert records[-1]["status"] == "FINISHED"
     assert records[-1]["final_score"] == 75.0
-    assert tracker.metadata_calls == 1
 
 
 @pytest.mark.parametrize(
-    ("status", "expected_event"),
+    ("stream", "events", "exit_code"),
     [
-        (BenchmarkStatus.ERROR, "error"),
-        (BenchmarkStatus.STOPPED, "stopped"),
+        (run_stream(make_fetch_response(_RUN_ID, status=BenchmarkStatus.ERROR)), ["update", "error"], 0),
+        (run_stream(make_fetch_response(_RUN_ID, status=BenchmarkStatus.STOPPED)), ["update", "stopped"], 0),
+        (run_stream(end="error"), ["error"], 0),
+        (run_stream(end="disconnect"), ["disconnect"], 0),
+        (KeyboardInterrupt(), ["interrupted"], 0),
+        (run_stream(end=None), ["disconnect"], 1),
     ],
+    ids=["errored-run", "stopped-run", "error-event", "disconnect", "ctrl-c", "body-ends-early"],
 )
-def test_fetch_jsonl_maps_completed_stream_to_terminal_run_status(
-    monkeypatch: pytest.MonkeyPatch,
-    status: BenchmarkStatus,
-    expected_event: str,
+def test_fetch_jsonl_names_how_the_stream_ended(
+    tracker: MockTracker,
+    cli_runner: CliRunner,
+    stream: httpx.Response | BaseException,
+    events: list[str],
+    exit_code: int,
 ) -> None:
-    run_id = uuid4()
-    terminal = make_fetch_response(run_id, status=status, finished_tasks=4)
-    tracker = StubFetchTracker(
-        make_fetch_response(run_id),
-        make_fetch_metadata(run_id),
-        events=[f"data: {terminal.model_dump_json()}", "event: complete"],
-    )
+    """`complete` maps to the run's final status; a body without an ending event exits 1."""
+    serve_run(tracker, make_fetch_response(_RUN_ID), stream=stream, metadata=make_fetch_metadata(_RUN_ID))
 
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--connect", "--format", "jsonl"])
+
+    assert result.exit_code == exit_code
+    assert [record["event"] for record in _records(result.stdout)] == ["snapshot", *events]
+    assert ("ended without a terminal event" in result.stderr) is bool(exit_code)
+
+
+def test_connected_text_shows_identity_then_the_errored_outcome(tracker: MockTracker, cli_runner: CliRunner) -> None:
+    """A live run that ends ERROR prints the failure, even though the stream's event is `complete`."""
+    error_message = "No tasks were completed successfully.\n- 4/4 tasks: Secret error"
+    errored = make_fetch_response(
+        _RUN_ID, status=BenchmarkStatus.ERROR, task_breakdown={TaskStatus.ERROR: 4}, error_message=error_message
+    )
+    serve_run(tracker, make_fetch_response(_RUN_ID), stream=run_stream(errored), metadata=make_fetch_metadata(_RUN_ID))
+
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--connect"])
 
     assert result.exit_code == 0, result.output
-    records = [json.loads(line) for line in result.output.splitlines()]
-    assert records[-1]["event"] == expected_event
-    assert records[-1]["status"] == status.value
+    assert "Run Details" in result.output
+    assert all(value in result.output for value in ("mini_sweagent", "openai/gpt-5", "verified", "runner@vals.ai"))
+    assert not any(secret in result.output for secret in _SECRETS)
+    assert "✗ Run errored." in result.output
+    assert "✓ Run completed!" not in result.output
+    assert f"Error: {error_message}" in result.output
 
 
-@pytest.mark.parametrize("terminal_event", ["error", "disconnect"])
-def test_fetch_jsonl_preserves_other_terminal_events(
-    monkeypatch: pytest.MonkeyPatch,
-    terminal_event: str,
+def test_connected_fetch_of_a_finished_run_prints_its_status_without_streaming(
+    tracker: MockTracker, cli_runner: CliRunner
 ) -> None:
-    run_id = uuid4()
-    tracker = StubFetchTracker(
-        make_fetch_response(run_id),
-        make_fetch_metadata(run_id),
-        events=[f"event: {terminal_event}"],
-    )
+    errored = make_fetch_response(_RUN_ID, status=BenchmarkStatus.ERROR, error_message="Dominant task error")
+    serve_run(tracker, errored, metadata=make_fetch_metadata(_RUN_ID))
 
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--connect"])
 
     assert result.exit_code == 0, result.output
-    records = [json.loads(line) for line in result.output.splitlines()]
-    assert [record["event"] for record in records] == ["snapshot", terminal_event]
-
-
-def test_fetch_jsonl_reports_keyboard_interrupt_as_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubFetchTracker(make_fetch_response(run_id), make_fetch_metadata(run_id), interrupt=True)
-
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
-
-    assert result.exit_code == 0, result.output
-    records = [json.loads(line) for line in result.output.splitlines()]
-    assert [record["event"] for record in records] == ["snapshot", "interrupted"]
-
-
-def test_fetch_jsonl_reports_clean_stream_exhaustion_as_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubFetchTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
-
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
-
-    assert result.exit_code != 0
-    records = [json.loads(line) for line in result.stdout.splitlines()]
-    assert [record["event"] for record in records] == ["snapshot", "disconnect"]
-    assert "ended without a terminal event" in result.stderr
+    assert "Run Status" in result.output
+    assert "Error: Dominant task error" in result.output
+    assert "Streaming run updates" not in result.output
+    assert [request.url.params.get("connect") for request in tracker.requests] == [None]
 
 
 @pytest.mark.parametrize(
-    ("args", "expected_error"),
-    [
-        (["--connect", "--format", "json"], "use --format jsonl"),
-        (["--format", "jsonl"], "requires --connect"),
-    ],
+    ("arguments", "expected_error"),
+    [(["--connect", "--format", "json"], "use --format jsonl"), (["--format", "jsonl"], "requires --connect")],
 )
 def test_fetch_rejects_mismatched_machine_format(
-    monkeypatch: pytest.MonkeyPatch,
-    args: list[str],
-    expected_error: str,
+    tracker: MockTracker, cli_runner: CliRunner, arguments: list[str], expected_error: str
 ) -> None:
-    run_id = uuid4()
-
-    def unexpected_tracker():
-        raise AssertionError("format validation should happen before constructing the tracker")
-
-    monkeypatch.setattr(fetch_module, "TrackerService", unexpected_tracker)
-
-    result = CliRunner().invoke(fetch, [str(run_id), *args])
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), *arguments])
 
     assert result.exit_code == 2
     assert expected_error in result.output
+    assert tracker.requests == []

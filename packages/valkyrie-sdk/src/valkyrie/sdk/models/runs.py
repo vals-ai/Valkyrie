@@ -178,6 +178,25 @@ class FetchBenchmarkResponse(ResponseModel):
     executor_protocol_version: str | None = None
 
 
+class RunStreamEvent(ResponseModel):
+    """Represents one message on a run's live update stream, as yielded by `runs.events()`.
+
+    The stream sends an `update` every few seconds while the run is going, then ends with one
+    `complete`, `error` or `disconnect`.
+    """
+
+    event: Literal["update", "complete", "error", "disconnect"] = Field(
+        description=(
+            '"complete" means the run reached FINISHED, ERROR or STOPPED (the last update shows which), '
+            '"error" that the run can no longer be found, and "disconnect" that the server closed the stream first.'
+        )
+    )
+    run: FetchBenchmarkResponse | None = Field(
+        default=None, description="The run's current state, set only on update events."
+    )
+    detail: str | None = Field(default=None, description="The server's message, set only on error events.")
+
+
 class BenchmarkTableRow(ResponseModel):
     """Summary row returned by the run-list endpoint."""
 

@@ -1,108 +1,74 @@
-"""Tests for run output download commands.
+"""Tests for run output downloads.
 
 Run: uv run pytest tests/unit/cli/run/test_outputs.py
 """
 
-from importlib import import_module
+import io
+import tarfile
 from pathlib import Path
-from unittest.mock import AsyncMock
 from uuid import UUID
 
 import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, AWSBenchmarkArguments
-from tracker.types import FetchBenchmarkMetadataResponse
 
-from valkyrie.cli.run.outputs import output_path, outputs
+from valkyrie.cli.run.outputs import extract_run_outputs, outputs
 
-outputs_module = import_module("valkyrie.cli.run.outputs")
+from tests.unit.cli.conftest import MockTracker
+from tests.unit.cli.factories import make_fetch_metadata, ok
 
 _RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
 
 
-class MockOutputsTracker:
-    """Record output retrieval while returning real tracker response models."""
+def _tar(files: dict[str, bytes], mode: str = "w") -> bytes:
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode=mode) as tar:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
 
-    def __init__(self) -> None:
-        self.response = httpx.Response(200, content=b"archive")
-        self.task_ids: list[str] | None = None
-
-    def __enter__(self) -> "MockOutputsTracker":
-        return self
-
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def fetch_benchmark_metadata(self, _run_id: UUID) -> FetchBenchmarkMetadataResponse:
-        return FetchBenchmarkMetadataResponse(
-            benchmark_id=_RUN_ID,
-            benchmark_name="swebench",
-            benchmark_arguments=AWSBenchmarkArguments(
-                contract=AgentContractRequest(name="agent", install_cmd="install", run_cmd="run"),
-                concurrency=1,
-            ),
-        )
-
-    def fetch_run_outputs(self, _run_id: UUID, task_ids: list[str] | None = None) -> httpx.Response:
-        self.task_ids = task_ids
-        return self.response
+    return archive.getvalue()
 
 
-class TestOutputsCommands:
-    """Tracker archive and direct S3 output download behavior."""
+def test_outputs_extract_into_a_named_directory_and_unpack_task_archives(
+    tracker: MockTracker, cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default directory names the benchmark, agent and run; selected task IDs reach Tracker."""
+    nested = _tar({"nested.txt": b"nested contents"}, mode="w:gz")
+    tracker.reply("GET", f"/fetch-benchmark-metadata/{_RUN_ID}", ok(make_fetch_metadata(_RUN_ID)))
+    tracker.reply(
+        "GET",
+        f"/fetch-run-outputs/{_RUN_ID}",
+        httpx.Response(200, content=_tar({"task-a/output.txt": b"run output", "task-a/artifacts.tar.gz": nested})),
+    )
+    monkeypatch.chdir(tmp_path)
 
-    def test_outputs_uses_metadata_default_and_task_selection(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        cli_runner: CliRunner,
-    ) -> None:
-        """Archive downloads must preserve task selection and choose a useful default directory.
+    result = cli_runner.invoke(outputs, [str(_RUN_ID), "--task-ids", "task-a, task-b"])
 
-        Test cases:
-        - Comma-separated task IDs are normalized before the tracker request.
-        - The default directory contains benchmark, agent, and run identity.
-        - The returned archive is passed to the extraction boundary once.
-        """
-        tracker = MockOutputsTracker()
-        extraction_calls: list[tuple[httpx.Response, Path]] = []
+    assert result.exit_code == 0, result.output
+    assert tracker.requested("GET", f"/fetch-run-outputs/{_RUN_ID}")[0].url.params.get_list("task_ids") == [
+        "task-a",
+        "task-b",
+    ]
 
-        def record_extraction(response: httpx.Response, output_dir: Path) -> None:
-            extraction_calls.append((response, output_dir))
+    output_dir = tmp_path / f"swebench_mini_sweagent_{_RUN_ID}"
+    assert f"Run outputs extracted to: {output_dir.name}" in result.output
+    assert (output_dir / "task-a" / "output.txt").read_bytes() == b"run output"
+    assert (output_dir / "task-a" / "artifacts" / "nested.txt").read_bytes() == b"nested contents"
+    assert not (output_dir / "task-a" / "artifacts.tar.gz").exists()
 
-        monkeypatch.setattr(outputs_module, "TrackerService", lambda: tracker)
-        monkeypatch.setattr(outputs_module, "download_run_outputs", record_extraction)
 
-        result = cli_runner.invoke(outputs, [str(_RUN_ID), "--task-ids", "task-a, task-b"])
+@pytest.mark.parametrize("nested", [False, True], ids=["outer-archive", "nested-archive"])
+def test_extract_run_outputs_rejects_archive_traversal(nested: bool, tmp_path: Path) -> None:
+    if nested:
+        archive = _tar({"task/artifacts.tar.gz": _tar({"../../escaped.txt": b"escaped"}, mode="w:gz")})
+        escaped_path = tmp_path / "output" / "escaped.txt"
+    else:
+        archive = _tar({"../escaped.txt": b"escaped"})
+        escaped_path = tmp_path / "escaped.txt"
 
-        assert result.exit_code == 0, result.output
-        assert tracker.task_ids == ["task-a", "task-b"]
-        assert extraction_calls == [(tracker.response, Path(f"swebench_agent_{_RUN_ID}"))]
-        assert "Run outputs extracted" in result.output
+    with pytest.raises(tarfile.FilterError):
+        extract_run_outputs(io.BytesIO(archive), tmp_path / "output")
 
-    def test_output_path_uses_tracker_and_reports_failures(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        cli_runner: CliRunner,
-    ) -> None:
-        """Artifact downloads must use Tracker and keep failures visible.
-
-        Test cases:
-        - The requested relative path and run ID reach the SDK.
-        - Download errors abort the command with the original failure message.
-        """
-        mock_download = AsyncMock(return_value=Path("/tmp/output"))
-        monkeypatch.setattr(outputs_module, "_download_artifacts", mock_download)
-
-        result = cli_runner.invoke(output_path, [str(_RUN_ID), "task-a", "--output-dir", "/tmp/output"])
-
-        assert result.exit_code == 0, result.output
-        mock_download.assert_awaited_once_with(_RUN_ID, "task-a", Path("/tmp/output"))
-        assert "Run artifacts downloaded" in result.output
-
-        mock_download.reset_mock(side_effect=True)
-        mock_download.side_effect = OSError("download unavailable")
-        failed_result = cli_runner.invoke(output_path, [str(_RUN_ID)])
-
-        assert failed_result.exit_code == 1
-        assert "download unavailable" in failed_result.stderr
+    assert not escaped_path.exists()

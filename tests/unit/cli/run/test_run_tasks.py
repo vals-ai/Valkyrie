@@ -7,37 +7,17 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from importlib import import_module
 from uuid import UUID
 
-import pytest
+import httpx
 from click.testing import CliRunner
-from valkyrie.sdk.models import FailureCategory, FetchTasksRequest, TaskStatus, TasksResponse, TaskSummary
+from valkyrie.sdk.models import FailureCategory, TaskStatus, TasksResponse, TaskSummary
 
 from valkyrie.cli.run.tasks import tasks
 
-tasks_module = import_module("valkyrie.cli.run.tasks")
+from tests.unit.cli.conftest import MockTracker
 
 RUN_ID = UUID(int=811)
-
-
-class MockBenchmarksResource:
-    def __init__(self, response: TasksResponse) -> None:
-        self.response = response
-
-    async def tasks(self, _run_id: UUID, _request: FetchTasksRequest) -> TasksResponse:
-        return self.response
-
-
-class MockClient:
-    def __init__(self, response: TasksResponse) -> None:
-        self.benchmarks = MockBenchmarksResource(response)
-
-    async def __aenter__(self) -> "MockClient":
-        return self
-
-    async def __aexit__(self, *_exc_info: object) -> None:
-        return None
 
 
 def _summary(index: int, *, error: str | None = None, category: FailureCategory | None = None) -> TaskSummary:
@@ -52,12 +32,12 @@ def _summary(index: int, *, error: str | None = None, category: FailureCategory 
     )
 
 
-def _invoke(monkeypatch: pytest.MonkeyPatch, response: TasksResponse, *arguments: str):
-    monkeypatch.setattr(tasks_module, "ValkyrieClient", lambda: MockClient(response))
+def _invoke(tracker: MockTracker, response: TasksResponse, *arguments: str):
+    tracker.reply("GET", f"/benchmarks/{RUN_ID}/tasks", httpx.Response(200, json=response.model_dump(mode="json")))
     return CliRunner().invoke(tasks, [str(RUN_ID), *arguments])
 
 
-def test_tasks_text_shows_category_column_and_blank_for_legacy_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tasks_text_shows_category_column_and_blank_for_legacy_rows(tracker: MockTracker) -> None:
     response = TasksResponse(
         tasks=[
             _summary(0, error="Agent command failed with exit code 2", category=FailureCategory.AGENT),
@@ -67,7 +47,7 @@ def test_tasks_text_shows_category_column_and_blank_for_legacy_rows(monkeypatch:
         total_count=3,
     )
 
-    result = _invoke(monkeypatch, response)
+    result = _invoke(tracker, response)
 
     assert result.exit_code == 0, result.output
     header, *body = [line for line in result.output.splitlines() if line.strip()]
@@ -79,13 +59,13 @@ def test_tasks_text_shows_category_column_and_blank_for_legacy_rows(monkeypatch:
     assert "Agent command failed with exit code 2" in result.output
 
 
-def test_tasks_json_emits_failure_category(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tasks_json_emits_failure_category(tracker: MockTracker) -> None:
     response = TasksResponse(
         tasks=[_summary(0, error="sandbox lost", category=FailureCategory.INFRASTRUCTURE), _summary(1)],
         total_count=2,
     )
 
-    result = _invoke(monkeypatch, response, "--format", "json")
+    result = _invoke(tracker, response, "--format", "json")
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)

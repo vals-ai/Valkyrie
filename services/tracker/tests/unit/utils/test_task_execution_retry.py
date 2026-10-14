@@ -196,7 +196,7 @@ class TestTaskExecutionRetry:
 
         assert len(retry_results) == 1
         retry_result = retry_results[0]
-        assert retry_result.error_message == str(error)
+        assert retry_result.error_message == f"{type(error).__name__}: {error}"
         assert retry_result.producer == "sandbox_provider"
         assert retry_result.operation == "setup"
         assert retry_result.error_type == type(error).__name__
@@ -493,7 +493,9 @@ class TestTaskExecutionRetry:
         error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
         retry_results = [result for result in error_results if result.retry_scheduled]
         assert len(retry_results) == 1
-        assert retry_results[0].error_message == f"Sandbox error: {service_error}"
+        assert retry_results[0].error_message == (
+            f"SandboxSetupError: Sandbox error: {service_error} (caused by BenchmarkServiceError: {service_error})"
+        )
         assert retry_results[0].producer == "sandbox_provider"
         assert retry_results[0].operation == "setup"
         assert retry_results[0].error_type == "SandboxSetupError"
@@ -752,6 +754,10 @@ class TestTaskExecutionRetry:
         assert result == {"task_0": expected_result}
         assert len(sandbox_envs) == expected_attempts
         assert all(env["RUN_ID"] == str(benchmark_id) for env in sandbox_envs)
+        # Replacement sandboxes continue the same execution, so they keep its ATTEMPT_ID.
+        assert {env["ATTEMPT_ID"] for env in sandbox_envs} == {
+            task_execution_module.task_attempt_id(task_row.id, task_row.started_at)
+        }
         assert "VALKYRIE_SANDBOX_OUTAGE_ID" not in sandbox_envs[0]
         for lost_attempt, env in enumerate(sandbox_envs[1:], start=1):
             assert env["VALKYRIE_SANDBOX_OUTAGE_STARTED_EPOCH"] == "1234.5"
@@ -857,7 +863,7 @@ class TestTaskExecutionRetry:
             .where(ErrorResult.task == task_row.id)
             .order_by(desc(ErrorResult.created_at))
         ).one()
-        assert error_message == "grading sandbox was preempted"
+        assert error_message == "SandboxNotFoundError: grading sandbox was preempted"
         captured_error = capture_exception.call_args.args[0]
         assert isinstance(captured_error, SandboxNotFoundError)
 

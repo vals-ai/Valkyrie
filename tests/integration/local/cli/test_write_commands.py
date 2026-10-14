@@ -129,7 +129,7 @@ def test_cli_updates_active_run_concurrency_through_tracker(
     """The public CLI must persist live concurrency through the production HTTP path.
 
     Test cases:
-    - A live update travels through Click, the tracker client, and the FastAPI route.
+    - A live update travels through Click, the SDK, and the FastAPI route.
     - Repeating the same update is idempotent.
     - A subsequent CLI read and direct database read return the new limit.
     - Updating concurrency preserves the rest of the stored benchmark arguments.
@@ -166,7 +166,7 @@ def test_cli_rejects_concurrency_update_for_finished_run(
     result = cli_runner.invoke(cli, ["run", "update", str(finished.id), "--concurrency", "4"])
 
     assert result.exit_code == 1
-    assert "Failed to update run concurrency" in result.output
+    assert "Valkyrie API request failed (409)" in result.output
     assert "BenchmarkStatus.FINISHED" in result.output
 
     database_session.expire_all()
@@ -215,7 +215,7 @@ async def test_sdk_updates_persisted_concurrency(
 
 
 def test_cli_downloads_run_artifacts_through_tracker(
-    cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark], local_tracker_app, monkeypatch, tmp_path: Path
+    cli_runner: CliRunner, seeded_runs: tuple[Benchmark, Benchmark], monkeypatch, tmp_path: Path
 ) -> None:
     import httpx
     from unittest.mock import AsyncMock
@@ -230,14 +230,12 @@ def test_cli_downloads_run_artifacts_through_tracker(
 
     monkeypatch.setattr(AWSClientProvider, "s3_client", lambda _: client)
 
-    async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-        if request.url.host == "download.test":
-            assert not any(name.startswith("x-harness") for name in request.headers)
-            return httpx.Response(200, content=b"result")
-        async with httpx.ASGITransport(app=local_tracker_app) as transport:
-            return await transport.handle_async_request(request)
+    async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "download.test"
+        assert "x-api-key" not in request.headers
+        return httpx.Response(200, content=b"result")
 
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
     listing = cli_runner.invoke(cli, ["run", "artifacts", str(running.id), "--format", "json"])
     assert listing.exit_code == 0, listing.output
     assert json.loads(listing.output)["artifacts"][0]["path"] == "task/result.txt"

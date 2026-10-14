@@ -49,7 +49,6 @@ _MANAGED_ENVELOPE_KEYS = {"execution_context_json"} | _DISPATCH_ENVELOPE_KEYS
 
 
 def _configure_managed_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")

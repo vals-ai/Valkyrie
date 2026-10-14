@@ -1,10 +1,16 @@
 """Shared CLI display helpers."""
 
-from collections.abc import Callable
+from __future__ import annotations
+
+from collections import defaultdict
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import click
+
+if TYPE_CHECKING:
+    from valkyrie.sdk.models import FailureCategory
 
 Page = TypeVar("Page")
 
@@ -23,6 +29,23 @@ def terminal_safe(value: str, *, preserve_newlines: bool) -> str:
             escaped.append(character.encode("unicode_escape").decode("ascii"))
 
     return "".join(escaped)
+
+
+def group_task_errors(
+    task_errors: Mapping[str, str],
+    task_failure_categories: Mapping[str, FailureCategory] | None = None,
+) -> list[tuple[FailureCategory | None, str, tuple[str, ...]]]:
+    """Group task IDs that share a category and raw message, as `(category, message, task_ids)`.
+
+    Task IDs are sorted within each group; groups come largest first, ties broken by first task ID.
+    """
+    categories = task_failure_categories or {}
+    grouped: defaultdict[tuple[FailureCategory | None, str], list[str]] = defaultdict(list)
+    for task_id, message in task_errors.items():
+        grouped[(categories.get(task_id), message)].append(task_id)
+
+    groups = [(category, message, tuple(sorted(task_ids))) for (category, message), task_ids in grouped.items()]
+    return sorted(groups, key=lambda group: (-len(group[2]), group[2][0]))
 
 
 def utc_isoformat(value: datetime | None = None) -> str:
@@ -136,7 +159,10 @@ def paginate_cli_pages(
         if total_pages <= 1:
             break
 
-        char = click.getchar()
+        try:
+            char = click.getchar()
+        except OSError as error:
+            raise click.ClickException(str(error)) from error
 
         if char == "l" and current_page < total_pages:
             current_page += 1

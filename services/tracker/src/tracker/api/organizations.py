@@ -10,6 +10,7 @@ from sqlalchemy import ColumnElement
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, delete, select
 
+from tracker import config
 from tracker.auth import (
     LoginIdentity,
     descope_call,
@@ -147,7 +148,13 @@ def create_organization(
     login: LoginIdentity = Depends(get_current_login),
     session: Session = Depends(get_session),
 ) -> OrganizationResponse:
-    """Create an organization with the caller as its admin."""
+    """Create an organization with the caller as its admin, on a Tracker that allows self-serve organizations."""
+    if not config.SELF_SERVE_ORGS_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail="Valkyrie doesn't create organizations on request. Ask Vals AI to add you, "
+            "or ask an organization admin to run `valkyrie org invite EMAIL`.",
+        )
     _verified_email(login)
     if _reserved(request.id) or find_org_by_tenant(request.id, session) is not None:
         raise HTTPException(status_code=409, detail=f"Organization {request.id!r} already exists")

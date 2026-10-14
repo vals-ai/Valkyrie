@@ -999,7 +999,10 @@ async def _process_benchmark(
         )
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            error_message = f"{str(e)}\n{traceback.format_exc()}"
+            if isinstance(e, TrackerServiceError) and not e.include_cause_in_task_error:
+                error_message = f"{type(e).__name__}: {e}"
+            else:
+                error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(
                 benchmark_row,
                 session,

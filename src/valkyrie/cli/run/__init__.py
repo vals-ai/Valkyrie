@@ -1,52 +1,48 @@
 import click
 
-from valkyrie.cli.run.analyze import analyze
-from valkyrie.cli.run.errors import errors
-from valkyrie.cli.run.filter_options import filter_options
-from valkyrie.cli.run.fetch import fetch
-from valkyrie.cli.run.list_runs import list_runs
-from valkyrie.cli.run.logs import logs
-from valkyrie.cli.run.outputs import artifacts, output_path, outputs
-from valkyrie.cli.run.results import results
-from valkyrie.cli.run.resume import resume, retry_command
-from valkyrie.cli.run.shed import shed
-from valkyrie.cli.run.start import start
-from valkyrie.cli.run.status import status_runs
-from valkyrie.cli.run.stop import stop
-from valkyrie.cli.run.update import update
-from valkyrie.cli.run.tasks import tasks, task, task_artifacts
+from valkyrie.cli.lazy import LazyGroup
 
 
-@click.group()
+@click.group(
+    cls=LazyGroup,
+    lazy_commands={
+        "analyze": (
+            "valkyrie.cli.run.analyze:analyze",
+            "Trigger Docent ingestion + error analysis for a finished run.",
+        ),
+        "errors": ("valkyrie.cli.run.errors:errors", "Show stored run and current task error messages."),
+        "fetch": ("valkyrie.cli.run.fetch:fetch", "Fetch a run by its run id."),
+        "filter-options": (
+            "valkyrie.cli.run.filter_options:filter_options",
+            "List benchmark, agent, model, dataset, and starter values from your run history.",
+        ),
+        "list": ("valkyrie.cli.run.list_runs:list_runs", "List runs by providing filter values."),
+        "logs": ("valkyrie.cli.run.logs:logs", "Fetch or follow logs for a run or one task."),
+        "artifacts": ("valkyrie.cli.run.outputs:artifacts", "List one page of artifact paths available within a run."),
+        "output": ("valkyrie.cli.run.outputs:output_path", "Download files from a benchmark run by its ID."),
+        "outputs": ("valkyrie.cli.run.outputs:outputs", "Fetch run outputs by run id."),
+        "results": ("valkyrie.cli.run.results:results", "Retrieve run results by its run id."),
+        "resume": ("valkyrie.cli.run.resume:resume", "Resume a run by its run id."),
+        "retry": ("valkyrie.cli.run.resume:retry_command", "Retry a run's errored tasks by its run id."),
+        "shed": (
+            "valkyrie.cli.run.shed:shed",
+            "Lower concurrency for an active run, then force stop the newest building or in-progress tasks until the "
+            "run is back at the new limit.",
+        ),
+        "start": ("valkyrie.cli.run.start:start", "Start a run."),
+        "status": ("valkyrie.cli.run.status:status_runs", "Fetch lightweight status for multiple run IDs."),
+        "stop": ("valkyrie.cli.run.stop:stop", "Stop a run by its run id."),
+        "update": ("valkyrie.cli.run.update:update", "Update concurrency for an active run."),
+        "tasks": ("valkyrie.cli.run.tasks:tasks", "List one page of tasks, including their status and error messages."),
+        "task": ("valkyrie.cli.run.tasks:task", "Inspect one task's status, evaluation result, and failure reason."),
+        "task-artifacts": (
+            "valkyrie.cli.run.tasks:task_artifacts",
+            "Get temporary download and log links for one task.",
+        ),
+    },
+)
 def run():
-    """Run command group"""
-    pass
+    """Start, monitor, manage, and retrieve runs."""
 
 
-run.add_command(analyze)
-run.add_command(errors)
-run.add_command(fetch)
-run.add_command(filter_options)
-run.add_command(list_runs)
-run.add_command(logs)
-run.add_command(artifacts)
-run.add_command(output_path)
-run.add_command(outputs)
-run.add_command(results)
-run.add_command(resume)
-run.add_command(retry_command)
-run.add_command(shed)
-run.add_command(start)
-run.add_command(status_runs)
-run.add_command(stop)
-run.add_command(update)
-run.add_command(tasks)
-run.add_command(task)
-run.add_command(task_artifacts)
-
-__all__ = [
-    "list_runs",
-    "run",
-    "start",
-    "status_runs",
-]
+__all__ = ["run"]

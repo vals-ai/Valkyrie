@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterable
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncGenerator, AsyncIterable
+from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, TypeVar
 
@@ -120,19 +120,31 @@ class ValkyrieClient:
             return self._client.auth
         return None
 
-    def stream_response(
+    @asynccontextmanager
+    async def stream_response(
         self,
         method: str,
         path: str,
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
-    ) -> AbstractAsyncContextManager[httpx.Response]:
-        """Open a streaming response without a read timeout."""
+    ) -> AsyncGenerator[httpx.Response]:
+        """Open a streaming response without a read timeout.
+
+        Raises ValkyrieAPIError for an error status, and ValkyrieTransportError when the connection
+        fails while the response is open, including mid-body.
+        """
         timeout = httpx.Timeout(
             connect=self._timeout.connect,
             read=None,
             write=self._timeout.write,
             pool=self._timeout.pool,
         )
-        return self._client.stream(method, path, params=params, json=json, timeout=timeout)
+        try:
+            async with self._client.stream(method, path, params=params, json=json, timeout=timeout) as response:
+                if not response.is_success:
+                    await response.aread()
+                    self.raise_for_status(response)
+                yield response
+        except httpx.HTTPError as exc:
+            raise ValkyrieTransportError(f"Valkyrie stream failed: {exc}") from exc

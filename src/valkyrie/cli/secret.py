@@ -1,26 +1,9 @@
 """Store, list, and remove the tenant's own run secrets through Tracker."""
 
-import asyncio
-
 import click
-from valkyrie.sdk import SecretEntry, SecretsResponse, ValkyrieClient, ValkyrieSDKError
 
+from valkyrie.cli.client import call
 from valkyrie.cli.display import format_table
-
-
-async def _set(name: str, value: str) -> SecretEntry:
-    async with ValkyrieClient() as client:
-        return await client.secrets.set(name, value)
-
-
-async def _list() -> SecretsResponse:
-    async with ValkyrieClient() as client:
-        return await client.secrets.list()
-
-
-async def _remove(name: str) -> None:
-    async with ValkyrieClient() as client:
-        await client.secrets.remove(name)
 
 
 @click.group()
@@ -44,10 +27,7 @@ def set_secret(name: str) -> None:
     value = (click.prompt("Value", hide_input=True) if stdin.isatty() else stdin.read()).strip()
     if not value:
         raise click.ClickException("The secret value is empty")
-    try:
-        entry = asyncio.run(_set(name, value))
-    except (ValkyrieSDKError, ValueError) as error:
-        raise click.ClickException(str(error)) from error
+    entry = call(lambda client: client.secrets.set(name, value))
     click.echo(click.style(f"✓ Secret '{entry.name}' saved.", fg="green", bold=True))
     click.echo(f"Use this reference as the secret name: {entry.reference}")
 
@@ -66,10 +46,7 @@ def list_secrets(output_format: str) -> None:
 
     Secrets set or removed in the last few minutes may not show up yet.
     """
-    try:
-        response = asyncio.run(_list())
-    except (ValkyrieSDKError, ValueError) as error:
-        raise click.ClickException(str(error)) from error
+    response = call(lambda client: client.secrets.list())
     if output_format == "json":
         click.echo(response.model_dump_json())
         return
@@ -88,8 +65,5 @@ def remove_secret(name: str, yes: bool) -> None:
     if not yes and not click.confirm(f"Delete secret '{name}'? Runs that reference it will fail."):
         click.echo("Cancelled.")
         return
-    try:
-        asyncio.run(_remove(name))
-    except (ValkyrieSDKError, ValueError) as error:
-        raise click.ClickException(str(error)) from error
+    call(lambda client: client.secrets.remove(name))
     click.echo(click.style(f"✓ Secret '{name}' removed.", fg="green", bold=True))

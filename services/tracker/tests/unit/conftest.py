@@ -15,6 +15,7 @@ from benchmark_service.schemas import (
     RetrieveTaskResponse,
     SetupTaskResponse,
     VerifyTaskIdsResponse,
+    VersionResponse,
 )
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
@@ -75,7 +76,6 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
 def managed_deployment_config(monkeypatch: pytest.MonkeyPatch) -> None:
     for key, value in {
         "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
-        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
         "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
         "AWS_DEPLOYMENT_REGION": "us-east-1",
         "AWS_DEPLOYMENT_S3_BUCKET": "test-bucket",
@@ -133,6 +133,9 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_health_check(*_args: Any, **_kwargs: Any) -> HealthCheckResponse:
         return HealthCheckResponse(status="ok")
 
+    async def _mock_version(*_args: Any, **_kwargs: Any) -> VersionResponse:
+        return VersionResponse(framework_version="test")
+
     async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
         return SetupTaskResponse(status="ok")
 
@@ -144,6 +147,7 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
     monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", _mock_get_sandbox_provider)
+    monkeypatch.setattr(BenchmarkServiceClient, "version", _mock_version)
     monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
 

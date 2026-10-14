@@ -6,7 +6,6 @@ Covers config validation, request construction, response parsing, streaming, and
 """
 
 import json
-import logging
 from pathlib import Path
 from typing import Any, assert_type
 from uuid import uuid4
@@ -328,6 +327,7 @@ async def test_resume_and_retry_send_their_options(method_name: str, retry: str,
             from_scratch=True,
             update_agent=True,
             benchmark_url="https://new.example",
+            lambda_function="post-run",
         )
 
     assert response.status == "success"
@@ -338,6 +338,7 @@ async def test_resume_and_retry_send_their_options(method_name: str, retry: str,
     assert request.url.params["concurrency"] == "4"
     assert json.loads(request.content) == {
         "benchmark_url": "https://new.example",
+        "lambda_function": "post-run",
         "task_ids": ["task-1"],
         "service_headers": {"Authorization": "override"},
         "secrets": {"KEY": "SecretName"},
@@ -405,17 +406,22 @@ async def test_stream_yields_snapshots_and_stops_on_complete(make_client, fetch_
     assert timeout == {"connect": 120, "read": None, "write": 120, "pool": 120}
 
 
-async def test_stream_parses_eof_after_ignoring_empty_events(make_client, fetch_response) -> None:
+async def test_events_report_how_the_stream_ended(make_client, fetch_response) -> None:
+    """Updates arrive with their run; the ending event is yielded once and nothing after it.
+
+    Test cases:
+    - Comments and empty events are skipped, and an unterminated final update is still parsed.
+    - An empty body yields nothing.
+    - `disconnect` and `error` end the stream; `error` carries the server's message.
+    """
     run_id = uuid4()
     event = json.dumps(fetch_response(run_id))
     responses = iter(
         [
-            httpx.Response(
-                200,
-                text=f"\n: keepalive\n\nevent: message\n\nevent: message\ndata: {event}",
-            ),
+            httpx.Response(200, text=f"\n: keepalive\n\nevent: message\n\nevent: message\ndata: {event}"),
             httpx.Response(200, text=""),
-            httpx.Response(200, text="event: disconnect"),
+            httpx.Response(200, text=f"data: {event}\n\nevent: disconnect\n\ndata: {event}\n\n"),
+            httpx.Response(200, text='event: error\ndata: {"error":"Run not found"}\n\n'),
         ]
     )
 
@@ -424,13 +430,17 @@ async def test_stream_parses_eof_after_ignoring_empty_events(make_client, fetch_
 
     client = make_client(handler)
     async with client:
-        snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
-        empty_snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
-        disconnected_snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
+        streams = [[item async for item in client.runs.events(run_id)] for _ in range(4)]
 
-    assert [snapshot.benchmark_id for snapshot in snapshots] == [run_id]
-    assert empty_snapshots == []
-    assert disconnected_snapshots == []
+    assert [[item.event for item in stream] for stream in streams] == [
+        ["update"],
+        [],
+        ["update", "disconnect"],
+        ["error"],
+    ]
+    assert streams[0][0].run is not None and streams[0][0].run.benchmark_id == run_id
+    assert streams[2][1].run is None
+    assert streams[3][0].detail == "Run not found"
 
 
 async def test_stream_converts_error_and_malformed_events(make_client) -> None:
@@ -455,17 +465,7 @@ async def test_stream_converts_error_and_malformed_events(make_client) -> None:
             _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
 
 
-async def test_stream_converts_status_and_transport_failures(
-    make_client,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Convert stream failures to SDK errors.
-
-    Test cases:
-    - API failures retain their response detail.
-    - HTTPX failures are logged before conversion.
-    """
-
+async def test_stream_converts_status_and_transport_failures(make_client) -> None:
     def status_error(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"detail": "run missing"})
 
@@ -478,12 +478,9 @@ async def test_stream_converts_status_and_transport_failures(
         raise httpx.ReadError("stream interrupted", request=request)
 
     client = make_client(transport_error)
-    with caplog.at_level(logging.WARNING, logger="valkyrie.sdk.errors"):
-        async with client:
-            with pytest.raises(ValkyrieTransportError, match="stream interrupted"):
-                _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
-
-    assert "Valkyrie stream failed: stream interrupted" in caplog.text
+    async with client:
+        with pytest.raises(ValkyrieTransportError, match="Valkyrie stream failed: stream interrupted"):
+            _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
 
 
 async def test_api_and_transport_failures_use_sdk_exceptions(make_client) -> None:

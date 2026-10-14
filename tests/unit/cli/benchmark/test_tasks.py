@@ -3,115 +3,49 @@
 Run: uv run pytest tests/unit/cli/benchmark/test_tasks.py
 """
 
-from importlib import import_module
+import json
 from pathlib import Path
 
-import pytest
+import httpx
 from click.testing import CliRunner
 
 from valkyrie.cli.benchmark.tasks import tasks
-from valkyrie.cli.exceptions import TrackerServiceError
 
-tasks_module = import_module("valkyrie.cli.benchmark.tasks")
-
-
-class MockTaskTracker:
-    """Return configured task IDs and record the benchmark request."""
-
-    response: list[str] | TrackerServiceError = []
-    calls: list[dict[str, object]] = []
-
-    def __enter__(self) -> "MockTaskTracker":
-        return self
-
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def fetch_benchmark_tasks(
-        self,
-        benchmark_name: str,
-        dataset: str | None = None,
-        ignore_custom_services: bool = False,
-        service_headers: dict[str, str] | None = None,
-    ) -> list[str]:
-        self.calls.append(
-            {
-                "benchmark_name": benchmark_name,
-                "dataset": dataset,
-                "ignore_custom_services": ignore_custom_services,
-                "service_headers": service_headers,
-            }
-        )
-        if isinstance(self.response, TrackerServiceError):
-            raise self.response
-
-        return self.response
+from tests.unit.cli.conftest import MockTracker
 
 
 class TestBenchmarkTasksCommand:
     """Task export contents, request options, and failure safety."""
 
-    def test_export_writes_task_ids_with_resolved_headers(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        cli_runner: CliRunner,
+    def test_export_writes_task_ids_and_sends_the_headers_and_service_choice(
+        self, tracker: MockTracker, tmp_path: Path, cli_runner: CliRunner
     ) -> None:
-        """Task export must write one ID per line and preserve benchmark request options.
-
-        Test cases:
-        - CLI headers, dataset and custom-service opt-out reach the tracker.
-        - The selected output file ends with a newline.
-        """
+        tracker.reply("POST", "/fetch-benchmark-tasks", httpx.Response(200, json={"task_ids": ["task-a", "task-b"]}))
         output_path = tmp_path / "tasks.txt"
-        MockTaskTracker.response = ["task-a", "task-b"]
-        MockTaskTracker.calls = []
-
-        monkeypatch.setattr(tasks_module, "TrackerService", MockTaskTracker)
 
         result = cli_runner.invoke(
             tasks,
-            [
-                "swebench",
-                "--dataset",
-                "verified",
-                "--header",
-                "X-Test",
-                "value",
-                "--ignore-custom-services",
-                "--output",
-                str(output_path),
-            ],
+            ["swebench", "--dataset", "verified", "-H", "X-Test", "value", "--ics", "--output", str(output_path)],
         )
 
         assert result.exit_code == 0, result.output
         assert output_path.read_text(encoding="utf-8") == "task-a\ntask-b\n"
-        assert MockTaskTracker.calls == [
-            {
-                "benchmark_name": "swebench",
-                "dataset": "verified",
-                "ignore_custom_services": True,
-                "service_headers": {"X-Test": "value"},
-            }
-        ]
+
+        (request,) = tracker.requests
+        assert json.loads(request.content) == {
+            "benchmark_name": "swebench",
+            "dataset": "verified",
+            "service_headers": {"X-Test": "value"},
+            "ignore_custom_services": True,
+        }
 
     def test_tracker_failure_does_not_create_output(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        cli_runner: CliRunner,
+        self, tracker: MockTracker, tmp_path: Path, cli_runner: CliRunner
     ) -> None:
-        """A failed tracker request must not leave a misleading task-ID file.
-
-        Test cases:
-        - Tracker errors produce a concise nonzero command result.
-        - The requested output path remains absent.
-        """
+        tracker.reply(
+            "POST", "/fetch-benchmark-tasks", httpx.Response(502, json={"detail": "benchmark service unavailable"})
+        )
         output_path = tmp_path / "tasks.txt"
-        MockTaskTracker.response = TrackerServiceError("benchmark service unavailable")
-        MockTaskTracker.calls = []
-
-        monkeypatch.setattr(tasks_module, "TrackerService", MockTaskTracker)
 
         result = cli_runner.invoke(tasks, ["swebench", "--output", str(output_path)])
 

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from ..errors import ValkyrieRunError, ValkyrieStreamError, handle_httpx_stream_errors
+from .._sse import error_detail, server_sent_events
+from ..errors import ValkyrieRunError, ValkyrieStreamError
 from ..models.logs import LogEvent, LogPage
 
 if TYPE_CHECKING:
@@ -106,7 +106,6 @@ class LogsResource:
                 raise ValkyrieStreamError("Valkyrie log pagination returned a repeated cursor")
             seen_cursors.add(cursor)
 
-    @handle_httpx_stream_errors("Valkyrie log stream failed")
     async def stream_task(
         self,
         run_id: UUID,
@@ -116,38 +115,18 @@ class LogsResource:
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ) -> AsyncIterator[LogEvent]:
-        """Yield events from one task stream, including task IDs containing `/`."""
+        """Yield events from one task's log stream until the server sends its `end` event.
+
+        Task IDs may contain `/`. Raises ValkyrieStreamError when the server reports an error or
+        the body ends without `end`.
+        """
         params = _request_params(task_id, query, start_time, end_time)
-        async with self._sdk.stream_response(
-            "GET",
-            f"/benchmarks/{run_id}/logs/stream",
-            params=params,
-        ) as response:
-            if not response.is_success:
-                await response.aread()
-                self._sdk.raise_for_status(response)
-
-            event_name = ""
-            data_lines: list[str] = []
-            async for line in response.aiter_lines():
-                if line == "":
-                    event = _parse_stream_event(event_name, data_lines)
-                    if event is not None:
-                        yield event
-                    if event_name == "end":
-                        return
-                    event_name = ""
-                    data_lines = []
-                elif line.startswith("event:"):
-                    event_name = line.removeprefix("event:").strip()
-                elif line.startswith("data:"):
-                    data_lines.append(line.removeprefix("data:").lstrip())
-
-            event = _parse_stream_event(event_name, data_lines)
-            if event is not None:
-                yield event
-            if event_name == "end":
-                return
+        async with self._sdk.stream_response("GET", f"/benchmarks/{run_id}/logs/stream", params=params) as response:
+            async for event_name, data in server_sent_events(response):
+                if event_name == "end":
+                    return
+                if event := _log_event(event_name, data):
+                    yield event
             raise ValkyrieStreamError("Valkyrie log stream ended before its end event")
 
 
@@ -180,15 +159,9 @@ def _request_params(
     return {key: value for key, value in params.items() if value is not None}
 
 
-def _parse_stream_event(event_name: str, data_lines: Sequence[str]) -> LogEvent | None:
-    data = "\n".join(data_lines)
+def _log_event(event_name: str, data: str) -> LogEvent | None:
     if event_name == "error":
-        try:
-            payload: Any = json.loads(data) if data else {}
-        except json.JSONDecodeError:
-            payload = data
-        detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
-        raise ValkyrieStreamError(f"Valkyrie log stream returned an error: {detail}")
+        raise ValkyrieStreamError(f"Valkyrie log stream returned an error: {error_detail(data, 'detail')}")
     if event_name != "log" or not data:
         return None
     try:

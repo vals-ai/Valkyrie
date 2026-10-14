@@ -9,9 +9,10 @@ dependencies = [
   "click>=8.1.0",
   "httpx>=0.28.1",
   "python-dotenv",
-  "valkyrie-sdk>=0.11.0,<1",
+  "valkyrie-sdk>=0.15.0,<1",
   "tracker",
   "pyyaml>=6.0.3",
+  "textual>=8.2,<9",
 ]
 
 [project.scripts]

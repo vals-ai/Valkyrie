@@ -183,7 +183,9 @@ For examples, see the [Python SDK guide](/sdk/runs).
 
 ## `client.runs.stream` {#stream}
 
-Yield typed updates until the run completes or disconnects.
+Yield the run's state as it changes until the run completes or the server disconnects.
+
+Raises ValkyrieStreamError if the server sends an `error` event; use events() to see how the stream ended.
 
 ```python Signature
 async def stream(run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]
@@ -198,6 +200,28 @@ async def stream(run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]
 **Returns**
 
 AsyncIterator[<a href="/reference/sdk/models/runs#fetch-benchmark-response"><code>FetchBenchmarkResponse</code></a>]
+
+For examples, see the [Python SDK guide](/sdk/runs).
+
+## `client.runs.events` {#events}
+
+Yield each update, then the `complete`, `error` or `disconnect` event that ends the stream.
+
+If the body ends without one of those, iteration stops after the last update.
+
+```python Signature
+async def events(run_id: UUID) -> AsyncIterator[RunStreamEvent]
+```
+
+**Parameters**
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_id"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · UUID</span></div>
+</div>
+
+**Returns**
+
+AsyncIterator[<a href="/reference/sdk/models/runs#run-stream-event"><code>RunStreamEvent</code></a>]
 
 For examples, see the [Python SDK guide](/sdk/runs).
 
@@ -324,7 +348,9 @@ For examples, see the [Python SDK guide](/sdk/runs).
 
 ## `client.runs.analyze` {#analyze}
 
-Yield typed progress events while analyzing a finished run.
+Yield typed progress events while analyzing a finished run, ending with `done`.
+
+A cached result arrives as a single `done` event. Raises ValkyrieStreamError when the analyzer reports an error.
 
 ```python Signature
 async def analyze(
@@ -516,7 +542,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 
 ## `client.runs.resume` {#resume}
 
-Resume unfinished work for a run.
+Resume unfinished work for a run; `lambda_function` replaces its post-run Lambda.
 
 ```python Signature
 async def resume(
@@ -529,6 +555,7 @@ async def resume(
     from_scratch: bool = False,
     update_agent: bool = False,
     benchmark_url: str | None = None,
+    lambda_function: str | None = None,
 ) -> RetryOrResumeBenchmarkResponse
 ```
 
@@ -566,6 +593,10 @@ async def resume(
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"benchmark_url"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
 </div>
 
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"lambda_function"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
+</div>
+
 **Returns**
 
 <a href="/reference/sdk/models/runs#retry-or-resume-benchmark-response"><code>RetryOrResumeBenchmarkResponse</code></a>
@@ -574,7 +605,7 @@ For examples, see the [Python SDK guide](/sdk/runs).
 
 ## `client.runs.retry` {#retry}
 
-Retry failed or selected work for a run.
+Retry failed or selected work for a run; `lambda_function` replaces its post-run Lambda.
 
 ```python Signature
 async def retry(
@@ -587,6 +618,7 @@ async def retry(
     from_scratch: bool = False,
     update_agent: bool = False,
     benchmark_url: str | None = None,
+    lambda_function: str | None = None,
 ) -> RetryOrResumeBenchmarkResponse
 ```
 
@@ -622,6 +654,10 @@ async def retry(
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"benchmark_url"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"lambda_function"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str | None · default: <code>{"None"}</code></span></div>
 </div>
 
 **Returns**

@@ -8,5 +8,6 @@
   "reference/cli/provider",
   "reference/cli/login",
   "reference/cli/token",
-  "reference/cli/org"
+  "reference/cli/org",
+  "reference/cli/ui"
 ]

@@ -50,7 +50,9 @@ build: venv_check
 		--workpath build \
 		--specpath build \
 		--clean \
-		src/valkyrie/cli/main.py
+		--collect-submodules valkyrie.cli \
+		--collect-data valkyrie.tui \
+		scripts/binary/valkyrie_cli.py
 	@echo "✓ Binary built at dist/valkyrie"
 
 format: venv_check
@@ -63,7 +65,7 @@ lint: venv_check
 	@uv run ruff check --fix .
 
 test: venv_check
-	@uv run pytest tests/unit/cli tests/integration/local \
+	@uv run pytest tests/unit/cli tests/unit/tui tests/integration/local \
 		--cov=src/valkyrie --cov-report=xml --cov-report=term-missing --cov-fail-under=80
 
 unit-test: test

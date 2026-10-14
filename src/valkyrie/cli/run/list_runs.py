@@ -1,12 +1,18 @@
-import click
-from tracker.database.models import BenchmarkStatus
-from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse, Order
+from collections.abc import AsyncIterator
 
-from valkyrie.cli.exceptions import TrackerServiceError
+import click
+from valkyrie.sdk.models import (
+    BenchmarkStatus,
+    BenchmarkTableRow,
+    FetchBenchmarksRequest,
+    FetchBenchmarksResponse,
+    Order,
+)
+
+from valkyrie.cli.client import call
 from valkyrie.cli.display import format_table, paginate_cli_pages, progress_percent, short_local_time
 from valkyrie.cli.run.progress import styled_status
 from valkyrie.cli.run.snapshot import format_run_list_json
-from valkyrie.cli.tracker_client import TrackerService
 
 _MACHINE_PAGE_LIMIT = 500
 
@@ -117,35 +123,13 @@ def list_runs(
         order_by=Order(order_by),
     )
 
-    try:
-        with TrackerService() as tracker:
-            if output_format == "json":
-                benchmarks = fetch_all_benchmarks(
-                    tracker, request.model_copy(update={"cursor": "", "limit": _MACHINE_PAGE_LIMIT})
-                )
-                click.echo(format_run_list_json(benchmarks))
-            else:
-                paginate_benchmarks(tracker, request)
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e))
-
-
-def fetch_all_benchmarks(tracker: TrackerService, request: FetchBenchmarksRequest) -> list[BenchmarkTableRow]:
-    """Exhaust cursor pagination before writing any machine-readable output."""
-    benchmarks: list[BenchmarkTableRow] = []
-    cursor = request.cursor
-    seen_cursors: set[str] = set()
-
-    while cursor is not None:
-        if cursor in seen_cursors:
-            raise TrackerServiceError("Tracker returned a repeated run-list cursor.")
-        seen_cursors.add(cursor)
-
-        response = tracker.fetch_benchmarks(request.model_copy(update={"cursor": cursor}))
-        benchmarks.extend(response.benchmarks)
-        cursor = response.next_cursor
-
-    return benchmarks
+    if output_format == "json":
+        # Every page is fetched before anything is written, so a failure never leaves partial JSON.
+        machine_request = request.model_copy(update={"limit": _MACHINE_PAGE_LIMIT})
+        runs = call(lambda client: _collect(client.runs.iter(machine_request)))
+        click.echo(format_run_list_json(runs))
+    else:
+        paginate_benchmarks(request)
 
 
 def format_fetch_benchmarks_response(
@@ -225,11 +209,16 @@ def format_no_benchmarks_found(request: FetchBenchmarksRequest) -> None:
             click.echo(f"  • {name}: {value if isinstance(value, str) else ', '.join(value)}")
 
 
-def paginate_benchmarks(tracker: TrackerService, request: FetchBenchmarksRequest, limit: int = 5) -> None:
+async def _collect(rows: AsyncIterator[BenchmarkTableRow]) -> list[BenchmarkTableRow]:
+    return [row async for row in rows]
+
+
+def paginate_benchmarks(request: FetchBenchmarksRequest, limit: int = 5) -> None:
     """Interactively page through runs."""
 
     def load_page(offset: int, page_limit: int) -> tuple[int, FetchBenchmarksResponse]:
-        response = tracker.fetch_benchmarks(request.model_copy(update={"offset": offset, "limit": page_limit}))
+        page_request = request.model_copy(update={"offset": offset, "limit": page_limit})
+        response = call(lambda client: client.runs.list(page_request))
         return response.total_count or 0, response
 
     paginate_cli_pages(

@@ -11,11 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 from uuid import UUID
 
 from valkyrie.sdk.output_archive import extract_output_archive
-from valkyrie.sdk.errors import (
-    ValkyrieRunError,
-    ValkyrieStreamError,
-    handle_httpx_stream_errors,
-)
+from valkyrie.sdk._sse import error_detail, server_sent_events
+from valkyrie.sdk.errors import ValkyrieRunError, ValkyrieStreamError
 from valkyrie.sdk.models import (
     AgentContractRequest,
     AnalyzeBenchmarkRequest,
@@ -31,6 +28,7 @@ from valkyrie.sdk.models import (
     ResultsExistResponse,
     RetryMode,
     RetryOrResumeBenchmarkResponse,
+    RunStreamEvent,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
@@ -149,39 +147,34 @@ class RunsResource:
                 return
             cursor = page.next_cursor
 
-    @handle_httpx_stream_errors("Valkyrie stream failed")
     async def stream(self, run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]:
-        """Yield typed updates until the run completes or disconnects."""
+        """Yield the run's state as it changes until the run completes or the server disconnects.
+
+        Raises ValkyrieStreamError if the server sends an `error` event; use events() to see how
+        the stream ended.
+        """
+        async for event in self.events(run_id):
+            if event.event == "error":
+                raise ValkyrieStreamError(f"Valkyrie run stream returned an error: {event.detail}")
+            if event.run is not None:
+                yield event.run
+
+    async def events(self, run_id: UUID) -> AsyncIterator[RunStreamEvent]:
+        """Yield each update, then the `complete`, `error` or `disconnect` event that ends the stream.
+
+        If the body ends without one of those, iteration stops after the last update.
+        """
         async with self._sdk.stream_response(
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(run_id), "connect": "true"},
         ) as response:
-            if not response.is_success:
-                await response.aread()
-                self._sdk.raise_for_status(response)
-
-            event_name = ""
-            data_lines: list[str] = []
-            async for line in response.aiter_lines():
-                if line == "":
-                    if event_name or data_lines:
-                        snapshot = self._parse_stream_event(event_name, data_lines)
-                        if snapshot is not None:
-                            yield snapshot
-                        if event_name in {"complete", "disconnect"}:
-                            return
-                    event_name = ""
-                    data_lines = []
-                elif line.startswith("event:"):
-                    event_name = line.removeprefix("event:").strip()
-                elif line.startswith("data:"):
-                    data_lines.append(line.removeprefix("data:").lstrip())
-
-            if event_name or data_lines:
-                snapshot = self._parse_stream_event(event_name, data_lines)
-                if snapshot is not None:
-                    yield snapshot
+            async for event_name, data in server_sent_events(response):
+                if (event := _run_stream_event(event_name, data)) is None:
+                    continue
+                yield event
+                if event.event != "update":
+                    return
 
     @overload
     async def results(
@@ -253,7 +246,6 @@ class RunsResource:
             params={"benchmark_id": str(run_id)},
         )
 
-    @handle_httpx_stream_errors("Valkyrie analysis stream failed")
     async def analyze(
         self,
         run_id: UUID,
@@ -261,17 +253,17 @@ class RunsResource:
         no_cache: bool = False,
         lambda_function: str | None = None,
     ) -> AsyncIterator[AnalyzeEvent]:
-        """Yield typed progress events while analyzing a finished run."""
+        """Yield typed progress events while analyzing a finished run, ending with `done`.
+
+        A cached result arrives as a single `done` event. Raises ValkyrieStreamError when the
+        analyzer reports an error.
+        """
         payload = AnalyzeBenchmarkRequest(no_cache=no_cache, lambda_function=lambda_function)
         async with self._sdk.stream_response(
             "POST",
             f"/analyze-benchmark/{run_id}",
             json=payload.model_dump(mode="json"),
         ) as response:
-            if not response.is_success:
-                await response.aread()
-                self._sdk.raise_for_status(response)
-
             if "text/event-stream" not in response.headers.get("content-type", ""):
                 await response.aread()
                 cached_payload: Any = response.json()
@@ -280,27 +272,12 @@ class RunsResource:
                 yield AnalyzeEvent(event="done", data=cast(dict[str, Any], cached_payload))
                 return
 
-            event_name = ""
-            data_lines: list[str] = []
-            async for line in response.aiter_lines():
-                if line == "":
-                    event = self._parse_analysis_event(event_name, data_lines)
-                    if event is not None:
-                        yield event
-                        if event.event == "done":
-                            return
-                    event_name = ""
-                    data_lines = []
-                elif line.startswith("event:"):
-                    event_name = line.removeprefix("event:").strip()
-                elif line.startswith("data:"):
-                    data_lines.append(line.removeprefix("data:").lstrip())
-
-            event = self._parse_analysis_event(event_name, data_lines)
-            if event is not None:
+            async for event_name, data in server_sent_events(response):
+                event = _analysis_event(event_name, data)
                 yield event
+                if event.event == "done":
+                    return
 
-    @handle_httpx_stream_errors("Valkyrie output stream failed")
     async def stream_outputs(
         self,
         run_id: UUID,
@@ -316,9 +293,6 @@ class RunsResource:
             f"/fetch-run-outputs/{run_id}",
             params=params,
         ) as response:
-            if not response.is_success:
-                await response.aread()
-                self._sdk.raise_for_status(response)
             async for chunk in response.aiter_bytes():
                 yield chunk
 
@@ -434,8 +408,9 @@ class RunsResource:
         from_scratch: bool = False,
         update_agent: bool = False,
         benchmark_url: str | None = None,
+        lambda_function: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
-        """Resume unfinished work for a run."""
+        """Resume unfinished work for a run; `lambda_function` replaces its post-run Lambda."""
         return await self._retry_or_resume(
             run_id,
             retry=False,
@@ -446,6 +421,7 @@ class RunsResource:
             from_scratch=from_scratch,
             update_agent=update_agent,
             benchmark_url=benchmark_url,
+            lambda_function=lambda_function,
         )
 
     async def retry(
@@ -459,8 +435,9 @@ class RunsResource:
         from_scratch: bool = False,
         update_agent: bool = False,
         benchmark_url: str | None = None,
+        lambda_function: str | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
-        """Retry failed or selected work for a run."""
+        """Retry failed or selected work for a run; `lambda_function` replaces its post-run Lambda."""
         return await self._retry_or_resume(
             run_id,
             retry=True,
@@ -471,6 +448,7 @@ class RunsResource:
             from_scratch=from_scratch,
             update_agent=update_agent,
             benchmark_url=benchmark_url,
+            lambda_function=lambda_function,
         )
 
     async def _retry_or_resume(
@@ -485,6 +463,7 @@ class RunsResource:
         from_scratch: bool,
         update_agent: bool,
         benchmark_url: str | None,
+        lambda_function: str | None,
     ) -> RetryOrResumeBenchmarkResponse:
         """Send a retry or resume request."""
         if concurrency is not None and concurrency < 1:
@@ -503,8 +482,8 @@ class RunsResource:
             "service_headers": dict(service_headers or {}),
             "secrets": dict(secrets or {}),
         }
-        if benchmark_url is not None:
-            body["benchmark_url"] = benchmark_url
+        optional = {"benchmark_url": benchmark_url, "lambda_function": lambda_function}
+        body |= {key: value for key, value in optional.items() if value is not None}
 
         return await self._sdk.request_model(
             "POST",
@@ -538,39 +517,27 @@ class RunsResource:
             updates["model"] = model
         return contract.model_copy(update=updates)
 
-    @staticmethod
-    def _parse_stream_event(event_name: str, data_lines: Sequence[str]) -> FetchBenchmarkResponse | None:
-        """Parse one server-sent event."""
-        data = "\n".join(data_lines)
-        if event_name == "error":
-            try:
-                payload: Any = json.loads(data) if data else {}
-            except json.JSONDecodeError:
-                payload = data
-            detail = payload.get("error", payload) if isinstance(payload, dict) else payload
-            raise ValkyrieStreamError(f"Valkyrie run stream returned an error: {detail}")
-        if event_name in {"complete", "disconnect"}:
-            return None
-        if not data:
-            return None
-        try:
-            return FetchBenchmarkResponse.model_validate_json(data)
-        except (ValueError, TypeError) as exc:
-            raise ValkyrieStreamError(f"Invalid Valkyrie run stream event: {data}") from exc
 
-    @staticmethod
-    def _parse_analysis_event(event_name: str, data_lines: Sequence[str]) -> AnalyzeEvent | None:
-        """Parse one analysis server-sent event."""
-        data = "\n".join(data_lines)
-        if not event_name and not data:
-            return None
-        try:
-            payload: Any = json.loads(data) if data else {}
-        except json.JSONDecodeError as exc:
-            raise ValkyrieStreamError(f"Invalid Valkyrie analysis event: {data}") from exc
-        if not isinstance(payload, dict):
-            raise ValkyrieStreamError(f"Invalid Valkyrie analysis event: {data}")
-        if event_name == "error":
-            detail = payload.get("message", payload)
-            raise ValkyrieStreamError(f"Valkyrie analysis failed: {detail}")
-        return AnalyzeEvent(event=event_name or "message", data=cast(dict[str, Any], payload))
+def _run_stream_event(event_name: str, data: str) -> RunStreamEvent | None:
+    if event_name == "error":
+        return RunStreamEvent(event="error", detail=str(error_detail(data, "error")))
+    if event_name in {"complete", "disconnect"}:
+        return RunStreamEvent.model_validate({"event": event_name})
+    if not data:
+        return None
+    try:
+        return RunStreamEvent(event="update", run=FetchBenchmarkResponse.model_validate_json(data))
+    except (ValueError, TypeError) as exc:
+        raise ValkyrieStreamError(f"Invalid Valkyrie run stream event: {data}") from exc
+
+
+def _analysis_event(event_name: str, data: str) -> AnalyzeEvent:
+    try:
+        payload: Any = json.loads(data) if data else {}
+    except json.JSONDecodeError as exc:
+        raise ValkyrieStreamError(f"Invalid Valkyrie analysis event: {data}") from exc
+    if not isinstance(payload, dict):
+        raise ValkyrieStreamError(f"Invalid Valkyrie analysis event: {data}")
+    if event_name == "error":
+        raise ValkyrieStreamError(f"Valkyrie analysis failed: {payload.get('message', payload)}")
+    return AnalyzeEvent(event=event_name or "message", data=cast(dict[str, Any], payload))

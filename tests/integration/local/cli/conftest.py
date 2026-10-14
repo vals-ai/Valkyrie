@@ -7,12 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from botocore.exceptions import ClientError
-from fastapi import FastAPI
 from tracker.aws.clients import AWSClientProvider
 
 
 @pytest.fixture
-def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
+def agent_library(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
     """Exercise CLI, SDK, Tracker, and S3 helpers with local object storage."""
     objects: dict[str, bytes] = {}
     parts: list[bytes] = []
@@ -79,16 +78,15 @@ def agent_library(local_tracker_app: FastAPI, monkeypatch: pytest.MonkeyPatch) -
     def s3_client(_provider: AWSClientProvider) -> AsyncMock:
         return client
 
-    async def handle(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
-        if request.url.host == "download.test":
-            assert "authorization" not in request.headers
-            assert not any(header.startswith("x-harness") for header in request.headers)
+    async def download(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "download.test"
+        assert "authorization" not in request.headers
+        assert "x-api-key" not in request.headers
 
-            return httpx.Response(200, content=objects[request.url.path.lstrip("/")])
-        async with httpx.ASGITransport(app=local_tracker_app) as transport:
-            return await transport.handle_async_request(request)
+        return httpx.Response(200, content=objects[request.url.path.lstrip("/")])
 
     monkeypatch.setattr(AWSClientProvider, "s3_client", s3_client)
-    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    # Presigned downloads use their own HTTP client, outside the CLI's Tracker transport.
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", download)
 
     return objects

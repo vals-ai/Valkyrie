@@ -4,7 +4,7 @@ from urllib.parse import quote
 
 import click
 
-from valkyrie.cli.tracker_client import request_tracker
+from valkyrie.cli.client import request_tracker
 
 
 @click.group()

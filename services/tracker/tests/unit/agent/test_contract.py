@@ -1,6 +1,6 @@
-"""Tests for agent contracts and the CLI push command.
+"""Tests for parsing and validating agent contracts.
 
-Run: uv run pytest tests/unit/cli/agent/test_contract.py
+Run: uv run pytest tests/unit/agent/test_contract.py
 """
 
 from pathlib import Path
@@ -8,13 +8,11 @@ from textwrap import dedent
 from typing import Any, cast
 
 import pytest
-from click.testing import CliRunner
 from pydantic import ValidationError
 from tracker.agent.schemas import AgentConfig, AgentContract, Parameter
 from tracker.database.models import AgentContractRequest, OutputArtifact
 
 from tracker.agent.contract import _parse_yaml_contract  # type: ignore
-from valkyrie.cli.main import agent
 
 
 def _make_contract(**overrides: Any) -> AgentContract:
@@ -671,25 +669,3 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.name == "my_agent"
-
-
-class TestPushCommand:
-    @pytest.mark.parametrize("name", [None, "override"])
-    def test_push_reports_resolved_name(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str | None
-    ) -> None:
-        async def mock_push(agent_name: str | None, agent_path: Path) -> str:
-            assert agent_name == name
-            assert agent_path == tmp_path
-
-            return agent_name or "my_agent"
-
-        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", mock_push)
-
-        arguments = ["push", str(tmp_path)]
-        if name is not None:
-            arguments.extend(["--name", name])
-        result = CliRunner().invoke(agent, arguments)
-
-        assert result.exit_code == 0
-        assert f"Agent '{name or 'my_agent'}' pushed successfully!" in result.output

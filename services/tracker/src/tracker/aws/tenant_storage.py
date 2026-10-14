@@ -8,7 +8,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from sqlmodel import Session
 
 from tracker import config
-from tracker.aws.resolver import organization_can_use_managed_aws
 from tracker.aws.tags import ORG_ID_TAG
 from tracker.database.models import Org
 
@@ -45,8 +44,8 @@ def ensure_org_bucket(session: Session, org: Org) -> str:
 
 
 def ensure_managed_org_bucket(session: Session, org: Org) -> None:
-    """Create the bucket of an organization that may use managed AWS, if it has none yet."""
-    if org.storage_key or not config.AWS_TENANT_BUCKET_PREFIX or not organization_can_use_managed_aws(org):
+    """Create the organization's bucket on a deployment with tenant buckets, if it has none yet."""
+    if org.storage_key or not config.AWS_TENANT_BUCKET_PREFIX:
         return
     ensure_org_bucket(session, org)
 

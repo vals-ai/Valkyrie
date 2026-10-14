@@ -159,6 +159,17 @@ class LoginSession(BaseModel):
         return DEFAULT_SESSION_DIR.expanduser() / "tracker"
 
     @classmethod
+    def saved(cls) -> list[LoginSession]:
+        """Return every saved login, one per Tracker, skipping files that can't be read."""
+        logins: list[LoginSession] = []
+        for path in sorted(DEFAULT_SESSION_DIR.expanduser().glob("*.json")):
+            try:
+                logins.append(cls.model_validate_json(path.read_bytes()))
+            except (OSError, ValidationError):
+                continue
+        return logins
+
+    @classmethod
     def remembered_tracker(cls) -> str | None:
         """The Tracker the last `valkyrie login` signed in to."""
         try:

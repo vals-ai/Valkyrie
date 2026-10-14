@@ -19,6 +19,8 @@ from sqlmodel import Session, col, delete, select, update
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
+    ExecutorDispatch,
+    ExecutorDispatchStatus,
     SandboxBuildReservation,
     Task,
     TaskStatus,
@@ -204,24 +206,35 @@ def _active_task_count():
     )
 
 
-def _eligible_task_id(pool_id: str):
-    active_count = _active_task_count()
+def _eligible_tasks(pool_id: str):
+    """PENDING tasks a claimed executor may admit right now, before any ordering."""
     arguments = type_coerce(col(Benchmark.arguments), JSON)
-    priority = arguments["priority"].as_integer()
     concurrency = arguments["concurrency"].as_integer()
-
     return (
         select(col(Task.id))
         .join(Benchmark, col(Benchmark.id) == col(Task.benchmark))
         .where(col(Task.status) == TaskStatus.PENDING)
         .where(col(Benchmark.status) == BenchmarkStatus.IN_PROGRESS)
         .where(arguments["queue_pool_id"].as_string() == pool_id)
-        .where(active_count < concurrency)
+        .where(_active_task_count() < concurrency)
+        .where(
+            col(Benchmark.id).in_(
+                select(col(ExecutorDispatch.benchmark_id)).where(
+                    col(ExecutorDispatch.status) == ExecutorDispatchStatus.RUNNING
+                )
+            )
+        )
         .where(col(Task.id).not_in(select(col(SandboxBuildReservation.task_row_id))))
-        .order_by(priority, col(Task.started_at), col(Task.id))
-        .limit(1)
-        .scalar_subquery()
     )
+
+
+def _admissible_ids(pool_id: str, *, head_only: bool):
+    """Eligible tasks, or only the pool head: highest priority, then oldest attempt."""
+    eligible = _eligible_tasks(pool_id)
+    if not head_only:
+        return eligible
+    priority = type_coerce(col(Benchmark.arguments), JSON)["priority"].as_integer()
+    return eligible.order_by(priority, col(Task.started_at), col(Task.id)).limit(1)
 
 
 def eligible_task_is(
@@ -229,15 +242,16 @@ def eligible_task_is(
     pool_id: str,
     task_row_id: UUID,
     expected_started_at: datetime,
+    *,
+    head_only: bool = True,
 ) -> bool:
-    """Return whether this exact attempt is the current global eligible head."""
+    """Return whether this exact attempt may be admitted, as the pool head unless ``head_only`` is off."""
     return (
         session.exec(
             select(col(Task.id))
             .where(col(Task.id) == task_row_id)
             .where(col(Task.started_at) == expected_started_at)
-            .where(col(Task.status) == TaskStatus.PENDING)
-            .where(col(Task.id) == _eligible_task_id(pool_id))
+            .where(col(Task.id).in_(_admissible_ids(pool_id, head_only=head_only)))
         ).first()
         is not None
     )
@@ -248,18 +262,56 @@ def claim_eligible_task(
     pool_id: str,
     task_row_id: UUID,
     expected_started_at: datetime,
+    *,
+    reservation: Resources | None = None,
 ) -> bool:
-    """Atomically claim this attempt only when it is the global eligible head."""
+    """Atomically claim this attempt, reserving ``reservation`` capacity in the caller transaction.
+
+    Reserving claims may take any eligible task; others only the pool head.
+    """
     result = session.exec(
         update(Task)
         .where(col(Task.id) == task_row_id)
         .where(col(Task.started_at) == expected_started_at)
-        .where(col(Task.status) == TaskStatus.PENDING)
-        .where(col(Task.id) == _eligible_task_id(pool_id))
+        .where(col(Task.id).in_(_admissible_ids(pool_id, head_only=reservation is None)))
         .values(status=TaskStatus.BUILDING)
     )
+    if result.rowcount != 1:
+        return False
 
-    return result.rowcount == 1
+    if reservation is not None:
+        session.add(
+            SandboxBuildReservation(
+                task_row_id=task_row_id,
+                attempt_started_at=expected_started_at,
+                pool_id=queue_pool_lock_id(pool_id),
+                requested_vcpu=reservation.vcpu,
+                requested_memory=reservation.memory,
+                requested_disk=reservation.disk,
+            )
+        )
+        session.flush()
+    return True
+
+
+def reserved_builds(session: Session, pool_id: str) -> dict[UUID, Resources]:
+    """Every reservation held in one provider capacity pool, keyed by task attempt row."""
+    rows = session.exec(
+        select(SandboxBuildReservation).where(col(SandboxBuildReservation.pool_id) == queue_pool_lock_id(pool_id))
+    ).all()
+    return {
+        row.task_row_id: Resources(vcpu=row.requested_vcpu, memory=row.requested_memory, disk=row.requested_disk)
+        for row in rows
+    }
+
+
+def sum_reservations(builds: dict[UUID, Resources]) -> ActiveReservations:
+    return ActiveReservations(
+        count=len(builds),
+        vcpu=sum(r.vcpu for r in builds.values()),
+        memory=sum(r.memory for r in builds.values()),
+        disk=sum(r.disk for r in builds.values()),
+    )
 
 
 def active_reservations(session: Session, pool_id: str) -> ActiveReservations:
@@ -277,31 +329,6 @@ def active_reservations(session: Session, pool_id: str) -> ActiveReservations:
         .one()
     )
     return ActiveReservations(count=count, vcpu=vcpu, memory=memory, disk=disk)
-
-
-def claim_eligible_task_with_reservation(
-    session: Session,
-    pool_id: str,
-    task_row_id: UUID,
-    expected_started_at: datetime,
-    resources: Resources,
-) -> bool:
-    """Claim the exact FIFO head and insert its reservation in the caller transaction."""
-    if not claim_eligible_task(session, pool_id, task_row_id, expected_started_at):
-        return False
-
-    session.add(
-        SandboxBuildReservation(
-            task_row_id=task_row_id,
-            attempt_started_at=expected_started_at,
-            pool_id=queue_pool_lock_id(pool_id),
-            requested_vcpu=resources.vcpu,
-            requested_memory=resources.memory,
-            requested_disk=resources.disk,
-        )
-    )
-    session.flush()
-    return True
 
 
 def release_reservation(session: Session, task_row_id: UUID, expected_started_at: datetime) -> None:

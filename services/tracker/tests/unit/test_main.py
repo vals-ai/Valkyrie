@@ -228,7 +228,6 @@ class TestTrackerAPI:
 
             return VerifyTaskIdsResponse(task_ids=task_ids or [f"task-{selected}"])
 
-        monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)
         monkeypatch.setattr(BenchmarkServiceClient, "resolve_dataset", resolve_dataset)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
@@ -334,7 +333,6 @@ class TestTrackerAPI:
 
             return VerifyTaskIdsResponse(task_ids=task_ids or ["task-1"])
 
-        monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
         request = StartBenchmarkRequest(
@@ -365,7 +363,6 @@ class TestTrackerAPI:
 
             return SimpleNamespace(dataset_version_selection=False)
 
-        monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)
         request = StartBenchmarkRequest(
             contract=contract,
@@ -403,7 +400,6 @@ class TestTrackerAPI:
 
             raise BenchmarkServiceError("The service resolved a different dataset")
 
-        monkeypatch.setattr(main_module.config, "DATASET_VERSION_PINNING_ENABLED", True)
         monkeypatch.setattr(BenchmarkServiceClient, "version", version)
         monkeypatch.setattr(BenchmarkServiceClient, "resolve_dataset", resolve_dataset)
         request = StartBenchmarkRequest(
@@ -3070,7 +3066,6 @@ class TestTrackerAPI:
         )
         database_session.add(benchmark)
         database_session.commit()
-        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-west-2")
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "new-shared-default")
@@ -3137,7 +3132,6 @@ class TestTrackerAPI:
         )
         database_session.add(benchmark)
         database_session.commit()
-        monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_REGION", "us-east-1")
         monkeypatch.setattr("tracker.config.AWS_DEPLOYMENT_S3_BUCKET", "legacy-shared")
@@ -3414,7 +3408,6 @@ async def test_storage_lifecycle_keeps_saved_bucket_and_logs(
     storage = MemoryS3()
     storage.objects["test-bucket", f"agents/{contract.name}.zip"] = b"original bundle"
     for name, value in {
-        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
         "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
         "AWS_DEPLOYMENT_REGION": "us-east-1",
         "AWS_DEPLOYMENT_S3_BUCKET": "deployment-bucket",

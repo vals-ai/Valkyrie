@@ -117,6 +117,17 @@ def test_valkyrie_url_skips_an_unreadable_remembered_tracker(monkeypatch: pytest
     assert ValkyrieConfig().url == "https://env.test"
 
 
+def test_saved_lists_each_trackers_login_and_skips_unreadable_files() -> None:
+    _session().save()
+    _session().model_copy(update={"tracker_url": "https://self-hosted.test:8000"}).save()
+    (login_module.DEFAULT_SESSION_DIR / "broken.json").write_text("{", encoding="utf-8")
+    (login_module.DEFAULT_SESSION_DIR / "not-utf8.json").write_bytes(b'{"tracker_url": "\xff"}')
+
+    assert sorted(login.tracker_url for login in LoginSession.saved()) == sorted(
+        [TRACKER, "https://self-hosted.test:8000"]
+    )
+
+
 def _refreshed(name: str, refresh_token: str | None = None) -> tuple[httpx.Response, str]:
     session_jwt = _jwt({"exp": 1e10, "name": name})
     body: dict[str, Any] = {"sessionJwt": session_jwt}

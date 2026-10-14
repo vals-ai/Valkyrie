@@ -27,7 +27,6 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select, update
 
-from tracker import config
 from tracker._lambda import invoke_lambda
 from tracker.api.login import router as login_router
 from tracker.api.organizations import router as organizations_router
@@ -618,8 +617,6 @@ async def start_benchmark(
     request.use_settings(settings, await asyncio.to_thread(provider_secrets, session, run_starter.org.id))
     if request.custom_benchmark_service is not None:
         _authorize_custom_benchmark_destination(request.custom_benchmark_service, run_starter.org)
-    if request.dataset_version is not None and not config.DATASET_VERSION_PINNING_ENABLED:
-        raise HTTPException(status_code=503, detail="Dataset version selection is not enabled")
     try:
         validate_agent_name(request.contract.name)
         validate_service_headers(request.service_headers)
@@ -786,39 +783,34 @@ async def start_benchmark(
                 detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
             ) from exc
 
-        if config.DATASET_VERSION_PINNING_ENABLED:
-            selected_dataset = request.dataset or "default"
+        selected_dataset = request.dataset or "default"
+        try:
             try:
-                try:
-                    version_metadata = await benchmark_service.version(dataset=selected_dataset)
-                except BenchmarkServiceError as exc:
-                    if exc.status_code not in {404, 405, 501}:
-                        raise
-                    if request.dataset_version is not None:
-                        raise HTTPException(
-                            status_code=400, detail="This benchmark service cannot select a dataset version"
-                        ) from exc
-                    logger.info(
-                        "Benchmark service does not expose version metadata; starting run without a pinned version"
-                    )
-                    version_metadata = None
-
-                if version_metadata is not None and version_metadata.dataset_version_selection:
-                    resolved = await benchmark_service.resolve_dataset(
-                        selected_dataset,
-                        version=request.dataset_version,
-                    )
-                    execution_request.dataset = resolved.dataset
-                    execution_request.resolved_dataset_version = resolved.version
-                    await benchmark_service.close()
-                    benchmark_service = execution_request.benchmark_service
-                elif version_metadata is not None and request.dataset_version is not None:
+                version_metadata = await benchmark_service.version(dataset=selected_dataset)
+            except BenchmarkServiceError as exc:
+                if exc.status_code not in {404, 405, 501}:
+                    raise
+                if request.dataset_version is not None:
                     raise HTTPException(
                         status_code=400, detail="This benchmark service cannot select a dataset version"
-                    )
-            except (BenchmarkServiceError, httpx.HTTPError, ValueError) as exc:
-                logger.exception("Failed to select dataset version for %s", request.benchmark_name)
-                raise HTTPException(status_code=502, detail="Failed to select dataset version") from exc
+                    ) from exc
+                logger.info("Benchmark service does not expose version metadata; starting run without a pinned version")
+                version_metadata = None
+
+            if version_metadata is not None and version_metadata.dataset_version_selection:
+                resolved = await benchmark_service.resolve_dataset(
+                    selected_dataset,
+                    version=request.dataset_version,
+                )
+                execution_request.dataset = resolved.dataset
+                execution_request.resolved_dataset_version = resolved.version
+                await benchmark_service.close()
+                benchmark_service = execution_request.benchmark_service
+            elif version_metadata is not None and request.dataset_version is not None:
+                raise HTTPException(status_code=400, detail="This benchmark service cannot select a dataset version")
+        except (BenchmarkServiceError, httpx.HTTPError, ValueError) as exc:
+            logger.exception("Failed to select dataset version for %s", request.benchmark_name)
+            raise HTTPException(status_code=502, detail="Failed to select dataset version") from exc
 
         try:
             verify_response = await benchmark_service.verify_task_ids(

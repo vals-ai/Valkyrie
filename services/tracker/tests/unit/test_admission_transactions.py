@@ -103,7 +103,6 @@ def _start_body(benchmark: Benchmark) -> dict[str, Any]:
 @pytest.fixture(autouse=True)
 def managed_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", True)
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "us-east-1")
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "test-bucket")

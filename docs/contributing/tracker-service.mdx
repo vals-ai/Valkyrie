@@ -35,7 +35,7 @@ Every authenticated route accepts either an access key in `X-Api-Key` or a Desco
 
 ## Organizations
 
-Organizations are Descope tenants. Any signed-in user with a verified email can create one with `POST /orgs` and becomes its admin by holding the `DESCOPE_ORG_ADMIN_ROLE` role (default `Valkyrie Admin`) in it. People who join by invitation hold no role. Without that role in the Descope project, `POST /orgs` returns 503 and creates nothing.
+Organizations are Descope tenants. Every organization that exists can use the Tracker, including hosted runs in its own bucket, which the Tracker creates on the organization's first request. An operator creates tenants in Descope. `POST /orgs` returns 403 unless `SELF_SERVE_ORGS_ENABLED` is `true`; with it on, any signed-in user with a verified email can create one and becomes its admin by holding the `DESCOPE_ORG_ADMIN_ROLE` role (default `Valkyrie Admin`) in it. People who join by invitation hold no role. Without that role in the Descope project, `POST /orgs` returns 503 and creates nothing.
 
 On bench (`VALKYRIE_STAGE=bench`), `PUT` and `DELETE /secrets/{name}` and `PUT` and `DELETE /sandbox-providers/{provider}` for `vals.ai` need a login session whose live Descope user record holds `DESCOPE_ORG_ADMIN_ROLE` in `vals.ai`. Other members and access keys, including CI keys, can still list its secrets and provider mappings.
 
@@ -133,7 +133,7 @@ make test-integration-local  # Local API and Postgres tests
 make test-integration-live   # AWS, benchmark service, and sandbox tests
 ```
 
-`tests/integration/live` uses the AWS SDK default credential chain, including a local AWS SSO profile, and requires the following resource and service settings in `services/tracker/.env`:
+`tests/integration/live` uses the AWS SDK default credential chain, including a local AWS SSO profile, and reads the following resource and service settings from the shell or `services/tracker/.env`:
 
 ```env
 # AWS: uses Secrets Manager and performs live S3 and CloudWatch create/read/delete tests
@@ -149,6 +149,21 @@ BENCHMARK_SERVICE_BASE_URL=     # Domain of the benchmark service
 BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE=local  # Cloud Map namespace fallback when no base URL is set
 BENCHMARK_SERVICE_AUTH_KEY=     # Access key for authenticating with a benchmark service
 ```
+
+### Error-preservation tests
+
+From `services/tracker`, use the existing live sandbox suite to reproduce error preservation:
+
+```bash
+uv run pytest tests/integration/live/sandbox/test_sandbox.py \
+  -k 'reported_error or unusable_report or install_preserves or run_preserves_error' -q
+```
+
+Use the dev environment. The tests require AWS access to read the configured provider secret and provider access to create and delete sandboxes. Missing required variables fail the fixture setup. The selected tests create the provider client directly and do not call the benchmark-service HTTP API. They use the configuration above, not new buckets or modified IAM permissions.
+
+Each case creates its own sandbox and deletes it on exit. The selected cases do not upload agent bundles or output artifacts. They test reported errors, exit-code fallback, masking of a synthetic configured value, and installation failures. The paired-failure case retains the agent error and records a missing required artifact as a separate exception with the original context.
+
+These tests exercise Tracker's local code against real sandbox commands. They do not test provider-managed secret mounting, maintained runner setup, deployed API or CLI responses, Dashboard rendering, or Sentry delivery. Those acceptance checks require their own live evidence.
 
 ## Migrations
 

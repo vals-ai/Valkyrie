@@ -4,8 +4,7 @@ from uuid import UUID
 
 import click
 
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_client import TrackerService
+from valkyrie.cli.client import call
 
 
 @click.command(
@@ -23,9 +22,5 @@ from valkyrie.cli.tracker_client import TrackerService
 )
 def update(run_id: UUID, concurrency: int) -> None:
     """Update the concurrency limit for an active run."""
-    try:
-        with TrackerService() as tracker:
-            response = tracker.update_benchmark_concurrency(run_id, concurrency)
-        click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
-    except TrackerServiceError as e:
-        raise click.ClickException(str(e)) from e
+    response = call(lambda client: client.runs.update_concurrency(run_id, concurrency=concurrency))
+    click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))

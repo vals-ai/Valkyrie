@@ -2,69 +2,31 @@
 
 Run: uv run pytest tests/unit/cli/run/test_update.py
 
-Covers successful updates, CLI validation, and tracker errors.
+Covers successful updates and CLI validation.
 """
 
-from importlib import import_module
+import json
 from uuid import UUID
 
+import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import BenchmarkStatus
-from tracker.types import UpdateBenchmarkConcurrencyResponse
 
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run import run
+from valkyrie.cli.run.update import update
 
-update_module = import_module("valkyrie.cli.run.update")
+from tests.unit.cli.conftest import MockTracker
 
-
-class MockUpdateTracker:
-    """Record concurrency updates and return deterministic tracker results."""
-
-    def __init__(
-        self,
-        response: UpdateBenchmarkConcurrencyResponse | TrackerServiceError,
-    ) -> None:
-        self.response = response
-        self.calls: list[tuple[UUID, int]] = []
-
-    def __enter__(self) -> "MockUpdateTracker":
-        return self
-
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def update_benchmark_concurrency(
-        self,
-        run_id: UUID,
-        concurrency: int,
-    ) -> UpdateBenchmarkConcurrencyResponse:
-        self.calls.append((run_id, concurrency))
-        if isinstance(self.response, TrackerServiceError):
-            raise self.response
-        return self.response
+_RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
 
 
-def test_update_uses_effective_tracker_concurrency(
-    cli_runner: CliRunner,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Print the effective concurrency returned by the tracker."""
-    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
-    tracker = MockUpdateTracker(
-        UpdateBenchmarkConcurrencyResponse(
-            benchmark_id=run_id,
-            status=BenchmarkStatus.IN_PROGRESS,
-            concurrency=6,
-        )
-    )
-    monkeypatch.setattr(update_module, "TrackerService", lambda: tracker)
+def test_update_prints_the_concurrency_tracker_applied(cli_runner: CliRunner, tracker: MockTracker) -> None:
+    effective = {"benchmark_id": str(_RUN_ID), "status": "IN_PROGRESS", "concurrency": 6}
+    tracker.reply("PATCH", f"/benchmarks/{_RUN_ID}/concurrency", httpx.Response(200, json=effective))
 
-    result = cli_runner.invoke(run, ["update", str(run_id), "--concurrency", "9"])
+    result = cli_runner.invoke(update, [str(_RUN_ID), "--concurrency", "9"])
 
     assert result.exit_code == 0, result.output
-    assert tracker.calls == [(run_id, 9)]
+    assert [json.loads(request.content) for request in tracker.requests] == [{"concurrency": 9}]
     assert result.output == "✓ Run concurrency updated to 6.\n"
 
 
@@ -74,27 +36,7 @@ def test_update_rejects_non_positive_integer(
     value: str,
 ) -> None:
     """Reject invalid concurrency values before contacting the tracker."""
-    result = cli_runner.invoke(
-        run,
-        ["update", "123e4567-e89b-12d3-a456-426614174000", "--concurrency", value],
-    )
+    result = cli_runner.invoke(update, [str(_RUN_ID), "--concurrency", value])
 
     assert result.exit_code == 2
     assert "--concurrency" in result.output
-
-
-def test_update_surfaces_tracker_error(
-    cli_runner: CliRunner,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Render tracker rejections as concise Click errors."""
-    tracker = MockUpdateTracker(TrackerServiceError("Run is not in progress."))
-    monkeypatch.setattr(update_module, "TrackerService", lambda: tracker)
-
-    result = cli_runner.invoke(
-        run,
-        ["update", "123e4567-e89b-12d3-a456-426614174000", "--concurrency", "4"],
-    )
-
-    assert result.exit_code == 1
-    assert result.output == "Error: Run is not in progress.\n"

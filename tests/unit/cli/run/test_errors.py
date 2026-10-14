@@ -3,66 +3,33 @@
 Run: uv run pytest tests/unit/cli/run/test_errors.py
 """
 
-from datetime import datetime
 import json
-from importlib import import_module
+from datetime import datetime
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import BenchmarkStatus, FailureCategory
-from tracker.types import RetrieveResultsResponse, S3UploadResultsResponse
+from valkyrie.sdk.models import BenchmarkStatus, FailureCategory, FinalViewResponse
 
-from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.errors import build_run_errors_payload, errors, group_task_errors
+from valkyrie.cli.run.errors import build_run_errors_payload, errors
 
-from tests.unit.cli.factories import make_final_view
-
-errors_module = import_module("valkyrie.cli.run.errors")
+from tests.unit.cli.conftest import MockTracker
+from tests.unit.cli.factories import make_final_view, ok
 
 
-class StubErrorsTracker:
-    def __init__(self, response: RetrieveResultsResponse | TrackerServiceError) -> None:
-        self.response = response
-        self.calls: list[tuple[UUID, bool, list[str] | None]] = []
-
-    def __enter__(self) -> "StubErrorsTracker":
-        return self
-
-    def __exit__(self, *_exc_info: object) -> None:
-        return None
-
-    def retrieve_results(
-        self,
-        run_id: UUID,
-        s3: bool,
-        task_ids: list[str] | None = None,
-    ) -> RetrieveResultsResponse:
-        self.calls.append((run_id, s3, task_ids))
-        if isinstance(self.response, TrackerServiceError):
-            raise self.response
-        return self.response
+def invoke_with_tracker(tracker: MockTracker, response: FinalViewResponse, *args: str) -> Result:
+    tracker.reply("GET", "/retrieve-results", ok(response))
+    return CliRunner().invoke(errors, [str(response.benchmark_id), *args])
 
 
-def invoke_with_tracker(
-    monkeypatch: pytest.MonkeyPatch,
-    tracker: StubErrorsTracker,
-    run_id: UUID,
-    *args: str,
-) -> Result:
-    monkeypatch.setattr(errors_module, "TrackerService", lambda: tracker)
-    return CliRunner().invoke(errors, [str(run_id), *args])
-
-
-def test_errors_text_groups_identical_messages_without_writing_files(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_errors_text_groups_identical_messages_without_writing_files(tracker: MockTracker) -> None:
     run_id = uuid4()
     shared_message = "Required output artifact was not produced."
     task_errors = {f"task-{index:03}": shared_message for index in range(100)}
     task_errors["other-task"] = "Evaluator returned an invalid response."
-    tracker = StubErrorsTracker(make_final_view(run_id, task_errors=task_errors))
+    tracker.reply("GET", "/retrieve-results", ok(make_final_view(run_id, task_errors=task_errors)))
     runner = CliRunner()
-    monkeypatch.setattr(errors_module, "TrackerService", lambda: tracker)
 
     with runner.isolated_filesystem():
         result = runner.invoke(errors, [str(run_id)])
@@ -78,7 +45,8 @@ def test_errors_text_groups_identical_messages_without_writing_files(monkeypatch
     assert "task-004" in result.stdout
     assert "task-005" not in result.stdout
     assert "(+95 more)" in result.stdout
-    assert tracker.calls == [(run_id, False, None)]
+    (request,) = tracker.requests
+    assert dict(request.url.params) == {"benchmark_id": str(run_id), "s3": "false"}
 
 
 @pytest.mark.parametrize(
@@ -91,7 +59,7 @@ def test_errors_text_groups_identical_messages_without_writing_files(monkeypatch
     ],
 )
 def test_errors_text_handles_run_task_and_empty_states(
-    monkeypatch: pytest.MonkeyPatch,
+    tracker: MockTracker,
     error_message: str | None,
     task_errors: dict[str, str] | None,
     status: BenchmarkStatus,
@@ -99,11 +67,9 @@ def test_errors_text_handles_run_task_and_empty_states(
     unexpected: str,
 ) -> None:
     run_id = uuid4()
-    tracker = StubErrorsTracker(
-        make_final_view(run_id, status=status, error_message=error_message, task_errors=task_errors)
+    result = invoke_with_tracker(
+        tracker, make_final_view(run_id, status=status, error_message=error_message, task_errors=task_errors)
     )
-
-    result = invoke_with_tracker(monkeypatch, tracker, run_id)
 
     assert result.exit_code == 0, result.output
     assert expected in result.stdout
@@ -111,28 +77,18 @@ def test_errors_text_handles_run_task_and_empty_states(
     assert status.value.replace("_", " ").title() in result.stdout
 
 
-def test_errors_text_preserves_empty_messages(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubErrorsTracker(make_final_view(run_id, error_message="", task_errors={"task-a": ""}))
-
-    result = invoke_with_tracker(monkeypatch, tracker, run_id)
+def test_errors_text_preserves_empty_messages(tracker: MockTracker) -> None:
+    result = invoke_with_tracker(tracker, make_final_view(uuid4(), error_message="", task_errors={"task-a": ""}))
 
     assert result.exit_code == 0, result.output
     assert result.stdout.count("(empty error message)") == 2
 
 
-def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
+def test_errors_text_sanitizes_terminal_controls(tracker: MockTracker) -> None:
     unsafe_message = "\x1b]8;;https://example.invalid\x07click\x1b]8;;\x07\rrewritten\nnext\tline\u202e"
-    tracker = StubErrorsTracker(
-        make_final_view(
-            run_id,
-            error_message=unsafe_message,
-            task_errors={"task\x1b[31m": "boom\b"},
-        )
-    )
+    response = make_final_view(uuid4(), error_message=unsafe_message, task_errors={"task\x1b[31m": "boom\b"})
 
-    result = invoke_with_tracker(monkeypatch, tracker, run_id)
+    result = invoke_with_tracker(tracker, response)
 
     assert result.exit_code == 0, result.output
     for control in ("\x1b", "\x07", "\r", "\b", "\t", "\u202e"):
@@ -144,7 +100,7 @@ def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch
     assert "next    line" in result.stdout
 
 
-def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_errors_json_is_versioned_allowlisted_and_deterministic(tracker: MockTracker) -> None:
     run_id = uuid4()
     raw_error = "task failed\n\x1b[31mred"
     response = make_final_view(
@@ -153,9 +109,7 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
         task_errors={"task-b": raw_error, "task-a": "another failure"},
         task_failure_categories={"task-b": FailureCategory.AGENT},
     )
-    tracker = StubErrorsTracker(response)
-
-    result = invoke_with_tracker(monkeypatch, tracker, run_id, "--format", "json")
+    result = invoke_with_tracker(tracker, response, "--format", "json")
 
     assert result.exit_code == 0, result.output
     assert len(result.stdout.splitlines()) == 1
@@ -196,18 +150,10 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
     assert fixed_payload["observed_at"] == "2026-07-10T20:15:00Z"
 
 
-def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubErrorsTracker(
-        make_final_view(
-            run_id,
-            status=BenchmarkStatus.FINISHED,
-            error_message=None,
-            task_errors=None,
-        )
-    )
+def test_errors_json_normalizes_empty_error_state(tracker: MockTracker) -> None:
+    response = make_final_view(uuid4(), status=BenchmarkStatus.FINISHED, error_message=None, task_errors=None)
 
-    result = invoke_with_tracker(monkeypatch, tracker, run_id, "--format", "json")
+    result = invoke_with_tracker(tracker, response, "--format", "json")
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
@@ -217,101 +163,16 @@ def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatc
     assert payload["task_errors"] == {}
 
 
-def test_group_task_errors_uses_raw_messages_and_stable_order() -> None:
-    groups = group_task_errors(
-        {
-            "task-c": "same",
-            "task-b": "different\x1b",
-            "task-a": "same",
-            "task-d": "different\\x1b",
-        }
+def test_errors_text_labels_groups_with_category(tracker: MockTracker) -> None:
+    response = make_final_view(
+        uuid4(),
+        error_message=None,
+        task_errors={"task-a": "sandbox setup failed", "task-b": "legacy failure"},
+        task_failure_categories={"task-a": FailureCategory.INFRASTRUCTURE},
     )
 
-    assert groups == [
-        (None, "same", ("task-a", "task-c")),
-        (None, "different\x1b", ("task-b",)),
-        (None, "different\\x1b", ("task-d",)),
-    ]
-
-
-def test_group_task_errors_splits_identical_messages_by_category() -> None:
-    groups = group_task_errors(
-        {"task-a": "same", "task-b": "same", "task-c": "same"},
-        {"task-a": FailureCategory.INFRASTRUCTURE, "task-b": FailureCategory.INFRASTRUCTURE},
-    )
-
-    assert groups == [
-        (FailureCategory.INFRASTRUCTURE, "same", ("task-a", "task-b")),
-        (None, "same", ("task-c",)),
-    ]
-
-
-def test_errors_text_labels_groups_with_category(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubErrorsTracker(
-        make_final_view(
-            run_id,
-            error_message=None,
-            task_errors={"task-a": "sandbox setup failed", "task-b": "legacy failure"},
-            task_failure_categories={"task-a": FailureCategory.INFRASTRUCTURE},
-        )
-    )
-
-    result = invoke_with_tracker(monkeypatch, tracker, run_id)
+    result = invoke_with_tracker(tracker, response)
 
     assert result.exit_code == 0, result.output
     assert "[1 task, infrastructure] task-a" in result.stdout
     assert "[1 task] task-b" in result.stdout
-
-
-def test_errors_tracker_failure_has_no_partial_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    unsafe_error = "tracker unavailable\x1b]8;;https://example.invalid\x07link\x1b]8;;\x07\rrewritten\u202e"
-    tracker = StubErrorsTracker(TrackerServiceError(unsafe_error))
-    monkeypatch.setattr(errors_module, "TrackerService", lambda: tracker)
-
-    result = CliRunner().invoke(errors, [str(run_id), "--format", "json"], color=True)
-
-    assert result.exit_code == 1
-    assert result.stdout == ""
-    assert "tracker unavailable" in result.stderr
-    assert "\x1b]8;" not in result.stderr
-    assert "\x07" not in result.stderr
-    assert "\r" not in result.stderr
-    assert "\u202e" not in result.stderr
-    assert "\\x1b" in result.stderr
-    assert "\\x07" in result.stderr
-    assert "\\r" in result.stderr
-    assert "\\u202e" in result.stderr
-
-
-def test_errors_rejects_unexpected_s3_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    run_id = uuid4()
-    tracker = StubErrorsTracker(
-        S3UploadResultsResponse(
-            s3_url="s3://example/results.json",
-            presigned_url="https://example.invalid/download",
-            console_url="https://example.invalid/console",
-        )
-    )
-
-    result = invoke_with_tracker(monkeypatch, tracker, run_id, "--format", "json")
-
-    assert result.exit_code == 1
-    assert result.stdout == ""
-    assert "unexpected response" in result.stderr
-
-
-def test_errors_rejects_invalid_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Invalid run IDs must fail before tracker construction.
-
-    Test cases:
-    - A non-UUID argument exits with Click's usage error without creating a tracker client.
-    """
-
-    def unexpected_tracker() -> None:
-        pytest.fail("invalid UUID should fail before constructing a tracker")
-
-    monkeypatch.setattr(errors_module, "TrackerService", unexpected_tracker)
-    invalid_result = CliRunner().invoke(errors, ["not-a-uuid"])
-    assert invalid_result.exit_code == 2

@@ -10,6 +10,7 @@ import pytest
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from pydantic import BaseModel, ValidationError
 from services.tracker.main import app
+from tracker.agent.schemas import AgentContract, Parameter
 from tracker.api.filter_options import FilterOptionsResponse
 from tracker.database.models import (
     AgentContractRequest,
@@ -65,7 +66,9 @@ from tracker.types import (
 )
 from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 from valkyrie.sdk.models import (
+    AgentContract as SDKAgentContract,
     AgentContractRequest as SDKAgentContractRequest,
+    Parameter as SDKParameter,
     AgentDownloadURLResponse as SDKAgentDownloadURLResponse,
     AgentEntry as SDKAgentEntry,
     AgentsResponse as SDKAgentsResponse,
@@ -219,6 +222,8 @@ MODEL_PAIRS = (
     (RunSettingsResponse, SDKRunSettingsResponse),
     (SavedBenchmarkService, SDKSavedBenchmarkService),
     (AgentContractRequest, SDKAgentContractRequest),
+    (AgentContract, SDKAgentContract),
+    (Parameter, SDKParameter),
     (LogEventResponse, SDKLogEvent),
     (StartBenchmarkRequest, SDKStartBenchmarkRequest),
     (BenchmarkDetails, SDKBenchmarkDetails),

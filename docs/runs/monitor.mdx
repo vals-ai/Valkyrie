@@ -129,3 +129,13 @@ For Python reports, use `async for run in client.runs.iter(request)` and `async 
 
 
 Use `valkyrie run filter-options --format json` or `await client.runs.filter_options()` to discover filter values from your organization's run history. These values describe previous runs, not all models or benchmark services you could use for a new run.
+
+## Browse runs in the terminal
+
+```bash
+valkyrie ui
+```
+
+`valkyrie ui` lists your recent runs with live status, using the same configuration as the other commands. Press Enter on a run to see its progress and tasks, with errors first, then select a task to read its log or its detail. The bottom line shows the equivalent `valkyrie` command for the selection, and `y` copies it. `e` groups the run's errors by category and message, `/` filters the current list, or searches the log once you've moved into it (`n` and `N` step through the matches), `Esc` goes back, and `?` lists every key. On the run list, `c` (or clicking the Tracker's name in the top bar) switches to another Tracker you've logged in to with `valkyrie login`, for that session only. The view only reads: stop or retry a run with `valkyrie run`.
+
+Add `--fake` to try it on built-in sample data without a Tracker.

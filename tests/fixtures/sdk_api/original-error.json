@@ -1,0 +1,83 @@
+{
+  "task": {
+    "id": "d159c389-86b0-409d-af52-005854346ad0",
+    "task_id": "task_0",
+    "status": "ERROR",
+    "started_at": "2026-10-01T21:47:39.897806+00:00",
+    "finished_at": "2026-10-01T21:47:39.955979+00:00",
+    "error_message": "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: AgentError: model returned no patch",
+    "failure_category": "agent",
+    "evaluation_result": null,
+    "agent_caused_exit_reason": null
+  },
+  "tasks": {
+    "tasks": [
+      {
+        "id": "d159c389-86b0-409d-af52-005854346ad0",
+        "task_id": "task_0",
+        "status": "ERROR",
+        "started_at": "2026-10-01T21:47:39.897806+00:00",
+        "finished_at": "2026-10-01T21:47:39.955979+00:00",
+        "error_message": "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: AgentError: model returned no patch",
+        "failure_category": "agent"
+      }
+    ],
+    "total_count": 1
+  },
+  "results": {
+    "benchmark_id": "7222da23-de5e-41bb-8796-b1333104b272",
+    "benchmark_name": "swebench",
+    "started_at": "2026-10-01T21:47:39.896898",
+    "finished_at": null,
+    "status": "IN_PROGRESS",
+    "error_message": null,
+    "benchmark_arguments": {
+      "contract": {
+        "name": "dummy",
+        "model": null,
+        "install_cmd": "echo installing dependencies...",
+        "run_cmd": "echo running agent...",
+        "final_output": null,
+        "output_artifacts": [],
+        "egress_allowlist": [],
+        "install_egress": null,
+        "secrets": {},
+        "kwargs": {},
+        "inference_settings_attested": false
+      },
+      "concurrency": 1,
+      "task_ids": [
+        "task_0"
+      ],
+      "slice_str": null,
+      "lambda_function": null,
+      "dataset": null,
+      "dataset_version": null,
+      "sandbox_provider": "daytona",
+      "sandbox_provider_secret_name": "test-daytona-secret",
+      "environment": "aws",
+      "properties": null
+    },
+    "tasks_stopped": null,
+    "final_evaluation": null,
+    "average_task_breakdown": null,
+    "evaluation_results": {},
+    "task_errors": {
+      "task_0": "AgentRunFailedError: Sandbox error: Agent command failed with exit code 1: AgentError: model returned no patch"
+    },
+    "task_failure_categories": {
+      "task_0": "agent"
+    }
+  },
+  "_provenance": {
+    "tracker_revision": "b256abc9e955c8106c815a9f21c5c2adabf76e53",
+    "source_dirty": false,
+    "source_hashes": {
+      "services/tracker/src/tracker/sandbox.py": "989c76a57f5ef475bd3652241f3ad9f55fcd800ce149066857d7ce3658e47d8e",
+      "services/tracker/src/tracker/utils/task_execution.py": "f7944e9b89366017cbdf626f669abfcf14ba98c0703c7ca8b736834d13531c17"
+    },
+    "producer_test": "TestBenchmarkServiceFailures.test_agent_reported_error_reaches_task_api[none-run]",
+    "limits": "Real Tracker error handling, SQLite persistence, in-process task/task-list/results API responses; mocked sandbox commands, runtime/services and remote sinks. No deployed sandbox or remote diagnostic delivery.",
+    "projection": "Unedited task, task-list and results JSON captured by the named test from clean source. Only this provenance object was added after capture."
+  }
+}

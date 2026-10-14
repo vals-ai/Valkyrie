@@ -11,6 +11,7 @@ Catch `ValkyrieSDKError` to handle every SDK-defined failure, or catch a specifi
 | --- | --- |
 | [`ValkyrieAPIError`](#valkyrieapierror) | `ValkyrieSDKError` |
 | [`ValkyrieConfigError`](#valkyrieconfigerror) | `ValkyrieSDKError` |
+| [`ValkyrieContractError`](#valkyriecontracterror) | `ValkyrieSDKError` |
 | [`ValkyrieRunError`](#valkyrierunerror) | `ValkyrieSDKError` |
 | [`ValkyrieSDKError`](#valkyriesdkerror) | `Exception` |
 | [`ValkyrieStreamError`](#valkyriestreamerror) | `ValkyrieSDKError` |
@@ -30,6 +31,14 @@ A saved Valkyrie login could not be read, or signing in or refreshing it failed.
 
 ```python
 ValkyrieConfigError(*args: object)
+```
+
+## `ValkyrieContractError`
+
+Raised when an agent contract, or the kwargs passed to it, fails validation.
+
+```python
+ValkyrieContractError(*args: object)
 ```
 
 ## `ValkyrieRunError`

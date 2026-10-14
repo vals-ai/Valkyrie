@@ -81,7 +81,6 @@ AGENT_ARCHIVE_MAX_EXPANDED_BYTES = _positive_int_setting("AGENT_ARCHIVE_MAX_EXPA
 AGENT_ARCHIVE_MAX_ENTRIES = _positive_int_setting("AGENT_ARCHIVE_MAX_ENTRIES", 100000)
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
-AWS_DEPLOYMENT_ROLE_ORG_IDS = os.environ.get("AWS_DEPLOYMENT_ROLE_ORG_IDS", "")
 AWS_SHARED_SECRET_TENANTS = os.environ.get("AWS_SHARED_SECRET_TENANTS", "")
 AWS_TENANT_ACCESS_ROLE_ARN = os.environ.get("AWS_TENANT_ACCESS_ROLE_ARN")
 AWS_DEPLOYMENT_ACCOUNT_ID = os.environ.get("AWS_DEPLOYMENT_ACCOUNT_ID")
@@ -91,7 +90,6 @@ AWS_TENANT_BUCKET_PREFIX = os.environ.get("AWS_TENANT_BUCKET_PREFIX")
 AWS_DEPLOYMENT_LOG_GROUP = os.environ.get("AWS_DEPLOYMENT_LOG_GROUP")
 AWS_DEPLOYMENT_LOG_RETENTION_DAYS = os.environ.get("AWS_DEPLOYMENT_LOG_RETENTION_DAYS")
 AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLED", "false").lower() == "true"
-DATASET_VERSION_PINNING_ENABLED = os.environ.get("DATASET_VERSION_PINNING_ENABLED", "false").lower() == "true"
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 
 
@@ -112,6 +110,7 @@ DATABASE_URL = _build_database_url()
 
 
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
+SELF_SERVE_ORGS_ENABLED = os.environ.get("SELF_SERVE_ORGS_ENABLED", "false").lower() == "true"
 VALKYRIE_STAGE = os.environ.get("VALKYRIE_STAGE", "")
 SANDBOX_QUEUE_ENABLED = os.environ.get("SANDBOX_QUEUE_ENABLED", "false").lower() == "true"
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")

@@ -117,6 +117,11 @@ def descope(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 
 @pytest.fixture
+def self_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tracker.config.SELF_SERVE_ORGS_ENABLED", True)
+
+
+@pytest.fixture
 def bob(descope: SimpleNamespace) -> None:
     descope.user.add("U-bob", BOB, BOB)
 
@@ -156,6 +161,7 @@ def _invite(database_session: Session, email: str, organization: str = "acme", a
 
 
 @pytest.mark.parametrize("organization", ["acme", "interview"])
+@pytest.mark.usefixtures("self_serve")
 def test_creating_an_organization_makes_the_creator_its_admin(
     monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace, organization: str
 ) -> None:
@@ -168,10 +174,12 @@ def test_creating_an_organization_makes_the_creator_its_admin(
     assert descope.user.users["google-alice"]["userTenants"] == [{"tenantId": organization, "roleNames": [ADMIN]}]
 
 
-def test_unverified_logins_cannot_create_organizations(
-    monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace
+@pytest.mark.parametrize(("enabled", "verified"), [(False, True), (True, False)], ids=["not-self-serve", "unverified"])
+def test_organizations_are_created_only_by_verified_logins_on_self_serve_trackers(
+    monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace, enabled: bool, verified: bool
 ) -> None:
-    _as(monkeypatch, {}, None, verified=False)
+    monkeypatch.setattr("tracker.config.SELF_SERVE_ORGS_ENABLED", enabled)
+    _as(monkeypatch, {}, None, verified=verified)
 
     assert _client.post("/orgs", json={"id": "acme"}).status_code == 403
     assert descope.tenant.tenants == {}
@@ -180,6 +188,7 @@ def test_unverified_logins_cannot_create_organizations(
 @pytest.mark.parametrize(
     "organization", ["default", "valkyrie-ci", "partner-evil", "legacy-team", "interview-candidate"]
 )
+@pytest.mark.usefixtures("self_serve")
 def test_existing_and_reserved_organizations_cannot_be_taken_over(
     monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace, database_session: Session, organization: str
 ) -> None:
@@ -194,6 +203,7 @@ def test_existing_and_reserved_organizations_cannot_be_taken_over(
     assert descope.tenant.tenants == {}
 
 
+@pytest.mark.usefixtures("self_serve")
 def test_existing_tenants_and_names_are_refused(monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace) -> None:
     descope.tenant.create(name="Acme", id="acme")
     _as(monkeypatch, {}, None)
@@ -205,6 +215,7 @@ def test_existing_tenants_and_names_are_refused(monkeypatch: pytest.MonkeyPatch,
     assert set(descope.tenant.tenants) == {"acme"}
 
 
+@pytest.mark.usefixtures("self_serve")
 def test_a_login_can_administer_a_limited_number_of_organizations(
     monkeypatch: pytest.MonkeyPatch, descope: SimpleNamespace
 ) -> None:
@@ -219,6 +230,7 @@ def test_a_login_can_administer_a_limited_number_of_organizations(
 @pytest.mark.parametrize(
     ("unavailable", "fail_delete"), [(True, False), (False, False), (False, True)], ids=["outage", "role", "rollback"]
 )
+@pytest.mark.usefixtures("self_serve")
 def test_a_failed_create_is_rolled_back(
     monkeypatch: pytest.MonkeyPatch,
     descope: SimpleNamespace,

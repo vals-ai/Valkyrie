@@ -8,6 +8,7 @@ import json
 import threading
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
@@ -251,6 +252,57 @@ class TestProcessTaskEnvironment:
                 "ttl_seconds": 7 * 24 * 60 * 60,
             }
         ]
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_task_injects_attempt_id_that_changes_on_rerun(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        """One execution carries one ATTEMPT_ID; a whole-task rerun carries another."""
+        run_starter = RequestIdentity(
+            org=TEST_ORG,
+            access_key_id="access-key-id",
+            email="starter@example.com",
+            name="Starter User",
+        )
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
+            contract,
+            database_session,
+            run_starter,
+        )
+        captured_env_vars: list[dict[str, str]] = []
+        _install_gateway(monkeypatch, [])
+        monkeypatch.setattr(
+            "tracker.utils.task_execution.resolve_secrets",
+            AsyncMock(return_value={"ATTEMPT_ID": "secret-attempt-id"}),
+        )
+        monkeypatch.setattr(
+            utils_module,
+            "create_sandbox",
+            partial(_capture_sandbox_environment, captured_env_vars),
+        )
+
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+        first_attempt_id = captured_env_vars[0]["ATTEMPT_ID"]
+        assert first_attempt_id == utils_module.task_attempt_id(task_row.id, task_row.started_at)
+
+        # A whole-task rerun advances started_at the way run_control does.
+        database_session.refresh(task_row)
+        task_row.status = TaskStatus.PENDING
+        task_row.started_at = task_row.started_at + timedelta(microseconds=1)
+        database_session.add(task_row)
+        database_session.commit()
+        database_session.refresh(task_row)
+
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert len(captured_env_vars) == 2
+        second_attempt_id = captured_env_vars[1]["ATTEMPT_ID"]
+        assert second_attempt_id == utils_module.task_attempt_id(task_row.id, task_row.started_at)
+        assert second_attempt_id != first_attempt_id
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_withholds_unattested_inference_settings(

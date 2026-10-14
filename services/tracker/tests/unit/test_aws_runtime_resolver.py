@@ -31,11 +31,9 @@ _ORG = Org(id=_ORG_ID, name="acme.example", storage_key="org-bucket")
 def _configure_managed_runtime(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    eligible: bool = True,
     submissions_enabled: bool = True,
     resources_configured: bool = True,
 ) -> None:
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(_ORG_ID if eligible else _OTHER_ORG_ID))
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_ACCOUNT_ID", "123456789012")
     monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", submissions_enabled)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region" if resources_configured else None)
@@ -45,24 +43,21 @@ def _configure_managed_runtime(
 
 
 @pytest.mark.parametrize(
-    ("submissions_enabled", "eligible", "resources_configured", "expected_status"),
+    ("submissions_enabled", "resources_configured", "expected_status"),
     [
-        pytest.param(True, True, True, None, id="managed-eligible"),
-        pytest.param(False, True, True, 503, id="managed-gate-closed"),
-        pytest.param(True, False, True, 403, id="managed-ineligible"),
-        pytest.param(True, True, False, 500, id="managed-config-missing"),
+        pytest.param(True, True, None, id="managed-open"),
+        pytest.param(False, True, 503, id="managed-gate-closed"),
+        pytest.param(True, False, 500, id="managed-config-missing"),
     ],
 )
 def test_start_runtime_selection(
     monkeypatch: pytest.MonkeyPatch,
     submissions_enabled: bool,
-    eligible: bool,
     resources_configured: bool,
     expected_status: int | None,
 ) -> None:
     _configure_managed_runtime(
         monkeypatch,
-        eligible=eligible,
         submissions_enabled=submissions_enabled,
         resources_configured=resources_configured,
     )
@@ -99,7 +94,6 @@ def test_managed_runtime_uses_the_org_bucket_with_deployment_settings(
 
 def test_new_run_logs_use_org_identity_not_its_name(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch)
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", f"{_ORG_ID},{_OTHER_ORG_ID}")
     renamed_org = Org(id=_ORG_ID, name="renamed", storage_key="org-bucket")
     other_org = Org(id=_OTHER_ORG_ID, name=_ORG.name, storage_key="other-bucket")
 
@@ -197,12 +191,6 @@ def test_run_saved_in_the_org_bucket_uses_its_saved_resources(monkeypatch: pytes
     assert metadata is not None and metadata.resources == saved
 
 
-def test_run_metadata_omits_runtime_for_ineligible_org(monkeypatch: pytest.MonkeyPatch) -> None:
-    _configure_managed_runtime(monkeypatch, eligible=False)
-
-    assert resolve_run_metadata_aws_runtime(org=_ORG) is None
-
-
 def test_run_metadata_returns_deployment_runtime_for_managed_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure_managed_runtime(monkeypatch, submissions_enabled=False)
 
@@ -221,15 +209,6 @@ def test_managed_runtime_rejects_missing_deployment_account(monkeypatch: pytest.
 
     assert error.value.status_code == 500
     assert error.value.detail == "AWS_DEPLOYMENT_ACCOUNT_ID must be a 12-digit AWS account ID"
-
-
-def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.MonkeyPatch) -> None:
-    _configure_managed_runtime(monkeypatch, eligible=False)
-
-    with pytest.raises(HTTPException) as exc_info:
-        resolve_run_aws_runtime(org=_ORG)
-
-    assert exc_info.value.status_code == 403
 
 
 def test_saved_resources_survive_new_defaults(
@@ -260,32 +239,24 @@ def test_managed_start_cannot_override_deployment_resources(monkeypatch: pytest.
 
 
 @pytest.mark.parametrize(
-    ("eligible", "submissions_enabled", "expected_status"),
+    ("submissions_enabled", "expected_status"),
     [
-        pytest.param(True, True, 200, id="eligible-and-open"),
-        pytest.param(True, False, 503, id="eligible-but-closed"),
-        pytest.param(False, True, 403, id="ineligible"),
+        pytest.param(True, 200, id="open"),
+        pytest.param(False, 503, id="closed"),
     ],
 )
 def test_aws_runtime_metadata_reflects_managed_submission_availability(
     monkeypatch: pytest.MonkeyPatch,
-    eligible: bool,
     submissions_enabled: bool,
     expected_status: int,
 ) -> None:
-    _configure_managed_runtime(
-        monkeypatch,
-        eligible=eligible,
-        submissions_enabled=submissions_enabled,
-    )
+    _configure_managed_runtime(monkeypatch, submissions_enabled=submissions_enabled)
 
     response = TestClient(app).get("/aws-runtime")
 
     assert response.status_code == expected_status
     if expected_status == 200:
         assert response.json() == {"mode": "managed", "region": "deployment-region", "s3_bucket": "test-bucket"}
-    elif expected_status == 403:
-        assert response.json()["detail"].startswith("Managed AWS access is not available for this organization.")
 
 
 def _mapping_keys(value: Any) -> Iterator[str]:
@@ -411,12 +382,6 @@ def test_managed_start_errors_provide_recovery_steps(monkeypatch: pytest.MonkeyP
     assert error.value.status_code == 503
     assert "Try again later or contact Vals support" in error.value.detail
 
-    _configure_managed_runtime(monkeypatch, eligible=False)
-    with pytest.raises(HTTPException) as error:
-        resolve_start_aws_runtime(_ORG)
-    assert error.value.status_code == 403
-    assert "Contact Vals support" in error.value.detail
-
 
 def test_local_start_is_rejected_before_aws_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     """The AWS-only stack must not silently accept local execution."""
@@ -449,26 +414,6 @@ def test_start_rejects_invalid_resource_properties(invalid_property: dict[str, o
         },
     )
     assert response.status_code == 422
-
-
-@pytest.mark.parametrize(
-    ("org_name", "eligible"),
-    [("partner-acme", True), ("internal.example", True), ("acme.example", False)],
-    ids=["listed-prefix", "listed-name", "unlisted"],
-)
-def test_shared_secret_tenants_are_eligible_without_an_org_id(
-    monkeypatch: pytest.MonkeyPatch, org_name: str, eligible: bool
-) -> None:
-    _configure_managed_runtime(monkeypatch, eligible=False)
-    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", "internal.example,partner-*")
-    org = Org(id=_ORG_ID, name=org_name, storage_key="org-bucket")
-
-    if eligible:
-        assert resolve_start_aws_runtime(org).resources.s3_bucket == "org-bucket"
-    else:
-        with pytest.raises(HTTPException) as error:
-            resolve_start_aws_runtime(org)
-        assert error.value.status_code == 403
 
 
 def test_hosted_runtime_uses_the_default_chain_without_a_tenant_role(monkeypatch: pytest.MonkeyPatch) -> None:

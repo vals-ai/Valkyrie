@@ -5,9 +5,9 @@ from urllib.parse import quote
 
 import click
 
+from valkyrie.cli.client import request_tracker
 from valkyrie.cli.display import format_table
 from valkyrie.cli.login import show_organizations
-from valkyrie.cli.tracker_client import request_tracker
 from valkyrie.sdk import ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieConfigError
 from valkyrie.sdk.login import LoginSession, SessionAuth

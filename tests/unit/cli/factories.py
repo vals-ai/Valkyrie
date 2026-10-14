@@ -1,17 +1,25 @@
-"""Factories for CLI response objects with deterministic defaults."""
+"""Factories for Tracker responses with deterministic defaults."""
 
+import json
 from datetime import datetime, timezone
 from uuid import UUID
 
-from tracker.database.models import (
+import httpx
+from pydantic import BaseModel
+from valkyrie.sdk.models import (
     AgentContractRequest,
     AWSBenchmarkArguments,
+    BenchmarkDetails,
     BenchmarkStatus,
     DocentReadingStatus,
     FailureCategory,
+    FetchBenchmarkMetadataResponse,
+    FetchBenchmarkResponse,
+    FinalViewResponse,
     TaskStatus,
 )
-from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse, FinalViewResponse
+
+from tests.unit.cli.conftest import MockTracker
 
 
 def make_fetch_response(
@@ -22,6 +30,7 @@ def make_fetch_response(
     finished_tasks: int = 1,
     task_breakdown: dict[TaskStatus, int] | None = None,
     final_score: float | None = None,
+    error_message: str | None = None,
 ) -> FetchBenchmarkResponse:
     """Build a run response with configurable progress and terminal state."""
     return FetchBenchmarkResponse(
@@ -43,6 +52,7 @@ def make_fetch_response(
         s3_bucket_url="s3://example/run",
         label="release-candidate",
         final_score=final_score,
+        error_message=error_message,
     )
 
 
@@ -97,3 +107,41 @@ def make_final_view(
         task_errors=task_errors,
         task_failure_categories=task_failure_categories,
     )
+
+
+def ok(model: BaseModel) -> httpx.Response:
+    """A 200 response carrying `model` as JSON; non-finite floats go out as NaN/Infinity."""
+    return httpx.Response(
+        200, content=json.dumps(model.model_dump(mode="json")), headers={"content-type": "application/json"}
+    )
+
+
+def run_stream(*updates: FetchBenchmarkResponse, end: str | None = "complete") -> httpx.Response:
+    """A run update stream: one `data:` event per update, then `event: <end>` unless `end` is None."""
+    body = "".join(f"data: {json.dumps(update.model_dump(mode='json'))}\n\n" for update in updates)
+    if end is not None:
+        body += f"event: {end}\n\n"
+
+    return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+
+def serve_run(
+    tracker: MockTracker,
+    run: FetchBenchmarkResponse,
+    *,
+    stream: httpx.Response | BaseException | None = None,
+    metadata: FetchBenchmarkMetadataResponse | None = None,
+) -> None:
+    """Answer fetches of `run`, its update stream, and its metadata (404 when `metadata` is None)."""
+
+    def fetch(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("connect") != "true":
+            return ok(run)
+        if isinstance(stream, BaseException):
+            raise stream
+
+        return stream or run_stream()
+
+    tracker.reply("GET", "/fetch-benchmark", fetch)
+    if metadata is not None:
+        tracker.reply("GET", f"/fetch-benchmark-metadata/{run.benchmark_id}", ok(metadata))

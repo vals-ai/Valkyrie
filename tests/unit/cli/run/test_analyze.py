@@ -3,145 +3,103 @@
 Run: uv run pytest tests/unit/cli/run/test_analyze.py
 """
 
-from importlib import import_module
-from unittest.mock import AsyncMock, MagicMock
+import io
+import json
+import zipfile
 from uuid import UUID
 
+import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, AWSBenchmarkArguments
-from valkyrie.sdk.errors import ValkyrieAPIError
-from tracker.types import FetchBenchmarkMetadataResponse
 
-from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.analyze import analyze
 
-analyze_module = import_module("valkyrie.cli.run.analyze")
+from tests.unit.cli.conftest import MockTracker
+from tests.unit.cli.factories import make_fetch_metadata, ok
 
 _RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
+_ANALYZE_PATH = f"/analyze-benchmark/{_RUN_ID}"
+_CONTRACT = "name: mini_sweagent\ninstall_cmd: 'true'\nrun_cmd: 'run {problem_statement_path}'\n"
 
 
-def _metadata() -> FetchBenchmarkMetadataResponse:
-    return FetchBenchmarkMetadataResponse(
-        benchmark_id=_RUN_ID,
-        benchmark_name="swebench",
-        benchmark_arguments=AWSBenchmarkArguments(
-            contract=AgentContractRequest(name="analysis-agent", install_cmd="true", run_cmd="true"),
-            concurrency=1,
-        ),
-    )
+def serve_pushed_agent(tracker: MockTracker, contract: str | None) -> None:
+    """Serve the run's metadata and its agent's current bundle, or a 404 when `contract` is None."""
+    tracker.reply("GET", f"/fetch-benchmark-metadata/{_RUN_ID}", ok(make_fetch_metadata(_RUN_ID)))
+    if contract is None:
+        tracker.reply("GET", "/agents/mini_sweagent/download-url", httpx.Response(404, json={"detail": "Not found"}))
+        return
+
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("mini_sweagent/contract.yaml", contract)
+    download_url = {"name": "mini_sweagent", "download_url": "https://download.test/agent.zip", "expires_in": 60}
+    tracker.reply("GET", "/agents/mini_sweagent/download-url", httpx.Response(200, json=download_url))
+    tracker.reply("GET", "/agent.zip", httpx.Response(200, content=bundle.getvalue()))
 
 
-def _tracker() -> MagicMock:
-    tracker = MagicMock()
-    tracker.__enter__.return_value = tracker
-    tracker.fetch_benchmark_metadata.return_value = _metadata()
+def test_analysis_uses_the_pushed_contracts_lambda_and_reports_the_plan(
+    tracker: MockTracker, cli_runner: CliRunner
+) -> None:
+    """Only `ingest_lambda` is read, so a pushed contract missing required fields still works."""
+    serve_pushed_agent(tracker, "name: mini_sweagent\ningest_lambda: docent-ingest\n")
+    events = [
+        ("started", {"lambda_function": "docent-ingest"}),
+        ("heartbeat", {}),
+        ("done", {"reading_plan_url": "https://docent.example/plan"}),
+    ]
+    body = "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events)
+    tracker.reply("POST", _ANALYZE_PATH, httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}))
 
-    return tracker
+    result = cli_runner.invoke(analyze, [str(_RUN_ID), "--no-cache"])
+
+    assert result.exit_code == 0, result.output
+    assert "Invoking docent-ingest" in result.output
+    assert "Reading plan: https://docent.example/plan" in result.output
+    assert "event:" not in result.output
+
+    (request,) = tracker.requested("POST", _ANALYZE_PATH)
+    assert json.loads(request.content) == {"no_cache": True, "lambda_function": "docent-ingest"}
 
 
-class TestAnalyzeCommand:
-    """Analysis event rendering and actionable failure behavior."""
+@pytest.mark.parametrize(
+    ("contract", "expected_message"),
+    [
+        (_CONTRACT, "has no `ingest_lambda` set"),
+        ("name: [unclosed\n", "Could not load contract for agent 'mini_sweagent'"),
+        (None, "If the agent has never been pushed"),
+    ],
+    ids=["no-lambda", "invalid-contract", "never-pushed"],
+)
+def test_unusable_analysis_contract_reports_remediation(
+    tracker: MockTracker, cli_runner: CliRunner, contract: str | None, expected_message: str
+) -> None:
+    serve_pushed_agent(tracker, contract)
 
-    def test_analysis_stream_reports_started_and_completed_plan(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        cli_runner: CliRunner,
-    ) -> None:
-        """A successful analysis stream must surface progress and the final reading plan.
+    result = cli_runner.invoke(analyze, [str(_RUN_ID)])
 
-        Test cases:
-        - The current pushed contract selects the analyzer Lambda.
-        - Started, heartbeat, and done events render without exposing raw SSE.
-        - The no-cache option reaches the tracker request.
-        """
-        tracker = _tracker()
-        events: list[tuple[str, dict[str, str]]] = [
-            ("started", {"lambda_function": "docent-ingest"}),
-            ("heartbeat", {}),
-            ("done", {"reading_plan_url": "https://docent.example/plan"}),
-        ]
-        tracker.analyze_benchmark.return_value = iter(events)
-        mock_ingest_lookup = AsyncMock(return_value="docent-ingest")
-        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
-        monkeypatch.setattr(analyze_module, "get_ingest_lambda", mock_ingest_lookup)
+    assert result.exit_code == 1
+    assert expected_message in result.output
+    assert tracker.requested("POST", _ANALYZE_PATH) == []
 
-        result = cli_runner.invoke(analyze, [str(_RUN_ID), "--no-cache"])
 
-        assert result.exit_code == 0, result.output
-        assert "Invoking docent-ingest" in result.output
-        assert "https://docent.example/plan" in result.output
-        assert "event:" not in result.output
-        mock_ingest_lookup.assert_awaited_once_with("analysis-agent")
-        tracker.analyze_benchmark.assert_called_once_with(
-            _RUN_ID,
-            no_cache=True,
-            lambda_function="docent-ingest",
-        )
+@pytest.mark.parametrize(
+    ("status", "expected_message"),
+    [
+        ("IN_PROGRESS", "is still in progress"),
+        ("STOPPING", "is stopping"),
+        ("STOPPED", "was stopped before completion"),
+        ("ERROR", "errored before completing"),
+    ],
+)
+def test_non_finished_runs_report_state_without_internal_error(
+    tracker: MockTracker, cli_runner: CliRunner, status: str, expected_message: str
+) -> None:
+    serve_pushed_agent(tracker, _CONTRACT + "ingest_lambda: docent-ingest\n")
+    detail = f"Cannot analyze run {_RUN_ID}: status is {status} (must be FINISHED)."
+    tracker.reply("POST", _ANALYZE_PATH, httpx.Response(409, json={"detail": detail}))
 
-    @pytest.mark.parametrize(
-        ("lookup_result", "lookup_error", "expected_message"),
-        [
-            (None, None, "has no `ingest_lambda` set"),
-            (None, ValkyrieAPIError(404, "Agent not found"), "Could not load contract for agent 'analysis-agent'"),
-        ],
-    )
-    def test_missing_analysis_contract_reports_remediation(
-        self,
-        lookup_result: str | None,
-        lookup_error: ValkyrieAPIError | None,
-        expected_message: str,
-        monkeypatch: pytest.MonkeyPatch,
-        cli_runner: CliRunner,
-    ) -> None:
-        """Missing analysis configuration must stop before invoking the tracker analyzer.
+    result = cli_runner.invoke(analyze, [str(_RUN_ID)])
 
-        Test cases:
-        - A contract without an analyzer directs the user to declare and push one.
-        - A missing S3 contract directs the user to push the agent first.
-        """
-        tracker = _tracker()
-        mock_ingest_lookup = AsyncMock(return_value=lookup_result, side_effect=lookup_error)
-        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
-        monkeypatch.setattr(analyze_module, "get_ingest_lambda", mock_ingest_lookup)
-
-        result = cli_runner.invoke(analyze, [str(_RUN_ID)])
-
-        assert result.exit_code == 1
-        assert expected_message in result.output
-        tracker.analyze_benchmark.assert_not_called()
-
-    @pytest.mark.parametrize(
-        ("status", "expected_message"),
-        [
-            ("IN_PROGRESS", "is still in progress"),
-            ("STOPPING", "is stopping"),
-            ("STOPPED", "was stopped before completion"),
-            ("ERROR", "errored before completing"),
-        ],
-    )
-    def test_non_finished_runs_report_state_without_internal_error(
-        self,
-        status: str,
-        expected_message: str,
-        monkeypatch: pytest.MonkeyPatch,
-        cli_runner: CliRunner,
-    ) -> None:
-        """Non-finished runs must explain why analysis cannot start.
-
-        Test cases:
-        - Active, stopping, stopped, and errored states each produce specific guidance.
-        - Every state exits nonzero without rendering a traceback.
-        """
-        tracker = _tracker()
-        tracker.analyze_benchmark.side_effect = TrackerServiceError(
-            f"Cannot analyze run {_RUN_ID}: status is {status} (must be FINISHED)."
-        )
-        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
-        monkeypatch.setattr(analyze_module, "get_ingest_lambda", AsyncMock(return_value="docent-ingest"))
-
-        result = cli_runner.invoke(analyze, [str(_RUN_ID)])
-
-        assert result.exit_code == 1
-        assert expected_message in result.output
-        assert "Traceback" not in result.output
+    assert result.exit_code == 1
+    assert expected_message in result.output
+    assert "Valkyrie API request failed" not in result.output

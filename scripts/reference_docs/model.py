@@ -55,6 +55,7 @@ GUIDE_LINKS = {
     "login": "/get-started/configuration#log-in",
     "token": "/get-started/configuration#access-keys-for-ci",
     "org": "/get-started/configuration#organizations",
+    "ui": "/runs/monitor#browse-runs-in-the-terminal",
 }
 
 CLI_CARDS = {
@@ -70,8 +71,10 @@ CLI_CARDS = {
     "login": ("log-in", "signing in, signing out, and checking which account your requests use"),
     "token": ("key-round", "creating and revoking access keys for CI and other headless use"),
     "org": ("building-2", "creating, joining and switching organizations, and managing their members"),
+    "ui": ("monitor", "browsing runs, tasks, and logs in a terminal UI"),
 }
 CLI_PAGE_GROUPS = {"logout": "login", "whoami": "login"}
+CLI_TITLES = {"ui": "UI"}
 
 RESOURCE_CARDS = {
     "ArtifactsResource": ("Artifacts", "folder", "listing and downloading run artifact paths"),
@@ -128,6 +131,7 @@ READ_ONLY_COMMANDS = frozenset(
         ("queue", "status"),
         ("secret", "list"),
         ("provider", "list"),
+        ("ui",),
     }
 )
 

@@ -2,7 +2,6 @@
 
 import re
 from dataclasses import replace
-from uuid import UUID
 
 from fastapi import HTTPException
 
@@ -17,26 +16,12 @@ class ManagedAWSError(ValueError):
     """Base error for deployment-managed AWS resolution."""
 
 
-class ManagedAWSEligibilityError(ManagedAWSError):
-    """The organization is not allowed to use deployment AWS authority."""
-
-
 class ManagedAWSConfigurationError(ManagedAWSError):
     """The deployment's managed AWS configuration is invalid."""
 
 
 class ManagedAWSStorageUnavailableError(ManagedAWSError):
     """A saved run points at a bucket its organization no longer uses."""
-
-
-def _eligible_org_ids() -> frozenset[UUID]:
-    """Parse organizations allowed to use deployment AWS authority."""
-    try:
-        return frozenset(
-            UUID(value.strip()) for value in config.AWS_DEPLOYMENT_ROLE_ORG_IDS.split(",") if value.strip()
-        )
-    except ValueError as exc:
-        raise ManagedAWSConfigurationError("AWS_DEPLOYMENT_ROLE_ORG_IDS contains an invalid organization ID") from exc
 
 
 def _managed_resources(s3_bucket: str) -> AWSResources:
@@ -88,18 +73,8 @@ def _org_bucket(org: Org) -> str | None:
     return None
 
 
-def organization_can_use_managed_aws(org: Org) -> bool:
-    """Return whether an organization may use deployment AWS authority."""
-    return org.id in _eligible_org_ids() or may_use_shared_secrets(org.name)
-
-
 def deployment_aws_runtime(org: Org, properties: AWSResources | None = None) -> AWSRuntime:
-    """Build a default-chain runtime for an eligible organization's own bucket."""
-    if not organization_can_use_managed_aws(org):
-        raise ManagedAWSEligibilityError(
-            "Managed AWS access is not available for this organization. "
-            "Contact Vals support to enable managed AWS for this organization."
-        )
+    """Build a default-chain runtime for the organization's own bucket."""
     bucket = _org_bucket(org)
     if not bucket:
         raise ManagedAWSConfigurationError("This organization has no storage bucket")
@@ -132,8 +107,6 @@ def _http_deployment_runtime(org: Org, properties: AWSResources | None = None) -
     """Translate managed-runtime configuration failures into HTTP errors."""
     try:
         return deployment_aws_runtime(org, properties)
-    except ManagedAWSEligibilityError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ManagedAWSStorageUnavailableError as exc:
         raise HTTPException(status_code=410, detail=str(exc)) from exc
     except ManagedAWSConfigurationError as exc:
@@ -186,7 +159,7 @@ def resolve_run_metadata_aws_runtime(
     """Return the run's runtime for storage links, or None when the organization can't reach the run's storage."""
     try:
         return deployment_aws_runtime(org, properties)
-    except (ManagedAWSEligibilityError, ManagedAWSStorageUnavailableError):
+    except ManagedAWSStorageUnavailableError:
         return None
     except ManagedAWSConfigurationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

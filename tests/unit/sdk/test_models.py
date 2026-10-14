@@ -6,12 +6,15 @@ Run: uv run pytest tests/unit/sdk/test_models.py
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from valkyrie.sdk import ValkyrieContractError
 from valkyrie.sdk.models import (
+    AgentContract,
     AgentContractRequest,
     FetchBenchmarkResponse,
     FetchBenchmarksResponse,
@@ -25,6 +28,67 @@ FIXTURES = Path(__file__).parents[2] / "fixtures" / "sdk_api"
 
 def load_fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+_CONTRACT = """\
+name: demo
+install_cmd: bash setup.sh
+run_cmd: demo --task {problem_statement_path} --model {model} --temperature {temperature}
+defaults:
+  model: {type: str, required: true, choices: [openai/gpt-5, anthropic/claude-opus-5]}
+kwargs:
+  temperature: {type: float, required: false, default: 0.7}
+"""
+
+
+class TestAgentContract:
+    """Reading contract.yaml and checking run kwargs before anything is uploaded."""
+
+    def test_validate_kwargs_coerces_cli_strings_and_fills_defaults(self, tmp_path: Path) -> None:
+        (tmp_path / "contract.yml").write_text(_CONTRACT)
+        contract = AgentContract.from_directory(tmp_path)
+
+        assert contract.validate_kwargs({}, model="openai/gpt-5") == {"model": "openai/gpt-5", "temperature": 0.7}
+        assert contract.validate_kwargs({"temperature": "1.5", "model": "anthropic/claude-opus-5"}) == {
+            "model": "anthropic/claude-opus-5",
+            "temperature": 1.5,
+        }
+
+        with pytest.raises(ValkyrieContractError) as error:
+            contract.validate_kwargs({"temperature": "hot"})
+
+        assert str(error.value).splitlines() == [
+            "  - 'model' is required but was not provided",
+            "  - 'temperature': Input should be a valid number, unable to parse string as a number",
+        ]
+
+    @pytest.mark.parametrize(
+        ("files", "message"),
+        [
+            ({}, "No contract.yaml or contract.yml in"),
+            ({"contract.yaml": "name: [unclosed"}, "Failed to parse YAML contract from `agent/contract.yaml`"),
+            ({"contract.yaml": "- not a mapping"}, "Invalid contract `agent/contract.yaml`: expected a mapping"),
+            (
+                {"contract.yaml": "name: demo\ninstall_cmd: x\nrun_cmd: demo"},
+                "Invalid contract `agent/contract.yaml`\n  - 'run_cmd': Value error, run_cmd must contain",
+            ),
+            (
+                {"contract.yaml": _CONTRACT + "output_artifacts: [/tmp/result]\n"},
+                "'output_artifacts': Value error, output_artifacts paths must be relative paths",
+            ),
+        ],
+        ids=["missing", "bad-yaml", "not-a-mapping", "invalid-field", "absolute-artifact"],
+    )
+    def test_from_directory_reports_unusable_contracts(
+        self, tmp_path: Path, files: dict[str, str], message: str
+    ) -> None:
+        agent_path = tmp_path / "agent"
+        agent_path.mkdir()
+        for name, content in files.items():
+            (agent_path / name).write_text(content)
+
+        with pytest.raises(ValkyrieContractError, match=re.escape(message)):
+            AgentContract.from_directory(agent_path)
 
 
 def test_agent_contract_serializes_install_egress() -> None:

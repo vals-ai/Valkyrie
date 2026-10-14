@@ -1,6 +1,7 @@
 """Public interface for the async Valkyrie SDK."""
 
 from valkyrie.sdk.models import (
+    AgentContract,
     AgentContractRequest,
     AgentDownloadURLResponse,
     AgentEntry,
@@ -23,8 +24,10 @@ from valkyrie.sdk.models import (
     FetchTasksRequest,
     FinalViewResponse,
     Order,
+    Parameter,
     RetryMode,
     RetryOrResumeBenchmarkResponse,
+    RunStreamEvent,
     ResultsExistResponse,
     S3UploadResultsResponse,
     SchedulerActiveEntryResponse,
@@ -60,6 +63,7 @@ from valkyrie.sdk.config import ValkyrieConfig
 from valkyrie.sdk.errors import (
     ValkyrieAPIError,
     ValkyrieConfigError,
+    ValkyrieContractError,
     ValkyrieRunError,
     ValkyrieSDKError,
     ValkyrieStreamError,
@@ -71,6 +75,7 @@ __all__ = [
     "RunArtifactEntry",
     "RunArtifactsResponse",
     "RunArtifactDownloadResponse",
+    "AgentContract",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
@@ -95,8 +100,10 @@ __all__ = [
     "LogEvent",
     "LogPage",
     "Order",
+    "Parameter",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
+    "RunStreamEvent",
     "ResultsExistResponse",
     "S3UploadResultsResponse",
     "SchedulerActiveEntryResponse",
@@ -129,6 +136,7 @@ __all__ = [
     "ValkyrieClient",
     "ValkyrieConfig",
     "ValkyrieConfigError",
+    "ValkyrieContractError",
     "ValkyrieRunError",
     "ValkyrieSDKError",
     "ValkyrieStreamError",

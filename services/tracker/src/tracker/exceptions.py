@@ -6,7 +6,7 @@ from pydantic import ValidationError
 class TrackerServiceError(Exception):
     """Base exception for all tracker service errors."""
 
-    pass
+    include_cause_in_task_error = True
 
 
 class ExecutionAuthorityRevoked(TrackerServiceError):
@@ -102,6 +102,8 @@ class LambdaError(TrackerServiceError):
 
 class SecretsError(TrackerServiceError):
     """Exception raised for Secret operation errors."""
+
+    include_cause_in_task_error = False
 
     def __str__(self) -> str:
         return "Secret error: " + super().__str__()

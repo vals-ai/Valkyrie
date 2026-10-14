@@ -74,6 +74,7 @@ _EXPECTED_CLI_PATHS = (
     "org decline",
     "org members",
     "org remove",
+    "ui",
 )
 _EXPECTED_RESOURCES = {
     "ArtifactsResource": ("list", "download_url", "download"),
@@ -84,6 +85,7 @@ _EXPECTED_RESOURCES = {
         "list",
         "iter",
         "stream",
+        "events",
         "results",
         "preview",
         "metadata",
@@ -99,7 +101,7 @@ _EXPECTED_RESOURCES = {
     ),
     "BenchmarksResource": ("fetch", "statuses", "tasks", "iter_tasks", "task", "artifacts"),
     "AgentsResource": ("list", "download_url", "push", "download", "remove", "install"),
-    "BenchmarkServicesResource": ("catalog", "list", "task_ids"),
+    "BenchmarkServicesResource": ("catalog", "check", "list", "task_ids"),
     "LogsResource": ("page_task", "fetch_task", "page_run", "fetch_run", "stream_task"),
     "SchedulerResource": ("overview",),
     "SecretsResource": ("list", "set", "remove"),
@@ -109,10 +111,12 @@ _EXPECTED_RESOURCES = {
 _EXPECTED_TYPES = {
     "Artifacts": ("RunArtifactEntry", "RunArtifactsResponse", "RunArtifactDownloadResponse"),
     "Agents": (
+        "AgentContract",
         "AgentContractRequest",
         "AgentDownloadURLResponse",
         "AgentEntry",
         "AgentsResponse",
+        "Parameter",
     ),
     "Runs": (
         "AnalyzeEvent",
@@ -124,6 +128,7 @@ _EXPECTED_TYPES = {
         "FilterOptionsResponse",
         "FinalViewResponse",
         "RetryOrResumeBenchmarkResponse",
+        "RunStreamEvent",
         "ResultsExistResponse",
         "S3UploadResultsResponse",
         "ShedBenchmarkRequest",

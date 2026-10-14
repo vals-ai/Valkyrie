@@ -57,7 +57,6 @@ def local_app(
 
     for key, value in {
         "AWS_MANAGED_SUBMISSIONS_ENABLED": True,
-        "AWS_DEPLOYMENT_ROLE_ORG_IDS": str(TEST_ORG_ID),
         "AWS_DEPLOYMENT_ACCOUNT_ID": "123456789012",
         "AWS_DEPLOYMENT_REGION": "us-east-1",
         "AWS_DEPLOYMENT_S3_BUCKET": "test-bucket",

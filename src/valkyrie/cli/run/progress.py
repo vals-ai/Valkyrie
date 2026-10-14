@@ -1,16 +1,23 @@
 """Run progress rendering and streaming helpers."""
 
+import asyncio
 from collections.abc import Iterable
 from typing import Literal
 from uuid import UUID
 
 import click
-from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
-from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
+from valkyrie.sdk import ValkyrieClient
+from valkyrie.sdk.models import (
+    BenchmarkDetails,
+    BenchmarkStatus,
+    DocentReadingStatus,
+    FetchBenchmarkMetadataResponse,
+    FetchBenchmarkResponse,
+    TaskStatus,
+)
 
 from valkyrie.cli.display import local_time, progress_percent, terminal_safe
 from valkyrie.cli.run.snapshot import RunEvent, fetch_run_metadata, format_run_snapshot_json
-from valkyrie.cli.tracker_client import TrackerService
 
 STATUS_COLORS = {
     "PENDING": "yellow",
@@ -166,21 +173,21 @@ def _completion_event(response: FetchBenchmarkResponse) -> Literal["complete", "
     return "complete"
 
 
-def stream_benchmark_status(
-    tracker: TrackerService,
+async def stream_benchmark_status(
+    client: ValkyrieClient,
     benchmark_id: UUID,
     *,
     show_identity: bool = False,
     output_format: Literal["text", "jsonl"] = "text",
 ) -> None:
-    """Stream and display live run status updates."""
-    initial = tracker.fetch_benchmark(benchmark_id)
+    """Stream and display live run status updates until the run ends or the user presses Ctrl+C."""
+    initial = await client.runs.fetch(benchmark_id)
     jsonl = output_format == "jsonl"
     if not jsonl and initial.details.status in TERMINAL_STATUSES:
         format_benchmark_status(initial)
         return
 
-    metadata = fetch_run_metadata(tracker, benchmark_id) if show_identity or jsonl else None
+    metadata = await fetch_run_metadata(client, benchmark_id) if show_identity or jsonl else None
     if jsonl:
         click.echo(format_run_snapshot_json(initial, metadata, event="snapshot"))
     else:
@@ -206,29 +213,28 @@ def stream_benchmark_status(
 
     disconnected = click.style("Disconnected from stream.", fg="yellow")
     try:
-        for event in tracker.stream_benchmark(benchmark_id):
-            if event.startswith("data:"):
-                data_json = event[5:].strip()
-                if not data_json:
-                    continue
-                latest = FetchBenchmarkResponse.model_validate_json(data_json)
+        async for event in client.runs.events(benchmark_id):
+            if event.run is not None:
+                latest = event.run
                 if jsonl:
                     click.echo(format_run_snapshot_json(latest, metadata, event="update"))
                 else:
                     progress_line, breakdown_line = _progress_lines(latest.details)
                     click.echo(f"\033[F\033[K{progress_line}\n\033[K{breakdown_line}", nl=False)
-            elif event.startswith("event: complete"):
+            elif event.event == "complete":
                 outcome = _completion_event(latest)
                 finish(outcome, OUTCOME_MESSAGES[outcome])
-                break
-            elif event.startswith("event: error"):
+                return
+            elif event.event == "error":
                 finish("error", OUTCOME_MESSAGES["error"])
-                break
-            elif event.startswith("event: disconnect"):
+                return
+            else:
                 finish("disconnect", disconnected, next_steps=False)
-                break
-        else:
-            finish("disconnect", disconnected, next_steps=False)
-            raise click.ClickException("Run stream ended without a terminal event.")
-    except KeyboardInterrupt:
+                return
+    # asyncio.run turns Ctrl+C into a cancellation of this coroutine on the main thread.
+    except (KeyboardInterrupt, asyncio.CancelledError):
         finish("interrupted", click.style("Streaming stopped.", fg="yellow"))
+        return
+
+    finish("disconnect", disconnected, next_steps=False)
+    raise click.ClickException("Run stream ended without a terminal event.")

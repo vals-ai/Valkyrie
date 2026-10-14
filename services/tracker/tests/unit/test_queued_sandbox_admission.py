@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from benchmark_service import ImageSource, ResourceCapacity, Resources, SandboxCapacity, SandboxSource, SnapshotSource
 import pytest
@@ -13,7 +13,7 @@ from tracker.database.models import TaskStatus
 from tracker.executor.execution_authority import ExecutionAuthority
 from tracker.sandbox import SandboxCreationState
 from tracker.scheduler import admission
-from tracker.scheduler.store import ActiveReservations, reserved_queue_pool_id
+from tracker.scheduler.store import reserved_queue_pool_id
 
 
 @pytest.mark.parametrize("claims", [[True], [False, True]])
@@ -50,14 +50,15 @@ async def test_build_lock_waits_outside_authority_transactions(
     pool_lock.__aexit__ = AsyncMock(return_value=False)
     provider = Mock()
     provider.check_admission = AsyncMock(return_value=True)
+    provider.reservable_demand = AsyncMock(return_value=Mock())
     context = admission.SandboxQueueContext(
         provider=provider, pool_id=reserved_queue_pool_id("pool"), engine=Mock(), poll_interval_seconds=0
     )
     sandbox = Mock()
     start = AsyncMock(return_value=sandbox)
     claim = Mock(side_effect=claims)
-    eligible = Mock(side_effect=eligibility + [True] * (len(claims) - 1))
-    reservations = Mock(return_value=Mock(count=0))
+    eligible = Mock(side_effect=eligibility + [True] * (2 * len(claims)))
+    reservations = Mock(return_value={})
     polled_while_ineligible = False
 
     async def poll(_seconds: float) -> None:
@@ -75,12 +76,11 @@ async def test_build_lock_waits_outside_authority_transactions(
     monkeypatch.setattr(admission, "lock_execution_authority", Mock())
     monkeypatch.setattr(admission, "eligible_task_is", eligible)
     monkeypatch.setattr(admission, "_is_waiting", Mock(return_value=True))
-    monkeypatch.setattr(admission, "active_reservations", reservations)
+    monkeypatch.setattr(admission, "reserved_builds", reservations)
     monkeypatch.setattr(admission.asyncio, "sleep", AsyncMock(side_effect=poll))
-    monkeypatch.setattr(admission, "_has_exact_demand", Mock(return_value=True))
     monkeypatch.setattr(admission, "_reservable_capacity", AsyncMock(return_value=Mock()))
     monkeypatch.setattr(admission, "_fits", Mock(return_value=True))
-    monkeypatch.setattr(admission, "claim_eligible_task_with_reservation", claim)
+    monkeypatch.setattr(admission, "claim_eligible_task", claim)
     monkeypatch.setattr(admission, "release_reservation", Mock())
     monkeypatch.setattr(admission, "_start_sandbox", start)
     async with AsyncExitStack() as stack:
@@ -111,11 +111,11 @@ async def test_build_lock_waits_outside_authority_transactions(
     ],
     ids=["snapshot", "gpu_image"],
 )
-async def test_inexact_demand_waits_for_reservation_drain_even_when_it_fits(
+async def test_unknown_demand_waits_for_reservation_drain_even_when_it_fits(
     monkeypatch: pytest.MonkeyPatch, source: SandboxSource, resources: Resources
 ) -> None:
     status = TaskStatus.PENDING
-    reserved = ActiveReservations(count=1, vcpu=1, memory=2, disk=3)
+    reserved: dict[UUID, Resources] = {uuid4(): Resources(vcpu=1, memory=2, disk=3)}
     counters = {"claim": 0, "create": 0, "start": 0, "cleanup": 0}
     polled: list[tuple[TaskStatus, int]] = []
     pool_held = False
@@ -137,12 +137,12 @@ async def test_inexact_demand_waits_for_reservation_drain_even_when_it_fits(
 
     async def drain_reservation(_seconds: float) -> None:
         nonlocal reserved
-        polled.append((status, reserved.count))
+        polled.append((status, len(reserved)))
         assert counters == {"claim": 0, "create": 0, "start": 0, "cleanup": 0}
         assert not pool_held
-        reserved = ActiveReservations(count=0, vcpu=0, memory=0, disk=0)
+        reserved = {}
 
-    def get_reservations(*_args: object) -> ActiveReservations:
+    def get_reservations(*_args: object) -> dict[UUID, Resources]:
         return reserved
 
     def claim_task(*_args: object, **_kwargs: object) -> bool:
@@ -167,6 +167,7 @@ async def test_inexact_demand_waits_for_reservation_drain_even_when_it_fits(
     pool_lock.__aexit__ = AsyncMock(side_effect=release_pool)
     provider = Mock()
     provider.check_admission = AsyncMock(return_value=True)
+    provider.reservable_demand = AsyncMock(return_value=None)
     provider.get_capacity = AsyncMock(
         return_value=SandboxCapacity(
             cpu=ResourceCapacity(total=8, used=0),
@@ -182,7 +183,7 @@ async def test_inexact_demand_waits_for_reservation_drain_even_when_it_fits(
 
     @asynccontextmanager
     async def create() -> AsyncGenerator[Mock]:
-        assert reserved.count == 0
+        assert not reserved
         assert status == TaskStatus.BUILDING
         assert pool_held
         assert not build_lock.held
@@ -200,7 +201,7 @@ async def test_inexact_demand_waits_for_reservation_drain_even_when_it_fits(
     monkeypatch.setattr(admission, "_reset_abandoned_pool_builds", AsyncMock())
     monkeypatch.setattr(admission, "lock_execution_authority", Mock())
     monkeypatch.setattr(admission, "eligible_task_is", Mock(return_value=True))
-    monkeypatch.setattr(admission, "active_reservations", Mock(side_effect=get_reservations))
+    monkeypatch.setattr(admission, "reserved_builds", Mock(side_effect=get_reservations))
     monkeypatch.setattr(admission, "claim_eligible_task", Mock(side_effect=claim_task))
     monkeypatch.setattr(admission, "_start_claimed_task", Mock(side_effect=start_task))
     monkeypatch.setattr(admission.asyncio, "sleep", AsyncMock(side_effect=drain_reservation))
@@ -224,7 +225,7 @@ async def test_inexact_demand_waits_for_reservation_drain_even_when_it_fits(
         assert counters == {"claim": 1, "create": 1, "start": 1, "cleanup": 0}
 
     assert polled == [(TaskStatus.PENDING, 1)]
-    assert reserved.count == 0
+    assert not reserved
     assert counters == {"claim": 1, "create": 1, "start": 1, "cleanup": 1}
     assert not creation_state.cleanup_pending
     build_lock.acquire.assert_not_awaited()
