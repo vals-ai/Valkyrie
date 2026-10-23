@@ -53,7 +53,7 @@ prerelease = "allow"
 cache-keys = [{ file = "pyproject.toml" }, { file = "src/executor_protocol.py" }]
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", tag = "v0.54.0" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "83acb6459bea219d701ddc5de244780e8f64973a" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
