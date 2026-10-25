@@ -46,7 +46,6 @@ def recovery_run(database_session: Session, example_benchmark_object: Benchmark)
         artifact_uri="s3://artifacts/barrier-release.pex",
         artifact_digest="barrier-digest",
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
-        readiness_verified=True,
     )
     database_session.add(release)
     database_session.commit()

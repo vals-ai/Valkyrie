@@ -1,93 +1,127 @@
 ---
-title: Manage runs with Python
-description: Start, inspect, stream, recover, and download Valkyrie runs.
+title: "Manage runs with Python"
+sidebarTitle: "Runs"
+description: "Start, follow, recover, and download Valkyrie runs from Python."
 ---
 
-Each method's parameters, defaults, and return types are in the [`client.runs` reference](/reference/sdk/runs#start).
+`client.runs` does from Python what [`valkyrie run`](/runs/start) does from the Valkyrie
+CLI. The rules for each action, such as which tasks a retry reruns, are on the CLI guides that each
+section links to. Every parameter is in the [`client.runs` reference](/reference/sdk/runs). The
+examples run inside `async with ValkyrieClient() as client:`, as in the
+[quickstart](/sdk/quickstart).
 
 ## Start a run
 
-Use an uploaded agent name or an `AgentContractRequest`:
-
 ```python
 run = await client.runs.start(
-    agent="sweagent",
+    agent="my-agent",
     benchmark="swebench",
     model="anthropic/claude-sonnet-4-6",
     concurrency=10,
-    priority=3,
     dataset="default",
     label="nightly-swebench",
+    agent_kwargs={"temperature": "0.2"},
+    secrets={"ANTHROPIC_API_KEY": "anthropic-api-key"},
 )
+run_id = run.benchmark_id
 ```
 
-`priority` accepts `0` (P0, highest) through `4` (P4, lowest). Managed shared-pool runs default to P3 when it is omitted. An explicit priority is rejected when the tracker queue is disabled or the selected provider uses direct execution. See [Start a run](/runs/start#prioritize-work-in-a-managed-sandbox-pool) for the queue behavior.
+`agent` is a name from your library or an `AgentContractRequest`. The other options match
+[`valkyrie run start`](/runs/start), including `task_ids`, `slice_str`, `provider`, and
+`priority`.
 
-## Fetch or stream progress
+## Follow a run
 
 ```python
-current = await client.runs.fetch(run.benchmark_id)
+current = await client.runs.fetch(run_id)
+print(current.details.status)
 
-async for update in client.runs.stream(run.benchmark_id):
+async for update in client.runs.stream(run_id):
     print(update.details.status)
 ```
 
-## List, score, and recover runs
+`stream` yields an update each time the run changes, until it finishes.
+
+## List runs
+
+`list` returns one page. `iter` walks every page and keeps your filters:
 
 ```python
-page = await client.runs.list()
-results = await client.runs.results(run.benchmark_id)
-await client.runs.stop(run.benchmark_id)
-await client.runs.resume(run.benchmark_id, concurrency=20)
+from valkyrie.sdk import FetchBenchmarksRequest
+
+nightly = FetchBenchmarksRequest(benchmark_name=["swebench"], label="nightly-swebench")
+async for row in client.runs.iter(nightly):
+    print(row.id, row.status, row.final_score)
+
+options = await client.runs.filter_options()
+```
+
+`filter_options` returns the values your organization's earlier runs used, which the filters
+accept.
+
+## Change, stop, and rerun a run
+
+```python
+await client.runs.update_concurrency(run_id, concurrency=20)
+
+await client.runs.shed(run_id, concurrency=10, dry_run=True)
+
+await client.runs.stop(run_id, task_ids=["task-1"])
+
+await client.runs.resume(run_id, concurrency=20)
+
 await client.runs.retry(
-    run.benchmark_id,
-    task_ids=["task-1"],
-    benchmark_url="https://new-benchmark.example",
+    run_id, task_ids=["task-1"], benchmark_url="https://new-benchmark.example.com"
 )
+
+await client.runs.retag(run_id, "google-report-xyz")
 ```
 
-Use `benchmark_url` when a benchmark service does not have a stable URL. `resume` picks up work that never ran, while `retry` re-runs tasks that ended in `ERROR`. See [Manage a run](/runs/manage) for the lifecycle rules that apply to both.
+`stop(force=True)` also deletes running sandboxes. `resume` and `retry` take the same
+options as the CLI, such as `from_scratch`, `update_agent`, `secrets`, and `service_headers`.
+See [Manage a run](/runs/manage) for what each one reruns. `retag` moves the run to another
+project in any run state and returns that project; `metadata(run_id).project` shows the newest.
 
-Fetch the stored launch metadata, or check whether the run's S3 results are there yet:
+## Get results
 
 ```python
-metadata = await client.runs.metadata(run.benchmark_id)
-exists = await client.runs.results_exist(run.benchmark_id)
+results = await client.runs.results(run_id)
+
+subset = await client.runs.results(run_id, task_ids=["task-1", "task-2"])
+
+metadata = await client.runs.metadata(run_id)
 ```
 
-## Analyze a completed run
+Passing `task_ids` recomputes the score over those tasks only. `metadata` returns the
+settings the run started with.
 
-Uncached analysis requires the analyzer Lambda name from the agent contract:
+## Download outputs
+
+Download and extract the files your agents wrote into a new directory:
 
 ```python
-async for event in client.runs.analyze(
-    run.benchmark_id,
-    lambda_function="my-agent-analyzer",
-):
-    print(event.event, event.data)
+await client.runs.download_outputs(run_id, "./outputs", task_ids=["task-1"])
 ```
 
-## Stream run outputs
-
-Stream the tar archive without loading it all into memory:
+Leave out `task_ids` for the whole run. The directory must not exist yet. To stream the tar
+archive yourself instead:
 
 ```python
 from pathlib import Path
 
 with Path("run-outputs.tar").open("wb") as archive:
-    async for chunk in client.runs.stream_outputs(run.benchmark_id):
+    async for chunk in client.runs.stream_outputs(run_id):
         archive.write(chunk)
 ```
 
-## Which executor release ran the work
+To list or download individual files, see [Download artifacts](/sdk/resources#download-artifacts).
 
-A run response reports both the release it started on and the one running it now:
+## Analyze a run
 
-| Field | Meaning |
-| --- | --- |
-| `executor_release_id` | The release chosen when the run was first admitted, which never changes |
-| `current_execution_release_id` | The release running the work now, which a retry or resume of a finished run can move forward |
-| `executor_artifact_digest` | Digest of the artifact from that first release |
-| `executor_protocol_version` | Protocol version of that first release |
+Send a finished run to its [Docent analyzer](/integrations/docent). A first analysis needs
+the analyzer's name from the agent contract:
 
-Runs that predate these fields return `null` for all of them. The metadata endpoint also reports the first `executor_artifact_uri`, and each dispatch keeps its own snapshot of the exact artifact that invocation used.
+```python
+async for event in client.runs.analyze(run_id, lambda_function="my-agent-analyzer"):
+    print(event.event, event.data)
+```

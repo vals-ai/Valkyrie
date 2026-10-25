@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/logging/test_logging.py
 """
 
 import json
+from collections.abc import Iterator
 import logging
 from unittest.mock import Mock
 from uuid import UUID
@@ -56,6 +57,19 @@ def _configure_test_logging(monkeypatch: pytest.MonkeyPatch, environment: str) -
     configure_logging()
 
 
+@pytest.fixture
+def _restore_test_logging(capfd: pytest.CaptureFixture[str]) -> Iterator[None]:
+    # Tear down before capfd closes the stdout stream used by configure_logging.
+    loggers = [logging.getLogger(name) for name in ("", "tracker", "uvicorn", "uvicorn.access", "uvicorn.error")]
+    original = [(logger, logger.handlers[:], logger.level, logger.propagate, logger.disabled) for logger in loggers]
+    yield
+    for logger, handlers, level, propagate, disabled in original:
+        logger.handlers[:] = handlers
+        logger.setLevel(level)
+        logger.propagate = propagate
+        logger.disabled = disabled
+
+
 def test_service_headers_are_excluded_from_log_repr() -> None:
     request = StartBenchmarkRequest(
         contract=AgentContractRequest(name="agent", run_cmd="run"),
@@ -65,11 +79,11 @@ def test_service_headers_are_excluded_from_log_repr() -> None:
     formatter = logging.Formatter("%(message)s")
 
     record = logging.LogRecord(
-        name="tracker.test_credentials",
+        name="tracker.test_headers",
         level=logging.ERROR,
         pathname="",
         lineno=0,
-        msg="AWS request failed: %r",
+        msg="Service request failed: %r",
         args=(request,),
         exc_info=None,
     )
@@ -166,6 +180,7 @@ async def test_bind_benchmark_id_survives_fastapi_dependency_resolution() -> Non
 class TestConfigureLogging:
     """Logging configuration across deployment environments."""
 
+    @pytest.mark.usefixtures("_restore_test_logging")
     @pytest.mark.parametrize(
         ("environment", "logger_name", "message", "structured", "expects_request_id"),
         [
@@ -204,6 +219,7 @@ class TestConfigureLogging:
         if expects_request_id:
             assert "request_id" in log_payload
 
+    @pytest.mark.usefixtures("_restore_test_logging")
     def test_configure_logging_includes_context_vars(
         self,
         monkeypatch: pytest.MonkeyPatch,

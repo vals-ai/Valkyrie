@@ -15,8 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from executor_protocol import (
     SUPPORTED_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
-    validate_executor_artifact_uri,
-    validate_executor_digest,
+    validate_executor_image_uri,
 )
 
 
@@ -38,8 +37,7 @@ class ReleaseTaskConfig(BaseModel):
     db_host: str
     db_port: int
     db_name: str
-    release_bucket: str
-    release_prefix: str
+    image_repository: str
     cluster_arn: str
     tracker_service_name: str
     tracker_desired_count: int
@@ -64,11 +62,16 @@ class EcsClient(Protocol):
     def update_service(self, **kwargs: object) -> Mapping[str, object]: ...
 
     def describe_services(self, **kwargs: object) -> Mapping[str, object]: ...
+
     def describe_tasks(self, **kwargs: object) -> Mapping[str, object]: ...
 
+    def describe_task_definition(self, **kwargs: object) -> Mapping[str, object]: ...
 
-class S3ArtifactClient(Protocol):
-    def get_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]: ...
+    def register_task_definition(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class EcrClient(Protocol):
+    def describe_images(self, **kwargs: object) -> Mapping[str, object]: ...
 
 
 class DatabaseSecret(BaseModel):
@@ -115,9 +118,8 @@ def create_ecs_client() -> EcsClient:
     return cast(EcsClient, boto3.client("ecs"))  # pyright: ignore[reportUnknownMemberType]
 
 
-def create_s3_artifact_client() -> S3ArtifactClient:
-    """Select the sealed release task's ambient S3 authority at its root."""
-    return cast(S3ArtifactClient, boto3.client("s3"))  # pyright: ignore[reportUnknownMemberType]
+def create_ecr_client() -> EcrClient:
+    return cast(EcrClient, boto3.client("ecr"))  # pyright: ignore[reportUnknownMemberType]
 
 
 def _configure_database(task: ReleaseTaskConfig) -> None:
@@ -133,21 +135,58 @@ def _configure_database(task: ReleaseTaskConfig) -> None:
         DB_HOST=task.db_host,
         DB_PORT=str(task.db_port),
         DB_NAME=task.db_name,
-        EXECUTOR_RELEASE_BUCKET=task.release_bucket,
-        EXECUTOR_RELEASE_PREFIX=task.release_prefix,
     )
 
 
-def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> None:
+# Read-only fields in a described task definition that RegisterTaskDefinition rejects.
+_TASK_DEFINITION_OUTPUT_FIELDS = (
+    "taskDefinitionArn",
+    "revision",
+    "status",
+    "requiresAttributes",
+    "compatibilities",
+    "registeredAt",
+    "registeredBy",
+    "deregisteredAt",
+)
+
+
+def _register_release_task_definition(client: EcsClient, task: ReleaseTaskConfig, release: ReleaseInput) -> str:
+    """Register one runner revision that differs from the deployed runner only by its pinned image."""
+    described = client.describe_task_definition(taskDefinition=task.runner_task_family)
+    template = dict(cast(Mapping[str, object], described["taskDefinition"]))
+    for field in _TASK_DEFINITION_OUTPUT_FIELDS:
+        template.pop(field, None)
+    template["containerDefinitions"] = [
+        {
+            **container,
+            "image": release.artifact_uri,
+            "environment": [
+                entry
+                for entry in cast(Sequence[Mapping[str, str]], container.get("environment", []))
+                if entry["name"] != "SENTRY_RELEASE"
+            ]
+            + [{"name": "SENTRY_RELEASE", "value": release.release_id}],
+        }
+        for container in cast(Sequence[Mapping[str, object]], template["containerDefinitions"])
+    ]
+    registered = client.register_task_definition(**template)
+    return str(cast(Mapping[str, object], registered["taskDefinition"])["taskDefinitionArn"])
+
+
+def _activate_sealed_release(release: ReleaseInput, ecs: EcsClient, task: ReleaseTaskConfig) -> None:
     from sqlmodel import Session
 
-    from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
     from tracker.database.models import ExecutorRelease
     from tracker.database.session import engine
     from tracker.executor.release_control import ReleaseControlError, activate_release
 
     try:
         with Session(engine) as session:
+            existing = session.get(ExecutorRelease, release.release_id)
+            task_definition_arn = existing.task_definition_arn if existing is not None else None
+            if task_definition_arn is None:
+                task_definition_arn = _register_release_task_definition(ecs, task, release)
             activate_release(
                 session,
                 ExecutorRelease(
@@ -155,10 +194,8 @@ def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> 
                     artifact_uri=release.artifact_uri,
                     artifact_digest=release.artifact_digest,
                     protocol_version=release.protocol_version,
+                    task_definition_arn=task_definition_arn,
                 ),
-                expected_bucket=task.release_bucket,
-                expected_prefix=task.release_prefix,
-                artifact_reader=S3ExecutorArtifactReader(create_s3_artifact_client()),
             )
             session.commit()
     except ReleaseControlError as error:
@@ -275,39 +312,41 @@ def _finish_maintenance(task: ReleaseTaskConfig, maintenance: MaintenanceInput) 
 
 def main() -> None:
     arguments = sys.argv[1:]
-    if len(arguments) < 12 or arguments[9] != "--runner-task-family":
+    if len(arguments) < 11 or arguments[8] != "--runner-task-family":
         raise SystemExit("Release task requires its sealed configuration and an operation")
     task = ReleaseTaskConfig(
         db_secret_arn=arguments[0],
         db_host=arguments[1],
         db_port=int(arguments[2]),
         db_name=arguments[3],
-        release_bucket=arguments[4],
-        release_prefix=arguments[5],
-        cluster_arn=arguments[6],
-        tracker_service_name=arguments[7],
-        tracker_desired_count=int(arguments[8]),
-        runner_task_family=arguments[10],
+        image_repository=arguments[4],
+        cluster_arn=arguments[5],
+        tracker_service_name=arguments[6],
+        tracker_desired_count=int(arguments[7]),
+        runner_task_family=arguments[9],
     )
-    operation = arguments[11]
+    operation = arguments[10]
 
-    if operation == "activate" and len(arguments) == 16:
+    if operation == "activate" and len(arguments) == 14:
         release = ReleaseInput(
-            release_id=arguments[12],
-            artifact_uri=arguments[13],
-            artifact_digest=validate_executor_digest(arguments[14]),
-            protocol_version=arguments[15],
+            release_id=arguments[11],
+            artifact_uri=arguments[12],
+            artifact_digest=validate_executor_image_uri(arguments[12], task.image_repository),
+            protocol_version=arguments[13],
         )
         if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
             raise ValueError(f"Unsupported executor protocol version: {release.protocol_version}")
-        validate_executor_artifact_uri(release.artifact_uri, task.release_bucket, task.release_prefix)
         _configure_database(task)
-        _activate_sealed_release(task, release)
+        create_ecr_client().describe_images(
+            repositoryName=task.image_repository.split("/", 1)[1],
+            imageIds=[{"imageDigest": f"sha256:{release.artifact_digest}"}],
+        )
+        _activate_sealed_release(release, create_ecs_client(), task)
         return
 
-    if operation not in ("maintenance-begin", "maintenance-finish") or len(arguments) != 13:
+    if operation not in ("maintenance-begin", "maintenance-finish") or len(arguments) != 12:
         raise SystemExit(f"Invalid sealed release task operation: {operation}")
-    maintenance = MaintenanceInput(target_sha=arguments[12])
+    maintenance = MaintenanceInput(target_sha=arguments[11])
     _configure_database(task)
     if operation == "maintenance-begin":
         print(json.dumps(_begin_maintenance(task, maintenance), sort_keys=True))

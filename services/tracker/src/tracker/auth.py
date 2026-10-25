@@ -368,11 +368,15 @@ def get_current_identity(request: Request, session: Session = Depends(get_sessio
         tenant = require_organization(
             tenants, _chosen_organization(tenants, request.headers.get(TENANT_HEADER), claims)
         )
+        bound_user_id = _string_claim(claims, "user_id")
+        is_access_key = bound_user_id is not None
+        user_id = bound_user_id if is_access_key else _string_claim(claims, "sub")
         return RequestIdentity(
             org=_require_org(tenant, session),
+            access_key_id=_string_claim(claims, "sub") if is_access_key else None,
             email=_string_claim(claims, "email", lowercase=True),
             name=_string_claim(claims, "name"),
-            user_id=_string_claim(claims, "sub"),
+            user_id=user_id,
         )
 
     key = _exchange_and_normalize_access_key(token)
@@ -471,4 +475,56 @@ def get_current_starter(identity: RequestIdentity = Depends(get_current_identity
     if identity.email is None and identity.user_id is not None:
         profile = _load_descope_user_profile(identity.user_id)
         identity = replace(identity, email=profile.email, name=identity.name or profile.name)
+    return identity
+
+
+def _resolve_run_owner(
+    management: MGMT, identity: RequestIdentity, subject_id: str
+) -> tuple[RequestIdentity, dict[str, Any] | None]:
+    if identity.user_id is not None:
+        user = _live_user(management, identity.user_id)
+        if user is not None:
+            return identity, user
+        if identity.access_key_id is not None:
+            raise HTTPException(status_code=403, detail="This user cannot start or retry benchmarks")
+
+    # A key-derived Bearer token has its key ID as sub when no user claim is present.
+    with descope_call("load the access key"):
+        try:
+            key = management.access_key.load(subject_id)["key"]
+        except AuthException as exc:
+            if exc.status_code in (400, 404):
+                raise HTTPException(status_code=403, detail="This user cannot start or retry benchmarks") from exc
+            raise
+    bound_user_id = _string_claim(key, "boundUserId")
+    identity = replace(identity, access_key_id=subject_id, user_id=bound_user_id)
+    if bound_user_id is None:
+        return identity, None
+    user = _live_user(management, bound_user_id)
+    if user is None:
+        raise HTTPException(status_code=403, detail="This user cannot start or retry benchmarks")
+    return identity, user
+
+
+def get_current_runner(identity: RequestIdentity = Depends(get_current_identity)) -> RequestIdentity:
+    """Check current Descope roles before starting, retrying, or resuming a run."""
+    subject_id = identity.user_id or identity.access_key_id
+    if subject_id is None:
+        return identity
+    management = descope_management()
+    if management is None:
+        raise HTTPException(status_code=503, detail="Auth service unavailable")
+    identity, user = _resolve_run_owner(management, identity, subject_id)
+    if user is None:
+        return identity
+    if "valkyrie-no-start" in (user.get("roleNames") or ()) or "valkyrie-no-start" in user_tenant_roles(user).get(
+        identity.org.name, ()
+    ):
+        raise HTTPException(status_code=403, detail="This user cannot start or retry benchmarks")
+    if identity.email is None:
+        identity = replace(
+            identity,
+            email=_string_claim(user, "email", lowercase=True),
+            name=identity.name or _clean_string(user.get("name") or user.get("displayName")),
+        )
     return identity

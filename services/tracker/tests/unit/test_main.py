@@ -27,18 +27,20 @@ from benchmark_service.client import (
 )
 from benchmark_service.schemas import DatasetVersion, FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
+from descope.exceptions import AuthException
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 import main as main_module
+import tracker.auth as auth_module
 from tracker import config
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from main import app, tracker_service_error_handler
 from tests.storage_lifecycle_support import MemoryS3
 from tests.utils import TEST_ORG_ID, FakeAccessKeys, async_iterator
-from tracker.auth import RequestIdentity, get_current_identity, get_current_org, get_current_starter
+from tracker.auth import RequestIdentity, get_current_identity, get_current_org, get_current_runner
 from tracker.aws.clients import AWSClientProvider
 from tracker.aws.cloudwatch_logs import CloudWatchBenchmarkLogSink
 from tracker.aws.runtime import AWSResources, AWSRuntime
@@ -66,6 +68,7 @@ from tracker.database.models import (
     Org,
     OrgProviderSecret,
     Task,
+    TaskBreakdown,
     TaskStatus,
     UserBenchmarkService,
     UserDefaultProvider,
@@ -98,7 +101,6 @@ def active_executor_release(database_session: Session) -> None:
         artifact_digest="digest-test-release",
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
         status=ExecutorReleaseStatus.ACTIVE,
-        readiness_verified=True,
     )
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
@@ -156,13 +158,107 @@ def _as_user(monkeypatch: MonkeyPatch, user_id: str | None) -> None:
     monkeypatch.setattr("tracker.api.run_settings.AUTH_REQUIRED", True)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
     identity = RequestIdentity(org=Org(id=TEST_ORG_ID, name="acme.example", storage_key="test-bucket"), user_id=user_id)
-    monkeypatch.setitem(app.dependency_overrides, get_current_starter, lambda: identity)
+    monkeypatch.setitem(app.dependency_overrides, get_current_runner, lambda: identity)
     monkeypatch.setitem(app.dependency_overrides, get_current_identity, lambda: identity)
 
 
 def _start_body(contract: AgentContractRequest, **fields: Any) -> dict[str, Any]:
     """A start request carrying only what a client chooses to send."""
     return {"contract": contract.model_dump(mode="json"), "benchmark_name": "swebench", **fields}
+
+
+class TestNoStartRoleHTTP:
+    @pytest.mark.parametrize(
+        "credential",
+        ["login", "bound-key", "key-derived-bearer", "bound-key-without-claim", "key-derived-bearer-without-claim"],
+    )
+    def test_denied_actions_leave_state_untouched_and_reads_stops_remain_available(
+        self,
+        credential: str,
+        contract: AgentContractRequest,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        monkeypatch.delitem(app.dependency_overrides, get_current_runner)
+        monkeypatch.delitem(app.dependency_overrides, get_current_org)
+        monkeypatch.setattr(auth_module, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(auth_module, "DESCOPE_MANAGEMENT_KEY", "management-key")
+        descope = MagicMock()
+        monkeypatch.setattr(auth_module, "_descope_client", descope)
+        descope.validate_session.return_value = {"sub": "U-alice", "tenants": {"default": {}}}
+        if credential.startswith("key-derived-bearer"):
+            descope.validate_session.return_value = {
+                "sub": "K2abc",
+                "tenants": {"default": {}},
+                **({"user_id": "U-alice"} if credential == "key-derived-bearer" else {}),
+            }
+        descope.exchange_access_key.return_value = {
+            "keyId": "K2abc",
+            "tenants": {"default": {}},
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"default": {}},
+                "exp": time.time() + 60,
+                **(
+                    {"customClaims": {"user_id": "U-alice", "valkyrie_user_key": True}}
+                    if credential == "bound-key"
+                    else {}
+                ),
+            },
+        }
+        user = {
+            "user": {
+                "roleNames": [],
+                "userTenants": [{"tenantId": "default", "roleNames": ["valkyrie-no-start"]}],
+            }
+        }
+        descope.mgmt.user.load_by_user_id.return_value = user
+        if credential.endswith("without-claim"):
+            descope.mgmt.access_key.load.return_value = {"key": {"id": "K2abc", "boundUserId": "U-alice"}}
+        if credential == "key-derived-bearer-without-claim":
+            descope.mgmt.user.load_by_user_id.side_effect = [AuthException(404, "E", "not found"), user] * 3
+        headers = {"x-api-key": credential} if credential.startswith("bound-key") else {"authorization": "Bearer token"}
+        example_benchmark_object.status = BenchmarkStatus.STOPPED
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        run_id = example_benchmark_object.id
+        database_session.expire_all()
+        admission_before = database_session.get(ExecutorAdmission, 1)
+        run_before = database_session.get(Benchmark, run_id)
+        assert admission_before is not None and run_before is not None
+        admission_state = admission_before.model_dump()
+        run_state = run_before.model_dump()
+
+        actions = [
+            client.post("/start-benchmark", json=_start_body(contract), headers=headers),
+            client.post(f"/retry-or-resume-benchmark/{example_benchmark_object.id}", headers=headers),
+            client.post(f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=true", headers=headers),
+        ]
+        assert all(response.status_code == 403 for response in actions), [response.text for response in actions]
+        assert all(response.json() == {"detail": "This user cannot start or retry benchmarks"} for response in actions)
+        database_session.expire_all()
+        assert database_session.get(Benchmark, example_benchmark_object.id).model_dump() == run_state
+        assert database_session.get(ExecutorAdmission, 1).model_dump() == admission_state
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+        assert database_session.exec(select(Task)).all() == []
+        assert len(database_session.exec(select(Benchmark)).all()) == 1
+        descope.mgmt.user.load_by_user_id.assert_called()
+        if credential.endswith("without-claim"):
+            descope.mgmt.access_key.load.assert_called_with("K2abc")
+
+        if credential == "login":
+            read = client.get("/fetch-benchmarks", headers=headers)
+            assert read.status_code == 200, read.text
+            assert read.json()["total_count"] == 1
+            run = database_session.get(Benchmark, example_benchmark_object.id)
+            assert run is not None
+            run.status = BenchmarkStatus.IN_PROGRESS
+            database_session.add(run)
+            database_session.commit()
+            stopped = client.post(f"/stop-benchmark/{run.id}", headers=headers)
+            assert stopped.status_code == 200, stopped.text
+            assert stopped.json()["status"] == "success"
 
 
 class TestTrackerAPI:
@@ -687,6 +783,49 @@ class TestTrackerAPI:
             force_stop.assert_awaited_once()
             assert force_stop.await_args is not None
             assert force_stop.await_args.kwargs["task_ids"] == ["task_newest", "task_building"]
+
+    def test_local_shed_benchmark_stops_newest_tasks_and_persists_lower_limit(
+        self,
+        tmp_path: Path,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        from tracker.local.resources import LocalResources
+
+        example_benchmark_object.arguments = LocalBenchmarkArguments.model_validate(
+            {
+                **example_benchmark_object.arguments.model_dump(),
+                "environment": "local",
+                "properties": LocalResources(data_root=tmp_path),
+                "sandbox_provider": "docker",
+            }
+        )
+        self._add_shed_tasks(database_session, example_benchmark_object)
+        force_stop = AsyncMock()
+        monkeypatch.setattr(main_module, "force_stop_sandboxes", force_stop)
+
+        response = client.post(
+            f"/benchmarks/{example_benchmark_object.id}/shed",
+            json={"concurrency": 2},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "benchmark_id": str(example_benchmark_object.id),
+            "concurrency": 2,
+            "task_ids": ["task_newest", "task_building"],
+        }
+        database_session.refresh(example_benchmark_object)
+        assert example_benchmark_object.arguments.concurrency == 2
+        assert self._task_statuses(database_session, example_benchmark_object) == {
+            "task_evaluating": TaskStatus.EVALUATING,
+            "task_oldest": TaskStatus.IN_PROGRESS,
+            "task_building": TaskStatus.STOPPED,
+            "task_newest": TaskStatus.STOPPED,
+            "task_pending": TaskStatus.PENDING,
+        }
+        force_stop.assert_awaited_once()
 
     def test_shed_benchmark_lowers_limit_without_stopping_when_within_it(
         self,
@@ -2176,6 +2315,68 @@ class TestTrackerAPI:
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
 
+    async def test_retrieve_results_keeps_accounting_summary_inside_task_breakdown(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        benchmark = example_benchmark_object
+        breakdown = TaskBreakdown(
+            sandbox_build_duration=1.0,
+            agent_run_duration=2.0,
+            evaluation_run_duration=3.0,
+            sandbox_run_duration=4.0,
+            accounting_id="accounting-session",
+            base_generation_allowance_seconds=300.0,
+            cumulative_time_credit_cap_seconds=120.0,
+            external_service_overhead_seconds=45.0,
+            external_service_credit_applied_seconds=45.0,
+            external_service_credit_revision=2,
+            generation_elapsed_seconds=20.0,
+        )
+        task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task-with-accounting",
+            benchmark=benchmark.id,
+            status=TaskStatus.FINISHED,
+            task_breakdown=breakdown.id,
+        )
+        result = EvaluationResult(
+            org_id=TEST_ORG_ID,
+            task=task.id,
+            instance_id=str(uuid4()),
+            result={"finished": True},
+        )
+        database_session.add_all([benchmark, breakdown, task, result])
+        database_session.commit()
+
+        response = client.get(
+            "/retrieve-results",
+            params={"benchmark_id": str(benchmark.id)},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body) == set(FinalViewResponse.model_fields)
+        assert body["evaluation_results"][task.task_id] == {
+            "finished": True,
+            "agent_caused_exit_reason": None,
+            "task_breakdown": {
+                "sandbox_build_duration": 1.0,
+                "agent_run_duration": 2.0,
+                "evaluation_run_duration": 3.0,
+                "sandbox_run_duration": 4.0,
+                "accounting_id": "accounting-session",
+                "base_generation_allowance_seconds": 300.0,
+                "cumulative_time_credit_cap_seconds": 120.0,
+                "external_service_overhead_seconds": 45.0,
+                "external_service_credit_applied_seconds": 45.0,
+                "external_service_credit_revision": 2,
+                "generation_elapsed_seconds": 20.0,
+            },
+            "attempts": 1,
+        }
+
     async def test_preview_results_archives_then_overwrites_canonical_result(
         self,
         monkeypatch: MonkeyPatch,
@@ -2610,7 +2811,7 @@ class TestTrackerAPI:
         monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", False)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         org = Org(id=TEST_ORG_ID, name=org_name, storage_key="test-bucket")
-        monkeypatch.setitem(app.dependency_overrides, get_current_starter, lambda: RequestIdentity(org=org))
+        monkeypatch.setitem(app.dependency_overrides, get_current_runner, lambda: RequestIdentity(org=org))
         database_session.merge(OrgProviderSecret(org_id=TEST_ORG_ID, provider="daytona", secret_name=provider_secret))
         database_session.commit()
         secrets = {"MODEL_KEY": contract_secret} if contract_secret else {}
@@ -2832,7 +3033,7 @@ class TestTrackerAPI:
         expected_id: str,
     ) -> None:
         test_org = Org(id=TEST_ORG_ID, name="default", storage_key="test-bucket")
-        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+        app.dependency_overrides[get_current_runner] = lambda: RequestIdentity(
             org=test_org,
             access_key_id=access_key_id,
             email="alice@vals.ai",
@@ -2866,7 +3067,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
     ) -> None:
-        # The autouse override_starter fixture already returns a self-hosted identity.
+        # The autouse override_starter_and_runner fixture already returns a self-hosted identity.
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
         request = StartBenchmarkRequest(
@@ -2897,7 +3098,7 @@ class TestTrackerAPI:
         firing on every authenticated request.
         """
         test_org = Org(id=TEST_ORG_ID, name="default", storage_key="test-bucket")
-        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(org=test_org, access_key_id="K2abc")
+        app.dependency_overrides[get_current_runner] = lambda: RequestIdentity(org=test_org, access_key_id="K2abc")
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 

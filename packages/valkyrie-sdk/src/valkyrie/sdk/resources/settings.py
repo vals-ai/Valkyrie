@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import quote
 
 from valkyrie.sdk.models import ProvidersResponse, RunSettingsResponse
+from valkyrie.sdk.resources._path import encode_path_segment as _segment
 
 if TYPE_CHECKING:
     from valkyrie.sdk.client import ValkyrieClient
-
-
-def _segment(name: str) -> str:
-    """Escape a provider or benchmark name for the request path; '.' and '..' would change the route."""
-    if name in {"", ".", ".."}:
-        raise ValueError(f"Invalid name: {name!r}")
-    return quote(name, safe="")
 
 
 class ProvidersResource:

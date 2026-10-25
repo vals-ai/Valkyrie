@@ -17,10 +17,18 @@ from valkyrie.sdk.models.benchmarks import (
     SingleBenchmarkResponse,
     SingleTaskResponse,
     TaskArtifactsResponse,
+    TaskBreakdown,
     TasksResponse,
     TaskSummary,
 )
 from valkyrie.sdk.models.config import AWSResources, LocalResources
+from valkyrie.sdk.models.projects import (
+    SPEND_SUBCATEGORIES,
+    ProjectCreateRequest,
+    ProjectResponse,
+    ProjectsResponse,
+    SpendType,
+)
 from .logs import LogEvent, LogPage  # pyright: ignore[reportMissingImports]
 from valkyrie.sdk.models.runs import (
     AnalyzeBenchmarkRequest,
@@ -128,6 +136,9 @@ __all__ = [
     "Parameter",
     "RetrieveResultsResponse",
     "ResultsExistResponse",
+    "ProjectCreateRequest",
+    "ProjectResponse",
+    "ProjectsResponse",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
     "RunStreamEvent",
@@ -150,6 +161,8 @@ __all__ = [
     "SingleTaskResponse",
     "ShedBenchmarkRequest",
     "ShedBenchmarkResponse",
+    "SPEND_SUBCATEGORIES",
+    "SpendType",
     "StartBenchmarkRequest",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
@@ -157,6 +170,7 @@ __all__ = [
     "UpdateBenchmarkConcurrencyResponse",
     "TaskStatus",
     "TaskArtifactsResponse",
+    "TaskBreakdown",
     "TaskIDsResponse",
     "TasksResponse",
     "TaskSummary",

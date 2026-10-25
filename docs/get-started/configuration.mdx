@@ -1,97 +1,149 @@
 ---
-title: Configure the CLI and SDK
-description: Sign in, choose a Tracker, and set up the Python SDK.
+title: "Configure the CLI and SDK"
+sidebarTitle: "Configuration"
+description: "Sign in, join an organization, create access keys for CI, and choose a Tracker."
 ---
 
-The CLI and SDK need only a login, or an access key, and a Tracker. Both come from `valkyrie login`, environment variables, and, in the SDK, `ValkyrieConfig`.
+The Valkyrie CLI and SDK need credentials and a Tracker to send requests to. A login covers
+both on your own machine, and an access key covers both in continuous integration (CI).
 
-## Log in
+## Sign in
 
 ```bash
 valkyrie login
 ```
 
-`login` opens your browser to sign in with your Google account, then saves the login for the [selected Tracker](#choose-a-tracker) under `~/.config/valkyrie/sessions`, readable only by you. The login refreshes itself; run `valkyrie login` again if it expires. It then lists your organizations; if you belong to several, choose one with `valkyrie org use NAME`.
-
-Check which Tracker, organization and account your requests use with `valkyrie whoami`, and forget the login with `valkyrie logout`.
-
-### Organizations
-
-Runs, agents, secrets and keys belong to an organization. If you sign up and aren't in one yet, `valkyrie login` says so. Ask an organization admin to invite you, or create one, which makes you its admin:
+Your browser opens to sign in with your Google account. On a machine without a browser,
+add `--no-browser` and open the printed link yourself. The login is saved for this Tracker
+under `~/.config/valkyrie/sessions`, readable only by you, and refreshes itself. When it
+can't, the CLI tells you to run `valkyrie login` again.
 
 ```bash
-valkyrie org create acme --name "Acme"
+# Show the Tracker, organization, and account your requests use
+valkyrie whoami
+
+# Forget the login for this Tracker
+valkyrie logout
 ```
 
-Admins invite people with `valkyrie org invite EMAIL`. The invitee signs in with `valkyrie login` using that address, sees the invitation, and joins with:
+## Join an organization
+
+Runs, agents, secrets, and access keys belong to an organization, and its members see its
+runs. Vals AI creates organizations: to get one, send an email to [contact@vals.ai](mailto:contact@vals.ai).
+To join an existing one:
+
+1. Ask one of its admins to run `valkyrie org invite you@example.com` with your email
+   address.
+2. Sign in with `valkyrie login` by using that address.
+3. List your invitations with `valkyrie org list`.
+4. Accept one with `valkyrie org accept acme`.
+
+Invitations expire after 14 days. Decline one with `valkyrie org decline acme`.
+
+## Switch organizations
+
+`valkyrie org list` shows your organizations and marks the one your requests act for.
+Switch with:
 
 ```bash
-valkyrie org accept acme
+valkyrie org use acme
 ```
 
-Invitations expire after 14 days. `valkyrie org list` shows pending invitations and `valkyrie org decline NAME` declines one. `valkyrie org members` lists members and pending invitations, and `valkyrie org remove EMAIL` removes a member or cancels an invitation. Organization commands always use your login, even when `VALKYRIE_API_KEY` is set.
+## Manage members
 
-A login can belong to several organizations. `valkyrie org list` shows them and marks the one your requests act for, and `valkyrie org use NAME` switches.
+Only admins can invite and remove people:
 
-### Access keys for CI
+```bash
+valkyrie org invite teammate@example.com
 
-CI jobs and other machines without a browser use an access key instead of a login. While logged in, create one with:
+# List members and pending invitations
+valkyrie org members
+
+# Remove a member, or cancel an invitation
+valkyrie org remove teammate@example.com
+```
+
+Removing a member also deletes the access keys they created for the organization.
+Organization commands always use your login, even when `VALKYRIE_API_KEY` is set.
+
+## Create an access key for CI
+
+CI jobs and machines without a browser use an access key instead of a login. While logged
+in, create one:
 
 ```bash
 valkyrie token create github-actions --expires-in-days 30
 ```
 
-The key is printed once. Set it as `VALKYRIE_API_KEY` where the job runs. Revoke it with `valkyrie token revoke <key id>`; the Tracker may keep accepting a revoked key for up to two hours.
+The key is printed once, on standard output, and its ID and expiry on standard error. Set
+the key as `VALKYRIE_API_KEY` where the job runs. Keys last from 1 to 90 days, 30 by
+default.
 
-Keys last 1 to 90 days. Creating and revoking them needs a login; an access key can't create other keys.
+There is no command to list keys, so keep the key ID. Revoke a key with:
 
-Runs started with a key use its creator's [default provider](#configure-sandbox-providers) and [saved benchmark service URLs](#configure-benchmark-services), and change when the creator changes them. Pin CI runs by passing `--provider` and `--ignore-custom-services` to `valkyrie run start`, and `--ignore-custom-services` to `valkyrie benchmark tasks`.
+```bash
+valkyrie token revoke KEY_ID
+```
+
+Replace *`KEY_ID`* with the key ID that `valkyrie token create` printed.
+
+A revoked key can keep working for up to an hour. Creating and revoking keys needs a login,
+not an access key.
+
+Runs started with a key use its creator's
+[default provider](/get-started/sandbox-providers#choose-the-provider-for-a-run) and
+[saved benchmark services](/benchmarks/custom-services), so they change when the creator
+changes those. To pin a CI run, pass `--provider` and `--ignore-custom-services` to
+`valkyrie run start`.
 
 ## Choose a Tracker
 
-The CLI and SDK use the bench Tracker, `https://benchmark-tracker.vals.ai`, until you sign in to another. Choose another Tracker, such as a self-hosted one, for `valkyrie login` with `VALKYRIE_URL`:
+The CLI and SDK use Vals AI's hosted Tracker, `https://benchmark-tracker.vals.ai`, until you
+sign in to another one. To use your own Tracker, or another URL Vals AI gave you, sign in
+with `VALKYRIE_URL`:
 
 ```bash
-VALKYRIE_URL=https://your-tracker.example.com valkyrie login
+VALKYRIE_URL=https://tracker.example.com valkyrie login
 ```
 
-`valkyrie logout` forgets that Tracker, and commands go back to bench. Logins are saved per Tracker, so you can stay logged in to several and pick one for a single command with `VALKYRIE_URL`.
+Later commands use the Tracker you last signed in to. Logins are saved per Tracker, so you
+can stay signed in to several and pick one for a single command with `VALKYRIE_URL`.
+`valkyrie logout` forgets the current Tracker's login, and commands go back to the hosted
+Tracker.
 
 Requests go to the first Tracker set by:
 
 1. `url` in the SDK's `ValkyrieConfig`
 2. `VALKYRIE_URL`
-3. Your last `valkyrie login`, only when no API key is set in `api_key` or `VALKYRIE_API_KEY`
-4. `https://benchmark-tracker.vals.ai` (bench)
+3. Your last `valkyrie login`, when no access key is set in `api_key` or `VALKYRIE_API_KEY`
+4. `https://benchmark-tracker.vals.ai`
+
+A Tracker you run yourself without authentication needs no login or key. See
+[Run Tracker locally](/self-hosting/local-tracker).
 
 ## Configure the Python SDK
 
-`ValkyrieClient()` uses the same Tracker and login as the CLI. To choose them in code, pass a `ValkyrieConfig`:
+`ValkyrieClient()` uses the same Tracker and login as the CLI. To choose them in code, pass
+a `ValkyrieConfig`:
 
 ```python
 from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 
-config = ValkyrieConfig(url="https://your-tracker.example.com", api_key="<access key>")
+config = ValkyrieConfig(url="https://tracker.example.com", api_key="ACCESS_KEY")
 async with ValkyrieClient(config) as client:
-    runs = await client.runs.list()
+    page = await client.runs.list()
 ```
 
-`url` selects the Tracker and `api_key` an access key. Requests authenticate with `api_key`, then `VALKYRIE_API_KEY`, then your saved login for that Tracker. Without any of them requests carry no credentials, which only a Tracker without authentication accepts. Every field is in the [SDK configuration reference](/reference/sdk/models/config#valkyrie-config).
+Replace *`ACCESS_KEY`* with an access key, or leave out `api_key` to use your login.
 
-## Configure sandbox providers
-
-Sandbox providers are saved in the Tracker. Your organization maps each provider to a secret with `valkyrie provider set`, and you choose your own default with `valkyrie provider default`. See [Configure sandbox providers](/get-started/sandbox-providers).
-
-## Configure benchmark services
-
-Benchmark service URLs are saved in the Tracker for you with `valkyrie benchmark service set`; see [Custom benchmark services](/benchmarks/custom-services). A service's credential is an organization secret that you name with `--auth-secret` when you save the URL; see [Benchmark authentication](/benchmarks/authentication).
+Requests authenticate with `api_key`, then `VALKYRIE_API_KEY`, then your saved login for
+that Tracker. Every field is in the
+[`ValkyrieConfig` reference](/reference/sdk/models/config#valkyrie-config).
 
 ## Environment variables
-
-The CLI and SDK read these variables.
 
 | Variable | Effect |
 | --- | --- |
 | `VALKYRIE_API_KEY` | Authenticates every request with this access key instead of a saved login. |
-| `VALKYRIE_URL` | Sends requests to this Tracker instead of your last login's or the hosted one. |
-| `VALKYRIE_CLI_LOGS` | CLI only. Set to `true` to print library log output. Logs are suppressed otherwise. |
+| `VALKYRIE_URL` | Sends requests to this Tracker instead of your last login's Tracker or the hosted one. |
+| `VALKYRIE_CLI_LOGS` | CLI only. To print library log output, set it to `true`. |

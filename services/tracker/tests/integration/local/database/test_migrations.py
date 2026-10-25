@@ -1,32 +1,44 @@
-"""PostgreSQL tests for operational Alembic migration contracts."""
+"""PostgreSQL tests for operational Alembic migration contracts.
 
-import os
+Run: pytest tests/integration/local/database/test_migrations.py
+"""
+
 import subprocess
-import sys
+import traceback
 from collections.abc import Generator
 from typing import Protocol
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import monotonic, sleep
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import DBAPIError
-from sqlmodel import Session, create_engine
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlmodel import Session, SQLModel, create_engine
 from testcontainers.postgres import PostgresContainer
 
+import tracker.config as tracker_config
 from tracker.database.models import (
     AgentContractRequest,
     AWSBenchmarkArguments,
     Benchmark,
     BenchmarkStatus,
     LocalBenchmarkArguments,
+    Project,
+    RunProject,
+    SpendType,
+    ExecutorDispatch,
+    ExecutorDispatchKind,
+    ExecutorDispatchStatus,
     ExecutorRelease,
-    ExecutorReleaseStatus,
+    SandboxAdmissionCandidate,
     SandboxBuildReservation,
     Task,
     TaskStatus,
@@ -42,18 +54,26 @@ _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 _MAINTENANCE_REVISION = "f0a1b2c3d4e5"
 _ERROR_RESULT_PROVENANCE_REVISION = "a3f4b5c6d7e8"
 _DISPATCH_LEASE_REVISION = "6a7b8c9d0e1f"
+_DROP_DISPATCH_LEASE_REVISION = "5b6c7d8e9f0a"
+_DROP_DISPATCH_LEASE_PREDECESSOR = "4a5b6c7d8e9f"
+_DROP_RELEASE_READINESS_REVISION = "6c7d8e9f0a1b"
 _MIGRATION_ADVISORY_LOCK_ID = 0x56414C4B59524945
 _TASK_LISTING_REVISION = "2d3e4f5a6b7c"
 _TASK_LISTING_PREDECESSOR = "1c2d3e4f5a6b"
 _SANDBOX_BUILD_RESERVATION_REVISION = "4f5a6b7c8d9e"
 _SANDBOX_BUILD_RESERVATION_PREDECESSOR = "3e4f5a6b7c8d"
+_RESERVED_ADMISSION_REVISION = "d9e0f1a2b3c4"
+_RESERVED_ADMISSION_PREDECESSOR = "c1d2e3f4a5b6"
 _ORG_BUCKET_REVISION = "a7b8c9d0e1f2"
 _ORG_BUCKET_PREDECESSOR = "b3c4d5e6f7a8"
 _DROP_AWS_MANAGED_REVISION = "c4d5e6f7a8b9"
+_PROJECT_REVISION = "7b1e4c9d2a60"
+_PROJECT_PREDECESSOR = "b7e4c1a9d2f0"
 
 
 def test_migration_graph_has_single_head() -> None:
-    heads = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_heads()
+    scripts = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI)))
+    heads = scripts.get_heads()
 
     assert len(heads) == 1, f"Expected one Alembic head, found {heads}"
 
@@ -79,21 +99,81 @@ def test_dispatch_lease_migration_adds_recovery_state(migration_database_url: st
     engine.dispose()
 
 
-@pytest.fixture
-def migration_database_url() -> Generator[str, None, None]:
+def test_dispatch_migration_retains_only_local_lease_state_and_drops_release_readiness(
+    migration_database_url: str,
+) -> None:
+    lease_columns = {"claim_deadline_at", "heartbeat_at", "lease_expires_at"}
+    readiness_columns = {"readiness_verified", "readiness_metadata"}
+
+    def lease_state() -> tuple[set[str], set[str], bool]:
+        engine = create_engine(migration_database_url)
+        inspector = inspect(engine)
+        columns = {column["name"] for column in inspector.get_columns("executordispatch")}
+        release_columns = {column["name"] for column in inspector.get_columns("executorrelease")}
+        indexed = any(
+            index["name"] == "ix_executordispatch_status_lease_expires"
+            for index in inspector.get_indexes("executordispatch")
+        )
+        engine.dispose()
+        return columns & lease_columns, release_columns & readiness_columns, indexed
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DROP_DISPATCH_LEASE_PREDECESSOR)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert lease_state() == (lease_columns, readiness_columns, True)
+
+    engine = create_engine(migration_database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO executorrelease"
+                " (id, artifact_uri, artifact_digest, protocol_version, status, readiness_verified,"
+                " readiness_metadata, created_at)"
+                " VALUES ('lease-drop-release', 'source:///src', :digest, '5', 'ACTIVE', true, '{}', now())"
+            ),
+            {"digest": "a" * 64},
+        )
+    engine.dispose()
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DROP_DISPATCH_LEASE_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert lease_state() == ({"lease_expires_at"}, readiness_columns, True)
+
+    upgrade = _run_alembic(migration_database_url, "upgrade", _DROP_RELEASE_READINESS_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert lease_state() == ({"lease_expires_at"}, set(), True)
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _DROP_DISPATCH_LEASE_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert lease_state() == (lease_columns, readiness_columns, True)
+
+
+@pytest.fixture(scope="module")
+def migration_postgres() -> Generator[PostgresContainer, None, None]:
     with PostgresContainer("postgres:16-alpine") as postgres:
-        yield postgres.get_connection_url()
+        yield postgres
 
 
-def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(_ALEMBIC_INI), *args],
-        cwd=_TRACKER_ROOT,
-        env={**os.environ, "DATABASE_URL": database_url},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+@pytest.fixture
+def migration_database_url(migration_postgres: PostgresContainer) -> Generator[str, None, None]:
+    """Give each migration test an empty database in the module's shared Postgres."""
+    name = f"migration_{uuid4().hex}"
+    admin = create_engine(migration_postgres.get_connection_url(), isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.execute(text(f"CREATE DATABASE {name}"))
+    yield make_url(migration_postgres.get_connection_url()).set(database=name).render_as_string(hide_password=False)
+    with admin.connect() as connection:
+        connection.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
+    admin.dispose()
+
+
+def _run_alembic(database_url: str, action: str, revision: str) -> subprocess.CompletedProcess[str]:
+    """Run an Alembic command in-process, reporting failure the way the CLI would."""
+    try:
+        with patch.object(tracker_config, "DATABASE_URL", database_url), patch("logging.config.fileConfig"):
+            getattr(command, action)(Config(str(_ALEMBIC_INI)), revision)
+    except Exception:
+        return subprocess.CompletedProcess([action, revision], 1, "", traceback.format_exc())
+    return subprocess.CompletedProcess([action, revision], 0, "", "")
 
 
 def test_failure_category_migration_aborts_on_busy_table_and_retries(
@@ -644,24 +724,27 @@ def test_current_execution_ownership_migration_rejects_downgrade(
     org_id = uuid4()
     benchmark_id = uuid4()
     with Session(engine) as session:
-        # The org table at this revision predates the ORM model's storage_key column.
         session.execute(
             text("INSERT INTO org (id, name) VALUES (:id, :name)"),
             {"id": org_id, "name": "migration-test-org"},
         )
-        session.add(
-            ExecutorRelease(
-                id="migration-test-release",
-                artifact_uri="s3://artifacts/migration-test-release.pex",
-                artifact_digest="a" * 64,
-                protocol_version="1",
-                status=ExecutorReleaseStatus.ACTIVE,
-                readiness_verified=True,
-            )
-        )
         session.commit()
         # Insert with explicit columns: the schema is pinned at the ownership
         # revision, which predates columns the current ORM model would include.
+        session.execute(
+            text(
+                "INSERT INTO executorrelease"
+                " (id, artifact_uri, artifact_digest, protocol_version, status, readiness_verified,"
+                " readiness_metadata, created_at)"
+                " VALUES (:id, :artifact_uri, :artifact_digest, '1', 'ACTIVE', true, '{}', :created_at)"
+            ),
+            {
+                "id": "migration-test-release",
+                "artifact_uri": "s3://artifacts/migration-test-release.pex",
+                "artifact_digest": "a" * 64,
+                "created_at": datetime.now(UTC),
+            },
+        )
         arguments = AWSBenchmarkArguments(
             contract=AgentContractRequest(name="migration-test-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
@@ -721,12 +804,13 @@ def test_sandbox_build_reservation_upgrade_and_downgrade(
     engine = create_engine(migration_database_url)
     attempt_started_at = datetime(2026, 9, 29, 12)
     org_id = uuid4()
+    task_row_id = uuid4()
     with engine.begin() as connection:
         connection.execute(
             text("INSERT INTO org (id, name) VALUES (:id, :name)"),
             {"id": org_id, "name": f"migration-reservation-{org_id}"},
         )
-    with Session(engine, expire_on_commit=False) as session:
+    with Session(engine) as session:
         benchmark = Benchmark(
             org_id=org_id,
             name="migration reservation",
@@ -738,37 +822,49 @@ def test_sandbox_build_reservation_upgrade_and_downgrade(
         )
         session.add(benchmark)
         session.flush()
-        task = Task(
-            org_id=org_id,
-            task_id="reserved-task",
-            benchmark=benchmark.id,
-            status=TaskStatus.BUILDING,
-            started_at=attempt_started_at,
+        session.execute(
+            text(
+                "INSERT INTO task (id, org_id, task_id, status, started_at, benchmark) "
+                "VALUES (:id, :org_id, :task_id, :status, :started_at, :benchmark)"
+            ),
+            {
+                "id": task_row_id,
+                "org_id": org_id,
+                "task_id": "reserved-task",
+                "status": "BUILDING",
+                "started_at": attempt_started_at,
+                "benchmark": benchmark.id,
+            },
         )
-        session.add(task)
         session.commit()
 
     migrate("upgrade", _SANDBOX_BUILD_RESERVATION_REVISION)
-    with Session(engine) as session:
-        session.add(
-            SandboxBuildReservation(
-                task_row_id=task.id,
-                attempt_started_at=attempt_started_at,
-                pool_id="pool_migration",
-                requested_vcpu=1,
-                requested_memory=2,
-                requested_disk=3,
-            )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO sandboxbuildreservation "
+                "(task_row_id, attempt_started_at, reserved_at, pool_id, "
+                "requested_vcpu, requested_memory, requested_disk) "
+                "VALUES (:task_row_id, :attempt_started_at, :reserved_at, :pool_id, "
+                ":requested_vcpu, :requested_memory, :requested_disk)"
+            ),
+            {
+                "task_row_id": task_row_id,
+                "attempt_started_at": attempt_started_at,
+                "reserved_at": attempt_started_at,
+                "pool_id": "pool_migration",
+                "requested_vcpu": 1,
+                "requested_memory": 2,
+                "requested_disk": 3,
+            },
         )
-        session.commit()
-
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE task SET status = 'ERROR', finished_at = :finished_at WHERE id = :id"),
-            {"id": task.id, "finished_at": attempt_started_at + timedelta(seconds=1)},
+            {"id": task_row_id, "finished_at": attempt_started_at + timedelta(seconds=1)},
         )
         remaining = connection.execute(
-            text("SELECT count(*) FROM sandboxbuildreservation WHERE task_row_id = :id"), {"id": task.id}
+            text("SELECT count(*) FROM sandboxbuildreservation WHERE task_row_id = :id"), {"id": task_row_id}
         ).scalar_one()
         assert remaining == 1
 
@@ -777,11 +873,261 @@ def test_sandbox_build_reservation_upgrade_and_downgrade(
     engine.dispose()
 
 
+class TestReservedAdmissionMigration:
+    """The combined migration preserves the head revision and supports admission writes."""
+
+    @pytest.fixture
+    def database(self, migration_database_url: str) -> Generator[Engine, None, None]:
+        predecessor = _run_alembic(migration_database_url, "upgrade", _RESERVED_ADMISSION_PREDECESSOR)
+        assert predecessor.returncode == 0, predecessor.stderr
+        engine = create_engine(migration_database_url)
+        try:
+            yield engine
+        finally:
+            engine.dispose()
+
+    @pytest.fixture
+    def admission_rows(self, database: Engine) -> tuple[list[Task], ExecutorDispatch]:
+        org_id = uuid4()
+        with database.begin() as connection:
+            connection.execute(
+                text("INSERT INTO org (id, name) VALUES (:id, :name)"),
+                {"id": org_id, "name": f"migration-admission-{org_id}"},
+            )
+        with Session(database, expire_on_commit=False) as session:
+            release = ExecutorRelease(
+                id="migration-admission-release",
+                artifact_uri="s3://artifacts/migration-admission.pex",
+                artifact_digest="a" * 64,
+                protocol_version="test",
+            )
+            benchmark = Benchmark(
+                org_id=org_id,
+                name="reserved admission migration",
+                arguments=AWSBenchmarkArguments(
+                    contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"),
+                    concurrency=3,
+                    queue_pool_id="pool_migration",
+                ),
+            )
+            # This historical schema predates the release task-definition column.
+            session.execute(
+                text(
+                    "INSERT INTO executorrelease"
+                    " (id, artifact_uri, artifact_digest, protocol_version, status, readiness_verified,"
+                    " readiness_metadata, created_at)"
+                    " VALUES (:id, :uri, :digest, :protocol, 'CANDIDATE', true, '{}', :created_at)"
+                ),
+                {
+                    "id": release.id,
+                    "uri": release.artifact_uri,
+                    "digest": release.artifact_digest,
+                    "protocol": release.protocol_version,
+                    "created_at": release.created_at,
+                },
+            )
+            session.add(benchmark)
+            session.flush()
+            dispatch = ExecutorDispatch(
+                benchmark_id=benchmark.id,
+                kind=ExecutorDispatchKind.START,
+                status=ExecutorDispatchStatus.RUNNING,
+                executor_release_id=release.id,
+                executor_artifact_uri=release.artifact_uri,
+                executor_artifact_digest=release.artifact_digest,
+                executor_protocol_version=release.protocol_version,
+            )
+            tasks = [
+                Task(
+                    org_id=org_id,
+                    task_id=name,
+                    benchmark=benchmark.id,
+                    status=status,
+                    started_at=datetime(2026, 10, 16, 12),
+                )
+                for name, status in (
+                    ("building", TaskStatus.BUILDING),
+                    ("ready", TaskStatus.PENDING),
+                    ("rejected", TaskStatus.PENDING),
+                )
+            ]
+            session.add(dispatch)
+            session.execute(
+                text(
+                    "INSERT INTO task (id, org_id, task_id, status, started_at, benchmark) "
+                    "VALUES (:id, :org_id, :task_id, :status, :started_at, :benchmark)"
+                ),
+                [
+                    {
+                        "id": task.id,
+                        "org_id": task.org_id,
+                        "task_id": task.task_id,
+                        "status": task.status.value,
+                        "started_at": task.started_at,
+                        "benchmark": task.benchmark,
+                    }
+                    for task in tasks
+                ],
+            )
+            session.commit()
+
+            return tasks, dispatch
+
+    @pytest.mark.parametrize("populated", [False, True], ids=["empty-ledger", "pre-domain-ledger"])
+    def test_upgrade_and_downgrade(
+        self,
+        migration_database_url: str,
+        database: Engine,
+        admission_rows: tuple[list[Task], ExecutorDispatch],
+        populated: bool,
+    ) -> None:
+        tasks, dispatch = admission_rows
+        building, ready, rejected = tasks
+        original_columns = {
+            column["name"]: (str(column["type"]), column["nullable"], column["default"])
+            for column in inspect(database).get_columns("sandboxbuildreservation")
+        }
+        if populated:
+            with database.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO sandboxbuildreservation "
+                        "(task_row_id, attempt_started_at, reserved_at, pool_id, "
+                        "requested_vcpu, requested_memory, requested_disk) "
+                        "VALUES (:id, :attempt, :attempt, 'pool_migration', 1, 2, 20)"
+                    ),
+                    {"id": building.id, "attempt": building.started_at},
+                )
+
+        upgrade = _run_alembic(migration_database_url, "upgrade", _RESERVED_ADMISSION_REVISION)
+        assert upgrade.returncode == 0, upgrade.stderr
+
+        with database.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM sandboxbuildreservation")).scalar_one() == 0
+        with Session(database) as session:
+            for attempt, released_at in (
+                (building.started_at - timedelta(minutes=1), building.started_at),
+                (building.started_at, None),
+            ):
+                session.add(
+                    SandboxBuildReservation(
+                        task_row_id=building.id,
+                        attempt_started_at=attempt,
+                        reserved_at=attempt,
+                        released_at=released_at,
+                        pool_id="pool_migration",
+                        target_id="region-a",
+                        sandbox_class="sysbox",
+                        requested_vcpu=1.25,
+                        requested_memory=2.25,
+                        requested_disk=20.25,
+                        requested_gpu=0,
+                    )
+                )
+            session.add_all(
+                [
+                    SandboxAdmissionCandidate(
+                        task_row_id=ready.id,
+                        attempt_started_at=ready.started_at,
+                        executor_dispatch_id=dispatch.id,
+                        admission_ready=True,
+                        pool_id="pool_migration",
+                        target_id="region-a",
+                        sandbox_class="sysbox",
+                        requested_vcpu=1.25,
+                        requested_memory=2.25,
+                        requested_disk=20.25,
+                        requested_gpu=0,
+                    ),
+                    SandboxAdmissionCandidate(
+                        task_row_id=rejected.id,
+                        attempt_started_at=rejected.started_at,
+                        executor_dispatch_id=dispatch.id,
+                        admission_ready=False,
+                        pool_id="pool_migration",
+                        target_id="region-b",
+                        sandbox_class="sysbox",
+                        requested_vcpu=0,
+                        requested_memory=0,
+                        requested_disk=0,
+                        requested_gpu=1,
+                    ),
+                ]
+            )
+            session.commit()
+
+        # Rows written after the reserved-admission upgrade survive later head migrations.
+        current_head = _run_alembic(migration_database_url, "upgrade", "head")
+        assert current_head.returncode == 0, current_head.stderr
+
+        with database.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_current_head()
+            )
+            reservations = connection.execute(
+                text(
+                    "SELECT attempt_started_at, released_at, requested_vcpu, requested_memory, requested_disk "
+                    "FROM sandboxbuildreservation ORDER BY attempt_started_at"
+                )
+            ).all()
+            candidates = connection.execute(
+                text(
+                    "SELECT task_row_id, admission_ready, target_id, sandbox_class, "
+                    "requested_vcpu, requested_memory, requested_disk, requested_gpu "
+                    "FROM sandboxadmissioncandidate"
+                )
+            ).all()
+
+        assert [tuple(row) for row in reservations] == [
+            (building.started_at - timedelta(minutes=1), building.started_at, 1.25, 2.25, 20.25),
+            (building.started_at, None, 1.25, 2.25, 20.25),
+        ]
+        assert {row[0]: tuple(row[1:]) for row in candidates} == {
+            ready.id: (True, "region-a", "sysbox", 1.25, 2.25, 20.25, 0),
+            rejected.id: (False, "region-b", "sysbox", 0, 0, 0, 1),
+        }
+
+        downgrade = _run_alembic(migration_database_url, "downgrade", _RESERVED_ADMISSION_PREDECESSOR)
+        assert downgrade.returncode == 0, downgrade.stderr
+
+        inspector = inspect(database)
+        assert {
+            column["name"]: (str(column["type"]), column["nullable"], column["default"])
+            for column in inspector.get_columns("sandboxbuildreservation")
+        } == original_columns
+        assert inspector.get_pk_constraint("sandboxbuildreservation")["constrained_columns"] == ["task_row_id"]
+        assert "sandboxadmissioncandidate" not in inspector.get_table_names()
+        with database.connect() as connection:
+            remaining = connection.execute(
+                text(
+                    "SELECT task_row_id, attempt_started_at, requested_vcpu, requested_memory, requested_disk "
+                    "FROM sandboxbuildreservation"
+                )
+            ).all()
+
+        assert [tuple(row) for row in remaining] == [(building.id, building.started_at, 1, 2, 20)]
+
+        repeated_upgrade = _run_alembic(migration_database_url, "upgrade", "head")
+        assert repeated_upgrade.returncode == 0, repeated_upgrade.stderr
+
+        with database.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM sandboxbuildreservation")).scalar_one() == 0
+            statuses = {
+                task_id: status for task_id, status in connection.execute(text("SELECT id, status FROM task")).all()
+            }
+
+        assert statuses == {
+            building.id: TaskStatus.BUILDING,
+            ready.id: TaskStatus.PENDING,
+            rejected.id: TaskStatus.PENDING,
+        }
+
+
 def test_org_bucket_migration_records_the_deployment_bucket_for_vals_only(
     migration_database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Vals keeps the bucket it already uses; Tracker creates every other organization's bucket later."""
-    monkeypatch.setenv("AWS_DEPLOYMENT_S3_BUCKET", "agentic-harness-test")
+    monkeypatch.setattr(tracker_config, "AWS_DEPLOYMENT_S3_BUCKET", "agentic-harness-test")
     upgrade = _run_alembic(migration_database_url, "upgrade", _ORG_BUCKET_PREDECESSOR)
     assert upgrade.returncode == 0, upgrade.stderr
     engine = create_engine(migration_database_url)
@@ -847,4 +1193,113 @@ def test_dropping_aws_managed_downgrades_with_every_aws_run_marked_managed(migra
     with engine.connect() as connection:
         flags = dict(connection.execute(text("SELECT name, aws_managed FROM benchmark")).all())
     assert flags == {"aws": True, "local": False}
+    engine.dispose()
+
+
+def test_project_migration_matches_the_models_and_downgrades(migration_database_url: str) -> None:
+    """Project handles are unique per org while names may repeat, a run's last-appended link is its project even when link timestamps tie, and downgrade removes both tables."""
+    upgrade = _run_alembic(migration_database_url, "upgrade", _PROJECT_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+    engine = create_engine(migration_database_url)
+    inspector = inspect(engine)
+    for table in ("project", "run_project"):
+        assert {column["name"]: column["nullable"] for column in inspector.get_columns(table)} == {
+            column.name: column.nullable for column in SQLModel.metadata.tables[table].columns
+        }
+    assert [
+        (constraint["name"], constraint["column_names"]) for constraint in inspector.get_unique_constraints("project")
+    ] == [("unique_project_handle_per_org", ["org_id", "handle"])]
+    assert [(index["name"], index["column_names"]) for index in inspector.get_indexes("run_project")] == [
+        ("ix_run_project_benchmark_id", ["benchmark_id"])
+    ]
+    assert [
+        (foreign_key["constrained_columns"], foreign_key["referred_table"], foreign_key["referred_columns"])
+        for foreign_key in inspector.get_foreign_keys("project")
+    ] == [(["org_id"], "org", ["id"])]
+    assert sorted(
+        (foreign_key["constrained_columns"], foreign_key["referred_table"], foreign_key["referred_columns"])
+        for foreign_key in inspector.get_foreign_keys("run_project")
+    ) == [(["benchmark_id"], "benchmark", ["id"]), (["project_id"], "project", ["id"])]
+    assert [column["name"] for column in inspector.get_columns("run_project") if column.get("identity")] == ["id"]
+
+    org_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO org (id, name) VALUES (:id, :name)"), {"id": org_id, "name": "org"})
+    with Session(engine) as session:
+        run, reversed_run = (
+            Benchmark(
+                org_id=org_id,
+                name="projects",
+                arguments=AWSBenchmarkArguments(
+                    contract=AgentContractRequest(name="agent", install_cmd="true", run_cmd="true"), concurrency=1
+                ),
+            )
+            for _ in range(2)
+        )
+        router_bench = Project(
+            org_id=org_id,
+            handle="router-bench",
+            name="Router Bench",
+            spend_type=SpendType.DEVELOPMENT,
+            subcategory="new_benchmark_generation",
+        )
+        google_report = Project(
+            org_id=org_id,
+            handle="google-report-xyz",
+            name="Google Report XYZ",
+            spend_type=SpendType.CUSTOMER,
+            subcategory="report",
+            customer="google",
+            extra_tags={"engagement": "q4"},
+        )
+        session.add_all([run, reversed_run, router_bench, google_report])
+        session.flush()
+        moved_at = datetime.now(UTC)
+        session.add_all(
+            [
+                RunProject(benchmark_id=run.id, project_id=router_bench.id, created_at=moved_at),
+                RunProject(benchmark_id=run.id, project_id=google_report.id, created_at=moved_at),
+                RunProject(benchmark_id=reversed_run.id, project_id=google_report.id, created_at=moved_at),
+                RunProject(benchmark_id=reversed_run.id, project_id=router_bench.id, created_at=moved_at),
+            ]
+        )
+        session.commit()
+        reversed_current = reversed_run.fetch_project(session)
+        assert reversed_current is not None
+        assert reversed_current.handle == "router-bench"
+        newest = run.fetch_project(session)
+        assert newest is not None
+        assert (newest.handle, newest.name, newest.spend_type, newest.extra_tags) == (
+            "google-report-xyz",
+            "Google Report XYZ",
+            SpendType.CUSTOMER,
+            {"engagement": "q4"},
+        )
+        session.add(
+            Project(
+                org_id=org_id,
+                handle="router-bench-2",
+                name="Router Bench",
+                spend_type=SpendType.INTERNAL,
+                subcategory="blog",
+            )
+        )
+        session.commit()
+        session.add(
+            Project(
+                org_id=org_id,
+                handle="router-bench",
+                name="Another name",
+                spend_type=SpendType.INTERNAL,
+                subcategory="blog",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _PROJECT_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert {"project", "run_project"}.isdisjoint(inspect(engine).get_table_names())
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT 1 FROM pg_type WHERE typname = 'spendtype'")).first() is None
     engine.dispose()

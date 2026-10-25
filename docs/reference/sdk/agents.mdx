@@ -48,7 +48,12 @@ Bundle a directory containing contract.yaml or contract.yml and upload it throug
 name defaults to the contract name and replaces that library alias if it exists. Set overwrite=False to reject an existing alias with a 409 API error.
 
 ```python Signature
-async def push(agent_path: str | Path, *, name: str | None = None, overwrite: bool = True) -> AgentEntry
+async def push(
+    agent_path: str | Path,
+    *,
+    name: str | None = None,
+    overwrite: bool = True,
+) -> AgentEntry
 ```
 
 **Parameters**

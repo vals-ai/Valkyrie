@@ -1,4 +1,4 @@
-"""Tests for ExecutorHost structured logging and Sentry correlation.
+"""Tests for executor dispatch log context and Sentry correlation.
 
 Run: uv run pytest services/tracker/tests/unit/executor/test_runner_observability.py
 """
@@ -7,15 +7,15 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
-import io
-import json
-import logging
 from unittest.mock import Mock
 
 import pytest
 import sentry_sdk
+from opentelemetry import trace
 
 from executor_protocol import ExecutorTelemetryContext
+from tracker.logging import request_id_var
+from tracker.logging.context import executor_dispatch_id_var, get_context_tags
 from tracker.executor import runner_observability as observability
 
 
@@ -99,71 +99,37 @@ def test_terminal_sentry_failure_does_not_escape(monkeypatch: pytest.MonkeyPatch
     assert warning.call_count == 3
 
 
-def test_invalid_sentry_configuration_logs_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    error = RuntimeError("bad dsn")
-    warning = Mock()
-    init_mock = Mock(side_effect=error)
-    monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("SENTRY_ENVIRONMENT", "bench")
-    monkeypatch.setattr(sentry_sdk, "init", init_mock)
-    monkeypatch.setattr(observability.logger, "warning", warning)
-
-    observability.configure_observability()
-
-    assert init_mock.call_args.kwargs["environment"] == "bench"
-    warning.assert_called_once_with("Failed to initialize Sentry: %s: %s", "RuntimeError", error)
-
-
-def test_missing_production_sentry_configuration_skips_sentry(monkeypatch: pytest.MonkeyPatch) -> None:
-    init_mock = Mock()
-    monkeypatch.delenv("SENTRY_DSN", raising=False)
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setattr(sentry_sdk, "init", init_mock)
-
-    observability.configure_observability()
-
-    init_mock.assert_not_called()
-
-
-def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level(logging.INFO)
+def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sentry_sdk, "get_traceparent", lambda: "sentry-child-trace")
     monkeypatch.setattr(sentry_sdk, "get_baggage", lambda: "sentry-child-baggage")
-    output = io.StringIO()
-    handler = logging.StreamHandler(output)
-    handler.addFilter(observability._ContextFilter())  # pyright: ignore[reportPrivateUsage]
-    handler.setFormatter(observability._JsonFormatter())  # pyright: ignore[reportPrivateUsage]
-    logger = logging.Logger("executor-runner-test")
-    logger.addHandler(handler)
-
-    with observability.dispatch_observability_context(
-        "benchmark-123",
-        "dispatch-456",
-        "release-789",
-        {
-            "request_id": "request-abc",
-            "trace_headers": {
-                "traceparent": "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01",
-                "tracestate": "vendor=value",
+    outer = request_id_var.set("outer-request")
+    try:
+        with observability.dispatch_observability_context(
+            "benchmark-123",
+            "dispatch-456",
+            "release-789",
+            {
+                "request_id": "request-abc",
+                "trace_headers": {
+                    "traceparent": "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01",
+                    "tracestate": "vendor=value",
+                },
             },
-        },
-    ) as child_context:
-        logger.info("Launching executor")
+        ) as child_context:
+            assert get_context_tags() == {
+                "request_id": "request-abc",
+                "benchmark_id": "benchmark-123",
+                "task_id": "",
+                "executor_dispatch_id": "dispatch-456",
+                "attempt_started_at": "",
+            }
+            assert trace.get_current_span().get_span_context().trace_id == 0x1234567890ABCDEF1234567890ABCDEF
+        assert request_id_var.get() == "outer-request"
+        assert executor_dispatch_id_var.get("") == ""
+        assert not trace.get_current_span().get_span_context().is_valid
+    finally:
+        request_id_var.reset(outer)
 
-    record = json.loads(output.getvalue())
-    assert record == {
-        "timestamp": record["timestamp"],
-        "level": "INFO",
-        "logger": "executor-runner-test",
-        "message": "Launching executor",
-        "request_id": "request-abc",
-        "benchmark_id": "benchmark-123",
-        "executor_dispatch_id": "dispatch-456",
-        "executor_release_id": "release-789",
-    }
     assert child_context == {
         "request_id": "request-abc",
         "trace_headers": {
@@ -171,29 +137,3 @@ def test_dispatch_context_correlates_cloudwatch_logs_and_child_trace(
             "baggage": "sentry-child-baggage",
         },
     }
-
-
-def test_dispatch_error_logs_before_capture(monkeypatch: pytest.MonkeyPatch) -> None:
-    events: list[str] = []
-    span = Mock()
-
-    @contextmanager
-    def record_transaction(_transaction: object) -> Generator[Mock, None, None]:
-        yield span
-
-    def record_log(*_args: object, **_kwargs: object) -> None:
-        events.append("logged")
-
-    def record_capture(_error: BaseException) -> None:
-        events.append("captured")
-
-    monkeypatch.setattr(sentry_sdk, "continue_trace", Mock(return_value=Mock()))
-    monkeypatch.setattr(sentry_sdk, "start_transaction", record_transaction)
-    monkeypatch.setattr(observability.logger, "error", record_log)
-    monkeypatch.setattr(sentry_sdk, "capture_exception", record_capture)
-    error = RuntimeError("executor failed")
-
-    observability.capture_dispatch_error(error, {"request_id": "request-abc", "trace_headers": {}})
-
-    span.set_status.assert_called_once_with(observability.SPANSTATUS.INTERNAL_ERROR)
-    assert events == ["logged", "captured"]

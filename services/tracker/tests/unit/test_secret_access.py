@@ -109,3 +109,38 @@ def test_customers_name_their_own_secrets_without_the_prefix(
     org_name: str, auth_required: bool, name: str, resolved: str
 ) -> None:
     assert resolve_secret_name(name, org_id=_ORG_ID, org_name=org_name, auth_required=auth_required) == resolved
+
+
+@pytest.mark.parametrize("org_name", ["vals-smith-dev-gh-52346350", "vals-smith-prod-gh-52346350"])
+@pytest.mark.parametrize(
+    "shared_tenants", ["vals.ai,vals-smith-*", "vals-smith-dev-gh-52346350,vals-smith-prod-gh-52346350"]
+)
+def test_dedicated_customer_secret_names_stay_in_their_tenant(
+    monkeypatch: pytest.MonkeyPatch, org_name: str, shared_tenants: str
+) -> None:
+    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", shared_tenants)
+
+    assert (
+        resolve_secret_name("devModelGatewayClientConfig", org_id=_ORG_ID, org_name=org_name, auth_required=True)
+        == f"valkyrie/tenants/{_ORG_ID}/devModelGatewayClientConfig"
+    )
+
+    with pytest.raises(ValueError):
+        validate_secret_names(
+            [f"valkyrie/tenants/{_OTHER_ORG_ID}/daytona"],
+            org_id=_ORG_ID,
+            org_name=org_name,
+            auth_required=True,
+        )
+
+
+@pytest.mark.parametrize("org_name", ["vals.ai", "vals-smith-research", "vals-smith-dev-gh-research"])
+def test_legacy_research_tenants_keep_explicit_shared_secret_access(
+    monkeypatch: pytest.MonkeyPatch, org_name: str
+) -> None:
+    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", "vals.ai,vals-smith-*")
+
+    assert (
+        resolve_secret_name("SharedDaytonaSecrets", org_id=_ORG_ID, org_name=org_name, auth_required=True)
+        == "SharedDaytonaSecrets"
+    )

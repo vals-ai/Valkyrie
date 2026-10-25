@@ -5,14 +5,17 @@ import json
 import socket
 import time
 import traceback
+from hashlib import sha256
 from asyncio import Semaphore, to_thread
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from enum import Enum
+from pathlib import PurePosixPath
 from types import TracebackType
 from typing import Any, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -21,26 +24,31 @@ import sentry_sdk
 from benchmark_service import (
     ComposeSource,
     Sandbox,
+    SandboxCreatedData,
     SandboxNotFoundError,
     SandboxProvider,
     SandboxProviderConfig,
     SandboxRecoveryAttempt,
 )
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceStreamError
-from pydantic import ValidationError
+from benchmark_service.client import BenchmarkServiceClient
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, col, func, select, update
-from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.runtime.logs import task_log_stream_name
 from tracker.runtime.secrets import resolve_secrets
 from tracker.runtime.services import RuntimeServices
 from tracker.runtime.artifacts import task_artifact_key
-from tracker.runtime.model_gateway import task_scoped_gateway_key
+from tracker.runtime.model_gateway import GATEWAY_TOKEN_TTL_SECONDS, task_scoped_gateway_key
 from tracker.runtime.task_logs import TaskLogBuffer
-from tracker.config import ENVIRONMENT
+from tracker.config import (
+    ENVIRONMENT,
+    EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
+    EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN,
+    EXTERNAL_SERVICE_GATEWAY_URL,
+)
 from tracker.database.models import (
+    ActiveNativeOutput,
     AgentCausedExitReason,
     AgentContractRequest,
     Benchmark,
@@ -49,6 +57,7 @@ from tracker.database.models import (
     ExecutorDispatch,
     EvaluationResult,
     FailureCategory,
+    FailurePhase,
     Org,
     Task,
     TaskBreakdown,
@@ -56,15 +65,26 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.exceptions import (
+    AgentRunFailedError,
+    CreditedTaskWallTimeExceeded,
     DependencySetupExhaustedError,
     ExecutionAuthorityRevoked,
+    GenerationTerminationUnconfirmedError,
     InvalidSandboxConfigurationError,
-    OutputArtifactError,
+    SandboxDNSResolutionError,
     SandboxSetupError,
     TrackerServiceError,
 )
 from tracker.egress import combine_run_egress_policies
+from tracker.external_service_gateway import (
+    AccountingSnapshot,
+    GenerationAccountingSummary,
+    ExternalServiceDeadlineController,
+    ExternalServiceGatewayClient,
+)
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
+from tracker.executor.native_output import clear_native_output, publish_native_output
+from tracker.generation_plan import GenerationPlan
 from tracker.logging import get_logger
 from tracker.observability import elapsed_ms, error_span, incr
 from tracker.observability.sentry import capture_exception, clear_sandbox_context, task_scope
@@ -78,31 +98,37 @@ from tracker.sandbox import (
     install_agent_dependencies,
     run_agent,
     runtime_sandbox,
+    sandbox_resolves,
     upload_agent_artifacts,
 )
+from tracker.sandbox_cost import SandboxLink, record_sandbox
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
-from tracker.scheduler.store import PostgresAdvisoryLock, queued_sandbox_name, task_evaluation_lock
+from tracker.scheduler.store import (
+    PostgresAdvisoryLock,
+    is_reserved_queue_pool_id,
+    queued_sandbox_name,
+    task_evaluation_lock,
+)
 from tracker.types import (
     StartBenchmarkRequest,
 )
 
-from tracker.utils.failure_classification import classify_failure
+from tracker.utils.failures import (
+    BenchmarkServiceWebSocketDNSResolutionError,
+    Disposition,
+    Failure,
+    classify_failure,
+    decide,
+    describe_failure,
+)
 from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 
 logger = get_logger(__name__)
+TASK_WALL_SECONDS = GATEWAY_TOKEN_TTL_SECONDS - 2 * 60 * 60
 
 _PTY_TASK_RETRY_LIMIT: int = 1
 _SANDBOX_RETRY_DELAY_SECONDS: float = 2
 _DIRECT_ADMISSION_POLL_SECONDS: float = 2
-# Nested-dockerd startup failures reported by the VCB and Terminal-Bench services.
-_DOCKER_NOT_READY_SIGNATURES = (
-    "docker daemon is not ready inside the sandbox",
-    "Docker daemon did not become ready inside the compose sandbox",
-)
-
-
-class BenchmarkServiceWebSocketDNSResolutionError(BenchmarkServiceError):
-    """A benchmark-service WebSocket could not resolve its destination host."""
 
 
 async def _run_benchmark_service_websocket(operation: Coroutine[Any, Any, Any]) -> Any:
@@ -211,6 +237,9 @@ def _record_failure_before_retry(
                 operation="setup",
                 error_type=type(exc).__name__,
                 category=FailureCategory.INFRASTRUCTURE,
+                cause_code=exc.cause_code,
+                phase=exc.phase,
+                transient=exc.transient,
                 retry_scheduled=True,
                 failed_attempt_number=failed_attempt_number,
             )
@@ -348,12 +377,12 @@ class TrackedTask:
                 # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
                 return {task_row.task_id: None}
             except Exception as e:
-                category = classify_failure(e)
-                error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
-                logger.error(error_message, extra={"failure_category": category.value})
+                failure = describe_failure(e, _exception_message(e), phase=getattr(e, "phase", None))
+                error_message = f"Task error was not handled: {failure.message}\n{traceback.format_exc()}"
+                logger.error(error_message, extra={"failure_category": failure.category.value})
                 logfire.exception("tracked_task_run failed")
                 with sentry_sdk.new_scope() as scope:
-                    scope.set_tag("failure_category", category.value)
+                    scope.set_tag("failure_category", failure.category.value)
                     capture_exception(e)
                 with Session(bind=engine) as session:
                     task = fetch_task_row(task_row.id, session, self._org)
@@ -361,10 +390,13 @@ class TrackedTask:
                         task,
                         session,
                         error_message,
-                        producer="sandbox_provider" if isinstance(e, SandboxSetupError) else "tracker",
-                        operation="setup" if isinstance(e, SandboxSetupError) else "process_task",
-                        error_type=type(e).__name__,
-                        category=category,
+                        producer=failure.producer,
+                        operation=failure.operation,
+                        error_type=failure.error_type,
+                        category=failure.category,
+                        cause_code=failure.cause_code,
+                        phase=failure.phase,
+                        transient=failure.transient,
                         expected_started_at=task_row.started_at,
                         authority=self._authority,
                     )
@@ -602,6 +634,78 @@ def commit_task_status_transition(
     )
 
 
+async def _create_generation_deadline_controller(
+    contract: AgentContractRequest,
+    plan: GenerationPlan,
+    resolved_secrets: dict[str, str],
+    scoped_env_vars: dict[str, str],
+) -> ExternalServiceDeadlineController:
+    if not (
+        EXTERNAL_SERVICE_GATEWAY_URL
+        and EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN
+        and contract.inference_settings_attested
+        and contract.model
+        and contract.model.strip()
+        and resolved_secrets.get("MODEL_GATEWAY_URL")
+        and resolved_secrets.get("MODEL_GATEWAY_API_KEY")
+    ):
+        return ExternalServiceDeadlineController(base_allowance_seconds=plan.allowance_seconds)
+
+    accounting_id = sha256(scoped_env_vars["MODEL_GATEWAY_API_KEY"].encode()).hexdigest()
+    client = ExternalServiceGatewayClient(
+        EXTERNAL_SERVICE_GATEWAY_URL, control_token=EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN
+    )
+    return ExternalServiceDeadlineController(
+        client=client,
+        snapshot=AccountingSnapshot(accounting_id=accounting_id, cumulative_neutral_overhead_ms=0, revision=0),
+        base_allowance_seconds=plan.allowance_seconds,
+        credit_cap_seconds=EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS,
+    )
+
+
+def _persist_generation_accounting_summary(
+    summary: GenerationAccountingSummary,
+    *,
+    task_breakdown: TaskBreakdown,
+    task_row_id: UUID,
+    org: Org,
+    authority: ExecutionAuthority,
+    expected_started_at: datetime,
+    open_task_session: Callable[[], Session],
+) -> None:
+    with open_task_session() as task_session:
+        try:
+            lock_execution_authority(task_session, authority)
+        except ExecutionAuthorityRevoked:
+            task_session.rollback()
+            raise
+        task_in_session = task_session.exec(
+            select(Task)
+            .where(col(Task.id) == task_row_id)
+            .where(col(Task.org_id) == org.id)
+            .where(col(Task.benchmark) == authority.benchmark_id)
+            .with_for_update()
+        ).one_or_none()
+        if (
+            task_in_session is None
+            or task_in_session.status == TaskStatus.STOPPED
+            or _normalized_attempt_time(task_in_session.started_at) != _normalized_attempt_time(expected_started_at)
+        ):
+            task_session.rollback()
+            raise ExecutionAuthorityRevoked("Task attempt changed before accounting persistence")
+        task_breakdown.accounting_id = summary.accounting_id
+        task_breakdown.base_generation_allowance_seconds = summary.base_generation_allowance_seconds
+        task_breakdown.cumulative_time_credit_cap_seconds = summary.cumulative_time_credit_cap_seconds
+        task_breakdown.external_service_overhead_seconds = summary.external_service_overhead_seconds
+        task_breakdown.external_service_credit_applied_seconds = summary.external_service_credit_applied_seconds
+        task_breakdown.external_service_credit_revision = summary.external_service_credit_revision
+        task_breakdown.generation_elapsed_seconds = summary.generation_elapsed_seconds
+        task_session.add(task_breakdown)
+        task_session.flush()
+        task_in_session.task_breakdown = task_breakdown.id
+        task_session.commit()
+
+
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -714,6 +818,12 @@ def _admit_direct_task(task_row: Task, org: Org, authority: ExecutionAuthority) 
         return None
 
 
+async def _acquire_queue_preparation(stack: AsyncExitStack, context: SandboxQueueContext | None) -> None:
+    """Bound task retrieval and provider preparation, not the subsequent admission wait."""
+    if context is not None and is_reserved_queue_pool_id(context.pool_id):
+        await stack.enter_async_context(context.preparation_slots)
+
+
 async def _process_task_attempt(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -740,6 +850,8 @@ async def _process_task_attempt(
     """
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
+
+    phase = FailurePhase.ADMISSION
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
@@ -784,6 +896,47 @@ async def _process_task_attempt(
 
     evaluation_lock: PostgresAdvisoryLock | None = None
     evaluation_lock_acquired = False
+    agent_attempt_started = False
+
+    def require_wall_seconds_remaining(deadline_at: datetime) -> float:
+        if deadline_at.tzinfo is None:
+            deadline_at = deadline_at.replace(tzinfo=UTC)
+        remaining = (deadline_at - datetime.now(UTC)).total_seconds()
+        if remaining <= 0:
+            raise CreditedTaskWallTimeExceeded("Task wall-time limit reached")
+        return remaining
+
+    @asynccontextmanager
+    async def enforce_wall_deadline(deadline_at: datetime | None) -> AsyncGenerator[asyncio.Timeout | None]:
+        if deadline_at is None:
+            yield None
+            return
+        remaining = require_wall_seconds_remaining(deadline_at)
+        wall: asyncio.Timeout
+        try:
+            async with asyncio.timeout_at(asyncio.get_running_loop().time() + remaining) as wall:
+                yield wall
+        except TimeoutError as error:
+            if wall.expired():
+                raise CreditedTaskWallTimeExceeded("Task wall-time limit reached") from error
+            raise
+
+    def ensure_wall_deadline() -> datetime:
+        with Session(bind=engine) as wall_session:
+            lock_execution_authority(wall_session, authority)
+            owned = wall_session.exec(
+                select(Task).where(col(Task.id) == task_row.id).where(col(Task.org_id) == org.id).with_for_update()
+            ).one()
+            if owned.started_at != attempt_started_at or owned.status == TaskStatus.STOPPED:
+                raise ExecutionAuthorityRevoked("Task attempt no longer owns the wall deadline")
+            if owned.credited_wall_deadline_at is None:
+                owned.credited_wall_deadline_at = datetime.now(UTC) + timedelta(seconds=TASK_WALL_SECONDS)
+                wall_session.add(owned)
+                wall_session.commit()
+            task_row.credited_wall_deadline_at = owned.credited_wall_deadline_at
+            return owned.credited_wall_deadline_at
+
+    preparation_stack = AsyncExitStack()
 
     def open_task_session() -> Session:
         bind = evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else engine
@@ -806,6 +959,49 @@ async def _process_task_attempt(
             authority=authority,
             connection=evaluation_lock.connection if evaluation_lock_acquired and evaluation_lock is not None else None,
         )
+
+    sandbox_writes: set[asyncio.Future[None]] = set()
+    sandbox_write_order = asyncio.Lock()
+
+    async def save_announced_sandbox(link: SandboxLink, sandbox_id: str) -> None:
+        async with sandbox_write_order:
+            await asyncio.to_thread(record_sandbox, link, sandbox_id)
+
+    async def drain_sandbox_writes() -> None:
+        if not sandbox_writes:
+            return
+        drain = asyncio.ensure_future(asyncio.gather(*sandbox_writes, return_exceptions=True))
+        cancelled = False
+        while not drain.done():
+            try:
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def on_sandbox_created(created: SandboxCreatedData) -> None:
+        link = SandboxLink(benchmark_id=benchmark_id, provider=created.provider)
+        write = asyncio.ensure_future(save_announced_sandbox(link, created.sandbox_id))
+        sandbox_writes.add(write)
+        write.add_done_callback(sandbox_writes.discard)
+
+    async def resume_evaluation_with_wall(state: dict[str, Any]) -> Any:
+        async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+            result = await _run_benchmark_service_websocket(
+                benchmark_service.resume_evaluation(
+                    task_row.task_id,
+                    eval_resume_state=state,
+                    on_message=log_output,
+                    on_eval_resume_state=on_eval_resume_state,
+                    on_sandbox_created=on_sandbox_created,
+                    dataset=start_benchmark_request.dataset,
+                    sandbox_provider=sandbox_provider_config,
+                )
+            )
+            if task_row.credited_wall_deadline_at is not None:
+                require_wall_seconds_remaining(task_row.credited_wall_deadline_at)
+            return result
 
     def execution_is_current(expected_status: TaskStatus | None = None) -> bool:
         with open_task_session() as task_session:
@@ -841,25 +1037,20 @@ async def _process_task_attempt(
                 authority=authority,
             )
 
-    def commit_terminal_error(
-        exc: BaseException,
-        error_message: str,
-        *,
-        producer: str,
-        operation: str,
-        category: FailureCategory,
-        cause_code: str | None = None,
-    ) -> dict[str, dict[str, Any] | None]:
+    def commit_terminal_error(failure: Failure) -> dict[str, dict[str, Any] | None]:
+        exc = failure.exc
         with error_span(
             "task.error",
             exc,
             benchmark_id=str(benchmark_id),
             task_id=task_id,
-            producer=producer,
-            operation=operation,
-            error_type=type(exc).__name__,
-            cause_code=cause_code or "",
-            failure_category=category.value,
+            producer=failure.producer,
+            operation=failure.operation,
+            error_type=failure.error_type,
+            cause_code=failure.cause_code or "",
+            failure_category=failure.category.value,
+            failure_phase=phase.value,
+            transient="" if failure.transient is None else failure.transient,
         ):
             logger.error(
                 "Task execution failed",
@@ -867,97 +1058,56 @@ async def _process_task_attempt(
                 extra={
                     "benchmark_id": str(benchmark_id),
                     "task_id": task_id,
-                    "producer": producer,
-                    "operation": operation,
-                    "error_type": type(exc).__name__,
-                    "cause_code": cause_code or "",
-                    "failure_category": category.value,
+                    "producer": failure.producer,
+                    "operation": failure.operation,
+                    "error_type": failure.error_type,
+                    "cause_code": failure.cause_code or "",
+                    "failure_category": failure.category.value,
+                    "failure_phase": phase.value,
+                    "transient": failure.transient,
                 },
             )
             with sentry_sdk.new_scope() as scope:
-                scope.set_tag("failure_category", category.value)
+                scope.set_tag("failure_category", failure.category.value)
+                scope.set_tag("failure_phase", phase.value)
                 capture_exception(exc)
         with open_task_session() as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(
                 task,
                 task_session,
-                error_message,
-                producer=producer,
-                operation=operation,
-                error_type=type(exc).__name__,
-                category=category,
-                cause_code=cause_code,
+                failure.message,
+                producer=failure.producer,
+                operation=failure.operation,
+                error_type=failure.error_type,
+                category=failure.category,
+                cause_code=failure.cause_code,
+                phase=phase,
+                transient=failure.transient,
                 expected_started_at=attempt_started_at,
                 expected_status=expected_failure_status,
                 authority=authority,
             )
         return {task_id: None}
 
-    async def recover_evaluation_stream_failure(error_message: str) -> dict[str, dict[str, Any] | None] | None:
-        """Resume an interrupted evaluation when the service has persisted continuation state."""
-        if evaluation_resume_state is None:
-            return None
-        if task_is_stopped():
-            return {task_id: None}
-
-        recovery_message = f"{error_message}; resuming evaluation from durable benchmark state"
-        logger.warning(recovery_message)
-        log_output(f"\n[WARN] {recovery_message}\n")
-        resume_eval_start_time = time.perf_counter()
-        try:
-            task_logs.last_log_time = time.monotonic()
-            evaluation_result = await _run_benchmark_service_websocket(
-                benchmark_service.resume_evaluation(
-                    task_row.task_id,
-                    eval_resume_state=evaluation_resume_state,
-                    on_message=log_output,
-                    on_eval_resume_state=on_eval_resume_state,
-                    dataset=start_benchmark_request.dataset,
-                    sandbox_provider=sandbox_provider_config,
-                )
+    def commit_wall_error(error: CreditedTaskWallTimeExceeded) -> dict[str, dict[str, Any] | None]:
+        return commit_terminal_error(
+            Failure(
+                error,
+                str(error),
+                FailureCategory.UNKNOWN,
+                "tracker",
+                "task_wall_deadline",
+                phase,
+                cause_code="credited_task_wall_time_exceeded",
             )
-        except BenchmarkServiceWebSocketDNSResolutionError as resume_error:
-            if task_is_stopped():
-                return {task_id: None}
-            terminal_error = (
-                f"{recovery_message}; WebSocket DNS resolution failed during resume: {_exception_message(resume_error)}"
-            )
-            logger.warning(terminal_error)
-            log_output(f"\n[ERROR] {terminal_error}")
-            return commit_terminal_error(
-                resume_error,
-                terminal_error,
-                producer="benchmark_service",
-                operation="websocket_connect",
-                category=FailureCategory.BENCHMARK_SERVICE,
-                cause_code="websocket_dns_resolution",
-            )
-        except Exception as resume_error:
-            if task_is_stopped():
-                return {task_id: None}
-            terminal_error = f"{recovery_message}; resume failed: {_exception_message(resume_error)}"
-            logger.warning(terminal_error)
-            log_output(f"\n[ERROR] {terminal_error}")
-            return commit_terminal_error(
-                resume_error,
-                terminal_error,
-                producer="benchmark_service",
-                operation="resume_evaluation",
-                category=FailureCategory.BENCHMARK_SERVICE,
-            )
-
-        finished_at = time.perf_counter()
-        evaluation_run_duration = finished_at - (evaluation_start_time or resume_eval_start_time)
-        sandbox_run_duration = finished_at - start_sandbox_run_time if start_sandbox_run_time is not None else None
-        evaluation_result_value = cast(dict[str, Any], evaluation_result)
-        evaluation_result_row = EvaluationResult(
-            org_id=org.id,
-            task=task_row.id,
-            instance_id=sandbox_id_for_recovery,
-            result=evaluation_result_value,
-            agent_caused_exit_reason=exit_reason,
         )
+
+    def commit_resumed_evaluation(
+        evaluation_result_row: EvaluationResult,
+        evaluation_run_duration: float,
+        sandbox_run_duration: float | None,
+    ) -> dict[str, dict[str, Any] | None]:
         with open_task_session() as task_session:
             task_session.add(evaluation_result_row)
             task_in_session = fetch_task_row(task_row.id, task_session, org)
@@ -977,12 +1127,79 @@ async def _process_task_attempt(
                 authority=authority,
             ):
                 return {task_id: None}
+            return {task_id: evaluation_result_row.result}
 
-        return {task_id: evaluation_result_value}
+    def recreate_sandbox(failure: Failure) -> dict[str, dict[str, Any] | None]:
+        """Hand the task back to run_with_sandbox_recovery, which retries it on a fresh sandbox.
+
+        The raised SandboxSetupError carries this attempt's phase and cause code, since the
+        retry row and the final error row (once retries run out) are written outside this function.
+        """
+        exc = failure.exc
+        if not return_queued_task_to_pending():
+            return {task_id: None}
+        log_output(f"\n[ERROR] {_exception_message(exc)}")
+        retry = exc if isinstance(exc, SandboxSetupError) else SandboxSetupError(str(exc))
+        retry.phase = phase
+        retry.cause_code = failure.cause_code
+        if retry is exc:
+            raise retry
+        raise retry from exc
+
+    async def recover_evaluation_stream_failure(error_message: str) -> dict[str, dict[str, Any] | None] | None:
+        """Resume an interrupted evaluation when the service has persisted continuation state."""
+        if evaluation_resume_state is None:
+            return None
+        if task_is_stopped():
+            return {task_id: None}
+
+        recovery_message = f"{error_message}; resuming evaluation from durable benchmark state"
+        logger.warning(recovery_message)
+        log_output(f"\n[WARN] {recovery_message}\n")
+        resume_eval_start_time = time.perf_counter()
+        try:
+            task_logs.last_log_time = time.monotonic()
+            evaluation_result = await resume_evaluation_with_wall(evaluation_resume_state)
+        except CreditedTaskWallTimeExceeded as wall_error:
+            if task_is_stopped():
+                return {task_id: None}
+            return commit_wall_error(wall_error)
+        except Exception as resume_error:
+            if task_is_stopped():
+                return {task_id: None}
+            failure = describe_failure(resume_error, _exception_message(resume_error), phase=phase)
+            if isinstance(resume_error, BenchmarkServiceWebSocketDNSResolutionError):
+                detail = f"WebSocket DNS resolution failed during resume: {_exception_message(resume_error)}"
+            else:
+                failure = replace(failure, producer="benchmark_service", operation="resume_evaluation")
+                detail = f"resume failed: {failure.message}"
+            failure = replace(failure, message=f"{recovery_message}; {detail}")
+            log_output(f"\n[ERROR] {failure.message}")
+            return commit_terminal_error(failure)
+
+        finished_at = time.perf_counter()
+        evaluation_run_duration = finished_at - (evaluation_start_time or resume_eval_start_time)
+        sandbox_run_duration = finished_at - start_sandbox_run_time if start_sandbox_run_time is not None else None
+        evaluation_result_value = cast(dict[str, Any], evaluation_result)
+        evaluation_result_row = EvaluationResult(
+            org_id=org.id,
+            task=task_row.id,
+            instance_id=sandbox_id_for_recovery,
+            result=evaluation_result_value,
+            agent_caused_exit_reason=exit_reason,
+        )
+        return commit_resumed_evaluation(evaluation_result_row, evaluation_run_duration, sandbox_run_duration)
+
+    if task_row.credited_wall_deadline_at is not None:
+        try:
+            require_wall_seconds_remaining(task_row.credited_wall_deadline_at)
+        except CreditedTaskWallTimeExceeded as error:
+            return commit_wall_error(error)
 
     try:
         evaluation_resume_state = task_row.eval_resume_state
         if task_row.status == TaskStatus.EVALUATING and evaluation_resume_state is not None:
+            phase = FailurePhase.EVALUATION
             evaluation_lock = task_evaluation_lock(engine, task_row.id)
             evaluation_lock_acquired = await evaluation_lock.__aenter__()
             if not evaluation_lock_acquired:
@@ -1016,16 +1233,7 @@ async def _process_task_attempt(
                 resume_eval_start_time = time.perf_counter()
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 task_logs.last_log_time = time.monotonic()
-                evaluation_result = await _run_benchmark_service_websocket(
-                    benchmark_service.resume_evaluation(
-                        task_row.task_id,
-                        eval_resume_state=evaluation_resume_state,
-                        on_message=log_output,
-                        on_eval_resume_state=on_eval_resume_state,
-                        dataset=start_benchmark_request.dataset,
-                        sandbox_provider=sandbox_provider_config,
-                    )
-                )
+                evaluation_result = await resume_evaluation_with_wall(evaluation_resume_state)
                 resume_eval_duration = time.perf_counter() - resume_eval_start_time
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
@@ -1035,25 +1243,7 @@ async def _process_task_attempt(
                     agent_caused_exit_reason=None,
                 )
 
-                with open_task_session() as task_session:
-                    task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    if task_in_session.task_breakdown:
-                        existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                        assert existing_breakdown is not None
-                        existing_breakdown.evaluation_run_duration = resume_eval_duration
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.FINISHED,
-                        expected_started_at=attempt_started_at,
-                        expected_status=(TaskStatus.EVALUATING, TaskStatus.ERROR),
-                        authority=authority,
-                    ):
-                        return {task_id: None}
-
-                    return {task_id: evaluation_result_row.result}
+                return commit_resumed_evaluation(evaluation_result_row, resume_eval_duration, None)
             except SandboxNotFoundError:
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
@@ -1084,7 +1274,9 @@ async def _process_task_attempt(
                     return {task_id: None}
                 await asyncio.sleep(_DIRECT_ADMISSION_POLL_SECONDS)
 
-        task_data = await recovery_attempt.retrieve_task()
+        await _acquire_queue_preparation(preparation_stack, queue_context)
+        async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+            task_data = await recovery_attempt.retrieve_task()
         # Generation creates an unrestricted network; Docker cannot replace it between stages.
         unrestricted_docker = sandbox_provider_config.type == "docker"
         run_egress_policy = combine_run_egress_policies(
@@ -1105,6 +1297,8 @@ async def _process_task_attempt(
             )
         if sandbox_provider is None:
             sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
+
+        plan = GenerationPlan.from_task(task_data)
 
         # Labels that show up in the UI we can use to filter sandboxes.
         # Benchmark/Id/Task are read back by sandbox._audit_sandbox_delete.
@@ -1127,11 +1321,18 @@ async def _process_task_attempt(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
+        async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+            resolved_secrets = await resolve_secrets(start_benchmark_request.contract.secrets, runtime.secrets)
+
+        # Ruff cannot trace this binding through the nested sandbox context.
+        deadline_controller: ExternalServiceDeadlineController
+
+        attempt_id = task_attempt_id(task_row.id, attempt_started_at)
         env_vars = {
-            **(await resolve_secrets(start_benchmark_request.contract.secrets, runtime.secrets)),
+            **resolved_secrets,
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
-            "ATTEMPT_ID": task_attempt_id(task_row.id, attempt_started_at),
+            "ATTEMPT_ID": attempt_id,
             **_attested_inference_settings(start_benchmark_request.contract),
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
@@ -1152,66 +1353,126 @@ async def _process_task_attempt(
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
 
+        async def persist_generation_accounting_summary(
+            summary: GenerationAccountingSummary,
+        ) -> None:
+            _persist_generation_accounting_summary(
+                summary,
+                task_breakdown=task_breakdown,
+                task_row_id=task_row.id,
+                org=org,
+                authority=authority,
+                expected_started_at=attempt_started_at,
+                open_task_session=open_task_session,
+            )
+
         start_sandbox_build_time = time.perf_counter()
         object_store = runtime.objects
         creation_state = SandboxCreationState(cleanup_pending=False)
 
         @asynccontextmanager
         async def sandbox_context() -> AsyncGenerator[Sandbox]:
-            nonlocal start_sandbox_build_time, redact_error
+            nonlocal deadline_controller, start_sandbox_build_time, redact_error, phase
             start_sandbox_build_time = time.perf_counter()
             sandbox_name = (
                 task_row.task_id if queue_context is None else queued_sandbox_name(task_row.id, attempt_started_at)
             )
             # Do not mint while the queued attempt waits for admission.
             contract = start_benchmark_request.contract
-            async with task_scoped_gateway_key(
-                env_vars,
-                run_id=str(benchmark_id),
-                task_id=task_row.task_id,
-                attested_model=contract.model if contract.inference_settings_attested else None,
-                companion_models=contract.kwargs.get("companion_models"),
-                identity=identity,
-                org_name=org.name,
-                agent_timeout=task_data.agent_timeout,
-            ) as scoped_env_vars:
+            wall_deadline_at = ensure_wall_deadline()
+            # Enter the key before the wall exits, but revoke it afterward so slow revocation cannot mask the task error.
+            async with AsyncExitStack() as key_stack, enforce_wall_deadline(wall_deadline_at) as wall_timeout:
+                scoped_env_vars = await key_stack.enter_async_context(
+                    task_scoped_gateway_key(
+                        env_vars,
+                        run_id=str(benchmark_id),
+                        task_id=task_row.task_id,
+                        attempt_id=attempt_id,
+                        attested_model=contract.model if contract.inference_settings_attested else None,
+                        companion_models=contract.kwargs.get("companion_models"),
+                        identity=identity,
+                        org_name=org.name,
+                    )
+                )
+                deadline_controller = await _create_generation_deadline_controller(
+                    contract, plan, resolved_secrets, scoped_env_vars
+                )
+                sandbox_env_vars = scoped_env_vars
                 # Mask the values actually supplied to this sandbox, including
                 # its newly minted gateway token. Provider-managed values are
                 # masked inside the sandbox before the optional report returns.
                 redact_error = create_agent_error_redactor(scoped_env_vars[name] for name in contract.secrets)
+                phase = FailurePhase.SANDBOX
                 async with create_sandbox(
                     provider=sandbox_provider,
                     sandbox_name=sandbox_name,
                     source=task_data.source,
                     labels=labels,
-                    env_vars=scoped_env_vars,
+                    env_vars=sandbox_env_vars,
                     sandbox_secrets=task_data.sandbox_secrets,
                     resources=task_data.resources,
                     volumes=task_data.volumes,
                     creation_semaphore=creation_semaphore,
                     creation_state=creation_state,
                     unique_name=queue_context is None,
+                    sandbox_link=SandboxLink(
+                        benchmark_id=benchmark_id,
+                        provider=sandbox_provider_config.type,
+                    ),
                 ) as sandbox:
-                    yield sandbox
+                    try:
+                        yield sandbox
+                    finally:
+                        # The two-hour margin is for teardown; a finished result must not be
+                        # overwritten by cancellation while deleting the sandbox.
+                        if wall_timeout is not None and not wall_timeout.expired():
+                            wall_timeout.reschedule(None)
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
                 sandbox = await sandbox_stack.enter_async_context(sandbox_context())
             else:
-                sandbox = await enter_queued_sandbox(
-                    stack=sandbox_stack,
-                    context=queue_context,
-                    task_row_id=task_row.id,
-                    expected_started_at=attempt_started_at,
-                    authority=authority,
-                    source=task_data.source,
-                    resources=task_data.resources,
-                    creation_state=creation_state,
-                    create=sandbox_context,
-                )
+                async with enforce_wall_deadline(task_row.credited_wall_deadline_at):
+                    sandbox = await enter_queued_sandbox(
+                        stack=sandbox_stack,
+                        context=queue_context,
+                        task_row_id=task_row.id,
+                        expected_started_at=attempt_started_at,
+                        authority=authority,
+                        source=task_data.source,
+                        resources=task_data.resources,
+                        creation_state=creation_state,
+                        create=sandbox_context,
+                        preparation_stack=preparation_stack,
+                    )
                 if sandbox is None:
                     return {task_id: None}
             sandbox_id_for_recovery = sandbox.id
+            phase = FailurePhase.SETUP
+            if start_benchmark_request.contract.final_output is not None:
+                descriptor = ActiveNativeOutput(
+                    attempt_started_at=attempt_started_at,
+                    sandbox_id=sandbox.id,
+                    runtime_source=task_data.source,
+                    # Reconnected providers must read relative output in the agent's cwd.
+                    output_path=str(PurePosixPath(task_data.cwd) / start_benchmark_request.contract.final_output),
+                )
+                try:
+                    with open_task_session() as task_session:
+                        publish_native_output(task_session, task_row.id, descriptor, authority)
+                except ExecutionAuthorityRevoked:
+                    raise
+                except Exception:
+                    logger.exception("Failed to publish native output", extra={"task_id": str(task_row.id)})
+
+                def revoke_native_output() -> None:
+                    try:
+                        with open_task_session() as task_session:
+                            clear_native_output(task_session, task_row.id, descriptor)
+                    except Exception:
+                        logger.exception("Failed to clear native output", extra={"task_id": str(task_row.id)})
+
+                sandbox_stack.callback(revoke_native_output)
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
             start_sandbox_run_time = time.perf_counter()
 
@@ -1292,26 +1553,43 @@ async def _process_task_attempt(
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
-                if start_benchmark_request.contract.final_output:
+                if plan.episode is not None or start_benchmark_request.contract.final_output:
                     agent_output_s3_key = task_artifact_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
                 if not unrestricted_docker:
                     await apply_egress_policy(agent_sandbox, run_egress_policy)
-                exit_reason, agent_run_time = await run_agent(
-                    agent_sandbox,
-                    start_benchmark_request.contract,
-                    task_data.problem_path,
-                    task_id,
-                    log_output,
-                    task_data.cwd,
-                    object_store=object_store,
-                    agent_output_s3_key=agent_output_s3_key,
-                    agent_timeout=task_data.agent_timeout,
-                    benchmark_id=str(benchmark_id),
-                    execution_is_current=execution_is_current,
-                    redact_error=redact_error,
-                    secret_env_names=secret_env_names,
+                agent_attempt_started = True
+                phase = FailurePhase.AGENT
+                generation_gateway_url = (
+                    EXTERNAL_SERVICE_GATEWAY_URL if deadline_controller.snapshot is not None else None  # noqa: F821
                 )
+                try:
+                    exit_reason, agent_run_time = await run_agent(
+                        agent_sandbox,
+                        start_benchmark_request.contract,
+                        task_data.problem_path,
+                        task_id,
+                        log_output,
+                        task_data.cwd,
+                        object_store=object_store,
+                        agent_output_s3_key=agent_output_s3_key,
+                        plan=plan,
+                        benchmark_id=str(benchmark_id),
+                        execution_is_current=execution_is_current,
+                        deadline_controller=deadline_controller,  # noqa: F821
+                        generation_gateway_url=generation_gateway_url,
+                        on_external_service_finalized=persist_generation_accounting_summary,
+                        redact_error=redact_error,
+                        secret_env_names=secret_env_names,
+                    )
+                except AgentRunFailedError as agent_error:
+                    gateway_url = generation_gateway_url or resolved_secrets.get("MODEL_GATEWAY_URL")
+                    gateway_host = urlsplit(gateway_url).hostname if gateway_url else None
+                    if gateway_host and not await sandbox_resolves(agent_sandbox, gateway_host):
+                        raise SandboxDNSResolutionError(
+                            f"Sandbox could not resolve the model gateway {gateway_host} after the agent failed"
+                        ) from agent_error
+                    raise
                 logger.info(
                     "agent.run.complete",
                     extra={
@@ -1324,10 +1602,9 @@ async def _process_task_attempt(
                 )
 
                 task_breakdown.agent_run_duration = agent_run_time
+                phase = FailurePhase.EVALUATION
                 with Session(bind=engine) as task_session:
                     task_session.add(task_breakdown)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    task_in_session.task_breakdown = task_breakdown.id
                     if not commit_task_status_transition(
                         task_row.id,
                         task_session,
@@ -1361,6 +1638,7 @@ async def _process_task_attempt(
                         sandbox.id,
                         on_message=log_output,
                         on_eval_resume_state=on_eval_resume_state,
+                        on_sandbox_created=on_sandbox_created,
                         dataset=start_benchmark_request.dataset,
                         sandbox_provider=sandbox_provider_config,
                     )
@@ -1411,17 +1689,42 @@ async def _process_task_attempt(
 
                 raise
 
+    except GenerationTerminationUnconfirmedError as e:
+        if task_is_stopped():
+            return {task_id: None}
+        error_message = _exception_message(e)
+        log_output(f"\n[ERROR] {error_message}")
+
+        failure = replace(
+            describe_failure(e, error_message, phase=phase),
+            producer="tracker",
+            operation="generation_termination",
+            category=FailureCategory.INFRASTRUCTURE,
+            cause_code="deadline_expired_termination_unconfirmed",
+        )
+        return commit_terminal_error(failure)
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
+        if agent_attempt_started:
+            error_message = _exception_message(e)
+            log_output(f"\n[ERROR] {error_message}")
+            failure = replace(
+                describe_failure(e, error_message, phase=phase),
+                producer="sandbox_provider",
+                operation="sandbox_recovery",
+                category=FailureCategory.INFRASTRUCTURE,
+            )
+            return commit_terminal_error(failure)
         if not return_queued_task_to_pending():
             return {task_id: None}
+        e.phase = phase
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except SandboxNotFoundError as e:
         if task_is_stopped():
             return {task_id: None}
-        if recovery_attempt.sandbox_loss_retry_available:
+        if recovery_attempt.sandbox_loss_retry_available and not agent_attempt_started:
             message = (
                 "Sandbox disappeared; restoring the task from its durable volume "
                 f"(attempt {recovery_attempt.number + 1}/{recovery_attempt.max_attempts})"
@@ -1430,163 +1733,43 @@ async def _process_task_attempt(
             log_output(f"\n[WARNING] {message}\n")
             raise
 
-        error_message = _exception_message(e)
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
+        failure = replace(
+            describe_failure(e, _exception_message(e), phase=phase),
             producer="sandbox_provider",
             operation="sandbox_recovery",
             category=FailureCategory.INFRASTRUCTURE,
         )
-    except OutputArtifactError as e:
+        log_output(f"\n[ERROR] {failure.message}")
+        return commit_terminal_error(failure)
+    except CreditedTaskWallTimeExceeded as wall_error:
         if task_is_stopped():
             return {task_id: None}
-        error_message = _exception_message(e)
-        logger.warning(error_message)
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="output_artifact",
-            operation="upload_output_artifacts",
-            category=FailureCategory.INFRASTRUCTURE,
-        )
-    except BenchmarkServiceWebSocketDNSResolutionError as e:
-        if task_is_stopped():
-            return {task_id: None}
-        error_message = f"Benchmark service WebSocket connection failed during DNS resolution: {_exception_message(e)}"
-        logger.warning(error_message)
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="benchmark_service",
-            operation="websocket_connect",
-            category=FailureCategory.BENCHMARK_SERVICE,
-            cause_code="websocket_dns_resolution",
-        )
-    except ConnectionClosedError as e:
-        if task_is_stopped():
-            return {task_id: None}
-        seconds = int(time.monotonic() - task_logs.last_log_time)
-        error_message = (
-            f"Benchmark service WebSocket disconnected: {_exception_message(e)}; "
-            f"last application message received {seconds}s ago"
-        )
-        recovered = await recover_evaluation_stream_failure(error_message)
-        if recovered is not None:
-            return recovered
-        logger.warning(error_message)
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="benchmark_service",
-            operation="websocket",
-            category=FailureCategory.BENCHMARK_SERVICE,
-            cause_code="websocket_connection_closed",
-        )
-    except BenchmarkServiceStreamError as e:
-        if task_is_stopped():
-            return {task_id: None}
-        error_message = f"Benchmark service WebSocket stream failed: {_exception_message(e)}"
-        recovered = await recover_evaluation_stream_failure(error_message)
-        if recovered is not None:
-            return recovered
-        logger.warning(error_message)
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="benchmark_service",
-            operation="websocket",
-            category=FailureCategory.BENCHMARK_SERVICE,
-            cause_code="websocket_connection_closed",
-        )
-    except ValidationError as e:
-        if task_is_stopped():
-            return {task_id: None}
-        # str(ValidationError) embeds the rejected input values, so only locations and error types are kept.
-        field_errors = ", ".join(
-            f"{'.'.join(str(loc) for loc in err['loc'])} ({err['type']})"
-            for err in e.errors(include_url=False, include_context=False, include_input=False)
-        )
-        error_message = (
-            "Benchmark service returned an incompatible task response. "
-            f"Missing or invalid fields: ValidationError: {field_errors}"
-        )
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="benchmark_service",
-            operation="decode_task_response",
-            category=FailureCategory.BENCHMARK_SERVICE,
-            cause_code="incompatible_response",
-        )
-    except InvalidStatus as e:
-        if task_is_stopped():
-            return {task_id: None}
-        error_message = (
-            f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code}): "
-            f"{_exception_message(e)}"
-        )
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="benchmark_service",
-            operation="websocket_connect",
-            category=FailureCategory.BENCHMARK_SERVICE,
-            cause_code="websocket_http_rejected",
-        )
-    except BenchmarkServiceError as e:
-        if task_is_stopped():
-            return {task_id: None}
-        error_message = _exception_message(e)
-        # This is necessary because Daytona routes tasks to bad nodes. We should
-        # remove this when Daytona fixes their infrastructure.
-        if any(signature in error_message for signature in _DOCKER_NOT_READY_SIGNATURES):
-            if not return_queued_task_to_pending():
-                return {task_id: None}
-            log_output(f"\n[ERROR] {error_message}")
-            raise SandboxSetupError(str(e)) from e
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="benchmark_service",
-            operation="request",
-            category=FailureCategory.BENCHMARK_SERVICE,
-        )
+        log_output(f"\n[ERROR] {wall_error}")
+        return commit_wall_error(wall_error)
     except Exception as e:
         if task_is_stopped():
             return {task_id: None}
-        logfire.exception("process_task failed")
-        error_message = _exception_message(e)
-
-        # include the error message
-        log_output(f"\n[ERROR] {error_message}")
-
-        return commit_terminal_error(
-            e,
-            error_message,
-            producer="tracker",
-            operation="process_task",
-            category=classify_failure(e),
+        failure = describe_failure(
+            e, _exception_message(e), phase=phase, idle_seconds=int(time.monotonic() - task_logs.last_log_time)
         )
+        disposition = decide(failure)
+        if disposition is Disposition.RECREATE_SANDBOX:
+            return recreate_sandbox(failure)
+        if disposition is Disposition.RESUME_EVALUATION:
+            recovered = await recover_evaluation_stream_failure(failure.message)
+            if recovered is not None:
+                return recovered
+        if failure.category is FailureCategory.UNKNOWN:
+            logfire.exception("process_task failed")
+        log_output(f"\n[ERROR] {failure.message}")
+        return commit_terminal_error(failure)
     finally:
-        if evaluation_lock is not None:
-            await evaluation_lock.__aexit__(None, None, None)
+        try:
+            await drain_sandbox_writes()
+        finally:
+            await preparation_stack.aclose()
+            if evaluation_lock is not None:
+                await evaluation_lock.__aexit__(None, None, None)
 
 
 def commit_task_error(
@@ -1600,6 +1783,8 @@ def commit_task_error(
     category: FailureCategory,
     authority: ExecutionAuthority,
     cause_code: str | None = None,
+    phase: FailurePhase | None = None,
+    transient: bool | None = None,
     expected_started_at: datetime | None = None,
     expected_status: TaskStatus | None = None,
 ) -> bool:
@@ -1613,6 +1798,8 @@ def commit_task_error(
             error_type=error_type,
             cause_code=cause_code,
             category=category,
+            phase=phase,
+            transient=transient,
         )
     )
     return _commit_task_status(

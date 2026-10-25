@@ -1,11 +1,39 @@
 [
   {
     "source": "/introduction",
-    "destination": "/get-started/overview"
+    "destination": "/introduction/what-is-valkyrie"
+  },
+  {
+    "source": "/get-started/overview",
+    "destination": "/introduction/what-is-valkyrie"
+  },
+  {
+    "source": "/get-started/hosting",
+    "destination": "/introduction/what-is-valkyrie"
   },
   {
     "source": "/self-hosting/infrastructure",
-    "destination": "/get-started/hosting"
+    "destination": "/introduction/what-is-valkyrie"
+  },
+  {
+    "source": "/sdk/errors",
+    "destination": "/sdk/quickstart"
+  },
+  {
+    "source": "/contributing/local-development",
+    "destination": "/self-hosting/local-tracker"
+  },
+  {
+    "source": "/contributing/tracker-service",
+    "destination": "/self-hosting/local-tracker"
+  },
+  {
+    "source": "/contributing/database",
+    "destination": "/self-hosting/local-tracker"
+  },
+  {
+    "source": "/self-hosting/aws-permissions",
+    "destination": "/self-hosting/local-tracker"
   },
   {
     "source": "/reference/cli/config/provider/set",
@@ -100,6 +128,10 @@
     "destination": "/reference/cli/run#results"
   },
   {
+    "source": "/reference/cli/run/retag",
+    "destination": "/reference/cli/run#retag"
+  },
+  {
     "source": "/reference/cli/run/resume",
     "destination": "/reference/cli/run#resume"
   },
@@ -178,6 +210,22 @@
   {
     "source": "/reference/cli/queue/status",
     "destination": "/reference/cli/queue#status"
+  },
+  {
+    "source": "/reference/cli/project/create",
+    "destination": "/reference/cli/project#create"
+  },
+  {
+    "source": "/reference/cli/project/list",
+    "destination": "/reference/cli/project#list"
+  },
+  {
+    "source": "/reference/cli/project/update",
+    "destination": "/reference/cli/project#update"
+  },
+  {
+    "source": "/reference/cli/project/delete",
+    "destination": "/reference/cli/project#delete"
   },
   {
     "source": "/reference/cli/secret/set",
@@ -320,6 +368,10 @@
     "destination": "/reference/sdk/runs#update-concurrency"
   },
   {
+    "source": "/reference/sdk/runs/retag",
+    "destination": "/reference/sdk/runs#retag"
+  },
+  {
     "source": "/reference/sdk/runs/shed",
     "destination": "/reference/sdk/runs#shed"
   },
@@ -434,6 +486,22 @@
   {
     "source": "/reference/sdk/secrets/remove",
     "destination": "/reference/sdk/secrets#remove"
+  },
+  {
+    "source": "/reference/sdk/projects/create",
+    "destination": "/reference/sdk/projects#create"
+  },
+  {
+    "source": "/reference/sdk/projects/list",
+    "destination": "/reference/sdk/projects#list"
+  },
+  {
+    "source": "/reference/sdk/projects/update",
+    "destination": "/reference/sdk/projects#update"
+  },
+  {
+    "source": "/reference/sdk/projects/delete",
+    "destination": "/reference/sdk/projects#delete"
   },
   {
     "source": "/reference/sdk/providers/list",
@@ -580,6 +648,18 @@
     "destination": "/reference/sdk/models/agents#parameter"
   },
   {
+    "source": "/reference/sdk/models/projects/project-create-request",
+    "destination": "/reference/sdk/models/projects#project-create-request"
+  },
+  {
+    "source": "/reference/sdk/models/projects/project-response",
+    "destination": "/reference/sdk/models/projects#project-response"
+  },
+  {
+    "source": "/reference/sdk/models/projects/projects-response",
+    "destination": "/reference/sdk/models/projects#projects-response"
+  },
+  {
     "source": "/reference/sdk/models/runs/retry-mode",
     "destination": "/reference/sdk/models/runs#retry-mode"
   },
@@ -670,6 +750,10 @@
   {
     "source": "/reference/sdk/models/runs/shed-benchmark-response",
     "destination": "/reference/sdk/models/runs#shed-benchmark-response"
+  },
+  {
+    "source": "/reference/sdk/models/projects/spend-type",
+    "destination": "/reference/sdk/models/projects#spend-type"
   },
   {
     "source": "/reference/sdk/models/runs/start-benchmark-response",

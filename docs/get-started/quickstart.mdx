@@ -1,15 +1,17 @@
 ---
-title: Quickstart
-description: Install Valkyrie, sign in, and start a benchmark run.
+title: "Quickstart"
+description: "Install the CLI, connect Daytona, and run a test agent on one SWE-bench task."
 ---
 
-## Prerequisites
+In this tutorial you run a small test agent on one SWE-bench task with Vals AI's hosted
+Valkyrie, and read the result. The test agent reads the task and changes nothing, so the
+run scores 0. That's expected: the goal is to see each step of a run work.
 
-- Python 3.12
-- [uv](https://docs.astral.sh/uv/) and Git, used by the install command below
-- A [sandbox-provider secret and mapping](/get-started/sandbox-providers), saved with `valkyrie secret set` and `valkyrie provider set` after you sign in
-- A Vals account, requested at [contact@vals.ai](mailto:contact@vals.ai)
-- For self-hosting, server IAM with the [required permissions](/self-hosting/aws-permissions) and an artifact bucket. [Hosted execution](/get-started/hosting#hosted-mode) uses deployment-configured resources.
+You need:
+
+- Python 3.12, [uv](https://docs.astral.sh/uv/), and Git.
+- A Vals AI account. To get one, send an email to [contact@vals.ai](mailto:contact@vals.ai).
+- A [Daytona](https://app.daytona.io) account, where your tasks' sandboxes run.
 
 ## Install the CLI
 
@@ -17,7 +19,8 @@ description: Install Valkyrie, sign in, and start a benchmark run.
 uv tool install git+https://github.com/vals-ai/Valkyrie@prod
 ```
 
-Both `valkyrie` and `valk` invoke the same CLI.
+This installs the Valkyrie CLI as `valkyrie`, with the short alias `valk`. To check it,
+run `valkyrie --help`, which lists the commands.
 
 ## Sign in
 
@@ -25,29 +28,102 @@ Both `valkyrie` and `valk` invoke the same CLI.
 valkyrie login
 ```
 
-This opens your browser to sign in with your Vals account. To use your own Tracker instead, see [Choose a hosting mode](/get-started/hosting).
+The CLI prints a link and a code, and your browser opens the link. Confirm the code and
+sign in. The output ends with your account and your organization, similar to the following:
 
-## Upload an agent
-
-Push a local agent directory that contains a valid `contract.yaml`:
-
-```bash
-valkyrie agent push ./agents/sweagent --name sweagent
+```text
+Logged in to https://benchmark-tracker.vals.ai as you@example.com.
+* acme
 ```
 
-See [Agent contract](/agents/agent-contract) to create a compatible agent.
+If the CLI says that you aren't in an organization yet, ask Vals AI to add you, and then
+run `valkyrie login` again.
 
-## Start your first run
+## Connect Daytona
 
-```bash
-valkyrie run start --agent sweagent --benchmark swebench --connect
+[Create a Daytona API key](https://app.daytona.io/dashboard/keys) with access to sandboxes
+and snapshots. Save it in a file named `daytona.json`:
+
+```json daytona.json
+{
+  "DAYTONA_API_KEY": "API_KEY",
+  "DAYTONA_API_URL": "https://app.daytona.io/api",
+  "DAYTONA_TARGET": "us"
+}
 ```
 
-`--connect` streams progress until the run finishes, so you can watch the first run end to end. The command prints the run id; use it with any other `run` command. Add `--model` when the agent contract requires one.
+Replace *`API_KEY`* with your Daytona API key. Then store the file as a secret of your
+organization:
+
+```bash
+valkyrie secret set daytona < daytona.json
+```
+
+The output is similar to the following:
+
+```text
+✓ Secret 'daytona' saved.
+Use this reference as the secret name: daytona
+```
+
+Point the `daytona` provider at that secret, using the reference that the output showed:
+
+```bash
+valkyrie provider set daytona daytona
+```
+
+The CLI confirms with `Provider daytona now uses the secret daytona.`
+
+## Create a test agent
+
+An agent is a directory with a `contract.yaml` that says how to run it. Create one whose
+agent prints the task's problem statement and does nothing else:
+
+```bash
+mkdir hello-agent
+
+cat > hello-agent/contract.yaml << 'EOF'
+name: hello-agent
+install_cmd: ""
+run_cmd: cat "{problem_statement_path}"
+EOF
+```
+
+## Upload the agent
+
+```bash
+valkyrie agent push ./hello-agent
+```
+
+The CLI confirms with `✓ Agent 'hello-agent' pushed successfully!` The agent is now in
+your organization's library as `hello-agent`.
+
+## Run one task
+
+```bash
+valkyrie project create my-project --name "My Project" --spend-type development --subcategory new_benchmark_generation
+valkyrie run start --agent hello-agent --benchmark swebench --slice 0:1 --connect --project my-project
+```
+
+Valkyrie creates a sandbox in your Daytona account, sets up the first SWE-bench task in it,
+runs the agent, and grades the result. The output starts with a summary of the benchmark
+and the agent, followed by a **Run ID** line. Notice the progress updates that follow: they
+stream until the run finishes, after a few minutes.
+
+## Read the result
+
+```bash
+valkyrie run results RUN_ID
+```
+
+Replace *`RUN_ID`* with the ID from the **Run ID** line. The CLI confirms with
+`Results saved to 'results-RUN_ID.json'`. In that file, `final_evaluation.final_score` is
+`0.0`, because the test agent didn't fix the task.
+
+You've run an agent on a benchmark task, from sandbox to score.
 
 ## Next steps
 
-- [Start a run](/runs/start) for run scope, secrets, and repeated runs
-- [Monitor runs](/runs/monitor) for streaming, status, and history
-- [Results and outputs](/runs/results-and-outputs) for scores and agent files
-- [`valkyrie run start` reference](/reference/cli/run#start) for every option and default
+- [Package an agent](/agents/package-an-agent) to run your own agent
+- [Start a run](/runs/start) on a whole dataset, with your model and concurrency
+- [Monitor runs](/runs/monitor) to follow progress and find failed tasks

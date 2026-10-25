@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import shlex
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -201,7 +202,7 @@ def _usage(command: CLICommandReference) -> str:
 def _format_example(command: CLICommandReference, example: str) -> str:
     comments = [line for line in example.splitlines() if line.startswith("#")]
     command_line = next((line for line in example.splitlines() if line and not line.startswith("#")), "")
-    tokens, prefix_length = command_line.split(), 1 + len(command.path)
+    tokens, prefix_length = shlex.split(command_line, posix=False), 1 + len(command.path)
     if len(tokens) <= prefix_length:
         return example
     options = {

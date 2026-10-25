@@ -9,7 +9,7 @@ on:
       - ".github/workflows/deploy.yaml"
       - "infra/executor_stack.py"
       - "infra/tracker_stack.py"
-      - "services/executor_artifact/**"
+      - "infra/executor_release/image.sh"
       - "services/tracker/**"
       - "tests/integration/observability/**"
   # Runs on every PR so the required check is always reported; the guard below
@@ -43,7 +43,7 @@ jobs:
             echo "Could not compute the PR diff; running the build to be safe."
             echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if printf '%s\n' "$changed" | grep -qE '^(\.dockerignore|\.github/workflows/(executor-build|deploy)\.yaml|infra/(executor_stack|tracker_stack)\.py|services/(executor_artifact|tracker)/|tests/integration/observability/)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(\.dockerignore|\.github/workflows/(executor-build|deploy)\.yaml|infra/((executor_stack|tracker_stack)\.py|executor_release/image\.sh)|services/tracker/|tests/integration/observability/)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "No executor-related changes; skipping build."
@@ -63,13 +63,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: |
             uv.lock
-            services/executor_artifact/uv.lock
             services/tracker/uv.lock
 
       - name: Verify locked service dependencies
         if: steps.rel.outputs.relevant == 'true'
         run: |
-          uv lock --project services/executor_artifact --check
           uv lock --project services/tracker --check
       - name: Install executor test dependencies
         if: steps.rel.outputs.relevant == 'true'
@@ -77,22 +75,8 @@ jobs:
 
       - name: Run executor support tests
         if: steps.rel.outputs.relevant == 'true'
-        run: uv run pytest services/tracker/tests/unit/executor tests/integration/observability services/executor_artifact/tests
+        run: uv run pytest services/tracker/tests/unit/executor tests/integration/observability
 
-      - name: Build and inspect immutable executor PEX
+      - name: Build ARM64 executor image
         if: steps.rel.outputs.relevant == 'true'
-        run: |
-          PYTHONPATH=services/tracker/src python services/executor_artifact/build.py \
-            --output-directory "$RUNNER_TEMP/executor-release" \
-            --source-revision "$GITHUB_SHA"
-          test -s "$RUNNER_TEMP/executor-release/executor.pex"
-          python -m json.tool "$RUNNER_TEMP/executor-release/manifest.json" >/dev/null
-
-      - name: Build ARM64 Tracker image
-        if: steps.rel.outputs.relevant == 'true'
-        run: docker build --platform linux/arm64 -t valkyrie-tracker:ci services/tracker
-
-      - name: Verify tracker image architecture
-        if: steps.rel.outputs.relevant == 'true'
-        run: |
-          test "$(docker image inspect valkyrie-tracker:ci --format '{{.Architecture}}')" = "arm64"
+        run: make -C services/tracker executor-image EXECUTOR_IMAGE=valkyrie-executor:ci

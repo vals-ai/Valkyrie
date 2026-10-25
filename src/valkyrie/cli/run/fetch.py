@@ -6,6 +6,7 @@ from valkyrie.sdk import ValkyrieClient
 from valkyrie.cli.client import call
 from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
+from valkyrie.cli.project import describe_run_spend
 
 
 @click.command(
@@ -44,11 +45,12 @@ def fetch(run_id: UUID, connect: bool, output_format: str):
             await stream_benchmark_status(client, run_id, output_format="jsonl")
         elif connect:
             await stream_benchmark_status(client, run_id, show_identity=True)
-        elif output_format == "json":
+        else:
             response = await client.runs.fetch(run_id)
             metadata = await fetch_run_metadata(client, run_id)
-            click.echo(format_run_snapshot_json(response, metadata, event="snapshot"))
-        else:
-            format_benchmark_status(await client.runs.fetch(run_id))
+            if output_format == "json":
+                click.echo(format_run_snapshot_json(response, metadata, event="snapshot"))
+            else:
+                format_benchmark_status(response, describe_run_spend(metadata))
 
     call(show)

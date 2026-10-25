@@ -1,383 +1,176 @@
 ---
-title: Agent contract
-description: Define how Valkyrie installs, configures, and runs an agent.
+title: "Agent contract reference"
+sidebarTitle: "Contract reference"
+description: "Every contract.yaml field, its placeholders, and the limits Valkyrie applies to agents."
 ---
 
-An agent contract defines how Valkyrie installs and runs an agent in a sandbox. Valkyrie handles bundling, deployment, and evaluation; the contract supplies the setup and execution commands.
+`contract.yaml` sits at the top of an agent's directory. To write one step by step, see
+[Package an agent](/agents/package-an-agent).
 
-If your agent does not expose a command-line interface, see [Create a CLI](#creating-a-cli).
+## Fields
 
-## Complete contract template
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | The agent's name in your library, unless you upload it with `--name`. Letters, digits, `.`, `_`, and `-`. |
+| `install_cmd` | yes | Shell command that [installs the agent](#install-cmd). `""` skips installation. |
+| `run_cmd` | yes | Shell command that runs the agent on one task. Must contain [`{problem_statement_path}`](#placeholders). |
+| `final_output` | no | Absolute path of the file or directory to [keep after the run](#output-files). |
+| `output_artifacts` | no | Up to 10 more files to [keep individually](#output-files). |
+| `secrets` | no | Environment variables to fill from [organization secrets](#secrets). |
+| `defaults` | no | The `model` [parameter](#parameters), which `--model` sets. |
+| `kwargs` | no | Other [parameters](#parameters), which `-k` sets. |
+| `install_egress` | no | [Network access](#install-egress) while installing. |
+| `turns` | no | Commands for [benchmarks that run the agent several times](#turns). |
+| `ingest_lambda` | no | The Lambda that [`valkyrie run analyze`](/integrations/docent) sends the run to. |
+| `provided` | no | Notes for people reading the contract. Valkyrie ignores it. |
 
-Copy this template as a starting point for your own agent.
+Valkyrie ignores keys it doesn't recognize, so a misspelled field has no effect.
 
-```yaml
-name: my_agent
+## Order of a task
 
-install_cmd: "bash setup.sh"
+For each task, Valkyrie:
 
-# CLI is required to run the agent, you may need to make a python file, install it as a package, import it
-# inside, and wrap it in a CLI to accept arguments
-run_cmd: >-
-  my_agent --task {problem_statement_path}
-  --model {model}
-  --temperature {temperature}
+1. Copies the agent directory into the sandbox at `/bundle/AGENT_NAME/`, where *`AGENT_NAME`* is the
+   agent's name in your library.
+2. Runs `install_cmd` from that directory, before or after the benchmark sets the task up,
+   as the benchmark chooses.
+3. Runs `run_cmd` from the benchmark's working directory, with placeholders filled in and
+   secrets set as environment variables.
+4. Saves `final_output` and `output_artifacts`, even when the agent fails.
+5. Has the benchmark grade the sandbox.
 
-final_output: /logs/my_agent
+## The `install_cmd` field {#install-cmd}
 
-output_artifacts:
-  - artifacts/summary.json
-  - artifacts/turns.jsonl
+- Runs with `sh -c` in `/bundle/AGENT_NAME/`, with a 10-minute limit.
+- A failed installation is tried up to three more times, then once more in a new sandbox,
+  before the task fails.
+- Uploading leaves out `.git`, `.venv`, `venv`, and `__pycache__` directories, and every file
+  whose name contains `.env`, `.git`, `venv`, `.pyc`, `.pyo`, `.pyd`, `.so`, `.dll`,
+  `.dylib`, `.egg-info`, or `.DS_Store`. Symbolic links are refused.
 
-install_egress:
-  - https://pypi.org
-  - https://files.pythonhosted.org
+## Placeholders
 
+Valkyrie fills these in `run_cmd`:
+
+| Placeholder | Value |
+| --- | --- |
+| `{problem_statement_path}` | Path of the file holding the task's problem statement. Required. |
+| `{task_id}` | The task's ID, such as `astropy__astropy-12907`. |
+| `{model}` and other parameter names | The parameter's value |
+| `{slot_dir}`, `{container_name}` | See [`turns`](#turns). |
+
+Values go in as they are, without shell quoting, so quote any that can contain spaces. A
+placeholder with no value, such as a parameter with no default that the run didn't set,
+stays in the command as written.
+
+## Parameters
+
+Parameters are values a run passes to the agent. `--model` sets the `model` parameter,
+declared under `defaults`. `-k NAME VALUE` sets parameters declared under `kwargs`.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `type` | yes | `str`, `int`, `float`, `bool`, or `dict` |
+| `required` | yes | Whether every run must set it |
+| `default` | no | The value when a run doesn't set it |
+| `description` | no | What it's for |
+| `choices` | no | The only values a run can pass, as strings |
+
+- A run that leaves out a required parameter fails to start, naming the parameter.
+- `-k` with a name the contract doesn't declare is ignored.
+- A `dict` parameter can't be set with `-k`, so give it a `default`.
+
+## Secrets
+
+`secrets` maps each environment variable to a secret reference that `valkyrie secret set`
+printed:
+
+```yaml contract.yaml
 secrets:
-  ANTHROPIC_API_KEY: AnthropicApiKey
-
-# Documentation only. These placeholders are always available and
-# substituted at runtime, changes will not be parsed
-provided:
-  task_id:
-    type: str
-    required: false
-    description: "Normally human readable id associated with a task inside of a benchmark, e.g., fib_buzz_123"
-  problem_statement_path:
-    type: str
-    required: true
-    description: "Path to the problem statement file"
-
-# Pre-defined parameters. The --model CLI flag is automatically
-# mapped here. Use `required: true` to enforce that users pass --model.
-# If choices is removed the model can be any string passed in
-defaults:
-  model:
-    type: str
-    required: false
-    description: "Model key (e.g. openai/gpt-4o)"
-    choices:
-      - openai/gpt-4o
-      - anthropic/claude-sonnet-4-20250514
-
-# Custom parameters passed via -k on the CLI.
-# Defaults are applied when the user doesn't provide a value.
-kwargs:
-  temperature:
-    type: float
-    required: false
-    default: 0.7
-    description: "Sampling temperature"
+  ANTHROPIC_API_KEY: anthropic-api-key
 ```
 
-```bash
-# Run with required model and default temperature (0.7)
-valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+- Valkyrie reads each secret when it creates the task's sandbox. Secret values are never
+  saved with the run.
+- `-s ENV_VAR SECRET` on `valkyrie run start` adds or replaces a mapping for that run.
+- When a secret's value is a JSON object, each variable gets the key with its own name, so
+  one secret can hold several keys.
 
-# Override the default temperature
-valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench -k temperature 1.0
+## The `install_egress` field {#install-egress}
+
+What the agent can reach while it installs:
+
+| Value | Effect |
+| --- | --- |
+| `"*"` | Allows all outbound traffic. This is the default. |
+| `[]` | Blocks all outbound traffic. |
+| A list | Allows only those hostnames, URLs, IPv4 addresses, and CIDR ranges. |
+
+- IPv6 addresses aren't supported. On Daytona, one list can't mix hostnames with CIDR
+  ranges.
+- The benchmark sets what the agent can reach while it runs, and what setup and grading
+  can reach.
+- `egress_allowlist`, an earlier field that some contracts still set, adds hosts to the
+  benchmark's run allowlist, or becomes the run allowlist when the benchmark sets none.
+- Hosts behind a shared content delivery network (CDN) can make an allowlist broader than the names in it.
+
+## Output files
+
+`final_output` is saved as `agent_output.tar.gz` in the task's folder, if the path exists
+when the agent finishes. While the task is active, its files can also be read live from the
+sandbox, including any written during grading, so don't treat the path as private.
+
+`output_artifacts` entries take one of two forms:
+
+| Form | Example | Reads from |
+| --- | --- | --- |
+| A path | `artifacts/summary.json` | `/tmp/valkyrie/artifacts/summary.json` |
+| An object | `{path: artifacts/result.json, source: /logs/{task_id}/result.json}` | `source` |
+
+- `source` is an absolute path. It can include `{task_id}` and a glob under a directory,
+  such as `/logs/*.json`. A glob saves its first match in sorted order.
+- Every entry is required unless it sets `required: false`. A required artifact that is
+  missing or can't be saved fails the task. An optional one is skipped and logged.
+- A task can declare at most 10 artifacts, of at most 250 MiB each and 250 MiB together.
+- Entries are saved under `benchmarks/RUN_ID/TASK_ID/` at their `path`, where *`RUN_ID`* and
+  *`TASK_ID`* are the run's and task's IDs.
+
+## Error reports
+
+When `run_cmd` exits with a nonzero code, the task fails with
+`Agent command failed with exit code N`. A line written to the file named by
+`VALKYRIE_ERROR_PATH` is added to that error.
+
+- Write one line in the form `Type: message`, such as `AgentError: model returned no patch`.
+- A report longer than 2048 bytes is dropped.
+- Valkyrie replaces the values of the contract's secrets with `[REDACTED]`. It can't
+  recognize other sensitive data, so don't write prompts or model output.
+- Exit code 137, when the operating system stops the agent, isn't an agent failure. The
+  benchmark still grades the task.
+
+The time an agent can spend on a task is set by the benchmark. See
+[Task time limits](/runs/time-limits).
+
+## The `turns` field {#turns}
+
+Some benchmarks start the agent more than once per task, for example to continue a
+conversation, and can run several copies, called slots, side by side. Other benchmarks
+ignore `turns`.
+
+```yaml contract.yaml
+run_cmd: agent --input "{problem_statement_path}" --home "{slot_dir}"
+turns:
+  continue_cmd: agent resume --input "{problem_statement_path}" --home "{slot_dir}"
+  interrupt_grace_seconds: 90
 ```
 
-## Contract definition
-
-Create a `contract.yaml` file in your agent directory:
-
-```yaml
-name: my_agent
-install_cmd: "bash setup.sh"
-run_cmd: "my_agent --task {problem_statement_path}"
-final_output: /logs/my_agent
-secrets:
-  API_KEY: myAwsSecretName
-```
-
-## Required fields
-
-### `name: str`
-
-The name of your agent contract.
-
-```yaml
-name: my_agent
-```
-
-### `install_cmd: str`
-
-Command to install the agent and its dependencies. Runs once during sandbox setup with the working directory set to `/bundle/<agent_name>/`.
-
-```yaml
-install_cmd: "bash setup.sh"
-```
-
-### `run_cmd: str`
-
-Shell command to run the agent on a task. Must contain the `{problem_statement_path}` placeholder. Placeholders are substituted at runtime:
-
-| Placeholder                | Substituted with                                                 |
-| -------------------------- | ---------------------------------------------------------------- |
-| `{problem_statement_path}` | Path to the problem statement file in the sandbox **(required)** |
-| `{task_id}`                | The task identifier (e.g. `astropy__astropy-12907`)              |
-
-```yaml
-run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
-```
-
-For ordinary nonzero `run_cmd` exits, the task error records the exit code. Reserved timeout (124) and killed-process (137) exits keep their existing outcomes. To surface the original error, write a short `Type: message` to the file at `$VALKYRIE_ERROR_PATH` before exiting. Tracker does not automatically copy agent stdout/stderr into the error.
-
-The optional report must be at most 2048 bytes and contain a printable exception summary, for example `ValueError: model returned no patch`. Tracker normalizes whitespace and rejects malformed or oversized input reports. It replaces literal secret values resolved from the contract's `secrets` with `[REDACTED]` before storing the summary. If masking expands an accepted report beyond 2048 bytes, Tracker shortens the already-masked summary at a complete UTF-8 character boundary.
-
-For provider-managed `sandbox_secrets`, a Python 3 reader first masks each declared environment value inside the sandbox. It shortens expanded reports only after masking, at a complete UTF-8 character boundary. Only the masked report returns to Tracker for ordinary contract-secret masking. With Daytona, these environment values are opaque placeholders, not the underlying secret material. If Python 3 or a declared value is unavailable, Tracker omits the optional report. The exit code and failure category remain available.
-
-Masking uses the secret values actually passed to the sandbox, including a task-scoped Model Gateway token when one replaces the configured key. This literal masking does not protect arbitrary customer data, transformed secrets, or secrets acquired by the agent itself. Write an exception summary rather than prompts, credentials, or model/tool output. Valid reports are persisted in task errors and can appear in logs and error monitoring.
-
-```bash
-my_agent --task "{problem_statement_path}" || { echo "AgentError: model returned no patch" > "$VALKYRIE_ERROR_PATH"; exit 1; }
-```
-
-## Optional fields
-
-### `final_output: path`
-
-Absolute path to the final output to collect. The artifact found here will be copied into the corresponding S3 bucket at `benchmark/benchmark_id/task_id/`. Can be a directory or a file (copied as a tar).
-
-```yaml
-final_output: /logs/my_agent
-```
-
-### `output_artifacts: list`
-
-Small files to upload directly from the sandbox into the task's S3 folder without adding them to `agent_output.tar.gz`. Use this for parser/evaluation inputs that need cheap direct reads.
-
-String entries are shorthand: tracker reads `/tmp/valkyrie/<path>` and uploads to `<path>`.
-
-Producers can write files under `/tmp/valkyrie`:
-
-```yaml
-output_artifacts:
-  - artifacts/summary.json
-  - artifacts/turns.jsonl
-```
-
-Object entries specify an explicit sandbox source and upload destination. Sources may include `{task_id}` and shell-style glob patterns resolved inside the sandbox:
-
-```yaml
-output_artifacts:
-  - path: artifacts/config.json
-    source: /logs/{task_id}/turns/init/config.json
-  - path: artifacts/result.json
-    source: /logs/{task_id}/result.json
-```
-
-By default, every declared artifact is required. Set `required: false` for best-effort telemetry that must not change the task result when it is missing or cannot be uploaded:
-
-```yaml
-output_artifacts:
-  - path: atif/trajectory.json
-    source: /logs/{task_id}/trajectory_atif.json
-    required: false
-  - path: artifacts/model.patch
-    source: /logs/{task_id}/artifacts/model.patch
-    required: false
-```
-
-`artifacts/model.patch` is reserved for an optional validated text diff produced by
-repository-editing agents. A trajectory artifact may reference it through
-`extra.vals.model_patch`; Valkyrie still collects it as a separate artifact.
-
-Valkyrie does not require a specific destination prefix. Vals-hosted result ingestion expects `vals_format/config.json` and `vals_format/result.json`.
-
-Guardrails:
-
-- Artifact destination paths are relative to the task's S3 prefix. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
-- Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
-- String entries and object entries without `required: false` are required. Missing files, unresolved glob sources, validation failures, size-limit failures, download failures, and upload failures fail the task clearly.
-- Optional artifacts are skipped and logged when collection fails. They are intended for non-scoring telemetry; their absence never changes the task result.
-- Individual files cannot exceed 250 MiB.
-- At most 10 output artifacts can be declared.
-- The total uploaded sidecar bytes per task cannot exceed 250 MiB.
-
-For the examples above, task `task_0` in run `run_id` uploads to matching task-scoped keys such as:
-
-```text
-benchmarks/run_id/task_0/artifacts/summary.json
-benchmarks/run_id/task_0/artifacts/turns.jsonl
-benchmarks/run_id/task_0/artifacts/config.json
-benchmarks/run_id/task_0/artifacts/result.json
-```
-
-### `install_egress: "*" | list[str]`
-
-Set the outbound network policy used while Valkyrie installs the agent:
-
-```yaml
-install_egress:
-  - https://pypi.org
-  - https://files.pythonhosted.org
-```
-
-`install_egress` accepts one of these values:
-
-- `"*"` keeps outbound access unrestricted.
-- `[]` blocks all outbound access.
-- A non-empty list allows only the listed URLs, domains, IP addresses, or CIDRs.
-
-Installation defaults to `"*"`. Nested `egress` configuration is not supported. The benchmark owns setup, agent-run, and evaluation policies. The benchmark also chooses whether agent installation occurs before or after setup. Compose tasks always run setup first so setup can start the service that receives agent commands. Each policy remains active until Valkyrie applies the next stage's policy.
-
-Existing contracts can keep using `egress_allowlist` as a legacy agent-run request. A missing or empty legacy allowlist adds no destinations. A non-empty legacy allowlist is unioned with the benchmark's run allowlist. When the benchmark has no run-policy opinion, a missing or empty legacy allowlist preserves unrestricted execution and a non-empty list preserves the old allowlist behavior. `"*"` from the benchmark keeps execution unrestricted.
-
-Allowlists help keep evaluations clean, but shared CDN edge IPs can make network restrictions broader than a single hostname.
-
-### `secrets: dict`
-
-Secrets required by the agent. Maps environment variable names to AWS Secrets Manager secret names. These are resolved at sandbox creation time - raw values are never stored.
-
-```yaml
-secrets:
-  ANTHROPIC_API_KEY: AnthropicApiKey
-```
-
-Secrets can also be passed (or overridden) at runtime via the CLI:
-
-```bash
-valkyrie run start --agent agents/my_agent -s API_KEY myAwsSecretName
-```
-
-CLI secrets are merged with contract defaults. If both define the same key, the CLI value wins.
-
-### `kwargs: dict`
-
-Define typed parameters with defaults that get substituted into `run_cmd`:
-
-```yaml
-name: my_agent
-install_cmd: "bash setup.sh"
-run_cmd: "my_agent --task {problem_statement_path} --model {model} --temp {temperature}"
-kwargs:
-  model:
-    type: str
-    required: true
-  temperature:
-    type: float
-    required: false
-    default: 0.7
-    description: "Sampling temperature"
-```
-
-Each kwarg supports these fields:
-
-| Field         | Required | Description                                        |
-| ------------- | -------- | -------------------------------------------------- |
-| `type`        | yes      | One of: `str`, `int`, `float`, `bool`, `dict`      |
-| `required`    | yes      | Whether the user must provide this value           |
-| `default`     | no       | Default value when the user doesn't provide one    |
-| `description` | no       | Human-readable description                         |
-| `choices`     | no       | List of valid values (enforced at validation time) |
-
-Kwargs are resolved at parse time:
-
-- **Defaults** are applied for any kwarg the user doesn't provide
-- **CLI overrides** (`-k`) replace defaults when provided
-- **Required kwargs** without a value raise a validation error
-
-```bash
-# Uses default temperature (0.7), must provide model
-valkyrie run start --agent agents/my_agent --benchmark swebench -k model gpt-4o
-
-# Override the default temperature
-valkyrie run start --agent agents/my_agent --benchmark swebench -k model gpt-4o -k temperature 1.0
-```
-
-## Model selection
-
-The model is passed separately from kwargs via `--model` on the CLI:
-
-```bash
-valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
-```
-
-### Companion models
-
-Each task's Model Gateway key only allows the run's model. If other agents in the sandbox call their own models alongside the main one, such as an auditor or a user simulator, declare a `companion_models` kwarg: a comma-separated list of model keys the key also allows.
-
-```yaml
-run_cmd: "my_agent --task {problem_statement_path} --model {model} --auditor-model {companion_models}"
-defaults:
-  companion_models:
-    type: str
-    required: false
-    default: openai/gpt-5-2025-08-07
-```
-
-## Installation scripts
-
-The `install_cmd` runs inside the sandbox with the working directory set to `/bundle/<agent_name>/`. Use it to install dependencies and set up your agent.
-
-Example `setup.sh`:
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-# Install CLI tools
-curl -fsSL https://example.com/install.sh | bash
-
-# Add to PATH if needed
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-
-# Install Python dependencies
-cd submodule/my_agent && uv sync
-```
-
-## Wrapper scripts
-
-If your agent requires a virtual environment or specific setup before running, create a wrapper script in `/usr/local/bin/` during installation:
-
-```bash
-# In setup.sh
-cat > /usr/local/bin/my_agent << 'WRAPPER'
-#!/bin/bash
-source /bundle/my_agent/submodule/my_agent/.venv/bin/activate
-exec python /bundle/my_agent/submodule/my_agent/main.py "$@"
-WRAPPER
-chmod +x /usr/local/bin/my_agent
-```
-
-## Creating a CLI
-
-In order for valkyrie to pass in the required CLI arguments to your agent, the agent must accept CLI arguments. If your agent currently does not have a CLI, you can use this example to add it
-
-```python
-# run_agent.py
-import argparse
-from pathlib import Path
-
-from agent import agent
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("problem_statement_path", type=Path)
-    parser.add_argument("task_id")
-    arguments = parser.parse_args()
-
-    problem_statement = arguments.problem_statement_path.read_text()
-    agent.run(
-        problem_statement=problem_statement,
-        task_id=arguments.task_id,
-    )
-
-
-if __name__ == "__main__":
-    """
-    uv run python run_agent.py \
-      "{problem_statement_path}" \
-      "{task_id}"
-    """
-    main()
-```
-
-The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox (`contract.yaml` will be excluded).
-
-## Integrations
-
-- **Docent ingestion**: set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into Docent records. Run it after a run finishes with `valkyrie run analyze <run-id>`. See [Analyze runs with Docent](/integrations/docent).
+| Key | Meaning |
+| --- | --- |
+| `continue_cmd` | Command for a slot's later turns. `run_cmd` starts its first turn. |
+| `interrupt_grace_seconds` | Seconds a stopped turn gets after an interrupt signal before Valkyrie stops it. Without it, Valkyrie stops the turn at once. |
+| `container_name` | Name of the container a turn starts, with `{slot}` filled in. Not allowed when slots run side by side. |
+
+- `{problem_statement_path}` is each turn's input.
+- `{slot_dir}` is a directory private to the slot. When slots run side by side, `run_cmd`
+  must use `{slot_dir}`, and so must `final_output` if it's set.
+- `{container_name}` is the value of `container_name` for the current slot.

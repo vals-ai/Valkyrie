@@ -5,7 +5,6 @@ Exercise release lifecycle locking against disposable PostgreSQL.
 
 import hashlib
 from collections.abc import Callable
-from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
@@ -17,7 +16,6 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION, source_executor_artifact_uri
-from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -51,27 +49,19 @@ _EXECUTOR_ARTIFACT = b"immutable executor artifact"
 _EXECUTOR_ARTIFACT_DIGEST = hashlib.sha256(_EXECUTOR_ARTIFACT).hexdigest()
 
 
-class _S3Client:
-    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
-        assert Bucket == "artifacts"
-        assert Key == "releases/concurrent-activation/executor.pex"
-        return {"Body": BytesIO(_EXECUTOR_ARTIFACT)}
-
-
 def _release(release_id: str) -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
-        artifact_uri=f"s3://artifacts/{release_id}.pex",
+        artifact_uri=f"source:///artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
-        readiness_verified=True,
     )
 
 
 def _activation_candidate() -> ExecutorRelease:
     return ExecutorRelease(
         id="concurrent-activation",
-        artifact_uri="s3://artifacts/releases/concurrent-activation/executor.pex",
+        artifact_uri="source:///artifacts/releases/concurrent-activation/executor.pex",
         artifact_digest=_EXECUTOR_ARTIFACT_DIGEST,
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
     )
@@ -159,9 +149,6 @@ def test_concurrent_first_activation_serializes_create_or_match(
         return activate_release(
             session,
             _activation_candidate(),
-            expected_bucket="artifacts",
-            expected_prefix="releases",
-            artifact_reader=S3ExecutorArtifactReader(_S3Client()),
         )
 
     outcomes = _run_while_first_transaction_holds_locks(
@@ -177,7 +164,6 @@ def test_concurrent_first_activation_serializes_create_or_match(
     assert release is not None
     assert admission is not None
     assert release.status == ExecutorReleaseStatus.ACTIVE
-    assert release.readiness_verified
     assert admission.release_id == release.id
 
 
@@ -676,6 +662,5 @@ def test_concurrent_source_registration_preserves_one_active_release(
     release = postgres_session.get(ExecutorRelease, admission.release_id)
     assert release is not None
     assert release.status == ExecutorReleaseStatus.ACTIVE
-    assert release.readiness_verified
     assert release.artifact_uri == source_executor_artifact_uri(root.resolve())
     assert len(postgres_session.exec(select(ExecutorRelease)).all()) == 1

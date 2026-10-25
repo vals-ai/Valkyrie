@@ -1,96 +1,26 @@
-"""Structured logging and Sentry correlation for the per-dispatch executor runner."""
+"""Dispatch log context and Sentry correlation for the executor task."""
 
 from __future__ import annotations
 
-import contextvars
-import json
 import logging
-import os
-import sys
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from typing import Generator
 
 import sentry_sdk
+from opentelemetry.context import attach, detach
+from opentelemetry.propagate import extract
 from sentry_sdk.consts import SPANSTATUS
-from sentry_sdk.integrations.logging import LoggingIntegration
 
 from executor_protocol import ExecutorTelemetryContext
+from tracker.logging import benchmark_id_var, request_id_var, task_id_var
+from tracker.logging.context import attempt_started_at_var, executor_dispatch_id_var, get_context_tags
 
-request_id_var = contextvars.ContextVar("request_id", default="")
-benchmark_id_var = contextvars.ContextVar("benchmark_id", default="")
-dispatch_id_var = contextvars.ContextVar("executor_dispatch_id", default="")
-release_id_var = contextvars.ContextVar("executor_release_id", default="")
 logger = logging.getLogger(__name__)
 _captured_dispatch_error: BaseException | None = None
 
 
 def _context_fields() -> dict[str, str]:
-    return {
-        "request_id": request_id_var.get(),
-        "benchmark_id": benchmark_id_var.get(),
-        "executor_dispatch_id": dispatch_id_var.get(),
-        "executor_release_id": release_id_var.get(),
-    }
-
-
-class _ContextFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        for key, value in _context_fields().items():
-            if not getattr(record, key, None):
-                setattr(record, key, value)
-        return True
-
-
-class _JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-            **{key: getattr(record, key, "") for key in _context_fields()},
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
-
-
-def configure_observability() -> None:
-    """Configure CloudWatch JSON logs and Sentry for the runner process."""
-    handler = logging.StreamHandler(sys.stdout)
-    handler.addFilter(_ContextFilter())
-    handler.setFormatter(_JsonFormatter())
-    root_logger = logging.getLogger()
-    root_logger.handlers = [handler]
-    root_logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
-
-    dsn = os.environ.get("SENTRY_DSN", "")
-    if not dsn:
-        return
-    try:
-        sentry_sdk.init(
-            dsn=dsn,
-            environment=os.environ.get("SENTRY_ENVIRONMENT", os.environ.get("ENVIRONMENT", "development")),
-            release=os.environ.get("SENTRY_RELEASE") or None,
-            server_name="valkyrie-executor-runner",
-            enable_logs=True,
-            send_default_pii=False,
-            traces_sample_rate=1.0,
-            integrations=[
-                LoggingIntegration(
-                    level=logging.INFO,
-                    event_level=None,
-                    sentry_logs_level=logging.INFO,
-                )
-            ],
-        )
-    except Exception as error:
-        logger.warning(
-            "Failed to initialize Sentry: %s: %s",
-            type(error).__name__,
-            error,
-        )
+    return {key: value for key, value in get_context_tags().items() if value}
 
 
 @contextmanager
@@ -100,31 +30,35 @@ def dispatch_observability_context(
     release_id: str,
     telemetry_context: ExecutorTelemetryContext,
 ) -> Generator[ExecutorTelemetryContext, None, None]:
-    """Bind one dispatch and create the child executor trace context."""
+    """Bind one dispatch to the log context, the parent trace, and a Sentry scope; yield the child trace context."""
     tokens = [
         request_id_var.set(telemetry_context["request_id"]),
         benchmark_id_var.set(benchmark_id),
-        dispatch_id_var.set(dispatch_id),
-        release_id_var.set(release_id),
+        task_id_var.set(""),
+        executor_dispatch_id_var.set(dispatch_id),
+        attempt_started_at_var.set(""),
     ]
+    trace_headers = telemetry_context["trace_headers"]
+    otel_token = attach(extract(trace_headers)) if trace_headers else None
     try:
-        with _dispatch_sentry_scope():
-            child_context = _accepted_telemetry_context(telemetry_context)
-            yield child_context
+        with _dispatch_sentry_scope(release_id):
+            yield _accepted_telemetry_context(telemetry_context)
     finally:
+        if otel_token is not None:
+            detach(otel_token)
         for token in reversed(tokens):
             token.var.reset(token)
 
 
 @contextmanager
-def _dispatch_sentry_scope() -> Generator[None, None, None]:
+def _dispatch_sentry_scope(release_id: str) -> Generator[None, None, None]:
     scope_manager = None
     scope_entered = False
     try:
         scope_manager = sentry_sdk.new_scope()
         scope = scope_manager.__enter__()
         scope_entered = True
-        scope.set_tags({key: value for key, value in _context_fields().items() if value})
+        scope.set_tags({**_context_fields(), "executor_release_id": release_id})
     except Exception as error:
         logger.warning("Failed to bind executor dispatch telemetry: %s: %s", type(error).__name__, error)
 
@@ -190,7 +124,7 @@ def _record_terminal_transaction(
 ) -> bool:
     try:
         with sentry_sdk.new_scope() as scope:
-            scope.set_tags({key: value for key, value in _context_fields().items() if value})
+            scope.set_tags(_context_fields())
             transaction = sentry_sdk.continue_trace(
                 telemetry_context["trace_headers"],
                 op="queue.process",

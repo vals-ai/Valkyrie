@@ -33,5 +33,12 @@ build
 *claude*
 *CLAUDE*
 
+# Shared Claude Code settings, hooks, and skill links. Personal files stay ignored.
+!/.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/hooks/
+!/.claude/skills/
+
 # Local docker-compose overrides (per-dev port remaps, etc.)
 services/tracker/docker-compose.override.yml

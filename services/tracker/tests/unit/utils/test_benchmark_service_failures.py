@@ -10,6 +10,7 @@ from pathlib import Path
 import socket
 import shlex
 import sys
+import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,7 +23,7 @@ import sentry_sdk
 from botocore.exceptions import ClientError
 from pythonjsonlogger.json import JsonFormatter
 from fastapi.testclient import TestClient
-from benchmark_service import ExecResult
+from benchmark_service import ExecResult, GenerationContainment, SandboxCreatedData
 from benchmark_service.client import (
     BenchmarkServiceClient,
     BenchmarkServiceError,
@@ -30,7 +31,7 @@ from benchmark_service.client import (
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.schemas import RetrieveTaskResponse
-from sqlmodel import Session, desc, select
+from sqlmodel import Session, col, desc, select
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 from websockets.frames import Close
@@ -48,6 +49,7 @@ from tests.unit.utils.task_execution_support import (
     TEST_ORG,
     bind_task_to_dispatch,
     create_task_environment,
+    finalize_agent_generation,
     install_sqlite_evaluation_lock,
     make_retrieve_task_response,
     run_process_task,
@@ -61,6 +63,7 @@ from tracker.database.models import (
     ErrorResult,
     EvaluationResult,
     FailureCategory,
+    SandboxRecord,
     Task,
     TaskBreakdown,
     TaskStatus,
@@ -261,6 +264,106 @@ class TestBenchmarkServiceFailures:
         assert not database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).first()
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_sandbox_created_chunk_saves_one_row_even_when_repeated(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
+
+        async def _mock_evaluate_instance(*_args: Any, on_sandbox_created: Any, **_kwargs: Any) -> dict[str, Any]:
+            created = SandboxCreatedData(provider="daytona", sandbox_id="verifier-1")
+            on_sandbox_created(created)
+            on_sandbox_created(created)
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        rows = database_session.exec(select(SandboxRecord).where(col(SandboxRecord.sandbox_id) == "verifier-1")).all()
+        assert [(row.provider, row.benchmark_id) for row in rows] == [("daytona", benchmark_id)]
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_cancelled_attempt_still_saves_every_pending_announced_sandbox(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
+        write_started = threading.Event()
+        release_write = threading.Event()
+        record_sandbox = utils_module.record_sandbox
+
+        def blocked_write(*args: Any) -> None:
+            write_started.set()
+            release_write.wait(5)
+            record_sandbox(*args)
+
+        async def _mock_evaluate_instance(*_args: Any, on_sandbox_created: Any, **_kwargs: Any) -> dict[str, Any]:
+            on_sandbox_created(SandboxCreatedData(provider="daytona", sandbox_id="verifier-running"))
+            on_sandbox_created(SandboxCreatedData(provider="daytona", sandbox_id="verifier-queued"))
+            await asyncio.sleep(30)
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+        monkeypatch.setattr(utils_module, "record_sandbox", blocked_write)
+
+        attempt = asyncio.create_task(
+            run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+        )
+        await asyncio.to_thread(write_started.wait, 5)
+        for _ in range(3):
+            attempt.cancel()
+            await asyncio.sleep(0.05)
+        release_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+
+        rows = database_session.exec(
+            select(SandboxRecord).where(col(SandboxRecord.sandbox_id).in_(["verifier-running", "verifier-queued"]))
+        ).all()
+        assert sorted(row.sandbox_id for row in rows) == ["verifier-queued", "verifier-running"]
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_resumed_evaluation_saves_the_sandboxes_it_creates(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
+        saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+
+        async def _mock_evaluate_instance(
+            *_args: Any, on_eval_resume_state: Any, on_sandbox_created: Any, **_kwargs: Any
+        ) -> dict[str, Any]:
+            on_sandbox_created(SandboxCreatedData(provider="daytona", sandbox_id="verifier-before"))
+            on_eval_resume_state(saved_state)
+            raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
+
+        async def _mock_resume_evaluation(*_args: Any, on_sandbox_created: Any, **_kwargs: Any) -> dict[str, Any]:
+            on_sandbox_created(SandboxCreatedData(provider="daytona", sandbox_id="verifier-after"))
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, runtime_services, authority)
+
+        rows = database_session.exec(
+            select(SandboxRecord).where(col(SandboxRecord.sandbox_id).in_(["verifier-before", "verifier-after"]))
+        ).all()
+        assert sorted(row.sandbox_id for row in rows) == ["verifier-after", "verifier-before"]
+        assert all(row.benchmark_id == benchmark_id for row in rows)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_recovery_preserves_sandbox_metadata(
         self,
         contract: AgentContractRequest,
@@ -271,7 +374,12 @@ class TestBenchmarkServiceFailures:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
 
-        async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[AgentCausedExitReason, float]:
+        async def _mock_run_agent(
+            *_args: Any, deadline_controller: Any, on_external_service_finalized: Any, **_kwargs: Any
+        ) -> tuple[AgentCausedExitReason, float]:
+            await finalize_agent_generation(
+                deadline_controller=deadline_controller, on_external_service_finalized=on_external_service_finalized
+            )
             return AgentCausedExitReason.TIMEOUT, 12.5
 
         async def _mock_evaluate_instance(*_args: Any, on_eval_resume_state: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -366,12 +474,32 @@ class TestBenchmarkServiceFailures:
         assert "keepalive timeout" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.parametrize(
+        ("resume_error", "expected_message", "expected_transient"),
+        [
+            pytest.param(
+                BenchmarkServiceError("resume endpoint unavailable"),
+                "resume failed: BenchmarkServiceError: resume endpoint unavailable",
+                None,
+                id="service-error",
+            ),
+            pytest.param(
+                socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
+                "WebSocket DNS resolution failed during resume",
+                True,
+                id="dns",
+            ),
+        ],
+    )
     async def test_stream_resume_failure_produces_terminal_error(
         self,
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         runtime_services: RuntimeServices,
+        resume_error: Exception,
+        expected_message: str,
+        expected_transient: bool | None,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
         saved_state = {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
@@ -381,7 +509,7 @@ class TestBenchmarkServiceFailures:
             raise BenchmarkServiceStreamClosedError(close_code=1011, close_reason="keepalive timeout", idle_s=30.0)
 
         async def _mock_resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            raise BenchmarkServiceError("resume endpoint unavailable")
+            raise resume_error
 
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
@@ -391,9 +519,10 @@ class TestBenchmarkServiceFailures:
         assert result == {"task_0": None}
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = self._latest_task_error(database_session, task_row)
-        assert "resuming evaluation from durable benchmark state" in error_message
-        assert "resume failed: BenchmarkServiceError: resume endpoint unavailable" in error_message
+        error = self._latest_task_error_result(database_session, task_row)
+        assert "resuming evaluation from durable benchmark state" in error.error_message
+        assert expected_message in error.error_message
+        assert error.transient is expected_transient
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stream_resume_stops_when_task_is_stopped_during_retry(
@@ -684,14 +813,36 @@ class TestBenchmarkServiceFailures:
         expected_log_written = asyncio.Event()
         event_loop = asyncio.get_running_loop()
 
+        class CompletedWorkload:
+            def __init__(self) -> None:
+                self.result = ExecResult(exit_code=0)
+                self.absence_confirmed_at = event_loop.time()
+
+        class ControlledWorkload:
+            agent_absence_confirmed_at: float | None = None
+
+            async def output(self) -> AsyncIterator[str]:
+                yield "agent output"
+
+            async def wait(self) -> CompletedWorkload:
+                completed = CompletedWorkload()
+                self.agent_absence_confirmed_at = completed.absence_confirmed_at
+                return completed
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncIterator[AsyncMock]:
+            sandbox = AsyncMock()
+            sandbox.id = "mock-sandbox-id"
+            sandbox.name = "mock-sandbox-name"
+            sandbox.generation_containment = GenerationContainment(type="linux_cgroup_v2", version=1)
+            sandbox.controlled_workload = Mock(return_value=ControlledWorkload())
+            yield sandbox
+
         async def _mock_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
             return None
 
-        async def _mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
-            return None, 0.0
-
         async def _mock_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command == "mkdir -p /testbed":
+            if command in ("mkdir -p /testbed", "mkdir -p /tmp/.valkyrie"):
                 return ExecResult(exit_code=0, output="")
             if command == "test -f /tmp/valkyrie/artifacts/missing.json":
                 return ExecResult(exit_code=1, output="")
@@ -703,8 +854,8 @@ class TestBenchmarkServiceFailures:
                 event_loop.call_soon_threadsafe(expected_log_written.set)
 
         monkeypatch.setattr(utils_module, "run_agent", sandbox_module.run_agent)
+        monkeypatch.setattr(utils_module, "create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(sandbox_module, "install_agent_dependencies", _mock_install_agent_dependencies)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", _mock_stream_command_output)
         monkeypatch.setattr(sandbox_module, "_exec", _mock_exec)
         monkeypatch.setattr(CloudWatchBenchmarkLogSink, "write", _mock_write_benchmark_log_event)
 
@@ -736,12 +887,18 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         runtime_services: RuntimeServices,
     ) -> None:
-        """VALKYRIE-59: BenchmarkServiceError from setup_task is caught and stored."""
+        """VALKYRIE-59: BenchmarkServiceError from setup_task is caught and stored.
+
+        The service rejects the request (404), so the error is terminal on the first attempt. A setup
+        error that does not say whether it is transient gets a fresh sandbox first
+        (test_task_execution_retry.py).
+        """
         start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(contract, database_session)
 
         async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> Never:
             raise BenchmarkServiceError(
-                "ProgramBench task container failed to start: task_cleanroom: Pulling from programbench/test"
+                "Task programbench-0042 not found in dataset programbench/test",
+                status_code=404,
             )
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
@@ -753,7 +910,7 @@ class TestBenchmarkServiceFailures:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        assert "ProgramBench task container failed to start" in error_message
+        assert "Task programbench-0042 not found in dataset programbench/test" in error_message
 
     @pytest.mark.usefixtures("process_benchmark_env")
     @pytest.mark.parametrize(
@@ -833,14 +990,17 @@ class TestBenchmarkServiceFailures:
         error_reads: list[str] = []
         logged_messages: list[str] = []
 
-        async def _command(command: str) -> AsyncIterator[str]:
-            match = re.search(r"export VALKYRIE_ERROR_PATH=([^;\s]+)", command)
-            assert match is not None
-            error_files[match.group(1)] = (
+        def record_error(path: str) -> None:
+            error_files[path] = (
                 "AgentError: model returned no patch\n"
                 if secret_source == "none"
                 else "AgentError: rejected fake-sensitive-value\n"
             )
+
+        async def _command(command: str) -> AsyncIterator[str]:
+            match = re.search(r"export VALKYRIE_ERROR_PATH=([^;\s]+)", command)
+            assert match is not None
+            record_error(match.group(1))
             yield "raw model output\n"
             raise ProviderSandboxCommandError(1)
 
@@ -881,6 +1041,21 @@ class TestBenchmarkServiceFailures:
                     error_files.pop(path, None)
             return ExecResult(exit_code=0)
 
+        class FailedControlledWorkload:
+            agent_absence_confirmed_at: float | None = None
+
+            async def output(self) -> AsyncIterator[str]:
+                yield "raw model output\n"
+
+            async def wait(self) -> Any:
+                completed = Mock(result=ExecResult(exit_code=1), absence_confirmed_at=asyncio.get_running_loop().time())
+                self.agent_absence_confirmed_at = completed.absence_confirmed_at
+                return completed
+
+        def controlled_workload(_command: str, *, cwd: str, env_vars: dict[str, str]) -> FailedControlledWorkload:
+            record_error(env_vars["VALKYRIE_ERROR_PATH"])
+            return FailedControlledWorkload()
+
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Mock]:
             if secret_source == "gateway":
@@ -890,6 +1065,9 @@ class TestBenchmarkServiceFailures:
             sandbox.name = "mock-sandbox"
             sandbox.command = _command
             sandbox.exec = _exec
+            sandbox.generation_containment = GenerationContainment(type="linux_cgroup_v2", version=1)
+            sandbox.probe_generation_containment = AsyncMock()
+            sandbox.controlled_workload = controlled_workload
             yield sandbox
 
         monkeypatch.setattr(utils_module, "create_sandbox", _mock_create_sandbox)

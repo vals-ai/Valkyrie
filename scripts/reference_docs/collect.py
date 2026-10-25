@@ -195,7 +195,7 @@ def _format_signature(name: str, function: Callable[..., object]) -> str:
     prefix = "async " if inspect.iscoroutinefunction(function) or inspect.isasyncgenfunction(function) else ""
     return_type = _format_annotation(signature.return_annotation)
     one_line = f"{prefix}def {name}({', '.join(rendered_parameters)}) -> {return_type}"
-    if len(one_line) <= 110:
+    if len(one_line) <= 88:
         return one_line
     body = "\n".join(f"    {parameter}," for parameter in rendered_parameters)
     return f"{prefix}def {name}(\n{body}\n) -> {return_type}"
@@ -338,6 +338,7 @@ def collect_sdk_reference() -> SDKReference:
     from valkyrie.sdk.resources.agents import AgentsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.benchmarks import BenchmarksResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.logs import LogsResource  # pyright: ignore[reportMissingImports]
+    from valkyrie.sdk.resources.projects import ProjectsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.runs import RunsResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.scheduler import SchedulerResource  # pyright: ignore[reportMissingImports]
     from valkyrie.sdk.resources.secrets import SecretsResource  # pyright: ignore[reportMissingImports]
@@ -355,6 +356,7 @@ def collect_sdk_reference() -> SDKReference:
         ("LogsResource", "client.logs", LogsResource),
         ("SchedulerResource", "client.scheduler", SchedulerResource),
         ("SecretsResource", "client.secrets", SecretsResource),
+        ("ProjectsResource", "client.projects", ProjectsResource),
         ("ProvidersResource", "client.providers", ProvidersResource),
         ("SettingsResource", "client.settings", SettingsResource),
     )

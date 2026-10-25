@@ -57,7 +57,6 @@ def database_session() -> Generator[Session, None, None]:
                 artifact_digest="a" * 64,
                 protocol_version=SUPPORTED_PROTOCOL_VERSION,
                 status=ExecutorReleaseStatus.ACTIVE,
-                readiness_verified=True,
             )
             session.add_all([Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME, storage_key="test-bucket"), release])
             session.flush()

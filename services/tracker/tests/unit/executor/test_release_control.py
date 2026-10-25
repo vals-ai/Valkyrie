@@ -1,6 +1,5 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
-import io
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -18,8 +17,7 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
 )
-from tracker.aws.executor_artifacts import S3ExecutorArtifactReader
-from executor_protocol import validate_source_executor_artifact_uri
+from executor_protocol import source_executor_artifact_uri
 from tracker.local.releases import register_source_release
 from tracker.executor.release_control import (
     ReleaseControlError,
@@ -31,17 +29,15 @@ from tracker.executor.release_control import (
     register_release,
     retire_drained_releases,
     select_active_release,
-    verify_release_artifact,
 )
 
 
 def _release(release_id: str) -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
-        artifact_uri=f"s3://artifacts/{release_id}.pex",
+        artifact_uri=f"source:///artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
         protocol_version="1",
-        readiness_verified=True,
         created_at=datetime.now(UTC),
     )
 
@@ -60,21 +56,11 @@ def _dispatch(
     )
 
 
-class FakeS3Client:
-    def __init__(self, content: bytes, *, key: str = "v1.pex") -> None:
-        self.content = content
-        self.key = key
-
-    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
-        assert (Bucket, Key) == ("artifacts", self.key)
-        return {"Body": io.BytesIO(self.content)}
-
-
 def test_activate_release_registers_verifies_and_promotes_in_one_session(database_session: Session) -> None:
     content = b"executor artifact"
     release = ExecutorRelease(
         id="git-abc123-def456",
-        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
+        artifact_uri="source:///artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
         protocol_version="1",
     )
@@ -82,14 +68,10 @@ def test_activate_release_registers_verifies_and_promotes_in_one_session(databas
     activated = activate_release(
         database_session,
         release,
-        expected_bucket="artifacts",
-        expected_prefix="releases",
-        artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-abc123-def456/executor.pex")),
     )
 
     admission = database_session.get(ExecutorAdmission, 1)
     assert activated.status == ExecutorReleaseStatus.ACTIVE
-    assert activated.readiness_verified
     assert admission is not None
     assert admission.release_id == release.id
 
@@ -98,17 +80,13 @@ def test_activate_release_is_idempotent_for_exact_active_release(database_sessio
     content = b"executor artifact"
     release = ExecutorRelease(
         id="git-abc123-def456",
-        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
+        artifact_uri="source:///artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
         protocol_version="1",
     )
-    client = FakeS3Client(content, key="releases/git-abc123-def456/executor.pex")
     first = activate_release(
         database_session,
         release,
-        expected_bucket="artifacts",
-        expected_prefix="releases",
-        artifact_reader=S3ExecutorArtifactReader(client),
     )
     activated_at = first.activated_at
 
@@ -120,9 +98,6 @@ def test_activate_release_is_idempotent_for_exact_active_release(database_sessio
             artifact_digest=release.artifact_digest,
             protocol_version=release.protocol_version,
         ),
-        expected_bucket="artifacts",
-        expected_prefix="releases",
-        artifact_reader=S3ExecutorArtifactReader(client),
     )
 
     assert second.status == ExecutorReleaseStatus.ACTIVE
@@ -135,29 +110,23 @@ def test_activate_release_rejects_draining_release(database_session: Session) ->
     content = b"executor artifact"
     previous = ExecutorRelease(
         id="git-previous",
-        artifact_uri="s3://artifacts/releases/git-previous/executor.pex",
+        artifact_uri="source:///artifacts/releases/git-previous/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
         protocol_version="1",
     )
     current = ExecutorRelease(
         id="git-current",
-        artifact_uri="s3://artifacts/releases/git-current/executor.pex",
+        artifact_uri="source:///artifacts/releases/git-current/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
         protocol_version="1",
     )
     activate_release(
         database_session,
         previous,
-        expected_bucket="artifacts",
-        expected_prefix="releases",
-        artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-previous/executor.pex")),
     )
     activate_release(
         database_session,
         current,
-        expected_bucket="artifacts",
-        expected_prefix="releases",
-        artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-current/executor.pex")),
     )
 
     with pytest.raises(ReleaseControlError, match="cannot be activated from DRAINING"):
@@ -169,9 +138,6 @@ def test_activate_release_rejects_draining_release(database_session: Session) ->
                 artifact_digest=previous.artifact_digest,
                 protocol_version=previous.protocol_version,
             ),
-            expected_bucket="artifacts",
-            expected_prefix="releases",
-            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-previous/executor.pex")),
         )
 
 
@@ -179,7 +145,7 @@ def test_activate_release_rejects_retired_release(database_session: Session) -> 
     content = b"executor artifact"
     release = ExecutorRelease(
         id="git-retired",
-        artifact_uri="s3://artifacts/releases/git-retired/executor.pex",
+        artifact_uri="source:///artifacts/releases/git-retired/executor.pex",
         artifact_digest=hashlib.sha256(content).hexdigest(),
         protocol_version="1",
     )
@@ -197,16 +163,13 @@ def test_activate_release_rejects_retired_release(database_session: Session) -> 
                 artifact_digest=release.artifact_digest,
                 protocol_version=release.protocol_version,
             ),
-            expected_bucket="artifacts",
-            expected_prefix="releases",
-            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content, key="releases/git-retired/executor.pex")),
         )
 
 
 def test_activate_release_rejects_release_id_reuse_with_different_content(database_session: Session) -> None:
     existing = ExecutorRelease(
         id="git-abc123-def456",
-        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
+        artifact_uri="source:///artifacts/releases/git-abc123-def456/executor.pex",
         artifact_digest="a" * 64,
         protocol_version="1",
     )
@@ -221,77 +184,7 @@ def test_activate_release_rejects_release_id_reuse_with_different_content(databa
                 artifact_digest="b" * 64,
                 protocol_version=existing.protocol_version,
             ),
-            expected_bucket="artifacts",
-            expected_prefix="releases",
-            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(b"irrelevant")),
         )
-
-
-def test_activate_release_digest_failure_rolls_back_new_candidate(database_session: Session) -> None:
-    release = ExecutorRelease(
-        id="git-abc123-def456",
-        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
-        artifact_digest="a" * 64,
-        protocol_version="1",
-    )
-
-    with pytest.raises(ReleaseControlError, match="digest mismatch"):
-        activate_release(
-            database_session,
-            release,
-            expected_bucket="artifacts",
-            expected_prefix="releases",
-            artifact_reader=S3ExecutorArtifactReader(
-                FakeS3Client(b"different", key="releases/git-abc123-def456/executor.pex")
-            ),
-        )
-    database_session.rollback()
-
-    assert database_session.get(ExecutorRelease, release.id) is None
-
-
-def test_activate_release_rejects_artifact_outside_configured_location(database_session: Session) -> None:
-    release = _release("git-abc123-def456")
-
-    with pytest.raises(ReleaseControlError, match="configured S3 bucket and prefix"):
-        activate_release(
-            database_session,
-            release,
-            expected_bucket="release-artifacts",
-            expected_prefix="releases",
-            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(b"irrelevant")),
-        )
-
-
-def test_verify_release_artifact_marks_candidate_ready(database_session: Session) -> None:
-    content = b"executor artifact"
-    release = _release("v1")
-    release.artifact_digest = hashlib.sha256(content).hexdigest()
-    register_release(database_session, release)
-
-    verified = verify_release_artifact(
-        database_session, "v1", artifact_reader=S3ExecutorArtifactReader(FakeS3Client(content))
-    )
-
-    assert verified.readiness_verified
-    assert verified.readiness_metadata["artifact_bytes"] == len(content)
-
-
-def test_verify_release_artifact_rejects_digest_mismatch(database_session: Session) -> None:
-    release = _release("v1")
-    release.readiness_verified = False
-    register_release(database_session, release)
-
-    with pytest.raises(ReleaseControlError, match="digest mismatch"):
-        verify_release_artifact(
-            database_session,
-            "v1",
-            artifact_reader=S3ExecutorArtifactReader(FakeS3Client(b"different artifact")),
-        )
-
-    stored = database_session.get(ExecutorRelease, "v1")
-    assert stored is not None
-    assert not stored.readiness_verified
 
 
 def test_register_release_rejects_unsupported_protocol(database_session: Session) -> None:
@@ -308,15 +201,6 @@ def test_register_release_rejects_invalid_digest(database_session: Session) -> N
 
     with pytest.raises(ReleaseControlError, match="SHA-256"):
         register_release(database_session, release)
-
-
-def test_promote_release_requires_readiness(database_session: Session) -> None:
-    release = _release("unready")
-    release.readiness_verified = False
-    register_release(database_session, release)
-
-    with pytest.raises(ReleaseControlError, match="is not ready"):
-        promote_release(database_session, "unready")
 
 
 def test_promote_release_is_idempotent_for_current_release(database_session: Session) -> None:
@@ -397,22 +281,13 @@ def test_select_active_release_requires_an_admission_target(database_session: Se
         select_active_release(database_session)
 
 
-@pytest.mark.parametrize(
-    ("status", "readiness_verified"),
-    [
-        (ExecutorReleaseStatus.CANDIDATE, True),
-        (ExecutorReleaseStatus.DRAINING, True),
-        (ExecutorReleaseStatus.ACTIVE, False),
-    ],
-)
+@pytest.mark.parametrize("status", [ExecutorReleaseStatus.CANDIDATE, ExecutorReleaseStatus.DRAINING])
 def test_select_active_release_rejects_invalid_admission_target(
     database_session: Session,
     status: ExecutorReleaseStatus,
-    readiness_verified: bool,
 ) -> None:
     release = _release("invalid")
     release.status = status
-    release.readiness_verified = readiness_verified
     admission = database_session.get(ExecutorAdmission, 1)
     assert admission is not None
     admission.release_id = release.id
@@ -496,7 +371,7 @@ def test_retirement_waits_for_owned_active_benchmark(
 
     benchmark = example_benchmark_object
     benchmark.executor_release_id = "v1"
-    benchmark.executor_artifact_uri = "s3://artifacts/v1.pex"
+    benchmark.executor_artifact_uri = "source:///artifacts/v1.pex"
     benchmark.executor_artifact_digest = "digest-v1"
     benchmark.executor_protocol_version = "1"
     database_session.add(benchmark)
@@ -679,7 +554,7 @@ def test_active_retry_dispatch_blocks_its_release_across_successive_promotions(
 
     benchmark = example_benchmark_object
     benchmark.executor_release_id = "v1"
-    benchmark.executor_artifact_uri = "s3://artifacts/v1.pex"
+    benchmark.executor_artifact_uri = "source:///artifacts/v1.pex"
     benchmark.executor_artifact_digest = "a" * 64
     benchmark.executor_protocol_version = "1"
     benchmark.status = BenchmarkStatus.FINISHED
@@ -732,7 +607,7 @@ def test_source_release_restart_reuses_the_checkout_release_across_edits(
     first = register_source_release(database_session, root)
     database_session.commit()
     assert first.status == ExecutorReleaseStatus.ACTIVE
-    assert validate_source_executor_artifact_uri(first.artifact_uri, root.resolve()) == root.resolve()
+    assert first.artifact_uri == source_executor_artifact_uri(root.resolve())
 
     module.write_text("VALUE = 2\n")
     restarted = register_source_release(database_session, root)
@@ -745,3 +620,45 @@ def test_source_release_restart_reuses_the_checkout_release_across_edits(
     assert other.id != first.id
     assert other.status == ExecutorReleaseStatus.ACTIVE
     assert first.status == ExecutorReleaseStatus.DRAINING
+
+
+def test_activate_release_pins_image_releases_to_their_registered_task_definition(database_session: Session) -> None:
+    image = f"123456789012.dkr.ecr.us-east-1.amazonaws.com/valkyrie-executor@sha256:{'c' * 64}"
+    release = ExecutorRelease(
+        id="git-image-release",
+        artifact_uri=image,
+        artifact_digest="c" * 64,
+        protocol_version="1",
+        task_definition_arn="arn:aws:ecs:us-east-1:123456789012:task-definition/ExecutorRunner:8",
+    )
+
+    activated = activate_release(database_session, release)
+
+    assert activated.status == ExecutorReleaseStatus.ACTIVE
+    assert activated.task_definition_arn == release.task_definition_arn
+
+    reactivated = activate_release(
+        database_session,
+        ExecutorRelease(
+            id=release.id,
+            artifact_uri=image,
+            artifact_digest="c" * 64,
+            protocol_version="1",
+            task_definition_arn="arn:aws:ecs:us-east-1:123456789012:task-definition/ExecutorRunner:9",
+        ),
+    )
+
+    assert reactivated.status == ExecutorReleaseStatus.ACTIVE
+    assert reactivated.task_definition_arn == release.task_definition_arn
+
+
+def test_register_release_rejects_a_non_source_release_without_a_task_definition(database_session: Session) -> None:
+    release = ExecutorRelease(
+        id="git-image-without-task-definition",
+        artifact_uri=f"123456789012.dkr.ecr.us-east-1.amazonaws.com/valkyrie-executor@sha256:{'c' * 64}",
+        artifact_digest="c" * 64,
+        protocol_version="1",
+    )
+
+    with pytest.raises(ReleaseControlError, match="source:///"):
+        register_release(database_session, release)

@@ -1,97 +1,175 @@
 ---
-title: Start a run
-description: Run an agent against a benchmark dataset.
+title: "Start a run"
+description: "Run an agent on a benchmark dataset or part of one, with the model, secrets, and concurrency you choose."
 ---
 
-Start a benchmark with an installed agent.
-
-<CodeGroup>
-
-```bash CLI
-valkyrie run start --agent sweagent --benchmark swebench
-```
-
-```python Python SDK
-run = await client.runs.start(
-    agent="sweagent",
-    benchmark="swebench",
-)
-```
-
-</CodeGroup>
-
-The tracker accepts the run and returns its id, which every other `run` command takes. Every option, alias, default, and constraint is in the [`valkyrie run start`](/reference/cli/run#start) and [`client.runs.start`](/reference/sdk/runs#start) reference.
-
-## Decide the run scope
-
-A run covers the whole dataset unless you narrow it. Narrow by task id when you know which tasks matter, or by slice for a cheap smoke run:
+Start a run with an agent from your library and a benchmark, in a project you created once:
 
 ```bash
-valkyrie run start --agent sweagent --benchmark swebench --slice "0:10"
+valkyrie project create my-project --name "My Project" --spend-type development --subcategory new_benchmark_generation
+valkyrie run start --agent my-agent --benchmark swebench --project my-project \
+  --model anthropic/claude-sonnet-4-6
 ```
 
-To select ids explicitly, export the dataset's task ids first with [`valkyrie benchmark tasks`](/reference/cli/benchmark#tasks), then pass them with `--task-ids` or `--task-ids-file`.
+Valkyrie prints the run ID, which every other `valkyrie run` command takes. Every option is
+in the [`valkyrie run start` reference](/reference/cli/run#start). To start runs from Python,
+see [Manage runs with Python](/sdk/runs).
 
-`--concurrency` sets how many sandboxes run at once, so raising it finishes the run sooner but runs up provider and model cost faster too.
+## Pass the model and parameters
 
-## Prioritize work in a managed sandbox pool
+`--model` sets the agent's `model` parameter, and `-k NAME VALUE` sets the others. The
+[agent contract](/agents/agent-contract#parameters) says which parameters exist and which
+are required.
 
 ```bash
-valkyrie run start --agent sweagent --benchmark swebench --priority 3
+valkyrie run start --agent my-agent --benchmark swebench --project my-project \
+  --model anthropic/claude-sonnet-4-6 -k temperature 0.2
 ```
 
-Priority is optional and ranges from P0 (`0`, highest) to P4 (`4`, lowest). Runs admitted to a managed shared sandbox pool default to P3 when priority is omitted. Priority applies only when the tracker sandbox queue is enabled and the selected provider has a managed admission pool. Otherwise, the run uses direct execution and an explicit priority is rejected instead of implying queueing.
+## Run part of a dataset
 
-Per-run `--concurrency` still limits how many tasks from that run may be active after admission.
-
-A benchmark that publishes several datasets defaults to `default`. Name another one with `--dataset`:
+A run covers the benchmark's `default` dataset unless you choose otherwise. Pick another
+dataset with `--dataset`:
 
 ```bash
-valkyrie run start --agent sweagent --benchmark terminal-bench --dataset terminal-bench-2.1
+valkyrie run start --agent my-agent --benchmark terminal-bench --project my-project \
+  --dataset terminal-bench-2.1
 ```
+
+Run a slice of the dataset for a cheap first try:
+
+```bash
+valkyrie run start --agent my-agent --benchmark swebench --slice 0:10 --project my-project
+```
+
+To pick tasks by ID, export the dataset's task IDs, edit the file, and pass it back:
+
+```bash
+valkyrie benchmark tasks swebench --output tasks.txt
+
+valkyrie run start --agent my-agent --benchmark swebench --task-ids-file tasks.txt --project my-project
+```
+
+`--task-ids` takes a comma-separated list instead.
+
+## Set concurrency
+
+`--concurrency` sets how many tasks run at once, 5 by default. A higher value finishes
+sooner but spends sandbox and model budget faster, and can reach your model provider's rate
+limits. You can [change it while the run goes](/runs/manage#change-concurrency).
+
+```bash
+valkyrie run start --agent my-agent --benchmark swebench --concurrency 20 --project my-project
+```
+
+## Pass secrets and headers
+
+`-s ENV_VAR SECRET` sets an environment variable in the agent's sandbox from one of your
+organization's secrets, and wins over the contract's mapping for the same variable. It
+takes the secret's name, never its value:
+
+```bash
+valkyrie run start --agent my-agent --benchmark swebench --project my-project \
+  -s ANTHROPIC_API_KEY anthropic-api-key
+```
+
+`-H NAME VALUE` sends an extra header to the benchmark service. See
+[Benchmark authentication](/benchmarks/authentication#send-request-headers).
+
+## Choose the sandbox provider
+
+`--provider` picks the provider for this run. Without it, the run uses your default provider,
+or `daytona`. See [Configure sandbox providers](/get-started/sandbox-providers).
+
+## Use the hosted benchmark service
+
+When you have [saved your own URL](/benchmarks/custom-services) for a benchmark, your runs
+use it. `--ignore-custom-services`, or `--ics`, sends this run to Vals AI's hosted service
+instead, and keeps your saved URL.
+
+## Set a priority
+
+On a Tracker that queues tasks in a shared sandbox pool, `--priority` orders this run's
+tasks against other waiting work, from `0`, the highest, to `4`, the lowest. Runs without a
+priority get `3`.
+
+```bash
+valkyrie run start --agent my-agent --benchmark swebench --priority 1 --project my-project
+```
+
+Where the selected provider isn't queued, `--priority` fails with
+`Queue priority requires ...`; leave it out. [`valkyrie queue status`](/runs/monitor#inspect-the-priority-queue)
+shows the queue.
 
 ## Label a run
 
 ```bash
-valkyrie run start --agent sweagent --benchmark swebench -l sweep-a
+valkyrie run start --agent my-agent --benchmark swebench -l sweep-a --project my-project
 ```
 
-The label is stored on the run and can be filtered on with [`valkyrie run list`](/reference/cli/run#list), which is how you find every run from the same experiment later. Model and agent parameters are separate from labels: `--model` and `-k` fill in the agent contract's `kwargs`. See [Agent contract](/agents/agent-contract).
+The label is saved on the run. Find every run with it later with
+`valkyrie run list -l sweep-a`.
 
-## Ignore a saved custom service
+## Put the run in a project
+
+Every CLI start names a project by its handle with `--project`. The handle is lowercase letters, digits and hyphens, such as `google-report-xyz`, and it never changes. The name, such as `Google Report XYZ`, is the label people read. The project holds the spend type, subcategory, customer and extra tags, so you set them once when you create it. Valkyrie saves the project with the run, so failed and stopped runs keep it, and cost reports can group spend by it.
 
 ```bash
-valkyrie run start --agent sweagent --benchmark swebench --ignore-custom-services
+valkyrie project create google-report-xyz --name "Google Report XYZ" \
+  --spend-type customer --subcategory report --customer google --tag engagement=q4
+valkyrie run start --agent my-agent --benchmark swebench --project google-report-xyz
 ```
 
-When you have saved an endpoint for a benchmark with `benchmark service set`, every run you start resolves tasks through it. This flag, aliased `--ics`, sends the run to the hosted service instead without removing your saved URL. See [Custom benchmark services](/benchmarks/custom-services).
+| `--spend-type` | Display name | Stored `--subcategory` value | `--customer` |
+| --- | --- | --- | --- |
+| `development` | New Benchmark Generation | `new_benchmark_generation` | optional |
+| `development` | New Benchmark Launch Runs | `new_benchmark_launch_runs` | optional |
+| `development` | Post-Launch Benchmark Update | `post_launch_benchmark_update` | optional |
+| `customer` | Report | `report` | required |
+| `customer` | Paid Run | `paid_run` | required |
+| `customer` | Eval Server | `eval_server` | required |
+| `customer` | Platform | `platform` | required |
+| `internal` | Unpaid Leaderboard Run | `unpaid_leaderboard_run` | optional |
+| `internal` | Other Unpaid Run | `other_unpaid_run` | optional |
+| `internal` | Fellows/Interns | `fellows_interns` | optional |
+| `internal` | Blog | `blog` | optional |
+| `internal` | Miscellaneous | `miscellaneous` | optional |
 
-## Map secrets instead of passing values
+`--name`, `--spend-type` and `--subcategory` are required. `--tag key=value` adds extra tags and can be repeated. List your organization's projects:
 
 ```bash
-valkyrie run start --agent sweagent --benchmark swebench -s ANTHROPIC_API_KEY AnthropicApiKey
+valkyrie project list
 ```
 
-`-s` maps an environment variable to an AWS Secrets Manager secret name, and never takes the raw secret value itself. A mapping passed on the CLI wins over the agent contract's mapping for the same variable.
-
-## Stream progress as the run starts
+To move a run to another project later, in any run state, retag it. Retagging adds a new link and keeps the earlier ones, and `valkyrie run fetch` shows the newest:
 
 ```bash
-valkyrie run start --agent sweagent --benchmark swebench --connect
+valkyrie run retag RUN_ID --project google-report-xyz
 ```
 
-Without `--connect`, attach later with [`valkyrie run fetch`](/reference/cli/run#fetch). See [Monitor runs](/runs/monitor) for reading the stream.
+## Watch the run as it starts
 
-## Start repeated runs
+`--connect` streams progress until the run finishes. Without it, attach later with
+`valkyrie run fetch RUN_ID --connect`, where *`RUN_ID`* is the ID that `run start` printed. See [Monitor runs](/runs/monitor).
+
+## Start several runs at once
 
 ```bash
-valkyrie run start --agent sweagent --benchmark swebench --count 3
+valkyrie run start --agent my-agent --benchmark swebench --count 3 --project my-project
 ```
 
-The start requests are sent one after another, but the accepted runs are independent and can overlap. `--connect` is rejected when `count` is greater than 1, since there is no single stream to follow.
+`--count` starts up to 10 identical, independent runs, one after another. The Valkyrie CLI stops
+at the first start that fails, so if one fails, check `valkyrie run list` before you start the
+rest again. `--connect` can't be combined with `--count`.
 
 <Warning>
-  Simultaneous task load and cost roughly scale with `count × concurrency`.
+
+Each run uses its own concurrency, so `--count 3 --concurrency 20` can run 60 tasks at once.
+
 </Warning>
 
-Starts are fail-fast, so once one request fails the CLI stops rather than sending the rest. A transport failure can leave the last request's outcome unclear, so check `valkyrie run list` before starting it again.
+## Limits
+
+- If starting, retrying, or resuming a run fails with
+  `This user cannot start or retry benchmarks`, starting runs is turned off for your account.
+  You can still read and stop runs. Ask Vals AI to turn it back on.

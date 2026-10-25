@@ -36,6 +36,8 @@ def test_error_result_provenance_schema_matches_metadata(postgres_engine: Engine
         "error_type",
         "cause_code",
         "category",
+        "phase",
+        "transient",
         "retry_scheduled",
         "failed_attempt_number",
     }

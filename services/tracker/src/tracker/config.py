@@ -1,5 +1,6 @@
 """Configuration for the tracker service."""
 
+import math
 from enum import Enum
 import os
 from urllib.parse import urlsplit
@@ -75,6 +76,23 @@ def _positive_int_setting(name: str, default: int) -> int:
     return value
 
 
+def _positive_float_setting(name: str) -> float:
+    value = float(os.environ[name])
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+
+    return value
+
+
+EXTERNAL_SERVICE_GATEWAY_URL = os.environ.get("EXTERNAL_SERVICE_GATEWAY_URL", "").rstrip("/") or None
+EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SERVICE_GATEWAY_CONTROL_TOKEN")
+EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS = (
+    _positive_float_setting("EXTERNAL_SERVICE_GATEWAY_CREDIT_CAP_SECONDS")
+    if EXTERNAL_SERVICE_GATEWAY_URL is not None
+    else None
+)
+
+
 RUN_ACCESS_KEY_TTL_SECONDS = _positive_int_setting("RUN_ACCESS_KEY_TTL_SECONDS", 14 * 24 * 3600)
 AGENT_UPLOAD_MAX_BYTES = _positive_int_setting("AGENT_UPLOAD_MAX_BYTES", 1073741824)
 AGENT_ARCHIVE_MAX_EXPANDED_BYTES = _positive_int_setting("AGENT_ARCHIVE_MAX_EXPANDED_BYTES", 5368709120)
@@ -113,6 +131,7 @@ AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
 SELF_SERVE_ORGS_ENABLED = os.environ.get("SELF_SERVE_ORGS_ENABLED", "false").lower() == "true"
 VALKYRIE_STAGE = os.environ.get("VALKYRIE_STAGE", "")
 SANDBOX_QUEUE_ENABLED = os.environ.get("SANDBOX_QUEUE_ENABLED", "false").lower() == "true"
+SANDBOX_BUILD_RATE_PER_MINUTE = int(os.environ.get("SANDBOX_BUILD_RATE_PER_MINUTE", "0"))
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
 DESCOPE_MANAGEMENT_KEY = os.environ.get("DESCOPE_MANAGEMENT_KEY", "")
 DESCOPE_BASE_URL = os.environ.get("DESCOPE_BASE_URL", "https://api.descope.com").rstrip("/")

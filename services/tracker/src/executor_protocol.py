@@ -1,25 +1,15 @@
-"""Shared executor payload and lease protocol."""
+"""Shared executor payload protocol."""
 
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict, cast
-from urllib.parse import unquote, urlparse
+from typing import TypedDict, cast
 
 RESERVED_QUEUE_PROTOCOL_VERSION = "5"
 SUPPORTED_PROTOCOL_VERSION = RESERVED_QUEUE_PROTOCOL_VERSION
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"1", "2", "3", "4", SUPPORTED_PROTOCOL_VERSION})
 MANAGED_EXECUTION_PROTOCOL_VERSION = "3"
 DATASET_VERSION_PROTOCOL_VERSION = "4"
-DEFAULT_EXECUTOR_RELEASE_PREFIX = "releases"
-EXECUTOR_ENTRYPOINT_MODULE = "tracker.executor.entrypoint"
-
-# A dispatch owner renews this lease from its runner task. The Tracker
-# reconciler runs every minute, so a dead runner is recovered within roughly six
-# minutes while a healthy dispatch has ample time between renewal ticks.
-DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS = 120
-DEFAULT_EXECUTOR_DISPATCH_LEASE_SECONDS = 300
-DEFAULT_EXECUTOR_DISPATCH_LEASE_TICK_SECONDS = 5
 
 
 class ExecutorDispatchStatus(str, Enum):
@@ -32,35 +22,6 @@ class ExecutorDispatchStatus(str, Enum):
 class ExecutorTelemetryContext(TypedDict):
     request_id: str
     trace_headers: dict[str, str]
-
-
-class ExecutorPayload(TypedDict):
-    # Exactly one execution shape is set: legacy flat payloads (local jobs queued
-    # before managed execution) carry the first three fields; managed runs carry
-    # only execution_context_json. Dispatch fields are required for both.
-    start_benchmark_request_json: NotRequired[dict[str, Any] | None]
-    benchmark_id_str: NotRequired[str | None]
-    verified_task_ids: NotRequired[list[str] | None]
-    execution_context_json: NotRequired[dict[str, Any] | None]
-    telemetry_context_json: NotRequired[ExecutorTelemetryContext | None]
-    executor_dispatch_id: str
-    executor_release_id: str
-    executor_artifact_uri: str
-    executor_artifact_digest: str
-    executor_protocol_version: str
-
-
-def executor_payload_benchmark_id(payload: Mapping[str, object]) -> str:
-    """Return the benchmark ID from either supported executor payload shape."""
-    benchmark_id = payload.get("benchmark_id_str")
-    if benchmark_id:
-        return str(benchmark_id)
-
-    execution_context = payload.get("execution_context_json")
-    if isinstance(execution_context, Mapping):
-        benchmark_id = cast(Mapping[object, object], execution_context).get("benchmark_id")
-
-    return str(benchmark_id) if benchmark_id else ""
 
 
 def normalize_executor_telemetry_context(value: object) -> ExecutorTelemetryContext:
@@ -90,28 +51,14 @@ def validate_executor_digest(digest: str) -> str:
     return normalized
 
 
-def validate_executor_artifact_uri(uri: str, expected_bucket: str, expected_prefix: str) -> tuple[str, str]:
-    parsed = urlparse(uri)
-    key = parsed.path.lstrip("/")
-    prefix = expected_prefix.strip("/")
-    if parsed.scheme != "s3" or not parsed.netloc or not key:
-        raise ValueError("Executor artifact URI must identify an S3 object")
-    if parsed.netloc != expected_bucket or not prefix or not key.startswith(f"{prefix}/"):
-        raise ValueError("Executor artifact URI is outside the configured S3 bucket and prefix")
-    return parsed.netloc, key
+def validate_executor_image_uri(uri: str, expected_repository: str) -> str:
+    """Require an image release to pin the configured ECR repository by digest; return the digest."""
+    repository, separator, digest = uri.partition("@sha256:")
+    if not separator or repository != expected_repository:
+        raise ValueError("Executor image must pin the configured ECR repository by digest")
+    return validate_executor_digest(digest)
 
 
 def source_executor_artifact_uri(root: Path) -> str:
     """Name a checkout's executor source tree as a release artifact."""
     return root.as_uri().replace("file://", "source://", 1)
-
-
-def validate_source_executor_artifact_uri(artifact_uri: str, root: Path) -> Path:
-    """Require a source release to name the resolved configured source root."""
-    parsed = urlparse(artifact_uri)
-    if parsed.scheme != "source" or parsed.netloc or parsed.query or parsed.fragment:
-        raise ValueError("Source executor artifact URI must use source:///absolute/path")
-    path = Path(unquote(parsed.path))
-    if not path.is_absolute() or path.resolve() != root:
-        raise ValueError("Source executor artifact URI does not match the configured source root")
-    return root

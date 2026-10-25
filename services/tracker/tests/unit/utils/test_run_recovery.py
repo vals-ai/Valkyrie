@@ -119,7 +119,6 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
-        readiness_verified=True,
     )
     database_session.add(release)
     database_session.commit()
@@ -582,7 +581,6 @@ class TestRunRecovery:
                 artifact_uri="s3://artifacts/test-release.pex",
                 artifact_digest="digest-test-release",
                 protocol_version=SUPPORTED_PROTOCOL_VERSION,
-                readiness_verified=True,
             )
         )
         database_session.add(benchmark_row)
@@ -1002,6 +1000,21 @@ class TestRunRecovery:
         ]
         assert len(evaluation_queries) == 1
         evaluation_results = response.json()["evaluation_results"]
+        task_breakdown = evaluation_results["task_result"].pop("task_breakdown")
+        assert {
+            key: task_breakdown[key]
+            for key in (
+                "sandbox_build_duration",
+                "agent_run_duration",
+                "evaluation_run_duration",
+                "sandbox_run_duration",
+            )
+        } == {
+            "sandbox_build_duration": 1.0,
+            "agent_run_duration": 2.0,
+            "evaluation_run_duration": 3.0,
+            "sandbox_run_duration": 4.0,
+        }
         assert evaluation_results == {
             "task_error": {
                 "score": 1.0,
@@ -1022,12 +1035,6 @@ class TestRunRecovery:
             "task_result": {
                 "score": 1.0,
                 "agent_caused_exit_reason": "TIMEOUT",
-                "task_breakdown": {
-                    "sandbox_build_duration": 1.0,
-                    "agent_run_duration": 2.0,
-                    "evaluation_run_duration": 3.0,
-                    "sandbox_run_duration": 4.0,
-                },
                 "attempts": 2,
                 "history": [
                     {
@@ -1986,10 +1993,11 @@ class TestRunRecovery:
             url: str,
             service_headers: dict[str, str] | None = None,
             dataset_version: object | None = None,
+            sandbox_provider: str | None = None,
         ) -> BenchmarkServiceClient:
             verified_urls.append(url)
             assert dataset_version is None
-            return create_benchmark_service_client(url, service_headers)
+            return create_benchmark_service_client(url, service_headers, sandbox_provider=sandbox_provider)
 
         async def _verify_task_ids(
             benchmark_service: BenchmarkServiceClient,
@@ -2035,6 +2043,7 @@ class TestRunRecovery:
         assert response.status_code == 200
         assert verified_urls == ["https://new.example"]
         assert "X-Descope-Api-Key" not in verified_headers[0]
+        assert verified_headers[0]["X-Vals-Sandbox-Provider"] == benchmark_row.arguments.sandbox_provider
 
         queued_request = mock_launcher.queued_calls[0]["execution_context_json"]["start_benchmark_request"]
         assert queued_request["custom_benchmark_service"] == "https://new.example"
@@ -2367,14 +2376,12 @@ class TestRunRecovery:
                     artifact_uri="s3://artifacts/new-release.pex",
                     artifact_digest="digest-new-release",
                     protocol_version=SUPPORTED_PROTOCOL_VERSION,
-                    readiness_verified=True,
                 ),
                 ExecutorRelease(
                     id="latest-release",
                     artifact_uri="s3://artifacts/latest-release.pex",
                     artifact_digest="digest-latest-release",
                     protocol_version=SUPPORTED_PROTOCOL_VERSION,
-                    readiness_verified=True,
                 ),
             ]
         )
@@ -2730,7 +2737,6 @@ class TestRunRecovery:
             artifact_uri="s3://artifacts/recovery-release.pex",
             artifact_digest="digest-recovery-release",
             protocol_version=SUPPORTED_PROTOCOL_VERSION,
-            readiness_verified=True,
         )
         database_session.add(release)
         database_session.commit()
@@ -2761,7 +2767,6 @@ class TestRunRecovery:
             artifact_uri="s3://artifacts/latest-release.pex",
             artifact_digest="digest-latest-release",
             protocol_version=SUPPORTED_PROTOCOL_VERSION,
-            readiness_verified=True,
         )
         database_session.add(latest_release)
         database_session.commit()
@@ -2829,7 +2834,6 @@ class TestRunRecovery:
                 artifact_uri="s3://artifacts/new-release.pex",
                 artifact_digest="digest-new-release",
                 protocol_version=SUPPORTED_PROTOCOL_VERSION,
-                readiness_verified=True,
             )
         )
         database_session.commit()
@@ -2882,7 +2886,6 @@ class TestRunRecovery:
                 artifact_uri="s3://artifacts/new-release.pex",
                 artifact_digest="digest-new-release",
                 protocol_version=SUPPORTED_PROTOCOL_VERSION,
-                readiness_verified=True,
             )
         )
         database_session.commit()
@@ -3535,7 +3538,6 @@ def test_in_progress_v2_recovery_keeps_release_and_arguments(
         artifact_uri="s3://artifacts/old-v2.pex",
         artifact_digest="b" * 64,
         protocol_version="2",
-        readiness_verified=True,
         status=ExecutorReleaseStatus.DRAINING,
     )
     database_session.add(old_release)

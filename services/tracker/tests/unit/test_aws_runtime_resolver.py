@@ -441,3 +441,19 @@ def test_hosted_runtime_assumes_the_tenant_role_for_its_org(
     assert clients == TenantRoleAWSClientProvider(
         region="deployment-region", role_arn=role_arn, org_id=str(_ORG_ID), shared_secrets=shared_secrets
     )
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_dedicated_customer_runtime_cannot_assume_shared_secret_scope(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_TENANT_ACCESS_ROLE_ARN", "arn:aws:iam::123456789012:role/TenantAccess")
+    monkeypatch.setattr(config, "AWS_SHARED_SECRET_TENANTS", "vals.ai,vals-smith-*")
+    customer = Org(id=_ORG_ID, name=f"vals-smith-{environment}-gh-52346350", storage_key="customer-bucket")
+
+    clients = deployment_aws_runtime(customer).clients
+
+    assert isinstance(clients, TenantRoleAWSClientProvider)
+    assert clients.shared_secrets is False
+    assert clients.org_id == str(_ORG_ID)

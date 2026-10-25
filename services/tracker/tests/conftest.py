@@ -93,7 +93,6 @@ def executor_authority_kwargs(
                     artifact_uri="s3://artifacts/authority-test-release.pex",
                     artifact_digest="a" * 64,
                     protocol_version=SUPPORTED_PROTOCOL_VERSION,
-                    readiness_verified=True,
                 )
                 authority_session.add(release)
                 authority_session.flush()

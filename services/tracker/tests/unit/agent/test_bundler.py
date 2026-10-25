@@ -47,8 +47,9 @@ secrets:
 
         assert contract.name == agent_name
         assert contract.model == "gpt-4o"
+        assert contract.kwargs == {"model": "gpt-4o"}
         assert contract.install_cmd == "echo install"
-        assert contract.run_cmd == "python run.py --problem {problem_statement_path} --model gpt-4o"
+        assert contract.run_cmd == "python run.py --problem {problem_statement_path} --model {model}"
         assert contract.final_output == "/tmp/final.txt"
         output_artifact = contract.output_artifacts[0]
         assert output_artifact == OutputArtifact(

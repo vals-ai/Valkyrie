@@ -15,6 +15,56 @@ from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from valkyrie.cli.main import cli
 
 
+def test_project_create_update_and_delete_round_trip(cli_runner: CliRunner) -> None:
+    created = cli_runner.invoke(
+        cli,
+        [
+            "project",
+            "create",
+            "local-project",
+            "--name",
+            "Local Project",
+            "--spend-type",
+            "development",
+            "--subcategory",
+            "new_benchmark_generation",
+            "--tag",
+            "owner=research",
+            "--tag",
+            "reporting=q4",
+        ],
+    )
+    assert created.exit_code == 0, created.output
+
+    updated = cli_runner.invoke(cli, ["project", "update", "local-project", "--name", "Renamed Project"])
+    assert updated.exit_code == 0, updated.output
+
+    listed = cli_runner.invoke(cli, ["project", "list", "--format", "json"])
+    assert listed.exit_code == 0, listed.output
+
+    (project,) = json.loads(listed.output)["projects"]
+    assert project["name"] == "Renamed Project"
+    assert project["spend_type"] == "development"
+    assert project["subcategory"] == "new_benchmark_generation"
+    assert project["extra_tags"] == {"owner": "research", "reporting": "q4"}
+
+    replaced = cli_runner.invoke(cli, ["project", "update", "local-project", "--tag", "team=platform"])
+    assert replaced.exit_code == 0, replaced.output
+
+    after_replacement = cli_runner.invoke(cli, ["project", "list", "--format", "json"])
+    assert after_replacement.exit_code == 0, after_replacement.output
+    (project,) = json.loads(after_replacement.output)["projects"]
+    assert project["name"] == "Renamed Project"
+    assert project["extra_tags"] == {"team": "platform"}
+
+    deleted = cli_runner.invoke(cli, ["project", "delete", "local-project"], input="y\n")
+    assert deleted.exit_code == 0, deleted.output
+
+    after_delete = cli_runner.invoke(cli, ["project", "list", "--format", "json"])
+    assert after_delete.exit_code == 0, after_delete.output
+    assert json.loads(after_delete.output)["projects"] == []
+
+
 def test_agent_library_round_trip(
     cli_runner: CliRunner,
     agent_library: dict[str, bytes],

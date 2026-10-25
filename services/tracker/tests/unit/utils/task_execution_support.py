@@ -1,6 +1,8 @@
 """Shared process-task setup for tracker unit tests."""
 
+import asyncio
 from asyncio import Semaphore
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -14,6 +16,7 @@ from sqlmodel import Session
 from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.external_service_gateway import ExternalServiceDeadlineController, GenerationAccountingSummary
 from tracker.runtime.services import RuntimeServices
 from tracker.database.models import (
     AgentContractRequest,
@@ -33,6 +36,15 @@ from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
 _TEST_STARTER = RequestIdentity(org=TEST_ORG)
+
+
+async def finalize_agent_generation(
+    *,
+    deadline_controller: ExternalServiceDeadlineController,
+    on_external_service_finalized: Callable[[GenerationAccountingSummary], Awaitable[None]],
+) -> None:
+    await deadline_controller.finalize_after_confirmed_stop(absence_confirmed_at=asyncio.get_running_loop().time())
+    await on_external_service_finalized(deadline_controller.summary())
 
 
 class _UnitEvaluationLock:
@@ -131,7 +143,6 @@ def create_task_environment(
         artifact_uri="s3://artifacts/task-execution-test.pex",
         artifact_digest="a" * 64,
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
-        readiness_verified=True,
     )
     database_session.add(release)
     database_session.flush()

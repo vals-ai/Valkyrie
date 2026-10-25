@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 from scripts.sdk import validate_sdk_artifacts
 from scripts.sdk.validate_sdk_artifacts import ArtifactError, validate_sdist, validate_wheel
@@ -86,6 +87,14 @@ def test_sdk_package_configuration_matches_release_boundaries() -> None:
     assert sdk_project["tool"]["basedpyright"]["pythonVersion"] == "3.12"
     assert sdk_project["build-system"]["requires"] == ["hatchling==1.27.0"]
     assert (PACKAGE_ROOT / ".gitignore").read_text(encoding="utf-8") == ".ruff_cache/\n__pycache__/\ndist/\n"
+
+
+def test_cli_requires_sdk_project_maintenance_methods() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as root_file:
+        dependencies = tomllib.load(root_file)["project"]["dependencies"]
+    requirement = next(Requirement(value) for value in dependencies if value.startswith("valkyrie-sdk"))
+    assert not requirement.specifier.contains("0.18.0")
+    assert requirement.specifier.contains("0.19.0")
 
 
 def test_valid_artifacts_are_accepted(tmp_path: Path) -> None:

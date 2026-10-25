@@ -1,0 +1,173 @@
+---
+title: "Package an agent"
+description: "Wrap your agent in a directory that Valkyrie can install and run, then test it on one task."
+---
+
+Valkyrie runs any agent that has a command-line entry point. To package yours, add a
+`contract.yaml` next to its code that says how to install it, how to run it on one task,
+and which files to keep. Every field is in the
+[contract reference](/agents/agent-contract).
+
+## Give the agent a command-line entry point
+
+Valkyrie starts your agent with a shell command, so the agent must take its inputs as
+command-line arguments. If it doesn't, add a small wrapper:
+
+```python run_agent.py
+import argparse
+from pathlib import Path
+
+from agent import agent
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("problem_statement_path", type=Path)
+    parser.add_argument("task_id")
+    parser.add_argument("--model", required=True)
+    arguments = parser.parse_args()
+
+    agent.run(
+        problem_statement=arguments.problem_statement_path.read_text(),
+        task_id=arguments.task_id,
+        model=arguments.model,
+    )
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## Write the contract
+
+Put `contract.yaml` at the top of the agent's directory:
+
+```yaml contract.yaml
+name: my-agent
+install_cmd: bash setup.sh
+run_cmd: >-
+  python /bundle/my-agent/run_agent.py "{problem_statement_path}" "{task_id}"
+  --model "{model}"
+final_output: /logs/my-agent
+
+secrets:
+  ANTHROPIC_API_KEY: anthropic-api-key
+
+defaults:
+  model:
+    type: str
+    required: true
+    description: Model to call, for example anthropic/claude-sonnet-4-6
+```
+
+Valkyrie fills in `{problem_statement_path}`, `{task_id}`, and `{model}` before it runs
+`run_cmd`. The command runs from the benchmark's working directory, so call your script by
+its full path under `/bundle/AGENT_NAME/`, where *`AGENT_NAME`* is the contract's `name`.
+The following sections cover `secrets` and `defaults`, and the reference lists [when each field is used](/agents/agent-contract#order-of-a-task).
+
+## Install dependencies
+
+`install_cmd` usually runs a setup script from the agent's directory:
+
+```bash setup.sh
+#!/bin/bash
+set -euo pipefail
+
+curl -fsSL https://example.com/install.sh | bash
+
+cd submodule/my_agent && uv sync
+```
+
+When the agent needs a virtual environment, have `setup.sh` write a wrapper on `PATH`, so
+`run_cmd` can call it by name:
+
+```bash setup.sh
+cat > /usr/local/bin/my-agent << 'WRAPPER'
+#!/bin/bash
+source /bundle/my-agent/submodule/my_agent/.venv/bin/activate
+exec python /bundle/my-agent/submodule/my_agent/main.py "$@"
+WRAPPER
+chmod +x /usr/local/bin/my-agent
+```
+
+See [`install_cmd` field](/agents/agent-contract#install-cmd) for its time limit and the files that
+uploading leaves out.
+
+## Give the agent its API keys
+
+Store each key as a secret of your organization. The command prompts for the value and
+prints the reference to use:
+
+```bash
+valkyrie secret set anthropic-api-key
+```
+
+Then map the environment variable your agent reads to that reference under `secrets`, as
+in the preceding contract. Valkyrie sets the variable in each task's sandbox. To use another
+key for one run, pass `-s ANTHROPIC_API_KEY other-key` to `valkyrie run start`.
+
+## Let runs choose the model and settings
+
+`defaults.model` is the parameter that `--model` sets, and `required: true` makes every run
+pass one. Declare other settings under `kwargs`, and runs set them with `-k`:
+
+```yaml contract.yaml
+kwargs:
+  temperature:
+    type: float
+    required: false
+    default: 0.7
+```
+
+Use each one in `run_cmd` as `{temperature}`. See [Parameters](/agents/agent-contract#parameters)
+for the types and checks.
+
+## Keep more output files
+
+`final_output` is saved as one archive. To keep files you can read without extracting it,
+such as a trajectory or a summary, list them under `output_artifacts`:
+
+```yaml contract.yaml
+output_artifacts:
+  - path: artifacts/summary.json
+    source: /logs/my-agent/summary.json
+  - path: atif/trajectory.json
+    source: /logs/my-agent/trajectory.json
+    required: false
+```
+
+See [Output files](/agents/agent-contract#output-files) for what `required` does, globs, and
+size limits.
+
+## Report why the agent failed
+
+When the agent fails, write a one-line reason to the file named by `VALKYRIE_ERROR_PATH`
+and exit with a nonzero code. The reason then appears in the task's error:
+
+```bash
+python /bundle/my-agent/run_agent.py "{problem_statement_path}" "{task_id}" \
+  --model "{model}" \
+  || { echo "AgentError: model returned no patch" > "$VALKYRIE_ERROR_PATH"; exit 1; }
+```
+
+See [Error reports](/agents/agent-contract#error-reports) for the format and limits.
+
+## Test it on one task
+
+Upload the agent and run it on one task:
+
+```bash
+valkyrie agent push ./my-agent
+
+valkyrie run start --agent my-agent --benchmark swebench --project my-project \
+  --model anthropic/claude-sonnet-4-6 --slice 0:1 --connect
+```
+
+If the task fails, `valkyrie run errors RUN_ID` shows why, and
+`valkyrie run logs RUN_ID` shows the install and run output, where *`RUN_ID`* is the ID that
+`valkyrie run start` printed. Fix the agent, run
+`valkyrie agent push` again to replace it, and rerun the task with
+`valkyrie run retry RUN_ID`.
+
+To run the agent on benchmarks that start it several times per task, add
+[`turns` field](/agents/agent-contract#turns).

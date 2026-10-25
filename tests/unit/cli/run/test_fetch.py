@@ -12,7 +12,7 @@ from uuid import UUID
 import httpx
 import pytest
 from click.testing import CliRunner
-from valkyrie.sdk.models import BenchmarkStatus, TaskStatus
+from valkyrie.sdk.models import BenchmarkStatus, FetchBenchmarkMetadataResponse, ProjectResponse, SpendType, TaskStatus
 
 from valkyrie.cli.run.fetch import fetch
 from valkyrie.cli.run.snapshot import build_run_snapshot, format_run_snapshot_json
@@ -22,6 +22,20 @@ from tests.unit.cli.factories import make_fetch_metadata, make_fetch_response, r
 
 _RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
 _SECRETS = ("MODEL_API_KEY", "classified-secret-name", "temperature")
+_PROJECT = ProjectResponse(
+    handle="google-report-xyz",
+    name="Google Report XYZ",
+    spend_type=SpendType.CUSTOMER,
+    subcategory="report",
+    customer="google",
+    extra_tags={"engagement": "q4"},
+    created_at=datetime(2026, 10, 21, 18, 0, tzinfo=timezone.utc),
+    created_by_email="researcher@vals.ai",
+)
+
+
+def _tagged_metadata() -> FetchBenchmarkMetadataResponse:
+    return make_fetch_metadata(_RUN_ID).model_copy(update={"project": _PROJECT})
 
 
 def _records(output: str) -> list[dict[str, object]]:
@@ -79,6 +93,78 @@ def test_fetch_json_outputs_one_clean_object(
     assert payload["final_score"] is None
     assert payload["metadata_available"] is metadata_available
     assert payload["agent_name"] == ("mini_sweagent" if metadata_available else None)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "spend_line"),
+    [
+        (_tagged_metadata(), "│ Spend:       customer · google-report-xyz · report · google · engagement=q4"),
+        (make_fetch_metadata(_RUN_ID), "│ Spend:       untagged"),
+        (None, "│ Spend:       unavailable"),
+    ],
+    ids=["tagged", "untagged", "metadata-unavailable"],
+)
+def test_fetch_text_shows_the_runs_project(
+    tracker: MockTracker,
+    cli_runner: CliRunner,
+    metadata: FetchBenchmarkMetadataResponse | None,
+    spend_line: str,
+) -> None:
+    serve_run(tracker, make_fetch_response(_RUN_ID), metadata=metadata)
+
+    result = cli_runner.invoke(fetch, [str(_RUN_ID)])
+
+    assert result.exit_code == 0, result.output
+    assert spend_line in result.output
+
+
+def test_fetch_text_escapes_terminal_control_characters_in_the_project(
+    tracker: MockTracker, cli_runner: CliRunner
+) -> None:
+    hostile = _PROJECT.model_copy(update={"handle": "Blog\x1b[2K", "extra_tags": {"note": "a\x1b[1Ab"}})
+    metadata = make_fetch_metadata(_RUN_ID).model_copy(update={"project": hostile})
+    serve_run(tracker, make_fetch_response(_RUN_ID), metadata=metadata)
+
+    result = cli_runner.invoke(fetch, [str(_RUN_ID)])
+
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.output
+    assert "Blog\\x1b[2K" in result.output
+    assert "note=a\\x1b[1Ab" in result.output
+
+
+@pytest.mark.parametrize(
+    ("metadata", "project"),
+    [
+        (
+            _tagged_metadata(),
+            {
+                "handle": "google-report-xyz",
+                "name": "Google Report XYZ",
+                "spend_type": "customer",
+                "subcategory": "report",
+                "customer": "google",
+                "extra_tags": {"engagement": "q4"},
+                "created_at": "2026-10-21T18:00:00+00:00",
+                "created_by_email": "researcher@vals.ai",
+            },
+        ),
+        (make_fetch_metadata(_RUN_ID), None),
+    ],
+    ids=["tagged", "untagged"],
+)
+def test_fetch_json_carries_the_runs_project(
+    tracker: MockTracker,
+    cli_runner: CliRunner,
+    metadata: FetchBenchmarkMetadataResponse,
+    project: dict[str, object] | None,
+) -> None:
+    serve_run(tracker, make_fetch_response(_RUN_ID), metadata=metadata)
+
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["project"] == project
 
 
 def test_fetch_jsonl_writes_snapshot_updates_and_the_terminal_record(
@@ -160,7 +246,52 @@ def test_connected_fetch_of_a_finished_run_prints_its_status_without_streaming(
     assert "Run Status" in result.output
     assert "Error: Dominant task error" in result.output
     assert "Streaming run updates" not in result.output
-    assert [request.url.params.get("connect") for request in tracker.requests] == [None]
+    assert all(request.url.params.get("connect") is None for request in tracker.requests)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "spend_line"),
+    [
+        (_tagged_metadata(), "customer · google-report-xyz · report · google · engagement=q4"),
+        (make_fetch_metadata(_RUN_ID), "untagged"),
+    ],
+    ids=["tagged", "untagged"],
+)
+def test_connected_fetch_of_an_active_run_shows_the_runs_project(
+    tracker: MockTracker, cli_runner: CliRunner, metadata: FetchBenchmarkMetadataResponse, spend_line: str
+) -> None:
+    finished = make_fetch_response(_RUN_ID, status=BenchmarkStatus.FINISHED)
+    serve_run(tracker, make_fetch_response(_RUN_ID), stream=run_stream(finished), metadata=metadata)
+
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--connect"])
+
+    assert result.exit_code == 0, result.output
+    assert "Run Details" in result.output
+    assert "Spend:" in result.output
+    assert spend_line in result.output
+
+
+@pytest.mark.parametrize(
+    ("metadata", "spend_line"),
+    [
+        (_tagged_metadata(), "customer · google-report-xyz · report · google · engagement=q4"),
+        (make_fetch_metadata(_RUN_ID), "untagged"),
+        (None, "unavailable"),
+    ],
+    ids=["tagged", "untagged", "metadata-unavailable"],
+)
+def test_connected_fetch_of_a_finished_run_shows_the_runs_project(
+    tracker: MockTracker, cli_runner: CliRunner, metadata: FetchBenchmarkMetadataResponse | None, spend_line: str
+) -> None:
+    finished = make_fetch_response(_RUN_ID, status=BenchmarkStatus.FINISHED)
+    serve_run(tracker, finished, metadata=metadata)
+
+    result = cli_runner.invoke(fetch, [str(_RUN_ID), "--connect"])
+
+    assert result.exit_code == 0, result.output
+    assert "Run Status" in result.output
+    assert "Spend:" in result.output
+    assert spend_line in result.output
 
 
 @pytest.mark.parametrize(

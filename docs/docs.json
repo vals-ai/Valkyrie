@@ -45,17 +45,10 @@
   "navigation": {
     "groups": [
       {
-        "group": "Introduction",
-        "pages": [
-          "introduction/what-is-valkyrie"
-        ]
-      },
-      {
         "group": "Get started",
         "pages": [
-          "get-started/overview",
+          "introduction/what-is-valkyrie",
           "get-started/quickstart",
-          "get-started/hosting",
           "get-started/configuration",
           "get-started/sandbox-providers"
         ]
@@ -63,6 +56,7 @@
       {
         "group": "Agents",
         "pages": [
+          "agents/package-an-agent",
           "agents/manage-agents",
           "agents/agent-contract"
         ]
@@ -73,15 +67,16 @@
           "runs/start",
           "runs/monitor",
           "runs/manage",
-          "runs/results-and-outputs"
+          "runs/results-and-outputs",
+          "runs/time-limits"
         ]
       },
       {
         "group": "Benchmarks",
         "pages": [
+          "benchmarks/convert-a-benchmark",
           "benchmarks/custom-services",
-          "benchmarks/authentication",
-          "benchmarks/convert-a-benchmark"
+          "benchmarks/authentication"
         ]
       },
       {
@@ -96,8 +91,7 @@
         "pages": [
           "sdk/quickstart",
           "sdk/runs",
-          "sdk/resources",
-          "sdk/errors"
+          "sdk/resources"
         ]
       },
       {
@@ -115,16 +109,7 @@
       {
         "group": "Self-hosting",
         "pages": [
-          "self-hosting/local-tracker",
-          "self-hosting/aws-permissions"
-        ]
-      },
-      {
-        "group": "Contributing",
-        "pages": [
-          "contributing/local-development",
-          "contributing/tracker-service",
-          "contributing/database"
+          "self-hosting/local-tracker"
         ]
       }
     ]

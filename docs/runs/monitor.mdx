@@ -1,134 +1,150 @@
 ---
-title: Monitor runs
-description: Stream progress, inspect status and errors, and list historical runs.
+title: "Monitor runs"
+description: "Follow a run's progress, find failed tasks, read logs, and search your run history."
 ---
 
-Stream updates until the run completes or disconnects.
+Follow a run while it goes, find out why tasks failed, and look up earlier runs. Every
+command is in the [`valkyrie run` reference](/reference/cli/run). To do the same from Python,
+see [Manage runs with Python](/sdk/runs).
 
-<CodeGroup>
+In the commands on this page, replace *`RUN_ID`* with the run's ID, which
+`valkyrie run start` prints, and *`TASK_ID`* with a task's
+ID.
 
-```bash CLI
-valkyrie run fetch <run-id> --connect
-```
-
-```python Python SDK
-async for update in client.runs.stream(run_id):
-    print(update.details.status)
-```
-
-</CodeGroup>
-
-Full syntax for each command below is in the [`run fetch`](/reference/cli/run#fetch), [`run status`](/reference/cli/run#status), [`run errors`](/reference/cli/run#errors), and [`run list`](/reference/cli/run#list) reference, and in [`client.runs.stream`](/reference/sdk/runs#stream) for Python.
-
-## Fetch one run
-
-Use a one-time text or machine-readable snapshot when streaming is not needed:
+## Follow a run
 
 ```bash
-valkyrie run fetch <run-id>
-valkyrie run fetch <run-id> --format json
-valkyrie run fetch <run-id> --connect --format jsonl
+valkyrie run fetch RUN_ID --connect
 ```
 
-Connected text output starts with the run's identity and metadata, then the progress updates. JSONL starts with a `snapshot` record and continues with `update` records until the stream ends, at which point it emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`.
+This prints the run's details, then its progress until the run finishes. Press **Control+C**
+to stop watching; the run keeps going. Without `--connect`, `run fetch` prints one snapshot,
+and `--format json` prints it as JSON.
 
-Exit code 0 only means the CLI handled the tracker response or stream event, not that the benchmark succeeded, so read the run `status` and each JSONL record's `event` to know how it went.
+A run ends as `FINISHED`, `ERROR`, or `STOPPED`. The command exits with 0 whichever way the
+run ends, so check the status rather than the exit code.
 
-### Machine-readable output
-
-When the JSONL stream ends cleanly but should not have, the CLI writes a final `disconnect` record and exits nonzero. Transport failures and malformed protocol output can also exit nonzero, but without any final record. Two field-level details are worth knowing: `metadata_available: false` means the run's identity metadata could not be loaded, and `finished_tasks` in batch output counts `FINISHED`, `ERROR`, and `STOPPED` tasks together.
-
-## Check several run IDs
+### Follow a run from a script
 
 ```bash
-valkyrie run status --ids <run-id-1>,<run-id-2> --format json
+valkyrie run fetch RUN_ID --connect --format jsonl
 ```
 
-Batch status keeps the order you asked for, ignores duplicate IDs, and takes at most 50 IDs at a time. Any ID that is missing or that you cannot access is listed under `missing_run_ids`, and the command exits nonzero after writing the JSON document.
+Each line is a JSON record with an `event` field. The first record is a `snapshot`, then
+`update` records follow, and the last is one of `complete`, `error`, `stopped`, `disconnect`,
+or `interrupted`. If the stream ends without a final record, the command exits with 1. In
+these records, `finished_tasks` counts tasks that finished, failed, or stopped.
 
-## Inspect the priority queue
-
-See your organization's waiting tasks, pool positions, priorities, and active tasks:
-
-<CodeGroup>
-
-```bash CLI
-valkyrie queue status
-```
-
-```python Python SDK
-snapshot = await client.scheduler.overview()
-print(snapshot.summary.waiting)
-```
-
-</CodeGroup>
-
-Managed sandbox pools order waiting tasks by priority (P0 highest, P4 lowest), enqueue time, then task ID. Priority defaults to P3. Positions are within each shared pool; other organizations' tasks can occupy positions but are not listed. Wait time uses the snapshot's observation time.
-
-Totals remain uncapped. Text output marks pages with more entries and prints the next `--waiting-offset` or `--active-offset`. Pass these offsets independently to advance either list:
+## Check several runs at once
 
 ```bash
-valkyrie queue status --waiting-offset 100 --active-offset 100
+valkyrie run status --ids RUN_ID_1,RUN_ID_2 --format json
 ```
 
-`--format json` includes `waiting_next_offset` and `active_next_offset`; `null` means that list is exhausted. Capped flags indicate more entries after the current page, not tasks on earlier pages. Pages are live, not a frozen snapshot: queue changes between calls can repeat or skip tasks. See [SDK page iteration](/sdk/resources#scheduler) for a Python example.
+Replace *`RUN_ID_1`* and *`RUN_ID_2`* with the runs' IDs.
 
-Queueing must be enabled for the selected provider's managed pool. An empty waiting list alone does not indicate whether queueing is enabled. This command only reads state; it does not change priorities or reserve capacity.
 
-See [`queue status`](/reference/cli/queue#status) and [`client.scheduler.overview`](/reference/sdk/scheduler#overview) for the full reference.
+The output keeps the order you gave. IDs that don't exist or that you can't see are listed
+under `missing_run_ids`, and the command then exits with 1.
 
-## Inspect errors
+## Find failed tasks
 
 ```bash
-valkyrie run errors <run-id>
+valkyrie run errors RUN_ID
 ```
 
-This shows both the errors stored on the run and the current task errors. Add `--format json` to read them from a script.
-
-## Search logs
-
-View logs for a run, or filter them by text and time:
+This shows the run's own errors and each failed task's error. To look closer:
 
 ```bash
-valkyrie run logs <run-id>
-valkyrie run logs <run-id> --query "rate limit" \
+# Tasks that failed, one page at a time; add --offset for later pages
+valkyrie run tasks RUN_ID --status ERROR
+
+# One task's status, grade, error and time breakdown
+valkyrie run task RUN_ID TASK_ID
+
+# Temporary links to one task's files and logs
+valkyrie run task-artifacts RUN_ID TASK_ID
+```
+
+For scripts, add `--format json` to any of these.
+
+## Check how long a task took
+
+```bash
+valkyrie run task RUN_ID TASK_ID
+```
+
+The output includes the task's exit reason and its time breakdown:
+
+| Field | Meaning |
+| --- | --- |
+| `agent_caused_exit_reason` | `TIMEOUT` when the generation limit stopped the agent, or `OS_KILLED` when the operating system stopped it |
+| `base_generation_allowance_seconds` | The task's generation limit, or `null` for none |
+| `generation_elapsed_seconds` | Charged generation time; ordinary runs end at provider-confirmed agent absence, not later result or cleanup |
+| `sandbox_build_duration` | Seconds spent creating the sandbox |
+| `agent_run_duration` | Controlled-command duration; ordinary runs end at the same confirmed absence but use a separately recorded start from charged generation time |
+| `evaluation_run_duration` | Seconds spent grading |
+
+See [Task time limits](/runs/time-limits) for what counts toward each limit.
+
+## Read logs
+
+```bash
+valkyrie run logs RUN_ID
+```
+
+Narrow the logs to one task, to text, or to a time range. Times need a time zone, and logs
+at exactly those times are included:
+
+```bash
+valkyrie run logs RUN_ID --task-id TASK_ID --query "rate limit" \
   --since 2026-01-01T00:00:00Z --until 2026-01-01T01:00:00Z
 ```
 
-Use `--task-id` to view one task. Add `--follow` to watch for new logs, or `--format jsonl` for machine-readable output:
+To watch new log lines arrive, add `--follow` with `--task-id`. For scripts, add `--format jsonl`.
 
-```bash
-valkyrie run logs <run-id> --task-id <task-id> --follow
-valkyrie run logs <run-id> --task-id <task-id> --query ERROR --format jsonl
-```
-
-Queries search log messages for the text you enter. Timestamps for `--since` and `--until` must include a timezone. Logs at those exact times are included.
-
-## List runs
-
-Filter the history to find a run:
+## Search your run history
 
 ```bash
 valkyrie run list --benchmark-name swebench --status IN_PROGRESS
 ```
 
-Runs can be filtered by `--agent-name`, `--benchmark-name`, `--model`, `--dataset`, `-l/--label`, `--status`, and `--started-by`, and ordered with `--order-by asc|desc`. Filters combine, and the interactive list supports `[h]` for previous, `[l]` for next, and `[q]` to quit. Emit all matching runs as one document with:
+Filter by `--agent-name`, `--benchmark-name`, `--model`, `--dataset`, `-l` for the label,
+`--status`, and `--started-by`, and sort with `--order-by asc` or `desc`. Page through the
+list with **h** and **l**, and quit with **q**. To print every match as one JSON document:
 
 ```bash
 valkyrie run list --format json --all --status IN_PROGRESS
 ```
 
-Machine-readable output is built from a versioned allowlist of fields, so it never carries stored agent secrets, kwargs, or raw error messages. Optional identity fields and scores may be `null`, timestamps are UTC ISO 8601 strings, and a non-finite score is reported as `null`.
+JSON output leaves out agent secrets, parameters, and raw error messages. Missing values and
+scores that aren't finite numbers are `null`, and times are UTC in ISO 8601.
 
-## Inspect individual tasks
+`valkyrie run filter-options` lists the agents, benchmarks, models, and other values your
+organization's earlier runs used, which are the values the filters accept.
 
-Use `valkyrie run tasks <run_id> --status ERROR --format json` to inspect failed tasks. The command returns one page; use `--offset` to read later pages. Inspect a result with `valkyrie run task <run_id> <task_id>`, or obtain temporary download and log links with `valkyrie run task-artifacts <run_id> <task_id>`. See the [task command reference](/reference/cli/run#tasks) for filtering and sorting options.
+## Inspect the priority queue
 
+On a Tracker that queues tasks in shared sandbox pools, see your organization's waiting and
+active tasks:
 
-For Python reports, use `async for run in client.runs.iter(request)` and `async for task in client.benchmarks.iter_tasks(run_id, request)` to fetch successive pages. Each iterator preserves its filters and page size. Run iteration uses cursors; task iteration uses offsets, so tasks can move between pages while their status changes.
+```bash
+valkyrie queue status
+```
 
+Waiting tasks are ordered by priority, then by when they joined the queue. Positions count
+every task in the pool, including other organizations' tasks, which aren't listed. The
+command only reads the queue.
 
-Use `valkyrie run filter-options --format json` or `await client.runs.filter_options()` to discover filter values from your organization's run history. These values describe previous runs, not all models or benchmark services you could use for a new run.
+Each list shows up to 100 entries. When there are more, the output prints the offset of the
+next page. Pass `--waiting-offset` and `--active-offset` to page through each list
+separately:
+
+```bash
+valkyrie queue status --waiting-offset 100 --active-offset 100
+```
+
+The queue changes between calls, so a task can appear on two pages or on none.
 
 ## Browse runs in the terminal
 
@@ -136,6 +152,16 @@ Use `valkyrie run filter-options --format json` or `await client.runs.filter_opt
 valkyrie ui
 ```
 
-`valkyrie ui` lists your recent runs with live status, using the same configuration as the other commands. Press Enter on a run to see its progress and tasks, with errors first, then select a task to read its log or its detail. The bottom line shows the equivalent `valkyrie` command for the selection, and `y` copies it. `e` groups the run's errors by category and message, `/` filters the current list, or searches the log once you've moved into it (`n` and `N` step through the matches), `Esc` goes back, and `?` lists every key. On the run list, `c` (or clicking the Tracker's name in the top bar) switches to another Tracker you've logged in to with `valkyrie login`, for that session only. The view only reads: stop or retry a run with `valkyrie run`.
+`valkyrie ui` lists your recent runs with live status. It only reads: stop or retry a run
+with `valkyrie run`. To try it on sample data, add `--fake`.
 
-Add `--fake` to try it on built-in sample data without a Tracker.
+| Key | Action |
+| --- | --- |
+| **Enter** | Open the selected run or task |
+| **e** | Group the run's errors by category and message |
+| **/** | Filter the list, or search a task's log |
+| **n**, **N** | Go to the next or previous search match |
+| **y** | Copy the `valkyrie` command for the selection |
+| **c** | Switch to another Tracker you've signed in to |
+| **Esc** | Go back |
+| **?** | List every key |

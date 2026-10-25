@@ -98,6 +98,6 @@ def token_create(name: str, expires_in_days: int) -> None:
 @token.command("revoke")
 @click.argument("key_id")
 def token_revoke(key_id: str) -> None:
-    """Delete an access key you created. The Tracker may accept it for up to two more hours."""
+    """Delete an access key you created. The Tracker may accept it for up to one more hour."""
     request_tracker("DELETE", f"/access-keys/{quote(key_id, safe='')}")
     click.echo(f"Revoked access key {key_id}.")

@@ -95,7 +95,6 @@ def _promote_test_release(
         artifact_uri=f"s3://artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
         protocol_version=protocol_version,
-        readiness_verified=True,
     )
     session.add(release)
     session.commit()

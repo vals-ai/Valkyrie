@@ -18,6 +18,7 @@ from valkyrie.sdk import (
     FetchBenchmarksRequest,
     FinalViewResponse,
     S3UploadResultsResponse,
+    SpendType,
     ValkyrieAPIError,
     ValkyrieClient,
     ValkyrieConfig,
@@ -565,3 +566,69 @@ async def test_a_client_without_a_config_uses_the_default_config() -> None:
     async with ValkyrieClient() as client:
         assert client.config == ValkyrieConfig()
         assert str(client._client.base_url) == "https://benchmark-tracker.vals.ai"
+
+
+async def test_projects_update_and_delete_use_the_project_contract(make_client) -> None:
+    requests: list[httpx.Request] = []
+    project = {
+        "handle": "router-bench",
+        "name": "Router Bench Updated",
+        "spend_type": "development",
+        "subcategory": "post_launch_benchmark_update",
+        "customer": None,
+        "extra_tags": {"owner": "research"},
+        "created_at": "2026-10-23T12:00:00Z",
+        "created_by_email": "researcher@vals.ai",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=project)
+
+    async with make_client(handler) as client:
+        updated = await client.projects.update(
+            "router-bench",
+            name="Router Bench Updated",
+            spend_type=SpendType.DEVELOPMENT,
+            subcategory="post_launch_benchmark_update",
+            customer=None,
+            extra_tags={"owner": "research"},
+        )
+        deleted = await client.projects.delete("router-bench")
+
+    assert (updated.handle, deleted.handle) == ("router-bench", "router-bench")
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("PUT", "/projects/router-bench"),
+        ("DELETE", "/projects/router-bench"),
+    ]
+    assert json.loads(requests[0].content) == {
+        "handle": "router-bench",
+        "name": "Router Bench Updated",
+        "spend_type": "development",
+        "subcategory": "post_launch_benchmark_update",
+        "customer": None,
+        "extra_tags": {"owner": "research"},
+    }
+    assert requests[1].content == b""
+
+
+@pytest.mark.parametrize("handle", ["", ".", ".."])
+async def test_projects_reject_normalized_path_segments_before_request(make_client, handle: str) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(500)
+
+    async with make_client(handler) as client:
+        with pytest.raises(ValueError, match="Invalid project handle"):
+            await client.projects.update(
+                handle,
+                name="Router Bench",
+                spend_type=SpendType.DEVELOPMENT,
+                subcategory="new_benchmark_generation",
+            )
+        with pytest.raises(ValueError, match="Invalid project handle"):
+            await client.projects.delete(handle)
+
+    assert requests == []

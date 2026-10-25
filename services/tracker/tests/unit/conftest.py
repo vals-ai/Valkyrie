@@ -20,9 +20,9 @@ from benchmark_service.schemas import (
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
-from tests.unit.utils.task_execution_support import MockLauncher, make_retrieve_task_response
+from tests.unit.utils.task_execution_support import MockLauncher, finalize_agent_generation, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID
-from tracker.auth import RequestIdentity, get_current_org, get_current_starter
+from tracker.auth import RequestIdentity, get_current_org, get_current_runner, get_current_starter
 from tracker.database.models import ExecutorDispatch, ExecutorDispatchPayload, Org, OrgProviderSecret
 from tracker.database.session import get_session
 from tracker.executor.dispatch_payload import SealedPayload, open_payload
@@ -96,6 +96,7 @@ def override_database_session(database_session: Session, monkeypatch: pytest.Mon
         database_session.expire_all()
 
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
+    monkeypatch.setattr("tracker.sandbox_cost.engine", database_session.get_bind())
 
 
 @pytest.fixture(autouse=True)
@@ -106,14 +107,12 @@ def override_org(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def override_starter(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Override get_current_starter to return a test identity.
-
-    Tests that need a different identity (e.g. hosted-mode with custom claims) can
-    monkeypatch app.dependency_overrides[get_current_starter] inside the test body.
-    """
+def override_starter_and_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub run identity for route tests; authorization tests remove the runner override."""
     test_org = Org(id=TEST_ORG_ID, name="default", storage_key="test-bucket")
-    monkeypatch.setitem(app.dependency_overrides, get_current_starter, lambda: RequestIdentity(org=test_org))
+    identity = RequestIdentity(org=test_org)
+    monkeypatch.setitem(app.dependency_overrides, get_current_starter, lambda: identity)
+    monkeypatch.setitem(app.dependency_overrides, get_current_runner, lambda: identity)
 
 
 @pytest.fixture
@@ -189,7 +188,11 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop(*_args: Any, **_kwargs: Any) -> None:
         return None
 
-    async def _noop_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+    async def _noop_run_agent(*_args: Any, **kwargs: Any) -> tuple[None, float]:
+        await finalize_agent_generation(
+            deadline_controller=kwargs["deadline_controller"],
+            on_external_service_finalized=kwargs["on_external_service_finalized"],
+        )
         return None, 0.0
 
     monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _noop)

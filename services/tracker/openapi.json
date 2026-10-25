@@ -299,6 +299,16 @@
             "default": {},
             "title": "Secrets",
             "type": "object"
+          },
+          "turns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentTurns"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -406,6 +416,16 @@
             "default": {},
             "title": "Secrets",
             "type": "object"
+          },
+          "turns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentTurns"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -459,6 +479,45 @@
           "name"
         ],
         "title": "AgentEntry",
+        "type": "object"
+      },
+      "AgentTurns": {
+        "properties": {
+          "container_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Container Name"
+          },
+          "continue_cmd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continue Cmd"
+          },
+          "interrupt_grace_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interrupt Grace Seconds"
+          }
+        },
+        "title": "AgentTurns",
         "type": "object"
       },
       "AgentsResponse": {
@@ -1081,6 +1140,70 @@
         "title": "Body_stop_benchmark",
         "type": "object"
       },
+      "CostsByEmailResponse": {
+        "properties": {
+          "costs": {
+            "items": {
+              "$ref": "#/components/schemas/EmailCost"
+            },
+            "title": "Costs",
+            "type": "array"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "costs"
+        ],
+        "title": "CostsByEmailResponse",
+        "type": "object"
+      },
+      "CostsByProjectResponse": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectCostRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectRun"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "rows",
+          "runs"
+        ],
+        "title": "CostsByProjectResponse",
+        "type": "object"
+      },
       "CreateAccessKeyRequest": {
         "properties": {
           "expires_in_days": {
@@ -1172,6 +1295,39 @@
           "provider"
         ],
         "title": "DefaultProviderRequest",
+        "type": "object"
+      },
+      "EmailCost": {
+        "properties": {
+          "amount_usd": {
+            "title": "Amount Usd",
+            "type": "number"
+          },
+          "cost_type": {
+            "title": "Cost Type",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "run_count": {
+            "title": "Run Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "email",
+          "cost_type",
+          "provider",
+          "amount_usd",
+          "run_count"
+        ],
+        "title": "EmailCost",
         "type": "object"
       },
       "FailureCategory": {
@@ -1269,6 +1425,16 @@
               }
             ],
             "title": "Executor Release Id"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "started_by_email": {
             "anyOf": [
@@ -2033,6 +2199,45 @@
         "title": "MembersResponse",
         "type": "object"
       },
+      "NativeOutputFile": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size_bytes"
+        ],
+        "title": "NativeOutputFile",
+        "type": "object"
+      },
+      "NativeOutputFilesResponse": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/NativeOutputFile"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "generation",
+          "files"
+        ],
+        "title": "NativeOutputFilesResponse",
+        "type": "object"
+      },
       "Order": {
         "enum": [
           "asc",
@@ -2149,6 +2354,256 @@
       },
       "OutputArtifact-Output": {
         "additionalProperties": true,
+        "type": "object"
+      },
+      "ProjectCostRow": {
+        "properties": {
+          "amount_usd": {
+            "title": "Amount Usd",
+            "type": "number"
+          },
+          "customer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer"
+          },
+          "month": {
+            "title": "Month",
+            "type": "string"
+          },
+          "project_handle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Handle"
+          },
+          "project_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Name"
+          },
+          "run_count": {
+            "title": "Run Count",
+            "type": "integer"
+          },
+          "spend_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Type"
+          },
+          "subcategory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory"
+          },
+          "vendor": {
+            "title": "Vendor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "month",
+          "vendor",
+          "spend_type",
+          "subcategory",
+          "project_handle",
+          "project_name",
+          "customer",
+          "amount_usd",
+          "run_count"
+        ],
+        "title": "ProjectCostRow",
+        "type": "object"
+      },
+      "ProjectCreateRequest": {
+        "description": "A new project: its immutable handle, its name, spend type and subcategory, and optional customer and extra tags.",
+        "properties": {
+          "customer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer"
+          },
+          "extra_tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Extra Tags",
+            "type": "object"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "spend_type": {
+            "$ref": "#/components/schemas/SpendType"
+          },
+          "subcategory": {
+            "title": "Subcategory",
+            "type": "string"
+          }
+        },
+        "required": [
+          "handle",
+          "name",
+          "spend_type",
+          "subcategory"
+        ],
+        "title": "ProjectCreateRequest",
+        "type": "object"
+      },
+      "ProjectResponse": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By Email"
+          },
+          "customer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer"
+          },
+          "extra_tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Extra Tags",
+            "type": "object"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "spend_type": {
+            "$ref": "#/components/schemas/SpendType"
+          },
+          "subcategory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory"
+          }
+        },
+        "required": [
+          "handle",
+          "name",
+          "spend_type",
+          "created_at"
+        ],
+        "title": "ProjectResponse",
+        "type": "object"
+      },
+      "ProjectRun": {
+        "properties": {
+          "project_handle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Handle"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_handle",
+          "run_id",
+          "started_at"
+        ],
+        "title": "ProjectRun",
+        "type": "object"
+      },
+      "ProjectsResponse": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectResponse"
+            },
+            "title": "Projects",
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "title": "ProjectsResponse",
         "type": "object"
       },
       "ProviderSecretRequest": {
@@ -2288,6 +2743,21 @@
           "artifacts"
         ],
         "title": "RunArtifactsResponse",
+        "type": "object"
+      },
+      "RunProjectRequest": {
+        "description": "The handle of the project a run now belongs to.",
+        "properties": {
+          "project": {
+            "minLength": 1,
+            "title": "Project",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "title": "RunProjectRequest",
         "type": "object"
       },
       "RunSettingsResponse": {
@@ -3084,6 +3554,16 @@
           "status": {
             "$ref": "#/components/schemas/TaskStatus"
           },
+          "task_breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "task_id": {
             "title": "Task Id",
             "type": "string"
@@ -3101,6 +3581,15 @@
         ],
         "title": "SingleTaskResponse",
         "type": "object"
+      },
+      "SpendType": {
+        "enum": [
+          "development",
+          "internal",
+          "customer"
+        ],
+        "title": "SpendType",
+        "type": "string"
       },
       "StartBenchmarkRequest": {
         "properties": {
@@ -3199,6 +3688,18 @@
               }
             ],
             "title": "Priority"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project"
           },
           "properties": {
             "anyOf": [
@@ -3380,6 +3881,16 @@
             ],
             "title": "Executor Release Id"
           },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "s3_bucket_url": {
             "title": "S3 Bucket Url",
             "type": "string"
@@ -3473,6 +3984,146 @@
           "agent_output_expires_in"
         ],
         "title": "TaskArtifactsResponse",
+        "type": "object"
+      },
+      "TaskBreakdown": {
+        "properties": {
+          "accounting_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accounting Id"
+          },
+          "agent_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Run Duration"
+          },
+          "base_generation_allowance_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Generation Allowance Seconds"
+          },
+          "cumulative_time_credit_cap_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cumulative Time Credit Cap Seconds"
+          },
+          "evaluation_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Run Duration"
+          },
+          "external_service_credit_applied_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Service Credit Applied Seconds"
+          },
+          "external_service_credit_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Service Credit Revision"
+          },
+          "external_service_overhead_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Service Overhead Seconds"
+          },
+          "generation_elapsed_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Elapsed Seconds"
+          },
+          "sandbox_build_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Build Duration"
+          },
+          "sandbox_run_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox Run Duration"
+          }
+        },
+        "required": [
+          "sandbox_build_duration",
+          "agent_run_duration",
+          "evaluation_run_duration",
+          "sandbox_run_duration",
+          "accounting_id",
+          "base_generation_allowance_seconds",
+          "cumulative_time_credit_cap_seconds",
+          "external_service_overhead_seconds",
+          "external_service_credit_applied_seconds",
+          "external_service_credit_revision",
+          "generation_elapsed_seconds"
+        ],
+        "title": "TaskBreakdown",
         "type": "object"
       },
       "TaskStatus": {
@@ -4656,6 +5307,57 @@
         "summary": "Stream Task Logs"
       }
     },
+    "/benchmarks/{benchmark_id}/project": {
+      "post": {
+        "description": "Put a run in another project, in any run state, by adding a link; earlier links are kept.",
+        "operationId": "retag_benchmark",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunProjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retag Benchmark"
+      }
+    },
     "/benchmarks/{benchmark_id}/shed": {
       "post": {
         "description": "Lower an active run's concurrency and force stop the newest tasks above the new limit.",
@@ -4927,6 +5629,153 @@
         "summary": "Get Task Artifacts"
       }
     },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/native-output/file": {
+      "get": {
+        "description": "Read one allowed file and discard bytes if its execution generation changes.",
+        "operationId": "get_native_output_file",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "generation",
+            "required": true,
+            "schema": {
+              "title": "Generation",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "X-Native-Output-Generation": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No active native output target"
+          },
+          "400": {
+            "description": "Malformed relative path"
+          },
+          "404": {
+            "description": "Task or native file not found"
+          },
+          "409": {
+            "description": "Native output generation changed"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Native Output File"
+      }
+    },
+    "/benchmarks/{benchmark_id}/tasks/{task_id}/native-output/files": {
+      "get": {
+        "description": "List current native files directly from the exact execution sandbox.",
+        "operationId": "get_native_output_files",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "benchmark_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Benchmark Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeOutputFilesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "204": {
+            "description": "No active native output target"
+          },
+          "404": {
+            "description": "Task not found"
+          },
+          "409": {
+            "description": "Native output generation changed"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Native Output Files"
+      }
+    },
     "/check-results-exist": {
       "get": {
         "description": "Check if the benchmark's final view already exists in S3.\n\nUsage:\ncurl -X GET http://<endpoint>/check-results-exist?benchmark_id=<uuid>\n\nReturns:\n    {\"exists\": true/false}",
@@ -4970,6 +5819,116 @@
           }
         },
         "summary": "Check Results Exist"
+      }
+    },
+    "/costs/by-email": {
+      "get": {
+        "description": "Each starter's recorded run costs in this org, per cost type and provider, for runs started in [start, end).",
+        "operationId": "get_costs_by_email",
+        "parameters": [
+          {
+            "description": "First UTC date whose runs are counted.",
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "description": "First UTC date whose runs are counted.",
+              "format": "date",
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          {
+            "description": "UTC date after the last counted one.",
+            "in": "query",
+            "name": "end",
+            "required": true,
+            "schema": {
+              "description": "UTC date after the last counted one.",
+              "format": "date",
+              "title": "End",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostsByEmailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Costs By Email"
+      }
+    },
+    "/costs/by-project": {
+      "get": {
+        "description": "Recorded run costs per month, vendor and project, for runs started in [start, end).\n\nA run counts under the project of its newest link (the highest run_project id). Runs with no project come back\nwith null project fields. `runs` lists every run in the window with its project so other cost sources can join.",
+        "operationId": "get_costs_by_project",
+        "parameters": [
+          {
+            "description": "First UTC date whose runs are counted.",
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "description": "First UTC date whose runs are counted.",
+              "format": "date",
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          {
+            "description": "UTC date after the last counted one.",
+            "in": "query",
+            "name": "end",
+            "required": true,
+            "schema": {
+              "description": "UTC date after the last counted one.",
+              "format": "date",
+              "title": "End",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostsByProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Costs By Project"
       }
     },
     "/fetch-benchmark": {
@@ -5745,6 +6704,162 @@
           }
         },
         "summary": "Preview Results"
+      }
+    },
+    "/projects": {
+      "get": {
+        "description": "List the organization's projects by handle.",
+        "operationId": "list_projects",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Projects"
+      },
+      "post": {
+        "description": "Create a project that runs can be started in; the handle is unique within the organization.",
+        "operationId": "create_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "The handle is already taken"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Project"
+      }
+    },
+    "/projects/{handle}": {
+      "delete": {
+        "description": "Delete an unused project; any historical run link keeps it for spend attribution.",
+        "operationId": "delete_project",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "handle",
+            "required": true,
+            "schema": {
+              "title": "Handle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "The project was not found"
+          },
+          "409": {
+            "description": "The project has run history"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Project"
+      },
+      "put": {
+        "description": "Change a project's shared metadata; linked spend is reclassified under the current values.",
+        "operationId": "update_project",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "handle",
+            "required": true,
+            "schema": {
+              "title": "Handle",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "The project was not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project"
       }
     },
     "/retrieve-results": {

@@ -12,6 +12,7 @@ from pydantic import ConfigDict, BaseModel, BeforeValidator, Field, field_serial
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
 from valkyrie.sdk.models.config import AWSResources, LocalResources
+from valkyrie.sdk.models.projects import ProjectResponse
 
 
 class TaskStatus(str, Enum):
@@ -95,6 +96,7 @@ class StartBenchmarkRequest(BaseModel):
     ignore_custom_services: bool = False
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     sandbox_provider: str | None = None
+    project: str | None = Field(default=None, min_length=1)
 
 
 class FetchBenchmarksRequest(BaseModel):
@@ -159,6 +161,7 @@ class StartBenchmarkResponse(ResponseModel):
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
+    project: ProjectResponse | None = None
 
 
 class FetchBenchmarkResponse(ResponseModel):
@@ -296,6 +299,7 @@ class FetchBenchmarkMetadataResponse(ResponseModel):
     executor_artifact_uri: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
+    project: ProjectResponse | None = None
 
 
 class FinalEvaluation(ResponseModel):

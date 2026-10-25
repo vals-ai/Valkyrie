@@ -14,7 +14,7 @@ Represents an agent's `contract.yaml`, which says how to install and run the age
 Use `from_directory()` to load and check one before publishing, and `validate_kwargs()` to check a
 run's `-k` values. Tracker checks the published contract again when a run starts.
 
-Agents model · 11 fields
+Agents model · 12 fields
 
 **Fields**
 
@@ -64,13 +64,17 @@ Agents model · 11 fields
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_cmd"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">required · str</span></div>
 </div>
 
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"turns"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · AgentTurns | None · default: <code>{"None"}</code></span></div>
+</div>
+
 ---
 
 ## `AgentContractRequest` {#agent-contract-request}
 
 Agent definition submitted when starting a run.
 
-Agents model · 11 fields
+Agents model · 12 fields
 
 **Fields**
 
@@ -88,6 +92,10 @@ Agents model · 11 fields
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"run_cmd"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · str · default: <code>{"''"}</code></span></div>
+</div>
+
+<div className="border-b border-gray-200 py-3 dark:border-gray-800">
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"><span className="break-all font-mono text-sm">{"turns"}</span><span className="min-w-0 break-words text-sm text-gray-500 dark:text-gray-400">optional · AgentTurns | None · default: <code>{"None"}</code></span></div>
 </div>
 
 <div className="border-b border-gray-200 py-3 dark:border-gray-800">

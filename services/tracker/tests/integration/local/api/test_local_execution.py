@@ -57,7 +57,6 @@ def local_tracker(tracker_database: Session, monkeypatch: pytest.MonkeyPatch) ->
         artifact_digest="digest-local-release",
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
         status=ExecutorReleaseStatus.ACTIVE,
-        readiness_verified=True,
     )
     admission = tracker_database.get(ExecutorAdmission, 1)
     assert admission is not None
@@ -79,7 +78,7 @@ def local_tracker(tracker_database: Session, monkeypatch: pytest.MonkeyPatch) ->
     overrides = main_module.app.dependency_overrides
     monkeypatch.setitem(overrides, main_module.get_session, lambda: tracker_database)
     monkeypatch.setitem(overrides, main_module.get_current_org, lambda: ORG)
-    monkeypatch.setitem(overrides, main_module.get_current_starter, lambda: RequestIdentity(org=ORG))
+    monkeypatch.setitem(overrides, main_module.get_current_runner, lambda: RequestIdentity(org=ORG))
     monkeypatch.setattr(BenchmarkServiceClient, "health_check", health_check)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
     monkeypatch.setattr(BenchmarkServiceClient, "version", _version)

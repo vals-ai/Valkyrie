@@ -22,6 +22,7 @@ from valkyrie.cli.lazy import LazyGroup
         "output": ("valkyrie.cli.run.outputs:output_path", "Download files from a benchmark run by its ID."),
         "outputs": ("valkyrie.cli.run.outputs:outputs", "Fetch run outputs by run id."),
         "results": ("valkyrie.cli.run.results:results", "Retrieve run results by its run id."),
+        "retag": ("valkyrie.cli.run.retag:retag", "Put a run in another project, in any run state."),
         "resume": ("valkyrie.cli.run.resume:resume", "Resume a run by its run id."),
         "retry": ("valkyrie.cli.run.resume:retry_command", "Retry a run's errored tasks by its run id."),
         "shed": (

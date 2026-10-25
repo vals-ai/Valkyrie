@@ -18,7 +18,6 @@ from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.logging import benchmark_id_var
 from tracker.local import config as local_config
-from tracker.local.runtime import LocalRuntimeFactory
 from tracker.runtime.services import RuntimeServices
 
 
@@ -52,7 +51,14 @@ async def get_run_runtime(
     """Compose services for one authorized run operation."""
     arguments = benchmark.arguments
     if arguments.environment == "local":
-        return LocalRuntimeFactory.create_runtime(arguments.properties, org.id)
+        from tracker.local.runtime import LocalRuntimeFactory
+
+        return LocalRuntimeFactory.create_runtime(
+            arguments.properties,
+            org.id,
+            sandbox_provider=arguments.sandbox_provider,
+            sandbox_provider_secret_name=arguments.sandbox_provider_secret_name,
+        )
 
     aws_runtime = resolve_run_aws_runtime(
         properties=arguments.properties,
@@ -73,6 +79,8 @@ def get_agent_library_runtime(
 ) -> RuntimeServices:
     """Open agent storage without constructing sandbox access."""
     if local_config.resources is not None:
+        from tracker.local.runtime import LocalRuntimeFactory
+
         return LocalRuntimeFactory.create_runtime(local_config.resources, org.id)
     aws_runtime = resolve_org_aws_runtime(org)
 

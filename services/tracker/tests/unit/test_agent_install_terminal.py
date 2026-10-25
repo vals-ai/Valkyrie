@@ -1,4 +1,4 @@
-"""Exercise the real install wrapper, stream timing, and exit handling in a terminal."""
+"""Exercise the real install wrapper, output streaming, and exit handling in a terminal."""
 
 import asyncio
 import os
@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from benchmark_service import ExecResult
 from benchmark_service.sandbox import SandboxCommandError
 
 from tracker import sandbox as sandbox_module
@@ -29,7 +28,6 @@ def terminal_sandbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterato
 
     monkeypatch.setattr(sandbox_module, "get_contract_path", contract_path)
     monkeypatch.setattr(sandbox_module, "AGENT_INSTALL_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr(sandbox_module, "_STATUS_DIR", str(tmp_path / "status"))
     terminal_helper = Path(__file__).parents[1] / "fixtures" / "terminal_command.py"
 
     async def command(command: str) -> AsyncIterator[str]:
@@ -44,14 +42,8 @@ def terminal_sandbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterato
         if result.returncode:
             raise SandboxCommandError(result.returncode)
 
-    async def execute(command: str) -> ExecResult:
-        result = await asyncio.to_thread(
-            subprocess.run, ["sh", "-c", command], capture_output=True, text=True, timeout=5
-        )
-        return ExecResult(exit_code=result.returncode, output=result.stdout)
-
     try:
-        yield Mock(command=command, exec=execute)
+        yield Mock(command=command)
     finally:
         child_file = tmp_path / "child.pid"
         if child_file.exists():
@@ -93,7 +85,6 @@ async def test_installer_terminal_and_deadline(
         assert (tmp_path / "installed.txt").read_text() == "installed"
 
     assert time.monotonic() - started < 5
-    assert not list((tmp_path / "status").iterdir())
     child_file = tmp_path / "child.pid"
     if child_file.exists():
         child_id = int(child_file.read_text())

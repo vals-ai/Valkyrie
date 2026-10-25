@@ -1,9 +1,12 @@
 """Canonical durable dispatch-intent transaction contracts."""
 
+import base64
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from cryptography.exceptions import InvalidTag
+from tracker.executor import entrypoint
 from benchmark_service.schemas import DatasetVersion
 from sqlmodel import Session, col, select
 
@@ -18,6 +21,7 @@ from tracker.database.models import (
     ErrorResult,
     ExecutorDispatch,
     ExecutorDispatchKind,
+    ExecutorDispatchPayload,
     ExecutorDispatchStatus,
     ExecutorRelease,
     FailureCategory,
@@ -25,16 +29,18 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.executor.dispatch_control import (
+    ClaimedDispatch,
+    claim_dispatch,
+    finish_dispatch,
     EnqueueFailureResolution,
     admit_recovery_dispatch,
     admit_start_dispatch,
     record_dispatch_failure,
-    reconcile_expired_dispatches,
     resolve_enqueue_failure,
     terminalize_active_dispatches,
 )
 from tracker.exceptions import ExecutionAuthorityRevoked
-from tracker.executor import runner
+from tracker.executor.dispatch_payload import generate_payload_key, seal_payload
 from tracker.executor.execution_authority import ExecutionAuthority, lock_execution_authority
 from tracker.executor.release_control import (
     ReleaseControlError,
@@ -48,13 +54,30 @@ from tracker.scheduler.store import queue_pool_id, reserved_queue_pool_id
 _LEGACY_QUEUE_POOL_ID = queue_pool_id("daytona:org-1")
 
 
+def _fail_stopped_task(session: Session, dispatch: ExecutorDispatch) -> bool:
+    before_claim = dispatch.status == ExecutorDispatchStatus.QUEUED
+    return record_dispatch_failure(
+        session,
+        benchmark_id=dispatch.benchmark_id,
+        dispatch_id=dispatch.id,
+        task_ids=dispatch.assigned_task_ids or [],
+        error_message="Executor task stopped",
+        producer="executor_dispatch",
+        operation="dispatch_reconciliation",
+        error_type="ExecutorTaskStoppedBeforeClaim" if before_claim else "ExecutorTaskStopped",
+        category=FailureCategory.INFRASTRUCTURE,
+        cause_code="ECS_TASK_STOPPED",
+        failure_reason="ECS_TASK_STOPPED",
+        dispatch_status=dispatch.status,
+    )
+
+
 def _release(release_id: str, *, protocol_version: str = MANAGED_EXECUTION_PROTOCOL_VERSION) -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
-        artifact_uri=f"s3://artifacts/{release_id}.pex",
+        artifact_uri=f"source:///artifacts/{release_id}.pex",
         artifact_digest="a" * 64,
         protocol_version=protocol_version,
-        readiness_verified=True,
         created_at=datetime.now(UTC),
     )
 
@@ -481,12 +504,22 @@ def test_payload_decryption_failure_records_infrastructure_category(
     )
     database_session.add(task)
     database_session.commit()
-    monkeypatch.setattr(runner, "engine", database_session.get_bind())
-    store = runner.PostgresExecutorDispatchStore(
-        host="unused", port="0", dbname="unused", user="unused", password="unused"
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setattr(entrypoint, "engine", database_session.get_bind())
+    key = generate_payload_key(dispatch.id)
+    sealed = seal_payload(dispatch.id, {"benchmark_id_str": str(example_benchmark_object.id)}, key)
+    database_session.add(
+        ExecutorDispatchPayload(
+            dispatch_id=dispatch.id,
+            ciphertext=sealed.ciphertext + b"corrupt",
+            encrypted_data_key=sealed.encrypted_data_key,
+            nonce=sealed.nonce,
+        )
     )
+    database_session.commit()
 
-    assert store._fail_before_claim(str(dispatch.id), "InvalidTag")
+    with pytest.raises(InvalidTag):
+        entrypoint._claim(dispatch.id)
 
     database_session.expire_all()
     error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
@@ -743,143 +776,16 @@ def test_running_dispatch_failure_preserves_active_sibling(
     assert error_result.failed_attempt_number is None
 
 
-def test_expired_dispatch_failure_uses_persisted_assignment_and_reason(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-) -> None:
-    release = _release("active")
-    register_release(database_session, release)
-    pin_benchmark_to_release(example_benchmark_object, release)
-    dispatch = create_executor_dispatch(
-        example_benchmark_object.id,
-        release,
-        ExecutorDispatchKind.START,
-        dispatch_id=uuid4(),
-        task_ids=["owned-task", "newer-task"],
-    )
-    dispatch.status = ExecutorDispatchStatus.RUNNING
-    dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
-    dispatch.heartbeat_at = dispatch.started_at
-    dispatch.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
-    owned_task = Task(
-        org_id=example_benchmark_object.org_id,
-        benchmark=example_benchmark_object.id,
-        task_id="owned-task",
-        status=TaskStatus.IN_PROGRESS,
-        started_at=dispatch.created_at - timedelta(seconds=1),
-    )
-    newer_task = Task(
-        org_id=example_benchmark_object.org_id,
-        benchmark=example_benchmark_object.id,
-        task_id="newer-task",
-        status=TaskStatus.PENDING,
-        started_at=dispatch.created_at + timedelta(seconds=1),
-    )
-    database_session.add_all([example_benchmark_object, dispatch, owned_task, newer_task])
-    database_session.commit()
-
-    assert reconcile_expired_dispatches(database_session) == 1
-    database_session.commit()
-    database_session.refresh(example_benchmark_object)
-    database_session.refresh(dispatch)
-    database_session.refresh(owned_task)
-    database_session.refresh(newer_task)
-
-    assert example_benchmark_object.status == BenchmarkStatus.ERROR
-    assert dispatch.status == ExecutorDispatchStatus.FAILED
-    assert dispatch.failure_reason == "LEASE_EXPIRED"
-    assert owned_task.status == TaskStatus.ERROR
-    assert newer_task.status == TaskStatus.PENDING
-
-    error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == owned_task.id)).one()
-    assert error_result.cause_code == "LEASE_EXPIRED"
-    assert error_result.category == FailureCategory.INFRASTRUCTURE
-
-
-def test_fresh_heartbeat_wins_expiry_reconciliation(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-) -> None:
-    release = _release("active")
-    register_release(database_session, release)
-    pin_benchmark_to_release(example_benchmark_object, release)
-    dispatch = create_executor_dispatch(
-        example_benchmark_object.id,
-        release,
-        ExecutorDispatchKind.START,
-        dispatch_id=uuid4(),
-        task_ids=["task-1"],
-    )
-    dispatch.status = ExecutorDispatchStatus.RUNNING
-    dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
-    dispatch.heartbeat_at = datetime.now(UTC)
-    dispatch.lease_expires_at = datetime.now(UTC) + timedelta(minutes=4)
-    database_session.add_all([example_benchmark_object, dispatch])
-    database_session.commit()
-
-    assert reconcile_expired_dispatches(database_session) == 0
-    database_session.refresh(dispatch)
-    assert dispatch.status == ExecutorDispatchStatus.RUNNING
-
-
-def test_reconciliation_does_not_rewrite_dispatch_finished_after_expiry_scan(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    release = _release("active")
-    register_release(database_session, release)
-    pin_benchmark_to_release(example_benchmark_object, release)
-    dispatch = create_executor_dispatch(
-        example_benchmark_object.id,
-        release,
-        ExecutorDispatchKind.START,
-        dispatch_id=uuid4(),
-        task_ids=["task-1"],
-    )
-    dispatch.status = ExecutorDispatchStatus.RUNNING
-    dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
-    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
-    dispatch.heartbeat_at = dispatch.started_at
-    dispatch.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
-    database_session.add_all([example_benchmark_object, dispatch])
-    database_session.commit()
-
-    original_exec = database_session.exec
-    exec_calls = 0
-
-    def finish_dispatch_before_reload(statement: object, *args: object, **kwargs: object) -> object:
-        nonlocal exec_calls
-        exec_calls += 1
-        if exec_calls == 3:
-            dispatch.status = ExecutorDispatchStatus.FINISHED
-            dispatch.finished_at = datetime.now(UTC)
-            database_session.add(dispatch)
-        return original_exec(statement, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(database_session, "exec", finish_dispatch_before_reload)
-
-    assert reconcile_expired_dispatches(database_session) == 0
-    database_session.commit()
-    database_session.refresh(example_benchmark_object)
-    database_session.refresh(dispatch)
-
-    assert exec_calls == 4
-    assert example_benchmark_object.status == BenchmarkStatus.IN_PROGRESS
-    assert dispatch.status == ExecutorDispatchStatus.FINISHED
-
-
 @pytest.mark.parametrize(
-    ("dispatch_status", "task_status", "failure_reason"),
+    ("dispatch_status", "task_status"),
     [
-        (ExecutorDispatchStatus.RUNNING, TaskStatus.IN_PROGRESS, "LEASE_EXPIRED"),
-        (ExecutorDispatchStatus.QUEUED, TaskStatus.PENDING, "CLAIM_DEADLINE_EXPIRED"),
+        (ExecutorDispatchStatus.RUNNING, TaskStatus.IN_PROGRESS),
+        (ExecutorDispatchStatus.QUEUED, TaskStatus.PENDING),
     ],
 )
-def test_expired_last_dispatch_completes_graceful_stop(
+def test_last_dispatch_failure_completes_graceful_stop(
     dispatch_status: ExecutorDispatchStatus,
     task_status: TaskStatus,
-    failure_reason: str,
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
@@ -895,11 +801,8 @@ def test_expired_last_dispatch_completes_graceful_stop(
         task_ids=["task-1"],
     )
     dispatch.status = dispatch_status
-    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
     if dispatch_status == ExecutorDispatchStatus.RUNNING:
         dispatch.started_at = datetime.now(UTC) - timedelta(minutes=6)
-        dispatch.heartbeat_at = dispatch.started_at
-        dispatch.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
     task = Task(
         org_id=example_benchmark_object.org_id,
         benchmark=example_benchmark_object.id,
@@ -910,7 +813,7 @@ def test_expired_last_dispatch_completes_graceful_stop(
     database_session.add_all([example_benchmark_object, dispatch, task])
     database_session.commit()
 
-    assert reconcile_expired_dispatches(database_session) == 1
+    assert _fail_stopped_task(database_session, dispatch)
     database_session.commit()
     database_session.refresh(example_benchmark_object)
     database_session.refresh(dispatch)
@@ -919,11 +822,11 @@ def test_expired_last_dispatch_completes_graceful_stop(
     assert example_benchmark_object.status == BenchmarkStatus.STOPPED
     assert example_benchmark_object.finished_at is not None
     assert dispatch.status == ExecutorDispatchStatus.FAILED
-    assert dispatch.failure_reason == failure_reason
+    assert dispatch.failure_reason == "ECS_TASK_STOPPED"
     assert task.status == TaskStatus.ERROR
 
 
-def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
+def test_queued_dispatch_failure_errors_the_benchmark(
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
@@ -937,7 +840,6 @@ def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
         dispatch_id=uuid4(),
         task_ids=["task-1"],
     )
-    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
     task = Task(
         org_id=example_benchmark_object.org_id,
         benchmark=example_benchmark_object.id,
@@ -948,7 +850,7 @@ def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
     database_session.add_all([example_benchmark_object, dispatch, task])
     database_session.commit()
 
-    assert reconcile_expired_dispatches(database_session) == 1
+    assert _fail_stopped_task(database_session, dispatch)
     database_session.commit()
     database_session.refresh(example_benchmark_object)
     database_session.refresh(dispatch)
@@ -956,11 +858,11 @@ def test_expired_queued_dispatch_is_failed_before_it_can_block_completion(
 
     assert example_benchmark_object.status == BenchmarkStatus.ERROR
     assert dispatch.status == ExecutorDispatchStatus.FAILED
-    assert dispatch.failure_reason == "CLAIM_DEADLINE_EXPIRED"
+    assert dispatch.failure_reason == "ECS_TASK_STOPPED"
     assert task.status == TaskStatus.ERROR
 
     error_result = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
-    assert error_result.error_type == "ExecutorDispatchClaimDeadlineExpired"
+    assert error_result.error_type == "ExecutorTaskStoppedBeforeClaim"
     assert error_result.category == FailureCategory.INFRASTRUCTURE
 
 
@@ -1098,13 +1000,13 @@ def test_terminal_authority_rejects_stopped_state(
 
 @pytest.mark.parametrize("task_status", [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS])
 @pytest.mark.parametrize("assignment", [None, ["owned-task", "sibling-task"], ["sibling-task"]])
-def test_expiry_only_preserves_tasks_an_active_sibling_can_run(
+def test_dispatch_failure_only_preserves_tasks_an_active_sibling_can_run(
     database_session: Session,
     example_benchmark_object: Benchmark,
     task_status: TaskStatus,
     assignment: list[str] | None,
 ) -> None:
-    """Verify expiry respects sibling assignments and newer attempts.
+    """Verify failure recording respects sibling assignments and newer attempts.
 
     Test cases:
     - An unrelated sibling does not prevent cleanup of an expired assignment.
@@ -1121,7 +1023,6 @@ def test_expiry_only_preserves_tasks_an_active_sibling_can_run(
         dispatch_id=uuid4(),
         task_ids=["owned-task", "newer-task"],
     )
-    dispatch.claim_deadline_at = datetime.now(UTC) - timedelta(minutes=1)
     sibling = create_executor_dispatch(
         example_benchmark_object.id,
         release,
@@ -1151,7 +1052,7 @@ def test_expiry_only_preserves_tasks_an_active_sibling_can_run(
     database_session.add_all([example_benchmark_object, dispatch, sibling, task, newer_task, sibling_task])
     database_session.commit()
 
-    assert reconcile_expired_dispatches(database_session) == 1
+    assert _fail_stopped_task(database_session, dispatch)
     database_session.commit()
     for row in [example_benchmark_object, dispatch, sibling, task, newer_task, sibling_task]:
         database_session.refresh(row)
@@ -1166,4 +1067,132 @@ def test_expiry_only_preserves_tasks_an_active_sibling_can_run(
     errors = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).all()
     assert len(errors) == (1 if expected_status == TaskStatus.ERROR else 0)
     if errors:
-        assert errors[0].cause_code == "CLAIM_DEADLINE_EXPIRED"
+        assert errors[0].cause_code == "ECS_TASK_STOPPED"
+
+
+@pytest.fixture
+def local_payload_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setenv("EXECUTOR_PAYLOAD_LOCAL_KEY", base64.b64encode(b"k" * 32).decode())
+    monkeypatch.delenv("EXECUTOR_PAYLOAD_KMS_KEY_ID", raising=False)
+
+
+def _queue_claimable_dispatch(session: Session, benchmark: Benchmark) -> tuple[ExecutorRelease, ExecutorDispatch]:
+    release = _release("claimable")
+    register_release(session, release)
+    pin_benchmark_to_release(benchmark, release)
+    dispatch = create_executor_dispatch(
+        benchmark.id, release, ExecutorDispatchKind.START, dispatch_id=uuid4(), task_ids=["task-1"]
+    )
+    sealed = seal_payload(dispatch.id, {"benchmark_id_str": str(benchmark.id)}, generate_payload_key(dispatch.id))
+    payload = ExecutorDispatchPayload(
+        dispatch_id=dispatch.id,
+        ciphertext=sealed.ciphertext,
+        encrypted_data_key=sealed.encrypted_data_key,
+        nonce=sealed.nonce,
+    )
+    session.add_all([benchmark, dispatch, payload])
+    session.commit()
+    return release, dispatch
+
+
+@pytest.mark.usefixtures("local_payload_key")
+def test_claim_consumes_the_payload_once(database_session: Session, example_benchmark_object: Benchmark) -> None:
+    release, dispatch = _queue_claimable_dispatch(database_session, example_benchmark_object)
+
+    claimed = claim_dispatch(database_session, dispatch.id, task_arn=None)
+    database_session.commit()
+
+    assert claimed == ClaimedDispatch(
+        dispatch_id=dispatch.id,
+        benchmark_id=example_benchmark_object.id,
+        release_id=release.id,
+        assigned_task_ids=["task-1"],
+        payload={"benchmark_id_str": str(example_benchmark_object.id)},
+    )
+    database_session.refresh(dispatch)
+    assert dispatch.status == ExecutorDispatchStatus.RUNNING
+    assert dispatch.started_at is not None
+    assert database_session.get(ExecutorDispatchPayload, dispatch.id) is None
+    assert claim_dispatch(database_session, dispatch.id, task_arn=None) is None
+
+
+@pytest.mark.usefixtures("local_payload_key")
+@pytest.mark.parametrize("revocation", ["benchmark_stopping", "benchmark_repinned"])
+def test_claim_refuses_a_dispatch_the_benchmark_no_longer_owns(
+    database_session: Session, example_benchmark_object: Benchmark, revocation: str
+) -> None:
+    _, dispatch = _queue_claimable_dispatch(database_session, example_benchmark_object)
+    if revocation == "benchmark_stopping":
+        example_benchmark_object.status = BenchmarkStatus.STOPPING
+    else:
+        newer = _release("newer")
+        register_release(database_session, newer)
+        example_benchmark_object.current_execution_release_id = newer.id
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+
+    assert claim_dispatch(database_session, dispatch.id, task_arn=None) is None
+    database_session.refresh(dispatch)
+    assert dispatch.status == ExecutorDispatchStatus.QUEUED
+    assert database_session.get(ExecutorDispatchPayload, dispatch.id) is not None
+
+
+@pytest.mark.usefixtures("local_payload_key")
+@pytest.mark.parametrize(
+    ("benchmark_status", "with_sibling", "expected_status"),
+    [
+        (BenchmarkStatus.IN_PROGRESS, False, BenchmarkStatus.ERROR),
+        (BenchmarkStatus.IN_PROGRESS, True, BenchmarkStatus.IN_PROGRESS),
+        (BenchmarkStatus.STOPPING, False, BenchmarkStatus.STOPPED),
+        (BenchmarkStatus.FINISHED, False, BenchmarkStatus.FINISHED),
+    ],
+)
+def test_finish_finalizes_only_a_benchmark_no_dispatch_still_owns(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    benchmark_status: BenchmarkStatus,
+    with_sibling: bool,
+    expected_status: BenchmarkStatus,
+) -> None:
+    release, dispatch = _queue_claimable_dispatch(database_session, example_benchmark_object)
+    claimed = claim_dispatch(database_session, dispatch.id, task_arn=None)
+    assert claimed is not None
+    if with_sibling:
+        sibling = create_executor_dispatch(
+            example_benchmark_object.id, release, ExecutorDispatchKind.RETRY, dispatch_id=uuid4(), task_ids=["task-2"]
+        )
+        database_session.add(sibling)
+    example_benchmark_object.status = benchmark_status
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+
+    finish_dispatch(database_session, claimed)
+    database_session.commit()
+
+    database_session.refresh(dispatch)
+    database_session.refresh(example_benchmark_object)
+    assert dispatch.status == ExecutorDispatchStatus.FINISHED
+    assert dispatch.finished_at is not None
+    assert example_benchmark_object.status == expected_status
+
+
+@pytest.mark.usefixtures("local_payload_key")
+def test_finish_does_not_revive_a_dispatch_recovery_already_failed(
+    database_session: Session, example_benchmark_object: Benchmark
+) -> None:
+    _, dispatch = _queue_claimable_dispatch(database_session, example_benchmark_object)
+    claimed = claim_dispatch(database_session, dispatch.id, task_arn=None)
+    assert claimed is not None
+    database_session.commit()
+    database_session.refresh(dispatch)
+    assert _fail_stopped_task(database_session, dispatch)
+    database_session.commit()
+
+    finish_dispatch(database_session, claimed)
+    database_session.commit()
+
+    database_session.refresh(dispatch)
+    database_session.refresh(example_benchmark_object)
+    assert dispatch.status == ExecutorDispatchStatus.FAILED
+    assert example_benchmark_object.status == BenchmarkStatus.ERROR

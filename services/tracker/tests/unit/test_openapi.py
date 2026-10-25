@@ -13,6 +13,14 @@ def test_openapi_snapshot_matches_generator() -> None:
     assert snapshot_path.read_text() == expected
 
 
+def test_openapi_documents_project_maintenance_missing_and_linked_states() -> None:
+    operations = build_openapi()["paths"]["/projects/{handle}"]
+
+    assert "404" in operations["put"]["responses"]
+    assert "404" in operations["delete"]["responses"]
+    assert "409" in operations["delete"]["responses"]
+
+
 def test_openapi_declares_authentication() -> None:
     schema = build_openapi()
 

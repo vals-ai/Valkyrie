@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from types import TracebackType
 
@@ -10,6 +11,7 @@ from tracker.runtime.lifecycle import finish_cleanup
 from tracker.runtime.logs import BenchmarkLogSink
 
 logger = get_logger(__name__)
+logging_executor = ThreadPoolExecutor(thread_name_prefix="tracker-task-logs")
 
 
 class TaskLogBuffer:
@@ -51,7 +53,9 @@ class TaskLogBuffer:
         if not message:
             return
 
-        future = asyncio.get_running_loop().run_in_executor(None, self._sink.write, self._stream_key, message)
+        future = asyncio.get_running_loop().run_in_executor(
+            logging_executor, self._sink.write, self._stream_key, message
+        )
         self._pending_writes.add(future)
         future.add_done_callback(self._write_finished)
 

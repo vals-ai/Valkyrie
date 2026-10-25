@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import UTC, datetime
+from hashlib import sha256
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -15,8 +16,9 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from benchmark_service import SandboxSource
 from benchmark_service.schemas import DatasetVersion
-from sqlalchemy import Boolean, Connection, DateTime, Dialect, Index, event, text
+from sqlalchemy import Boolean, Connection, DateTime, Dialect, Identity, Index, Integer, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -113,9 +115,30 @@ class FailureCategory(str, Enum):
     UNKNOWN = "unknown"
 
 
+class FailurePhase(str, Enum):
+    """Marks how far a task attempt got before it failed.
+
+    ADMISSION, SANDBOX and SETUP come before the agent runs, so a retry from one of them
+    costs no model spend. AGENT and EVALUATION have already paid for generation, and a
+    retry from scratch pays for it again.
+    """
+
+    ADMISSION = "admission"
+    SANDBOX = "sandbox"
+    SETUP = "setup"
+    AGENT = "agent"
+    EVALUATION = "evaluation"
+
+
 class RetryMode(str, Enum):
     AUTO = "auto"
     FROM_SCRATCH = "from_scratch"
+
+
+class SpendType(str, Enum):
+    DEVELOPMENT = "development"
+    INTERNAL = "internal"
+    CUSTOMER = "customer"
 
 
 MAX_OUTPUT_ARTIFACT_BYTES = 250 * 1024 * 1024
@@ -165,11 +188,18 @@ class OutputArtifact(BaseModel):
 OutputArtifactSpec = str | OutputArtifact
 
 
+class AgentTurns(BaseModel):
+    continue_cmd: str | None = None
+    interrupt_grace_seconds: float | None = None
+    container_name: str | None = None
+
+
 class AgentContractRequest(BaseModel):
     name: str
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""
+    turns: AgentTurns | None = None
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     egress_allowlist: list[str] = []
@@ -312,9 +342,8 @@ class ExecutorRelease(SQLModel, table=True):
     artifact_uri: str
     artifact_digest: str
     protocol_version: str
+    task_definition_arn: str | None = None
     status: ExecutorReleaseStatus = Field(default=ExecutorReleaseStatus.CANDIDATE)
-    readiness_verified: bool = False
-    readiness_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     activated_at: datetime | None = None
     draining_at: datetime | None = None
@@ -350,11 +379,9 @@ class ExecutorDispatch(SQLModel, table=True):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     assigned_task_ids: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
-    claim_deadline_at: datetime | None = None
-    heartbeat_at: datetime | None = None
-    lease_expires_at: datetime | None = None
     failure_reason: str | None = None
     ecs_task_arn: str | None = None
+    lease_expires_at: datetime | None = None
 
 
 class OrganizationInvite(SQLModel, table=True):
@@ -379,6 +406,46 @@ class RunAccessKey(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
     last_attempt_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+
+
+class SandboxRecord(SQLModel, table=True):
+    """One sandbox a task attempt created, kept so the provider's bill for it can be joined to its run."""
+
+    __tablename__ = "sandbox"
+    __table_args__ = (Index("ix_sandbox_benchmark_id", "benchmark_id"),)
+
+    provider: str = Field(primary_key=True)
+    sandbox_id: str = Field(primary_key=True)
+    benchmark_id: UUID = Field(foreign_key="benchmark.id")
+
+
+class RunCost(SQLModel, table=True):
+    """One charge to a run.
+
+    `source_id` traces the charge to what made it when there is one, e.g. the sandbox id for a sandbox.
+    Only sandbox rows are deduplicated, by (provider, source_id); other cost types choose their own rule
+    when they are added.
+    """
+
+    __tablename__ = "run_cost"
+    __table_args__ = (
+        Index("ix_run_cost_benchmark_id", "benchmark_id"),
+        Index(
+            "uq_run_cost_sandbox_provider_source_id",
+            "provider",
+            "source_id",
+            unique=True,
+            postgresql_where=text("cost_type = 'sandbox'"),
+            sqlite_where=text("cost_type = 'sandbox'"),
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    benchmark_id: UUID = Field(foreign_key="benchmark.id")
+    cost_type: str
+    source_id: str | None = None
+    provider: str
+    amount_usd: float
 
 
 class OrgProviderSecret(SQLModel, table=True):
@@ -426,19 +493,42 @@ class SandboxBuildReservation(SQLModel, table=True):
 
     __table_args__ = (
         CheckConstraint(
-            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0",
+            "requested_vcpu >= 0 AND requested_memory >= 0 AND requested_disk >= 0 AND requested_gpu >= 0",
             name="sandbox_build_reservation_resources_nonnegative",
         ),
         Index("ix_sandboxbuildreservation_pool", "pool_id"),
+        Index("ix_sandboxbuildreservation_pool_released_at", "pool_id", "released_at"),
     )
 
     task_row_id: UUID = Field(primary_key=True, foreign_key="task.id")
-    attempt_started_at: datetime
+    attempt_started_at: datetime = Field(primary_key=True)
     reserved_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    released_at: datetime | None = None
     pool_id: str
-    requested_vcpu: int
-    requested_memory: int
-    requested_disk: int
+    target_id: str
+    sandbox_class: str
+    requested_vcpu: float
+    requested_memory: float
+    requested_disk: float
+    requested_gpu: float
+
+
+class SandboxAdmissionCandidate(SQLModel, table=True):
+    """Resolved demand and provider readiness for one executor's pending attempt."""
+
+    __table_args__ = (Index("ix_sandboxadmissioncandidate_pool", "pool_id"),)
+
+    task_row_id: UUID = Field(primary_key=True, foreign_key="task.id")
+    attempt_started_at: datetime = Field(primary_key=True)
+    executor_dispatch_id: UUID = Field(foreign_key="executordispatch.id")
+    admission_ready: bool
+    pool_id: str
+    target_id: str
+    sandbox_class: str
+    requested_vcpu: float
+    requested_memory: float
+    requested_disk: float
+    requested_gpu: float
 
 
 class Benchmark(SQLModel, table=True):
@@ -575,7 +665,10 @@ class Benchmark(SQLModel, table=True):
             else self.custom_benchmark_service or create_benchmark_service_url(self.name)
         )
         return create_benchmark_service_client(
-            url=url, service_headers=service_headers, dataset_version=self.arguments.dataset_version
+            url=url,
+            service_headers=service_headers,
+            dataset_version=self.arguments.dataset_version,
+            sandbox_provider=self.arguments.sandbox_provider,
         )
 
     @property
@@ -656,6 +749,58 @@ class Benchmark(SQLModel, table=True):
         ).first()
         return row if row is not None else None
 
+    def fetch_project(self, session: Session) -> "Project | None":
+        """Return the project of this run's last-appended project link, or None if the run was started without one."""
+        return session.exec(
+            select(Project)
+            .join(RunProject, col(RunProject.project_id) == col(Project.id))
+            .where(col(RunProject.benchmark_id) == self.id)
+            .order_by(col(RunProject.id).desc())
+            .limit(1)
+        ).first()
+
+
+class Project(SQLModel, table=True):
+    """A piece of work runs spend money on, with the spend type and tags every run in it shares.
+
+    ``handle`` is the immutable string people type (``my-project``) and ``name`` is the label they read (``My Project``).
+    """
+
+    __table_args__ = (UniqueConstraint("org_id", "handle", name="unique_project_handle_per_org"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    org_id: UUID = Field(foreign_key="org.id")
+    handle: str
+    name: str
+    spend_type: SpendType
+    subcategory: str | None = None
+    customer: str | None = None
+    extra_tags: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(ZoneInfo("UTC")),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    created_by_email: str | None = None
+
+
+class RunProject(SQLModel, table=True):
+    """One link from a run to a project; the link with the highest ``id`` is the run's current project.
+
+    The database assigns ``id`` in insert order, so it is the append order even when two links share a timestamp.
+    ``created_at`` and ``created_by_email`` record when the run was moved and who moved it; they never decide the order.
+    """
+
+    __tablename__ = "run_project"
+
+    id: int | None = Field(default=None, sa_column=Column(Integer, Identity(), primary_key=True))
+    benchmark_id: UUID = Field(foreign_key="benchmark.id", index=True)
+    project_id: UUID = Field(foreign_key="project.id")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(ZoneInfo("UTC")),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    created_by_email: str | None = None
+
 
 @event.listens_for(Benchmark, "before_insert")
 @event.listens_for(Benchmark, "before_update")
@@ -681,6 +826,42 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
         target.finished_at = datetime.now(ZoneInfo("UTC"))
 
 
+class ActiveNativeOutput(BaseModel):
+    """Internal attachment to one task attempt's actual sandbox, without credentials."""
+
+    attempt_started_at: datetime
+    sandbox_id: str
+    runtime_source: SandboxSource
+    output_path: str
+
+    @property
+    def generation(self) -> str:
+        started_at = self.attempt_started_at
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        identity = f"{started_at.astimezone(UTC).isoformat()}\0{self.sandbox_id}"
+        return sha256(identity.encode()).hexdigest()
+
+    def matches_attempt(self, started_at: datetime) -> bool:
+        def utc(value: datetime) -> datetime:
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+        return utc(self.attempt_started_at) == utc(started_at)
+
+
+class ActiveNativeOutputType(TypeDecorator[ActiveNativeOutput]):
+    """The single serialization owner for the internal JSON descriptor."""
+
+    impl = JSON
+    cache_ok = True
+
+    def process_bind_param(self, value: ActiveNativeOutput | None, dialect: Dialect) -> dict[str, Any] | None:
+        return value.model_dump(mode="json") if value is not None else None
+
+    def process_result_value(self, value: dict[str, Any] | None, dialect: Dialect) -> ActiveNativeOutput | None:
+        return ActiveNativeOutput.model_validate(value) if value is not None else None
+
+
 class Task(SQLModel, table=True):
     __table_args__: tuple[CheckConstraint, UniqueConstraint, Index] = (
         CheckConstraint(
@@ -703,6 +884,12 @@ class Task(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    active_native_output: ActiveNativeOutput | None = Field(
+        default=None, exclude=True, sa_column=Column(ActiveNativeOutputType(), nullable=True)
+    )
+    credited_wall_deadline_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
@@ -731,6 +918,13 @@ class TaskBreakdown(SQLModel, table=True):
     agent_run_duration: float | None = Field(default=None)
     evaluation_run_duration: float | None = Field(default=None)
     sandbox_run_duration: float | None = Field(default=None)
+    accounting_id: str | None = Field(default=None)
+    base_generation_allowance_seconds: float | None = Field(default=None)
+    cumulative_time_credit_cap_seconds: float | None = Field(default=None)
+    external_service_overhead_seconds: float | None = Field(default=None)
+    external_service_credit_applied_seconds: float | None = Field(default=None)
+    external_service_credit_revision: int | None = Field(default=None)
+    generation_elapsed_seconds: float | None = Field(default=None)
 
 
 class ResultBase(SQLModel):
@@ -765,6 +959,8 @@ class ErrorResult(ResultBase, table=True):
     error_type: str | None = Field(default=None)
     cause_code: str | None = Field(default=None)
     category: FailureCategory | None = Field(default=None)
+    phase: FailurePhase | None = Field(default=None)
+    transient: bool | None = Field(default=None)
     retry_scheduled: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),

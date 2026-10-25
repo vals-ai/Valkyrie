@@ -28,6 +28,7 @@ from valkyrie.sdk.models import (
     ResultsExistResponse,
     RetryMode,
     RetryOrResumeBenchmarkResponse,
+    ProjectResponse,
     RunStreamEvent,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
@@ -68,8 +69,9 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         ignore_custom_services: bool = False,
+        project: str | None = None,
     ) -> StartBenchmarkResponse:
-        """Start a run from an uploaded agent name or complete contract."""
+        """Start a run from an uploaded agent name or complete contract, in the project whose handle is ``project``."""
         if concurrency < 1:
             raise ValkyrieRunError("concurrency must be greater than 0")
         if priority is not None and (type(priority) is not int or priority not in range(5)):
@@ -95,6 +97,7 @@ class RunsResource:
             service_headers=dict(service_headers or {}),
             sandbox_provider=provider,
             ignore_custom_services=ignore_custom_services,
+            project=project,
         )
         return await self._sdk.request_model(
             "POST",
@@ -369,6 +372,12 @@ class RunsResource:
             f"/benchmarks/{run_id}/concurrency",
             UpdateBenchmarkConcurrencyResponse,
             json=request.model_dump(mode="json"),
+        )
+
+    async def retag(self, run_id: UUID, project: str) -> ProjectResponse:
+        """Put a run in the project whose handle is ``project``, in any run state. Earlier project links are kept."""
+        return await self._sdk.request_model(
+            "POST", f"/benchmarks/{run_id}/project", ProjectResponse, json={"project": project}
         )
 
     async def shed(self, run_id: UUID, *, concurrency: int, dry_run: bool = False) -> ShedBenchmarkResponse:

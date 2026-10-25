@@ -1,39 +1,73 @@
 ---
-title: Benchmark authentication
-description: Keep a benchmark service's credential in your organization's secrets and send request-specific headers.
+title: "Secure a benchmark service"
+sidebarTitle: "Authentication"
+description: "Require a credential in your benchmark service, and have Valkyrie send it."
 ---
 
-Benchmark-service credentials are separate from the login or access key you use with the Tracker. The Tracker keeps them as secrets of your organization and adds them to its requests to the service.
+To keep a deployed benchmark service private, have it answer only callers that hold its
+credential. You set the check in the service, and save the credential in Valkyrie, which sends it with every
+request to that service. This credential is separate from your Valkyrie login and access
+keys.
 
-## Save a credential with the service
+Services that Vals AI hosts need none of this: Valkyrie authenticates to them for you.
 
-Store the credential as a secret, then name the secret when you save the service URL:
+## Require a credential
 
-```bash
-valkyrie secret set swebench-key
-valkyrie benchmark service set swebench https://benchmark.example.com --auth-secret swebench-key
+A service built with create-benchmark-service accepts every request unless it runs with
+`AUTH_REQUIRED=true`. With it set, the service rejects requests until you implement the
+check. Override `check_auth` in your benchmark class:
+
+```python
+import os
+
+from benchmark_service import BenchmarkService
+
+
+class MyBenchmark(BenchmarkService):
+    async def check_auth(self, headers: dict[str, str]) -> bool:
+        return headers.get("authorization") == f"Bearer {os.environ['SERVICE_TOKEN']}"
 ```
 
-The Tracker sends the secret's value as the `Authorization` header on every request to that service, for your runs and task listings. Store the value exactly as the header should carry it, such as `Bearer <token>`. Services built from create-benchmark-service read a Descope access key from `X-Descope-Api-Key` instead; see [Save the endpoint](/benchmarks/custom-services#save-the-endpoint).
+Header names arrive in lowercase. Requests that fail the check get `401 Unauthorized`. The
+[create-benchmark-service README](https://github.com/vals-ai/create-benchmark-service#authentication)
+shows how to allow some callers only some datasets.
 
-- The secret has to exist in your organization's secrets when you save the service.
-- Saving the service again replaces its URL and credential, so leave out `--auth-secret` to stop sending one; `valkyrie secret set` changes the credential's value without saving the service again.
-- Headers the Tracker controls, such as `X-Api-Key` and `Host`, are refused.
-- Runs and task listings with `--ignore-custom-services` use the hosted service and don't send the saved credential, and a local Tracker, which has no organization secrets, refuses it.
-- Resuming or retrying a run doesn't send it again; pass the credential with `-H` to `valkyrie run resume`.
+## Save the credential with the service
 
-See the [`benchmark service set`](/reference/cli/benchmark#service-set) and [`secret set`](/reference/cli/secret#set) reference for full syntax.
-
-## Send runtime headers
-
-Use repeatable `-H` or `--header` pairs:
+Store the credential as a secret of your organization, exactly as the header carries
+it, such as `Bearer TOKEN`, where *`TOKEN`* is the service's token. Then name the secret when you save the service URL:
 
 ```bash
-valkyrie run start \
-  --benchmark my-benchmark \
-  --agent sweagent \
-  -H X-Custom-Header my-value \
-  -H X-Another-Header another-value
+valkyrie secret set swebench-token
+
+valkyrie benchmark service set swebench https://benchmark.example.com \
+  --auth-secret swebench-token
 ```
 
-Runtime headers are sent alongside the saved credential, which always goes with the saved URL.
+Valkyrie sends the secret's value as the `Authorization` header on every request to that
+service, for your runs and task listings. To use another header, add
+`--auth-header X-Service-Token`. Headers that Valkyrie controls, such as `Host` and
+`X-Api-Key`, are refused.
+
+- To change the credential, run `valkyrie secret set swebench-token` again. To stop sending
+  it, save the service again without `--auth-secret`.
+- Retries and resumes don't send the saved credential. Pass it with
+  `-H Authorization "Bearer TOKEN"` to `valkyrie run retry` or `valkyrie run resume`.
+- Runs with `--ignore-custom-services` use the hosted service and don't send the
+  credential.
+- A [local Tracker](/self-hosting/local-tracker) that reads secrets from a file can't send a
+  saved credential.
+
+## Send request headers
+
+`-H NAME VALUE` adds a header to the benchmark service requests of one run. Repeat it for
+more headers:
+
+```bash
+valkyrie run start --agent my-agent --benchmark swebench --project my-project \
+  -H X-Experiment sweep-a \
+  -H X-Team research
+```
+
+When a header has the same name as the saved credential's header, the saved credential
+wins.

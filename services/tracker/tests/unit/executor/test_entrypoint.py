@@ -1,245 +1,170 @@
-"""Tests for the immutable executor PEX entrypoint.
-
-Run: uv run pytest tests/unit/executor/test_entrypoint.py
-"""
+"""Run with `uv run pytest tests/unit/executor/test_entrypoint.py`."""
 
 import asyncio
-import json
+import os
 import signal
 import sys
-from collections.abc import Callable
-from pathlib import Path
+import threading
+from datetime import timedelta
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID, uuid4
 
 import pytest
-import sentry_sdk
-from opentelemetry import trace
-from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
-from opentelemetry.trace.propagation import set_span_in_context
 from pytest import MonkeyPatch
 
 from tracker.config import ENVIRONMENT
-from tracker.executor import entrypoint as executor_entrypoint
-from tracker.logging import benchmark_id_var, request_id_var, task_id_var
-from tracker.logging.context import attempt_started_at_var, executor_dispatch_id_var
+from tracker.database.models import FailureCategory
+from tracker.executor import entrypoint
+from tracker.executor.dispatch_control import ClaimedDispatch
 
 
-@pytest.fixture(autouse=True)
-def observability(monkeypatch: MonkeyPatch) -> tuple[Mock, Mock]:
+@pytest.fixture
+def lifecycle(monkeypatch: MonkeyPatch) -> dict[str, Mock]:
+    mocks = {name: Mock() for name in ("_finish", "_fail", "record_dispatch_completion")}
+    for name, mock in mocks.items():
+        monkeypatch.setattr(entrypoint, name, mock)
+    return mocks
+
+
+def _claimed(dispatch_id: UUID) -> ClaimedDispatch:
+    return ClaimedDispatch(
+        dispatch_id=dispatch_id,
+        benchmark_id=uuid4(),
+        release_id="release-1",
+        assigned_task_ids=["task-1"],
+        payload={
+            "start_benchmark_request_json": {"benchmark": "test-benchmark"},
+            "benchmark_id_str": "benchmark-id",
+            "verified_task_ids": ["task-1"],
+            "telemetry_context_json": {"request_id": "request-id", "trace_headers": {}},
+        },
+    )
+
+
+def test_main_runs_the_dispatch_and_flushes(monkeypatch: MonkeyPatch) -> None:
+    dispatch_id = uuid4()
+    run_dispatch = AsyncMock()
     configure = Mock()
     flush = Mock()
-    monkeypatch.setattr(executor_entrypoint, "configure_observability", configure)
-    monkeypatch.setattr(executor_entrypoint, "_flush_observability", flush)
-    return configure, flush
+    monkeypatch.setattr(entrypoint, "run_dispatch", run_dispatch)
+    monkeypatch.setattr(entrypoint, "configure_logging", Mock())
+    monkeypatch.setattr(entrypoint, "configure_observability", configure)
+    monkeypatch.setattr(entrypoint, "_flush_observability", flush)
+    monkeypatch.setattr(sys, "argv", ["executor-entrypoint", "--dispatch-id", str(dispatch_id)])
+
+    entrypoint.main()
+
+    configure.assert_called_once_with("valkyrie-executor", environment=ENVIRONMENT)
+    run_dispatch.assert_awaited_once_with(dispatch_id)
+    flush.assert_called_once_with()
 
 
-@pytest.mark.asyncio
-async def test_sigterm_cancels_executor_and_awaits_cleanup(monkeypatch: MonkeyPatch) -> None:
-    started = asyncio.Event()
-    cleaned_up = asyncio.Event()
-    signal_handler: Callable[[], None] | None = None
-    loop = asyncio.get_running_loop()
+def test_unclaimable_dispatch_runs_nothing(monkeypatch: MonkeyPatch, lifecycle: dict[str, Mock]) -> None:
+    process_benchmark = AsyncMock()
+    monkeypatch.setattr(entrypoint, "_claim", lambda _dispatch_id: None)
+    monkeypatch.setattr(entrypoint, "process_benchmark", process_benchmark)
 
-    async def process_benchmark(**_payload: object) -> None:
-        started.set()
+    asyncio.run(entrypoint.run_dispatch(uuid4()))
+
+    process_benchmark.assert_not_awaited()
+    lifecycle["_finish"].assert_not_called()
+    lifecycle["_fail"].assert_not_called()
+
+
+def test_failed_dispatch_records_the_failure_and_reraises(monkeypatch: MonkeyPatch, lifecycle: dict[str, Mock]) -> None:
+    dispatch_id = uuid4()
+    claimed = _claimed(dispatch_id)
+    capture = Mock()
+    monkeypatch.setattr(entrypoint, "_claim", lambda _dispatch_id: claimed)
+    monkeypatch.setattr(entrypoint, "process_benchmark", AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(entrypoint, "capture_dispatch_error", capture)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(entrypoint.run_dispatch(dispatch_id))
+
+    lifecycle["_fail"].assert_called_once_with(
+        claimed, "Executor dispatch failed: boom", "RuntimeError", "EXECUTOR_FAILED", FailureCategory.UNKNOWN
+    )
+    lifecycle["_finish"].assert_not_called()
+    capture.assert_called_once()
+
+
+def test_sigterm_cancels_the_dispatch_and_records_cancellation(
+    monkeypatch: MonkeyPatch, lifecycle: dict[str, Mock]
+) -> None:
+    dispatch_id = uuid4()
+    claimed = _claimed(dispatch_id)
+    cancellation = Mock()
+
+    async def hang_until_terminated(**_kwargs: object) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(entrypoint, "_claim", lambda _dispatch_id: claimed)
+    monkeypatch.setattr(entrypoint, "process_benchmark", hang_until_terminated)
+    monkeypatch.setattr(entrypoint, "record_dispatch_cancellation", cancellation)
+
+    async def terminated_by_signal() -> None:
+        dispatch = asyncio.create_task(entrypoint.run_dispatch(dispatch_id))
         try:
-            await asyncio.Event().wait()
+            done, _ = await asyncio.wait({dispatch}, timeout=2)
+            assert dispatch in done, "SIGTERM did not cancel benchmark work"
+            await dispatch
         finally:
-            cleaned_up.set()
+            dispatch.cancel()
+            await asyncio.gather(dispatch, return_exceptions=True)
 
-    def add_signal_handler(received_signal: signal.Signals, handler: Callable[[], None]) -> None:
-        nonlocal signal_handler
-        assert received_signal == signal.SIGTERM
-        signal_handler = handler
+    asyncio.run(terminated_by_signal())
 
-    def remove_signal_handler(received_signal: signal.Signals) -> bool:
-        return received_signal == signal.SIGTERM
-
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
-    monkeypatch.setattr(loop, "add_signal_handler", add_signal_handler)
-    monkeypatch.setattr(loop, "remove_signal_handler", remove_signal_handler)
-
-    executor = asyncio.create_task(
-        executor_entrypoint._run_executor(  # pyright: ignore[reportPrivateUsage]
-            {
-                "start_benchmark_request_json": {},
-                "benchmark_id_str": "benchmark-id",
-                "verified_task_ids": [],
-                "executor_dispatch_id": "dispatch-id",
-            }
-        )
+    lifecycle["_fail"].assert_called_once_with(
+        claimed,
+        "Executor dispatch was cancelled",
+        "ExecutorDispatchCancelled",
+        "EXECUTOR_CANCELLED",
+        FailureCategory.CANCELLED,
     )
-    await started.wait()
-    assert signal_handler is not None
-    signal_handler()
-    await executor
-
-    assert cleaned_up.is_set()
+    lifecycle["_finish"].assert_not_called()
+    cancellation.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_unhandled_executor_error_is_captured_with_run_context(monkeypatch: MonkeyPatch) -> None:
-    error = RuntimeError("executor failed")
-
-    async def process_benchmark(**_payload: object) -> None:
-        raise error
-
-    captured_context: dict[str, str] = {}
-
-    def capture_exception(captured_error: BaseException) -> None:
-        assert captured_error is error
-        captured_context["benchmark_id"] = benchmark_id_var.get()
-        captured_context["request_id"] = request_id_var.get()
-        captured_context["executor_dispatch_id"] = executor_dispatch_id_var.get()
-
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
-    monkeypatch.setattr(sentry_sdk, "capture_exception", capture_exception)
-
-    with pytest.raises(RuntimeError, match="executor failed"):
-        await executor_entrypoint._run_executor(  # pyright: ignore[reportPrivateUsage]
-            {
-                "benchmark_id_str": "benchmark-id",
-                "telemetry_context_json": {"request_id": "request-id", "trace_headers": {}},
-                "executor_dispatch_id": "dispatch-id",
-            }
-        )
-
-    assert captured_context == {
-        "benchmark_id": "benchmark-id",
-        "request_id": "request-id",
-        "executor_dispatch_id": "dispatch-id",
-    }
-
-
-def test_main_forwards_executor_payload(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    observability: tuple[Mock, Mock],
+def test_local_lease_cancels_work_while_renewal_is_blocked(
+    monkeypatch: MonkeyPatch, lifecycle: dict[str, Mock]
 ) -> None:
-    payload = {
-        "start_benchmark_request_json": {"benchmark": "test-benchmark"},
-        "benchmark_id_str": "benchmark-id",
-        "verified_task_ids": ["task-1", "task-2"],
-        "executor_dispatch_id": "dispatch-id",
-    }
-    payload_path = tmp_path / "payload.json"
-    payload_path.write_text(json.dumps(payload), encoding="utf-8")
-    process_benchmark = AsyncMock()
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
-    monkeypatch.setattr(sys, "argv", ["executor-entrypoint", str(payload_path)])
+    renewal_started = threading.Event()
+    release_renewal = threading.Event()
+    work_cancelled = threading.Event()
 
-    executor_entrypoint.main()
+    def blocked_renewal(_dispatch_id: UUID) -> bool:
+        renewal_started.set()
+        assert release_renewal.wait(5)
+        return True
 
-    configure, flush = observability
-    configure.assert_called_once_with("valkyrie-executor", environment=ENVIRONMENT)
-    flush.assert_called_once_with()
-    process_benchmark.assert_awaited_once_with(
-        start_benchmark_request_json=payload["start_benchmark_request_json"],
-        benchmark_id_str=payload["benchmark_id_str"],
-        verified_task_ids=payload["verified_task_ids"],
-        execution_context_json=None,
-        executor_dispatch_id=payload["executor_dispatch_id"],
-    )
+    async def benchmark(**_kwargs: object) -> None:
+        try:
+            await asyncio.Future()
+        finally:
+            work_cancelled.set()
+            release_renewal.set()
 
+    monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
+    monkeypatch.setattr(entrypoint, "LOCAL_DISPATCH_LEASE", timedelta(seconds=0.1))
+    monkeypatch.setattr(entrypoint, "_LOCAL_RENEW_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(entrypoint, "_claim", _claimed)
+    monkeypatch.setattr(entrypoint, "_renew_local", blocked_renewal)
+    monkeypatch.setattr(entrypoint, "process_benchmark", benchmark)
 
-def test_main_forwards_managed_execution_payload(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    observability: tuple[Mock, Mock],
-) -> None:
-    payload = {
-        "execution_context_json": {"benchmark_id": "benchmark-id"},
-        "executor_dispatch_id": "dispatch-id",
-    }
-    payload_path = tmp_path / "payload.json"
-    payload_path.write_text(json.dumps(payload), encoding="utf-8")
-    process_benchmark = AsyncMock()
-    monkeypatch.setattr(executor_entrypoint, "process_benchmark", process_benchmark)
-    monkeypatch.setattr(sys, "argv", ["executor-entrypoint", str(payload_path)])
+    async def expired_by_lease() -> None:
+        dispatch = asyncio.create_task(entrypoint.run_dispatch(uuid4()))
+        try:
+            done, _ = await asyncio.wait({dispatch}, timeout=1)
+            assert dispatch in done, "Lease expiry did not cancel benchmark work"
+            await dispatch
+        finally:
+            release_renewal.set()
+            dispatch.cancel()
+            await asyncio.gather(dispatch, return_exceptions=True)
 
-    executor_entrypoint.main()
-
-    configure, flush = observability
-    configure.assert_called_once_with("valkyrie-executor", environment=ENVIRONMENT)
-    flush.assert_called_once_with()
-    process_benchmark.assert_awaited_once_with(
-        start_benchmark_request_json=None,
-        benchmark_id_str=None,
-        verified_task_ids=None,
-        execution_context_json=payload["execution_context_json"],
-        executor_dispatch_id=payload["executor_dispatch_id"],
-    )
-
-
-def test_executor_context_restores_run_and_trace_context(monkeypatch: MonkeyPatch) -> None:
-    parent_span = NonRecordingSpan(
-        SpanContext(
-            trace_id=0x1234567890ABCDEF1234567890ABCDEF,
-            span_id=0x1234567890ABCDEF,
-            is_remote=True,
-            trace_flags=TraceFlags(TraceFlags.SAMPLED),
-        )
-    )
-    extract = Mock(return_value=set_span_in_context(parent_span))
-    monkeypatch.setattr(executor_entrypoint, "extract", extract)
-    request_token = request_id_var.set("outer-request")
-    benchmark_token = benchmark_id_var.set("outer-benchmark")
-    task_token = task_id_var.set("outer-task")
-    dispatch_token = executor_dispatch_id_var.set("outer-dispatch")
-    attempt_token = attempt_started_at_var.set("outer-attempt")
-
-    try:
-        with executor_entrypoint._executor_context(  # pyright: ignore[reportPrivateUsage]
-            {
-                "execution_context_json": {"benchmark_id": "benchmark-id"},
-                "executor_dispatch_id": "dispatch-id",
-                "telemetry_context_json": {
-                    "request_id": "request-id",
-                    "trace_headers": {"sentry-trace": "trace-header", "baggage": "baggage-header"},
-                },
-            }
-        ):
-            assert request_id_var.get() == "request-id"
-            assert benchmark_id_var.get() == "benchmark-id"
-            assert task_id_var.get() == ""
-            assert executor_dispatch_id_var.get() == "dispatch-id"
-            assert attempt_started_at_var.get() == ""
-            assert trace.get_current_span().get_span_context() == parent_span.get_span_context()
-
-        assert request_id_var.get() == "outer-request"
-        assert benchmark_id_var.get() == "outer-benchmark"
-        assert task_id_var.get() == "outer-task"
-        assert executor_dispatch_id_var.get() == "outer-dispatch"
-        assert attempt_started_at_var.get() == "outer-attempt"
-        assert not trace.get_current_span().get_span_context().is_valid
-    finally:
-        attempt_started_at_var.reset(attempt_token)
-        executor_dispatch_id_var.reset(dispatch_token)
-        task_id_var.reset(task_token)
-        benchmark_id_var.reset(benchmark_token)
-        request_id_var.reset(request_token)
-
-    extract.assert_called_once_with({"sentry-trace": "trace-header", "baggage": "baggage-header"})
-
-
-@pytest.mark.parametrize("payload", [[], "not an object", 1, None])
-def test_main_rejects_non_object_payload(
-    payload: object,
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    payload_path = tmp_path / "payload.json"
-    payload_path.write_text(json.dumps(payload), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["executor-entrypoint", str(payload_path)])
-
-    with pytest.raises(SystemExit, match="Invalid executor payload: expected object"):
-        executor_entrypoint.main()
-
-
-def test_main_rejects_malformed_json(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    payload_path = tmp_path / "payload.json"
-    payload_path.write_text("not-json", encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["executor-entrypoint", str(payload_path)])
-
-    with pytest.raises(json.JSONDecodeError):
-        executor_entrypoint.main()
+    asyncio.run(expired_by_lease())
+    assert renewal_started.is_set()
+    assert work_cancelled.is_set()
+    lifecycle["_finish"].assert_not_called()

@@ -22,9 +22,11 @@ from tracker import sandbox as sandbox_module
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3ObjectStore, get_benchmark_contract_s3_key
 from tracker.runtime.artifacts import agent_bundle_key
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentCausedExitReason, AgentContractRequest
 from tracker.egress import combine_run_egress_policies
 from tracker.exceptions import AgentRunFailedError, OutputArtifactError, SandboxError
+from tracker.external_service_gateway import ExternalServiceDeadlineController
+from tracker.generation_plan import GenerationPlan
 from tracker.sandbox import (
     SandboxCreationState,
     apply_egress_policy,
@@ -399,6 +401,8 @@ class TestSandboxOperations:
             log_output=log_callback,
             cwd="/",
             object_store=object_store,
+            plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
+            deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=None),
         )
 
         output = "\n".join(logged_messages)
@@ -442,6 +446,8 @@ class TestSandboxOperations:
             log_output=log_callback,
             cwd="/",
             object_store=object_store,
+            plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
+            deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=None),
         )
 
         output = "\n".join(logged_messages)
@@ -477,9 +483,9 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "timeout 15 sleep 70"
 
-            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print)
+            exit_reason = await stream_command_output(sandbox, command, on_output=print)
 
-            assert command_timeout
+            assert exit_reason == AgentCausedExitReason.TIMEOUT
 
         async with create_sandbox(
             sandbox_provider,
@@ -491,9 +497,9 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "timeout 15 sleep 10"
 
-            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print)
+            exit_reason = await stream_command_output(sandbox, command, on_output=print)
 
-            assert not command_timeout
+            assert exit_reason is None
 
     async def test_pty_streaming_captures_all_output(
         self,
@@ -524,9 +530,9 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "echo 'STAGE_1' && sleep 1 && echo 'STAGE_2' && sleep 1 && echo 'STAGE_3'"
 
-            timed_out, _ = await stream_command_output(sandbox, command, on_output=log_callback)
+            exit_reason = await stream_command_output(sandbox, command, on_output=log_callback)
 
-            assert not timed_out
+            assert exit_reason is None
             output = "\n".join(logged_messages)
             assert "STAGE_1" in output
             assert "STAGE_2" in output
@@ -597,7 +603,5 @@ class TestSandboxOperations:
             creation_semaphore,
             creation_state=SandboxCreationState(cleanup_pending=False),
         ) as sandbox:
-            # Use `false` (returns 1) instead of `exit 1` — exit kills the writer
-            # shell itself, preventing the status file from being written.
             with pytest.raises(SandboxError, match="exit code 1"):
                 await stream_command_output(sandbox, "false", on_output=lambda _: None)

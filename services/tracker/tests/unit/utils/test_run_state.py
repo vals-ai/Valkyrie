@@ -63,7 +63,6 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
         artifact_uri="s3://artifacts/test-release.pex",
         artifact_digest="digest-test-release",
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
-        readiness_verified=True,
     )
     database_session.add(release)
     database_session.commit()

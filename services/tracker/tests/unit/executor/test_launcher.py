@@ -16,10 +16,12 @@ from tracker.executor import launcher
 def ecs_launcher_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "ecs")
     monkeypatch.setenv("EXECUTOR_RUNNER_CLUSTER", "cluster")
-    monkeypatch.setenv("EXECUTOR_RUNNER_TASK_DEFINITION", "arn:aws:ecs:us-east-1:123456789012:task-definition/runner:7")
     monkeypatch.setenv("EXECUTOR_RUNNER_SUBNETS", "subnet-a,subnet-b")
     monkeypatch.setenv("EXECUTOR_RUNNER_SECURITY_GROUP", "sg-runner")
     monkeypatch.setenv("EXECUTOR_RUNNER_CONTAINER", "ExecutorRunner")
+    monkeypatch.setattr(
+        launcher, "_task_definition", lambda _dispatch: "arn:aws:ecs:us-east-1:123456789012:task-definition/runner:7"
+    )
 
 
 @pytest.mark.asyncio
@@ -50,7 +52,7 @@ async def test_ecs_retries_ambiguous_error_with_same_token_and_records_one_arn(
     assert observed[0]["overrides"]["containerOverrides"][0]["command"] == [
         "/app/.venv/bin/python",
         "-m",
-        "tracker.executor.runner",
+        "tracker.executor.entrypoint",
         "--dispatch-id",
         str(dispatch_id),
     ]
@@ -94,7 +96,7 @@ async def test_ecs_accepted_launch_survives_arn_write_failure(
 
 
 @pytest.mark.asyncio
-async def test_local_launcher_spawns_one_detached_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_local_launcher_spawns_one_detached_executor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXECUTOR_LAUNCHER", "local")
     popen = Mock()
     monkeypatch.setattr(launcher.subprocess, "Popen", popen)
@@ -103,7 +105,7 @@ async def test_local_launcher_spawns_one_detached_runner(monkeypatch: pytest.Mon
     await launcher.launch_dispatch(SimpleNamespace(id=dispatch_id))
 
     popen.assert_called_once_with(
-        [launcher.sys.executable, "-m", "tracker.executor.runner", "--dispatch-id", str(dispatch_id)],
+        [launcher.sys.executable, "-m", "tracker.executor.entrypoint", "--dispatch-id", str(dispatch_id)],
         start_new_session=True,
         env=launcher.os.environ,
     )
@@ -121,7 +123,6 @@ async def test_ecs_task_arn_persists_on_dispatch_row(
         artifact_uri="s3://artifacts/runner.pex",
         artifact_digest="a" * 64,
         protocol_version="3",
-        readiness_verified=True,
     )
     benchmark = example_benchmark_object
     dispatch = ExecutorDispatch(
@@ -149,3 +150,39 @@ async def test_ecs_task_arn_persists_on_dispatch_row(
         stored = session.get(ExecutorDispatch, dispatch.id)
         assert stored is not None
         assert stored.ecs_task_arn == "arn:task:persisted"
+
+
+def test_launch_requires_the_release_task_definition(
+    monkeypatch: pytest.MonkeyPatch,
+    database_session: Session,
+) -> None:
+    monkeypatch.setattr(launcher, "engine", database_session.get_bind())
+    source = ExecutorRelease(
+        id="source-release",
+        artifact_uri="source:///checkout",
+        artifact_digest="a" * 64,
+        protocol_version="3",
+    )
+    image = ExecutorRelease(
+        id="image-release",
+        artifact_uri=f"123456789012.dkr.ecr.us-east-1.amazonaws.com/valkyrie-executor@sha256:{'b' * 64}",
+        artifact_digest="b" * 64,
+        protocol_version="3",
+        task_definition_arn="arn:aws:ecs:us-east-1:123456789012:task-definition/runner:8",
+    )
+    database_session.add_all([source, image])
+    database_session.commit()
+
+    def dispatch(release: ExecutorRelease) -> ExecutorDispatch:
+        return ExecutorDispatch(
+            benchmark_id=uuid4(),
+            kind=ExecutorDispatchKind.START,
+            executor_release_id=release.id,
+            executor_artifact_uri=release.artifact_uri,
+            executor_artifact_digest=release.artifact_digest,
+            executor_protocol_version=release.protocol_version,
+        )
+
+    assert launcher._task_definition(dispatch(image)).endswith("runner:8")
+    with pytest.raises(launcher.DefinitiveLaunchFailure, match="has no task definition"):
+        launcher._task_definition(dispatch(source))

@@ -1,4 +1,4 @@
-"""Local Compose must supply the runner's required environment."""
+"""Local Compose must supply the executor's required environment."""
 
 import ast
 from pathlib import Path
@@ -25,15 +25,17 @@ def _environment_keys(source: Path) -> set[str]:
     }
 
 
-def test_compose_tracker_supplies_local_runner_environment() -> None:
-    runner_keys = _environment_keys(EXECUTOR_SOURCE / "runner.py")
+def test_compose_tracker_supplies_local_executor_environment() -> None:
+    executor_keys = _environment_keys(EXECUTOR_SOURCE / "entrypoint.py")
     launcher_keys = _environment_keys(EXECUTOR_SOURCE / "launcher.py")
     # ECS-only override settings are not needed on the local launch path.
-    required = runner_keys | {key for key in launcher_keys if not key.startswith("EXECUTOR_RUNNER_")}
+    required = (executor_keys - {"ECS_CONTAINER_METADATA_URI_V4"}) | {
+        key for key in launcher_keys if not key.startswith("EXECUTOR_RUNNER_")
+    }
     # The local payload key is read with .get(), but is required for the local encryption mode.
     required.add("EXECUTOR_PAYLOAD_LOCAL_KEY")
 
     compose = yaml.safe_load((TRACKER_ROOT / "docker-compose.yml").read_text())
     environment = compose["services"]["tracker"]["environment"]
     defined = {item.split("=", 1)[0] for item in environment}
-    assert required <= defined, f"Compose tracker is missing runner settings: {sorted(required - defined)}"
+    assert required <= defined, f"Compose tracker is missing executor settings: {sorted(required - defined)}"

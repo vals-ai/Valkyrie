@@ -1,66 +1,71 @@
 ---
-title: Results and outputs
-description: Download scores, task artifacts, or a specific run path.
+title: "Download results and outputs"
+sidebarTitle: "Results and outputs"
+description: "Download a run's scores, the files your agent wrote, or a single file."
 ---
 
-Valkyrie keeps two things apart: the evaluated results, and the files the agent produced along the way.
+A run produces two kinds of files: results, which hold the score and each task's grade, and
+outputs, which are the files your agent wrote. Every command is in the
+[`valkyrie run` reference](/reference/cli/run). To download from Python, see
+[Manage runs with Python](/sdk/runs#download-outputs).
 
-<CodeGroup>
-
-```bash CLI
-valkyrie run results <run-id> --path ./results.json
-```
-
-```python Python SDK
-results = await client.runs.results(run_id)
-```
-
-</CodeGroup>
-
-Full syntax is in the [`run results`](/reference/cli/run#results), [`run outputs`](/reference/cli/run#outputs), and [`run output`](/reference/cli/run#output) reference, and in [`client.runs.results`](/reference/sdk/runs#results) for Python.
+In the commands on this page, replace *`RUN_ID`* with the run's ID, which
+`valkyrie run start` prints, and *`TASK_ID`* with a task's
+ID.
 
 ## Download results
 
-The results file holds the scores and the per-task evaluation. Without `--path`, the CLI writes it to `./results-<run-id>.json`.
+```bash
+valkyrie run results RUN_ID
+```
 
-Pass a task subset to recompute `final_score` over only those tasks. The stored full result stays as it was:
+This writes the run's score and each task's grade to `./results-RUN_ID.json`. Choose
+another file with `--path`.
+
+To score part of the run, name the tasks. Valkyrie recomputes `final_score` over only those
+tasks, and the stored result stays as it was:
 
 ```bash
-valkyrie run results <run-id> --task-ids task_1,task_2
+valkyrie run results RUN_ID --task-ids task_1,task_2
 ```
 
 <Warning>
-  Combining `--s3` with a task subset overwrites the run's S3 result file with that subset view. Run the command again without filters to put the full result back.
+
+`--s3` saves the results to the run's storage instead of downloading them. Combined with
+`--task-ids`, it replaces the run's stored result with the subset. To restore the full result, run it again without `--task-ids`.
+
 </Warning>
 
-## Download outputs
-
-Outputs are the files the agent itself wrote. Fetch all of them, or only the tasks you care about:
+## Download agent outputs
 
 ```bash
-valkyrie run outputs <run-id> --output-dir ./outputs
-valkyrie run outputs <run-id> --task-ids astropy__astropy-7606,django__django-10880
+valkyrie run outputs RUN_ID
 ```
 
-To pull one file or directory instead of the whole run, name a path inside the run's benchmark prefix:
+This downloads and extracts each task's [`final_output` and output artifacts](/agents/agent-contract#output-files)
+into a new directory named after the benchmark, the agent, and the run, such as
+`./swebench_my-agent_RUN_ID`. Choose the directory with `--output-dir`, or only some
+tasks with `--task-ids`:
 
 ```bash
-valkyrie run output <run-id> <subpath> --output-dir ./output-dir
+valkyrie run outputs RUN_ID --output-dir ./outputs \
+  --task-ids astropy__astropy-7606,django__django-10880
 ```
 
-The output directory defaults to `./<run-id>`.
+## Download one file or folder
 
+List the paths stored for a run, one page at a time. Pass the returned `next_cursor` to
+`--cursor` for the next page:
 
-## Download outputs from Python
+```bash
+valkyrie run artifacts RUN_ID --format json
+```
 
-Use `await client.runs.download_outputs(run_id, "./outputs", task_ids=["task-id"])` to download and unpack run outputs, including nested task tarballs. Omit `task_ids` for the entire run. Choose a new output directory; existing directories are refused. Downloads and extraction enforce [configurable size and entry limits](/reference/sdk/runs#download-outputs) and reject links or unsafe archive paths.
+Then download one task's folder, or one file by its full path:
 
-## Download a specific artifact path
+```bash
+valkyrie run output RUN_ID TASK_ID --output-dir ./task-files
+```
 
-Use `valkyrie run artifacts <run_id> --format json` to list one page of available paths. Continue with the returned `next_cursor` using `--cursor`.
-
-`valkyrie run output <run_id> task-id -o ./artifacts` downloads that task's stored files through Tracker. Pass a complete relative file path to download one file. Paths remain relative to the run inside the destination, which must be a new directory.
-
-Python callers can inspect a page with `await client.artifacts.list(run_id, prefix="task-id")`, request an individual temporary URL with `await client.artifacts.download_url(run_id, "task-id/result.json")`, or download a path with `await client.artifacts.download(run_id, "./artifacts", path="task-id")`. See the [artifact SDK reference](/reference/sdk/artifacts) for limits and pagination.
-
-Hosted runs use the deployment's storage permissions and their saved resource locations. Tracker checks access to the run before listing or signing an artifact.
+The destination must be a new directory, and defaults to `./RUN_ID`. Paths keep their
+place relative to the run inside it.

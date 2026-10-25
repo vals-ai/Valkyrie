@@ -2,10 +2,11 @@
 
 Run: uv run pytest tests/unit/cli/run/test_start.py -v
 
-Covers counted starts, the contract sent to Tracker, local agents, and failure reporting.
+Covers counted starts, the contract sent to Tracker, the run's project, local agents, and failure reporting.
 """
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -32,8 +33,20 @@ kwargs:
   variant: {type: str, required: true, choices: [max, min]}
 """
 
+_ROUTER_BENCH = ("--project", "router-bench")
+_GOOGLE_REPORT = {
+    "handle": "google-report-xyz",
+    "name": "Google Report XYZ",
+    "spend_type": "customer",
+    "subcategory": "report",
+    "customer": "google",
+    "extra_tags": {"engagement": "q4"},
+    "created_at": datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc).isoformat(),
+    "created_by_email": "researcher@vals.ai",
+}
 
-def _started(run_id: UUID) -> httpx.Response:
+
+def _started(run_id: UUID, project: Mapping[str, object] | None = None) -> httpx.Response:
     return httpx.Response(
         200,
         json={
@@ -45,6 +58,7 @@ def _started(run_id: UUID) -> httpx.Response:
             "task_count": 2,
             "cloudwatch_url": f"https://cloudwatch.example/{run_id}",
             "s3_bucket_url": f"s3://runs/{run_id}",
+            "project": project,
         },
     )
 
@@ -53,8 +67,8 @@ def _start_bodies(tracker: MockTracker) -> list[dict[str, object]]:
     return [json.loads(request.content) for request in tracker.requested("POST", "/start-benchmark")]
 
 
-def _invoke(*arguments: str, agent: str = "remote-agent") -> Result:
-    return CliRunner().invoke(start, ["--agent", agent, "--benchmark", "swebench", *arguments])
+def _invoke(*arguments: str, agent: str = "remote-agent", project: tuple[str, ...] = _ROUTER_BENCH) -> Result:
+    return CliRunner().invoke(start, ["--agent", agent, "--benchmark", "swebench", *project, *arguments])
 
 
 def test_single_start_sends_the_agent_by_name_and_prints_next_steps(tracker: MockTracker) -> None:
@@ -238,3 +252,72 @@ def test_failure_stops_and_reports_confirmed_progress(
     if count > 1:
         assert f"{confirmed} / {count} requested runs successfully started." in result.output
     assert (f"valkyrie run status --ids {_FIRST_RUN_ID}" in result.output) is bool(confirmed)
+
+
+def test_start_sends_the_project_and_shows_its_spend_fields(tracker: MockTracker) -> None:
+    tracker.reply("POST", "/start-benchmark", _started(_FIRST_RUN_ID, _GOOGLE_REPORT))
+
+    result = _invoke(project=("--project", " google-report-xyz "))
+
+    assert result.exit_code == 0, result.output
+    (body,) = _start_bodies(tracker)
+    assert body["project"] == "google-report-xyz"
+    assert "│ Spend:            customer · google-report-xyz · report · google · engagement=q4" in result.output
+
+
+def test_start_shows_untagged_when_the_tracker_saved_no_project(tracker: MockTracker) -> None:
+    tracker.reply("POST", "/start-benchmark", _started(_FIRST_RUN_ID))
+
+    result = _invoke()
+
+    assert result.exit_code == 0, result.output
+    assert "│ Spend:            untagged" in result.output
+
+
+def test_start_escapes_terminal_control_characters_in_the_project(tracker: MockTracker) -> None:
+    hostile = {**_GOOGLE_REPORT, "handle": "Blog\x1b[2K", "extra_tags": {"note": "a\x1b[1Ab"}}
+    tracker.reply("POST", "/start-benchmark", _started(_FIRST_RUN_ID, hostile))
+
+    result = _invoke()
+
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.output
+    assert "Blog\\x1b[2K" in result.output
+    assert "note=a\\x1b[1Ab" in result.output
+
+
+def test_start_in_an_unknown_project_shows_the_existing_ids_escaped(tracker: MockTracker) -> None:
+    detail = (
+        "Project 'router-bnech' does not exist. Existing projects: router-bench, evil\x1b[2K. "
+        "Create it with: valkyrie project create router-bnech --name NAME "
+        "--spend-type development|internal|customer --subcategory SUBCATEGORY"
+    )
+    tracker.reply("POST", "/start-benchmark", httpx.Response(422, json={"detail": detail}))
+
+    result = _invoke(project=("--project", "router-bnech"))
+
+    assert result.exit_code == 1
+    assert "\x1b" not in result.output
+    assert "Existing projects: router-bench, evil\\x1b[2K." in result.output
+    assert (
+        "valkyrie project create router-bnech --name NAME --spend-type development|internal|customer "
+        "--subcategory SUBCATEGORY"
+    ) in result.output
+
+
+@pytest.mark.parametrize(
+    ("project", "message"),
+    [
+        ((), "Missing option '--project'. Name the project this run is for, e.g. router-bench."),
+        (("--project", "  "), "must name the project this run is for"),
+    ],
+    ids=["missing-project", "blank-project"],
+)
+def test_start_without_a_project_names_the_flag_before_any_request(
+    tracker: MockTracker, project: tuple[str, ...], message: str
+) -> None:
+    result = _invoke(project=project)
+
+    assert result.exit_code == 2
+    assert message in result.output
+    assert tracker.requests == []

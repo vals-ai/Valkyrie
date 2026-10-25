@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 
 [options]
@@ -437,10 +437,11 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.56.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=83acb6459bea219d701ddc5de244780e8f64973a#83acb6459bea219d701ddc5de244780e8f64973a" }
+version = "0.57.0"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=bd0d7d075eb8f53fa9624641a853a48906bc1479#bd0d7d075eb8f53fa9624641a853a48906bc1479" }
 dependencies = [
     { name = "aiodocker" },
+    { name = "certifi" },
     { name = "click" },
     { name = "daytona" },
     { name = "daytona-api-client-async" },
@@ -1235,7 +1236,7 @@ wheels = [
 
 [[package]]
 name = "modal"
-version = "1.6.2.dev1"
+version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1252,9 +1253,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "watchfiles" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/32/9c3b4fd71861b4b07a0d9b56227145e06f501b315fa89ea32c25a105f417/modal-1.6.2.dev1.tar.gz", hash = "sha256:444587f3f34ef36babefb05d28172c2ff1ccaaa0407dbd56cdf195a3a509b102", size = 942938, upload-time = "2026-10-05T01:05:39.241Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/e5/eb665f233679ed6cde1b24a7daa68b14eec02cb25046983426145fd3d32c/modal-1.6.0.tar.gz", hash = "sha256:c5dd551b5e0a283f3c764476c0a4ebe5bdef1e4a69432fa27e1b1ad8ca5e0817", size = 936653, upload-time = "2026-09-29T01:17:11.866Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/1a/0aa857ba2c3eab44cc5e4c49e1f5bfe3f994190e517582f715c1fef951c6/modal-1.6.2.dev1-py3-none-any.whl", hash = "sha256:e905dd61af553207b626c613f28642561f44407d31e0c2722b0dd4249850dc7e", size = 1063534, upload-time = "2026-10-05T01:05:36.132Z" },
+    { url = "https://files.pythonhosted.org/packages/04/64/7ed6259ab64f18c65fa5136b89054a7ecdfb2fc3ac325e61883af1c16b8f/modal-1.6.0-py3-none-any.whl", hash = "sha256:2f5981ba656570ad96379d29f0ddff876880708c84966024ce130e9e1794fa68", size = 1057597, upload-time = "2026-09-29T01:17:09.043Z" },
 ]
 
 [[package]]
@@ -2301,6 +2302,7 @@ source = { editable = "services/tracker" }
 dependencies = [
     { name = "aioboto3" },
     { name = "aiobotocore" },
+    { name = "aiodocker" },
     { name = "alembic" },
     { name = "boto3" },
     { name = "boto3-stubs", extra = ["s3"] },
@@ -2327,11 +2329,12 @@ dependencies = [
 requires-dist = [
     { name = "aioboto3", specifier = ">=7.0.0" },
     { name = "aiobotocore", specifier = ">=3.4.0" },
+    { name = "aiodocker", specifier = ">=0.27.0" },
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "cachetools", specifier = ">=7.1.1,<8" },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=83acb6459bea219d701ddc5de244780e8f64973a" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=bd0d7d075eb8f53fa9624641a853a48906bc1479" },
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },
@@ -2555,7 +2558,7 @@ dev = [
 
 [[package]]
 name = "valkyrie-sdk"
-version = "0.15.0"
+version = "0.19.0"
 source = { editable = "packages/valkyrie-sdk" }
 dependencies = [
     { name = "filelock" },

@@ -16,19 +16,6 @@ from tracker import config as tracker_config
 from tracker.local import config
 
 
-def _register_source_release() -> None:
-    from sqlmodel import Session
-
-    from tracker.database.session import engine
-    from tracker.local.releases import register_source_release
-
-    source_root = Path(__file__).resolve().parents[1]
-    with Session(engine) as session:
-        release = register_source_release(session, source_root)
-        session.commit()
-        print(f"Executor source release ready: {release.id} ({source_root})")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, help="Local execution resource configuration")
@@ -37,10 +24,6 @@ def main() -> None:
     if args.config is not None:
         config.configure(args.config)
         os.environ["EXECUTOR_LAUNCHER"] = "local"
-        os.environ["EXECUTOR_SOURCE_ROOT"] = str(Path(__file__).resolve().parents[1])
-        cache_dir = config.resources.data_root / "executor-cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["EXECUTOR_CACHE_DIR"] = str(cache_dir)
         database_url = make_url(tracker_config.DATABASE_URL)
         os.environ.update(
             DB_HOST=str(database_url.host),
@@ -52,7 +35,9 @@ def main() -> None:
         os.environ.pop("EXECUTOR_PAYLOAD_KMS_KEY_ID", None)
         if "EXECUTOR_PAYLOAD_LOCAL_KEY" not in os.environ:
             os.environ["EXECUTOR_PAYLOAD_LOCAL_KEY"] = base64.b64encode(os.urandom(32)).decode()
-        _register_source_release()
+        from tracker.local.releases import register_checkout_release
+
+        register_checkout_release()
     is_local = config.resources is not None
     uvicorn.run(
         "main:app",

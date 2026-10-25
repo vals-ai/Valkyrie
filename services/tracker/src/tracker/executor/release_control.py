@@ -1,10 +1,8 @@
 """Lifecycle operations for immutable executor releases in PostgreSQL."""
 
-import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlparse
 from uuid import UUID
 
 from sqlmodel import Session, col, select
@@ -20,12 +18,9 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
 )
 from executor_protocol import (
-    DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS,
     SUPPORTED_PROTOCOL_VERSIONS,
-    validate_executor_artifact_uri,
     validate_executor_digest,
 )
-from tracker.runtime.executor_artifacts import ExecutorArtifactReader
 
 _ACTIVE_BENCHMARK_STATUSES = (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)
 _ACTIVE_DISPATCH_STATUSES = (
@@ -77,20 +72,9 @@ def register_release(session: Session, release: ExecutorRelease) -> ExecutorRele
     return release
 
 
-def activate_release(
-    session: Session,
-    candidate: ExecutorRelease,
-    *,
-    expected_bucket: str,
-    expected_prefix: str,
-    artifact_reader: ExecutorArtifactReader,
-) -> ExecutorRelease:
-    """Create-or-match, verify, promote, and assert one immutable release."""
+def activate_release(session: Session, candidate: ExecutorRelease) -> ExecutorRelease:
+    """Create-or-match, promote, and assert one immutable release."""
     _validate_release_manifest(candidate)
-    try:
-        validate_executor_artifact_uri(candidate.artifact_uri, expected_bucket, expected_prefix)
-    except ValueError as error:
-        raise ReleaseControlError(str(error)) from error
 
     get_executor_admission(session, for_update=True)
     release = session.get(ExecutorRelease, candidate.id)
@@ -105,54 +89,11 @@ def activate_release(
     if release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED):
         raise ReleaseControlError(f"Executor release {release.id!r} cannot be activated from {release.status.value}")
 
-    verify_release_artifact(session, release.id, artifact_reader=artifact_reader)
     activated = promote_release(session, release.id)
     admission = get_executor_admission(session)
-    if (
-        admission.release_id != activated.id
-        or activated.status != ExecutorReleaseStatus.ACTIVE
-        or not activated.readiness_verified
-    ):
+    if admission.release_id != activated.id or activated.status != ExecutorReleaseStatus.ACTIVE:
         raise ReleaseControlError(f"Executor release {activated.id!r} did not become active")
     return activated
-
-
-def verify_release_artifact(
-    session: Session,
-    release_id: str,
-    *,
-    artifact_reader: ExecutorArtifactReader,
-) -> ExecutorRelease:
-    """Verify a registered release artifact and mark it ready for promotion."""
-    release = _get_release(session, release_id)
-    if release.status == ExecutorReleaseStatus.RETIRED:
-        raise ReleaseControlError(f"Retired executor release {release_id!r} cannot be verified")
-    parsed = urlparse(release.artifact_uri)
-    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
-        raise ReleaseControlError("Executor artifact URI must use s3://bucket/key")
-
-    digest = hashlib.sha256()
-    artifact_bytes = 0
-    with artifact_reader.open(parsed.netloc, parsed.path.lstrip("/")) as body:
-        while chunk := body.read(1024 * 1024):
-            digest.update(chunk)
-            artifact_bytes += len(chunk)
-    if digest.hexdigest() != release.artifact_digest:
-        raise ReleaseControlError(f"Executor artifact digest mismatch for release {release_id!r}")
-
-    release.readiness_verified = True
-    release.readiness_metadata = {
-        **release.readiness_metadata,
-        "artifact_bytes": artifact_bytes,
-        "verified_at": datetime.now(UTC).isoformat(),
-    }
-    session.add(release)
-    session.flush()
-    _logger.info(
-        "executor_release_lifecycle",
-        extra={"event": "verified", "release_id": release.id, "status": release.status.value},
-    )
-    return release
 
 
 def pin_benchmark_to_release(benchmark: Benchmark, release: ExecutorRelease) -> None:
@@ -187,7 +128,6 @@ def create_executor_dispatch(
         executor_protocol_version=release.protocol_version,
         created_at=created_at,
         assigned_task_ids=list(task_ids) if task_ids is not None else None,
-        claim_deadline_at=created_at + timedelta(seconds=DEFAULT_EXECUTOR_DISPATCH_CLAIM_TIMEOUT_SECONDS),
     )
 
 
@@ -246,7 +186,7 @@ def select_active_release(session: Session, *, for_update: bool = False) -> Exec
         raise ReleaseControlError("No active executor release is configured")
 
     release = session.get(ExecutorRelease, admission.release_id)
-    if release is None or release.status != ExecutorReleaseStatus.ACTIVE or not release.readiness_verified:
+    if release is None or release.status != ExecutorReleaseStatus.ACTIVE:
         raise ReleaseControlError("No active executor release is configured")
     return release
 
@@ -257,7 +197,7 @@ def resolve_current_execution_release(
     *,
     for_update: bool = False,
 ) -> ExecutorRelease:
-    """Resolve the verified ACTIVE or DRAINING release owned by an active benchmark."""
+    """Resolve the ACTIVE or DRAINING release owned by an active benchmark."""
     release_id = benchmark.current_execution_release_id
     if release_id is None:
         raise ReleaseControlError(f"Benchmark {benchmark.id} has no current executor release")
@@ -268,30 +208,22 @@ def resolve_current_execution_release(
         populate_existing=for_update,
         with_for_update=for_update or None,
     )
-    if (
-        release is None
-        or release.status not in (ExecutorReleaseStatus.ACTIVE, ExecutorReleaseStatus.DRAINING)
-        or not release.readiness_verified
-    ):
+    if release is None or release.status not in (ExecutorReleaseStatus.ACTIVE, ExecutorReleaseStatus.DRAINING):
         raise ReleaseControlError(f"Current executor release {release_id!r} is unavailable")
     return release
 
 
 def promote_release(session: Session, release_id: str) -> ExecutorRelease:
-    """Promote a verified candidate for new benchmarks."""
+    """Promote a candidate for new benchmarks."""
     admission = get_executor_admission(session, for_update=True)
     release = _get_release(session, release_id, populate_existing=True, for_update=True)
 
     if admission.release_id == release_id:
         if release.status != ExecutorReleaseStatus.ACTIVE:
             raise ReleaseControlError("Admission points to a release that is not active")
-        if not release.readiness_verified:
-            raise ReleaseControlError(f"Executor release {release_id!r} is not ready")
         return release
     if release.status != ExecutorReleaseStatus.CANDIDATE:
         raise ReleaseControlError(f"Executor release {release_id!r} cannot be promoted from {release.status.value}")
-    if not release.readiness_verified:
-        raise ReleaseControlError(f"Executor release {release_id!r} is not ready")
 
     if admission.release_id is not None:
         previous = _get_release(session, admission.release_id, populate_existing=True)
@@ -401,8 +333,8 @@ def _validate_release_manifest(release: ExecutorRelease) -> None:
         raise ReleaseControlError(str(error)) from error
     if release.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
         raise ReleaseControlError(f"Unsupported executor protocol version: {release.protocol_version}")
-    if not release.artifact_uri.startswith(("s3://", "source:///")):
-        raise ReleaseControlError("Executor artifact URI must use s3:// or source:///")
+    if release.task_definition_arn is None and not release.artifact_uri.startswith("source:///"):
+        raise ReleaseControlError("Executor artifact URI must use source:///")
 
 
 def _get_release(

@@ -1,3 +1,4 @@
+import re
 from collections.abc import Iterable
 from uuid import UUID
 
@@ -10,6 +11,9 @@ def tenant_secret_prefix(org_id: UUID) -> str:
 
 
 def may_use_shared_secrets(org_name: str) -> bool:
+    if re.fullmatch(r"vals-smith-(?:dev|prod)-gh-[1-9][0-9]*", org_name):
+        return False
+
     for entry in config.AWS_SHARED_SECRET_TENANTS.split(","):
         entry = entry.strip()
         if entry.endswith("*") and len(entry) > 1 and org_name.startswith(entry[:-1]):

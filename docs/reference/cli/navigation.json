@@ -4,6 +4,7 @@
   "reference/cli/agent",
   "reference/cli/benchmark",
   "reference/cli/queue",
+  "reference/cli/project",
   "reference/cli/secret",
   "reference/cli/provider",
   "reference/cli/login",

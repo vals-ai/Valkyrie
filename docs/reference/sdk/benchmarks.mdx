@@ -78,7 +78,10 @@ Iterate matching tasks from the requested offset, preserving filters and page si
 Task pages use offsets; concurrent status changes can move tasks between pages.
 
 ```python Signature
-async def iter_tasks(run_id: UUID, request: FetchTasksRequest | None = None) -> AsyncIterator[TaskSummary]
+async def iter_tasks(
+    run_id: UUID,
+    request: FetchTasksRequest | None = None,
+) -> AsyncIterator[TaskSummary]
 ```
 
 **Parameters**

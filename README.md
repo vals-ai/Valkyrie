@@ -2,12 +2,13 @@
 
 [![Paper](https://img.shields.io/badge/Paper-alphaXiv-B31B1B)](https://www.alphaxiv.org/abs/valkyrie)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vals-ai/Valkyrie)
-[![Test Coverage](https://codecov.io/gh/vals-ai/Valkyrie/branch/dev/graph/badge.svg)](https://codecov.io/gh/vals-ai/Valkyrie)
+[![CLI Coverage](https://img.shields.io/endpoint?url=https://vals-ai.github.io/Valkyrie/cli-coverage.json)](https://github.com/vals-ai/Valkyrie/actions/workflows/cli-unit-tests.yaml)
+[![Tracker Coverage](https://img.shields.io/endpoint?url=https://vals-ai.github.io/Valkyrie/tracker-coverage.json)](https://github.com/vals-ai/Valkyrie/actions/workflows/tracker-unit-tests.yaml)
 [![Doc Coverage](https://vals-ai.github.io/Valkyrie/docstr-coverage.svg)](https://github.com/vals-ai/Valkyrie)
 
-Valkyrie orchestrates scalable, reproducible evaluations for AI agents. It supports Vals-hosted infrastructure and self-hosted AWS deployments.
+Valkyrie orchestrates scalable, reproducible evaluations for AI agents. Run it on infrastructure that Vals AI hosts, or on your own machine with a local Tracker.
 
-Guides, the CLI reference, the Python SDK reference, and contributor setup are published at [docs.valkyrie.vals.ai](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie).
+Guides, the CLI reference and the Python SDK reference are published at [docs.valkyrie.vals.ai](https://docs.valkyrie.vals.ai/introduction/what-is-valkyrie).
 
 ## Quickstart
 
@@ -31,12 +32,19 @@ Upload an agent with a valid `contract.yaml`:
 valkyrie agent push ./agents/sweagent --name sweagent
 ```
 
+Create the project the run spends for, once:
+
+```bash
+valkyrie project create my-project --name "My Project" --spend-type development --subcategory new_benchmark_generation
+```
+
 Start a benchmark run:
 
 ```bash
 valkyrie run start \
   --agent sweagent \
   --benchmark swebench \
+  --project my-project \
   --model anthropic/claude-sonnet-4-6 \
   --slice "0:10" \
   --connect
@@ -54,7 +62,7 @@ valkyrie run start \
 | Every CLI command | [reference/cli/index](https://docs.valkyrie.vals.ai/reference/cli/index) |
 | Python SDK | [sdk/quickstart](https://docs.valkyrie.vals.ai/sdk/quickstart) |
 | Running Tracker locally without AWS | [self-hosting/local-tracker](https://docs.valkyrie.vals.ai/self-hosting/local-tracker) |
-| Local development | [contributing/local-development](https://docs.valkyrie.vals.ai/contributing/local-development) |
+| Local development | [DEVELOPMENT.md](DEVELOPMENT.md) |
 
 ## Citation
 

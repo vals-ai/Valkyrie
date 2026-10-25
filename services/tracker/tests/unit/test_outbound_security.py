@@ -16,6 +16,8 @@ from tracker.outbound_security import validate_custom_service_destination
 from tracker.types import (
     BenchmarkServiceEntry,
     FetchBenchmarkTasksRequest,
+    RunExecutionRequest,
+    RunSettingsResponse,
     StartBenchmarkRequest,
 )
 from tracker.utils.resources import create_benchmark_service_client
@@ -254,3 +256,29 @@ def test_unlisted_tenants_cannot_reach_internal_destinations(org_name: str, monk
 
     with pytest.raises(ValueError, match="Custom benchmark destination is not allowed"):
         validate_custom_service_destination("http://service.internal:8001", org_name=org_name, auth_required=True)
+
+
+class TestRunSandboxProviderHeader:
+    """Run-scoped service clients tell the service which sandbox provider the run uses."""
+
+    def test_run_provider_replaces_caller_header(self) -> None:
+        client = create_benchmark_service_client(
+            "https://service.example",
+            {"x-vals-sandbox-provider": "daytona", "X-Other": "kept"},
+            sandbox_provider="modal",
+        )
+
+        assert getattr(client, "_headers") == {"X-Other": "kept", "X-Vals-Sandbox-Provider": "modal"}
+
+    def test_start_and_execution_clients_send_requested_provider(self) -> None:
+        request = _start_benchmark_request(
+            sandbox_provider="daytona",
+            service_headers={"X-Vals-Sandbox-Provider": "other"},
+        )
+        request.use_settings(
+            RunSettingsResponse(default_provider="modal", benchmark_services={}), {"daytona": "secret"}
+        )
+        execution_request = RunExecutionRequest.model_validate(request.model_dump(mode="python"))
+
+        for client in (request.benchmark_service, execution_request.benchmark_service):
+            assert getattr(client, "_headers")["X-Vals-Sandbox-Provider"] == "daytona"

@@ -15,6 +15,8 @@ from benchmark_service import ImageSource, Resources, SandboxQuery
 
 from tracker.database.models import AgentContractRequest, OutputArtifact
 from tracker.exceptions import AgentRunFailedError
+from tracker.external_service_gateway import ExternalServiceDeadlineController
+from tracker.generation_plan import GenerationPlan
 from tracker.runtime.secrets import resolve_secrets
 from tracker.local.resources import LocalResources
 from tracker.local.runtime import LocalRuntimeFactory
@@ -92,6 +94,8 @@ async def test_local_runtime_transfers_and_executes_frozen_agent(tmp_path: Path,
                         logs.write,
                         "/tmp/work",
                         runtime.objects,
+                        plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
+                        deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=None),
                         agent_output_s3_key=output_key,
                         benchmark_id=benchmark_id,
                     )

@@ -765,7 +765,7 @@ class TestRunFinalization:
         original_terminalize = terminalize_active_dispatches
         retry_thread: Thread | None = None
 
-        def terminalize_with_concurrent_retry(*args: Any, **kwargs: Any) -> None:
+        def terminalize_with_concurrent_retry(*args: Any, **kwargs: Any) -> list[str]:
             nonlocal retry_thread
             retry_thread = Thread(target=admit_retry)
             retry_thread.start()
@@ -786,7 +786,7 @@ class TestRunFinalization:
                     break
                 sleep(0.01)
             assert blocking_pids
-            original_terminalize(*args, **kwargs)
+            return original_terminalize(*args, **kwargs)
 
         monkeypatch.setattr(run_control_module, "terminalize_active_dispatches", terminalize_with_concurrent_retry)
 

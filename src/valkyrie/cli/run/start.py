@@ -6,7 +6,8 @@ import click
 from valkyrie.sdk import AgentContract, StartBenchmarkResponse, ValkyrieAPIError, ValkyrieClient, ValkyrieSDKError
 
 from valkyrie.cli.client import call
-from valkyrie.cli.display import local_time
+from valkyrie.cli.display import local_time, terminal_safe
+from valkyrie.cli.project import describe_project, project_option
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 
@@ -81,6 +82,8 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
         ("Total tasks:", start_benchmark_response.task_count),
         ("Dataset version:", version.label or version.id if version else "not pinned"),
     ]
+    project = start_benchmark_response.project
+    details.append(("Spend:", describe_project(project) if project is not None else "untagged"))
     commands = [
         ("Get results:", f"valkyrie run results {run_id} --path ./results-{run_id}.json"),
         ("Stop:", f"valkyrie run stop {run_id}"),
@@ -117,7 +120,10 @@ def format_confirmed_start_summary(run_ids: list[UUID], count: int, outcome_unkn
 
 
 @click.command(
-    help="Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench --concurrency 5"
+    help=(
+        "Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench "
+        "--project router-bench --concurrency 5"
+    )
 )
 @click.option(
     "--agent",
@@ -204,6 +210,7 @@ def format_confirmed_start_summary(run_ids: list[UUID], count: int, outcome_unkn
     default=None,
     help="Label to attach to the run",
 )
+@project_option
 @click.option(
     "--kwarg",
     "-k",
@@ -265,6 +272,7 @@ def start(
     provider: str | None,
     priority: int | None,
     label: str | None,
+    project: str,
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
     headers: tuple[tuple[str, str]],
@@ -276,7 +284,7 @@ def start(
     Run an agent on a benchmark.
 
     Example:
-        valkyrie run start --agent agents/claude_code --benchmark swebench
+        valkyrie run start --agent agents/claude_code --benchmark swebench --project router-bench
     """
     if count > 1 and connect:
         raise click.UsageError("--connect cannot be used when --count is greater than 1")
@@ -311,12 +319,13 @@ def start(
                     secrets=dict(secrets),
                     service_headers=dict(headers),
                     ignore_custom_services=ignore_custom_services,
+                    project=project,
                 )
             except ValkyrieAPIError as error:
                 click.echo(_CLEAR_LINE, nl=False)
                 click.echo(click.style("Run failed to start!", fg="red", bold=True))
                 format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=error.status_code >= 500)
-                raise click.ClickException(str(error.detail)) from error
+                raise click.ClickException(terminal_safe(str(error.detail), preserve_newlines=False)) from error
             except (ValkyrieSDKError, ValueError):
                 click.echo(_CLEAR_LINE, nl=False)
                 format_confirmed_start_summary(confirmed_run_ids, count, outcome_unknown=True)

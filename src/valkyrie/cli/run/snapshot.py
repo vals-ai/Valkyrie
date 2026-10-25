@@ -82,6 +82,7 @@ def build_run_snapshot(
         "s3_bucket_url": response.s3_bucket_url,
         "docent_reading_status": details.docent_reading_status.value,
         "docent_reading_url": details.docent_reading_url,
+        "project": metadata.project.model_dump(mode="json") if metadata and metadata.project else None,
         "metadata_available": metadata is not None,
     }
 

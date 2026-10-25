@@ -1,19 +1,22 @@
 ---
-title: Python SDK quickstart
-description: Configure the async Valkyrie client and list runs from Python.
+title: "Set up the Python SDK"
+sidebarTitle: "Set up the SDK"
+description: "Install the async Python client, list your runs, and handle its errors."
 ---
 
-The `valkyrie-sdk` package is an async Python client for starting and inspecting runs from your own code. It needs Python 3.12 or newer, and it installs neither the CLI nor the tracker service.
+The Valkyrie SDK is an async Python client for starting and inspecting runs from your own
+code. It needs Python 3.12 or later, and uses the same login and Tracker as the Valkyrie CLI.
 
 ## Install
 
 ```bash
-pip install valkyrie-sdk
+pip install "valkyrie-sdk @ git+https://github.com/vals-ai/Valkyrie@prod#subdirectory=packages/valkyrie-sdk"
 ```
 
-## Configure
+The SDK doesn't install the CLI. Sign in once with [`valkyrie login`](/get-started/configuration#sign-in),
+or set `VALKYRIE_API_KEY` to an [access key](/get-started/configuration#create-an-access-key-for-ci).
 
-`ValkyrieClient()` uses the same Tracker and credentials as the CLI.
+## List your runs
 
 ```python
 import asyncio
@@ -23,33 +26,49 @@ from valkyrie.sdk import ValkyrieClient
 
 async def main() -> None:
     async with ValkyrieClient() as client:
-        runs = await client.runs.list()
-        print(runs)
+        page = await client.runs.list()
+        for run in page.benchmarks:
+            print(run.id, run.name, run.status, run.final_score)
 
 
 asyncio.run(main())
 ```
 
-To choose the Tracker or access key in code, see [Configure the Python SDK](/get-started/configuration#configure-the-python-sdk). The [`ValkyrieClient` reference](/reference/sdk/client) lists every constructor parameter and default.
+`ValkyrieClient()` sends requests to the Tracker you last signed in to. To pick the Tracker
+or access key in code, see [Configure the Python SDK](/get-started/configuration#configure-the-python-sdk).
 
-Execution uses server-configured AWS resources and authority. See [hosted execution](/get-started/hosting#hosted-mode).
+## Handle errors
 
-## Examples
+Every SDK exception inherits from `ValkyrieSDKError`. Catch `ValkyrieAPIError` when you
+need the HTTP status or the Tracker's error detail:
 
-The repository includes complete scripts for common workflows:
+```python
+from valkyrie.sdk import ValkyrieAPIError, ValkyrieSDKError
 
-- [`run_lifecycle.py`](https://github.com/vals-ai/Valkyrie/blob/prod/docs/sdk/examples/run_lifecycle.py) starts, streams, and retrieves a run.
-- [`manage_run.py`](https://github.com/vals-ai/Valkyrie/blob/prod/docs/sdk/examples/manage_run.py) stops, resumes, or retries a run.
+try:
+    run = await client.runs.fetch(run_id)
+except ValkyrieAPIError as exc:
+    print(exc.status_code, exc.detail)
+except ValkyrieSDKError as exc:
+    print(exc)
+```
 
-From a Valkyrie checkout:
+The [errors reference](/reference/sdk/errors) lists every exception.
+
+## Run the example scripts
+
+The repository has two complete scripts. Run them from a Valkyrie checkout:
 
 ```bash
+# Start a run, stream its progress and download its results
 python docs/sdk/examples/run_lifecycle.py --help
+
+# Stop, resume or retry a run
 python docs/sdk/examples/manage_run.py --help
 ```
 
 ## Next steps
 
-- [Manage runs with Python](/sdk/runs) for the run lifecycle
-- [Inspect resources with Python](/sdk/resources) for tasks, agents, and services
+- [Manage runs with Python](/sdk/runs) to start, watch, recover, and download runs
+- [Inspect resources with Python](/sdk/resources) for tasks, logs, agents, secrets, and services
 - [Python SDK reference](/reference/sdk) for every method, model, and field

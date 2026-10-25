@@ -23,10 +23,8 @@ import sentry_sdk
 from sentry_sdk.envelope import Envelope, Item
 
 from executor_protocol import normalize_executor_telemetry_context
-from tracker.executor.runner import ExecutorProcessPayload
 from tracker.executor import runner_observability
 from services.tracker import main as tracker_main
-from tracker.executor.entrypoint import _executor_context
 from tracker.logging import benchmark_id_var, configure_logging, request_id_var, task_id_var
 from tracker.observability import configure_observability, error_span, incr
 
@@ -128,7 +126,7 @@ def _run_tracker(dsn: str, context_path: str) -> None:
                 "telemetry_context_json": tracker_main._executor_telemetry_context(),  # pyright: ignore[reportPrivateUsage]
                 "executor_dispatch_id": _DISPATCH_ID,
                 "executor_release_id": _RELEASE_ID,
-                "executor_artifact_uri": "s3://artifacts/local-smoke.pex",
+                "executor_artifact_uri": "source:///artifacts/local-smoke",
                 "executor_artifact_digest": "a" * 64,
                 "executor_protocol_version": "1",
             }
@@ -140,43 +138,22 @@ def _run_tracker(dsn: str, context_path: str) -> None:
         _flush_telemetry()
 
 
-def _run_executor_runner(dsn: str, input_path: str, output_path: str) -> None:
+def _run_executor(dsn: str, payload_path: str) -> None:
     _set_sentry_environment(dsn)
-    os.environ["ENVIRONMENT"] = _ENVIRONMENT
-    runner_observability.configure_observability()
-    payload = cast(dict[str, Any], json.loads(Path(input_path).read_text()))
+    os.environ["ENVIRONMENT"] = "development"
+    configure_logging()
+    configure_observability("valkyrie-executor", environment=_ENVIRONMENT)
+    payload = cast(dict[str, Any], json.loads(Path(payload_path).read_text()))
     with runner_observability.dispatch_observability_context(
         _RUN_ID,
         _DISPATCH_ID,
         _RELEASE_ID,
         normalize_executor_telemetry_context(payload["telemetry_context_json"]),
     ) as child_context:
-        process_payload = ExecutorProcessPayload.from_payload(payload, telemetry_context=child_context)
-        logging.getLogger("executor-runner.observability.smoke").info(
-            "ExecutorRunner dispatched observability smoke run"
-        )
-        Path(output_path).write_text(json.dumps(process_payload.arguments["telemetry_context_json"]))
-        _capture_test_error("valkyrie-executor-runner")
-        runner_observability.record_dispatch_completion(child_context)
-    _flush_telemetry()
-
-
-def _run_executor(dsn: str, context_path: str) -> None:
-    _set_sentry_environment(dsn)
-    os.environ["ENVIRONMENT"] = "development"
-    configure_logging()
-    configure_observability("valkyrie-executor", environment=_ENVIRONMENT)
-    telemetry_context = cast(dict[str, Any], json.loads(Path(context_path).read_text()))
-    with _executor_context(
-        {
-            "benchmark_id_str": _RUN_ID,
-            "telemetry_context_json": telemetry_context,
-            "executor_dispatch_id": _DISPATCH_ID,
-        }
-    ):
         with logfire.span("observability.smoke.executor"):
             logging.getLogger("tracker.executor.observability.smoke").info("Executor processed observability smoke run")
             _capture_test_error("valkyrie-executor")
+        runner_observability.record_dispatch_completion(child_context)
     _flush_telemetry()
 
 
@@ -252,12 +229,10 @@ def _breadcrumbs(event: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Path) -> None:
     tracker_context = tmp_path / "tracker-context.json"
-    executor_context = tmp_path / "executor-context.json"
 
     with _local_sentry_receiver() as (dsn, server):
         _run_process(_run_tracker, dsn, str(tracker_context))
-        _run_process(_run_executor_runner, dsn, str(tracker_context), str(executor_context))
-        _run_process(_run_executor, dsn, str(executor_context))
+        _run_process(_run_executor, dsn, str(tracker_context))
         items = _items(server)
 
     events = [event for item in items if (event := item.get_event()) is not None]
@@ -267,7 +242,6 @@ def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Pat
 
     assert {event["server_name"] for event in events} == {
         "valkyrie-tracker",
-        "valkyrie-executor-runner",
         "valkyrie-executor",
     }
     assert all(event["tags"]["benchmark_id"] == _RUN_ID for event in events)
@@ -279,14 +253,13 @@ def test_run_id_correlates_logs_errors_and_traces_across_processes(tmp_path: Pat
     )
 
     correlated_logs = [entry for entry in logs if _attribute_value(entry, "benchmark_id") == _RUN_ID]
-    assert len(correlated_logs) >= 3
+    assert len(correlated_logs) >= 2
     assert {_attribute_value(entry, "server.address") for entry in correlated_logs} == {
         "valkyrie-tracker",
-        "valkyrie-executor-runner",
         "valkyrie-executor",
     }
 
-    assert len(transactions) >= 3
+    assert len(transactions) >= 2
     tracker_error_spans = [
         span
         for transaction in transactions

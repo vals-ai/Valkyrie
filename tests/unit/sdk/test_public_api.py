@@ -50,6 +50,9 @@ EXPECTED_ALL = [
     "LogPage",
     "Order",
     "Parameter",
+    "ProjectCreateRequest",
+    "ProjectResponse",
+    "ProjectsResponse",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
     "RunStreamEvent",
@@ -73,6 +76,8 @@ EXPECTED_ALL = [
     "SingleTaskResponse",
     "ShedBenchmarkRequest",
     "ShedBenchmarkResponse",
+    "SPEND_SUBCATEGORIES",
+    "SpendType",
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
     "UpdateBenchmarkConcurrencyRequest",
@@ -98,8 +103,9 @@ EXPECTED_SIGNATURES = {
         "self, agent, benchmark, *, model=None, concurrency=5, priority=None, task_ids=None, "
         "slice_str=None, dataset=None, dataset_version=None, "
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
-        "ignore_custom_services=False"
+        "ignore_custom_services=False, project=None"
     ),
+    RunsResource.retag: "self, run_id, project",
     RunsResource.filter_options: "self",
     RunsResource.fetch: "self, run_id",
     RunsResource.list: "self, request=None",

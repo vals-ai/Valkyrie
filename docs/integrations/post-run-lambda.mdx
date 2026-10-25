@@ -1,68 +1,77 @@
 ---
-title: Invoke a post-run Lambda
-description: Run an AWS Lambda function after a benchmark finishes.
+title: "Invoke a Lambda after a run"
+sidebarTitle: "Post-run Lambda"
+description: "Have Valkyrie call an AWS Lambda function with a run's details when the run finishes."
 ---
 
-The `--lambda` flag on [`valkyrie run start`](/reference/cli/run#start) invokes an AWS Lambda function after a run completes.
+Valkyrie can call an AWS Lambda function after a run finishes and its results are
+saved, for example to send a notification or start your own analysis.
 
-```bash
-valkyrie run start \
-  --agent agents/claude_code \
-  --benchmark swebench \
-  --lambda my-post-benchmark-handler
+Valkyrie calls the function with the Tracker's own AWS credentials, so the function must be
+in the Tracker's AWS account or allow that account to invoke it. A
+[local Tracker](/self-hosting/local-tracker) can't call Lambda functions.
+
+## Write the handler
+
+```python lambda_function.py
+def lambda_handler(event, context):
+    run_id = event["benchmark_id"]
+    agent_name = event["contract"]["name"]
+
+    # Your post-run work, such as a notification
+
+    return {"statusCode": 200, "body": f"Processed {agent_name} run {run_id}"}
 ```
 
-The lambda is invoked once after all tasks finish and results are uploaded. By that point the run's status is already terminal, so a lambda that fails — an uncaught exception, or a `statusCode >= 400` — does **not** change it: the run stays `FINISHED` and the failure is recorded in the tracker logs. The tracker logs only a failure, so to confirm your lambda ran at all, check its own CloudWatch logs; a green run is not evidence that it did.
+## Name the function when you start a run
+
+```bash
+valkyrie run start --agent my-agent --benchmark swebench --lambda my-post-run-handler --project my-project
+```
+
+To call another function when a rerun finishes, pass `--lambda` to `valkyrie run resume` or `valkyrie run retry`.
+
+## When the function runs
+
+- Valkyrie checks that it can invoke the function when the run starts, and the run fails if
+  it can't.
+- The function runs once, after every task has finished, and only if the run ends as
+  `FINISHED`. A stopped run doesn't call it.
+- Resuming or retrying the run calls it again when the rerun finishes.
+- A function that fails, by raising an exception or returning a `statusCode` of 400 or more,
+  doesn't change the run's status. To confirm that the function ran, check its own logs.
 
 ## Payload
 
-The tracker invokes your lambda with the full `BenchmarkArguments` plus the persisted benchmark ID and name:
+The function receives the run's launch settings, plus its ID and benchmark name. These are
+the fields most handlers need:
 
 ```json
 {
-  "contract": {
-    "name": "claude_code",
-    "install_cmd": "bash setup.sh",
-    "run_cmd": "cat /tmp/problem_statement | claude -p ...",
-    "final_output": "/logs",
-    "secrets": {
-      "ANTHROPIC_API_KEY": "AnthropicApiKey"
-    }
-  },
+  "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
+  "benchmark_name": "swebench",
+  "dataset": "default",
   "concurrency": 5,
   "task_ids": ["astropy__astropy-12907"],
   "slice_str": null,
-  "lambda_function": "my-post-benchmark-handler",
-  "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
-  "benchmark_name": "swebench"
+  "lambda_function": "my-post-run-handler",
+  "contract": {
+    "name": "my-agent",
+    "install_cmd": "bash setup.sh",
+    "run_cmd": "my-agent --task \"{problem_statement_path}\"",
+    "final_output": "/logs/my-agent",
+    "secrets": {"ANTHROPIC_API_KEY": "anthropic-api-key"}
+  }
 }
 ```
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `contract` | object | The agent contract used for the run |
-| `concurrency` | int | Concurrency level |
-| `task_ids` | list or null | Task IDs that were run (null = all) |
-| `slice_str` | string or null | Dataset slice if provided |
-| `lambda_function` | string | Name of this lambda function |
-| `benchmark_id` | string | UUID of the completed run |
-| `benchmark_name` | string | Persisted name of the completed benchmark |
-
-## Format required by AWS
-
-AWS Lambda expects a `lambda_function.py` with a `lambda_handler` entry point:
-
-```python
-def lambda_handler(event, context):
-    benchmark_id = event["benchmark_id"]
-    agent_name = event["contract"]["name"]
-
-    # Your post-run logic here
-    # e.g. send a Slack notification, trigger evaluation, etc.
-
-    return {"statusCode": 200, "body": f"Processed {agent_name} run {benchmark_id}"}
-```
-
-## Deployment
-
-The Lambda is invoked by the server's AWS role in the configured Region. Grant that role access only to the functions the deployment supports.
+| Field | Meaning |
+| --- | --- |
+| `benchmark_id` | The run's ID |
+| `benchmark_name` | The benchmark the run used |
+| `dataset` | The dataset the run used |
+| `concurrency` | The run's concurrency |
+| `task_ids` | The tasks the run was limited to, or `null` for all |
+| `slice_str` | The run's `--slice`, or `null` |
+| `lambda_function` | This function's name |
+| `contract` | The agent contract the run used, with secret names but not their values |

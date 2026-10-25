@@ -94,6 +94,7 @@ class TestAgentWrites:
             _agent_archive(unsupported_compression=True),
             _agent_archive().replace(b"agent content", b"wrong content"),
         ],
+        ids=["not-zip", "invalid-contract", "symlink", "unsupported-compression", "bad-crc"],
     )
     def test_upload_rejects_invalid_contract_symlink_and_crc(self, body: bytes) -> None:
         response = _client.put("/agents/demo", headers={"Content-Type": "application/zip"}, content=body)

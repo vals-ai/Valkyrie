@@ -30,7 +30,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.scheduler.store import queue_pool_id
+from tracker.scheduler.store import queue_pool_id, reserved_queue_pool_id
 from tracker.aws.runtime import AWSResources
 from tracker.types import ManagedExecutionContext, RunExecutionRequest, StartBenchmarkRequest
 from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
@@ -133,9 +133,12 @@ async def test_queued_coordinator_retries_abandoned_reservation_recovery(
             task_row_id=task.id,
             attempt_started_at=task.started_at,
             pool_id=queue_pool_id("retry-recovery"),
+            target_id="region-a",
+            sandbox_class="sysbox",
             requested_vcpu=1,
             requested_memory=1,
             requested_disk=1,
+            requested_gpu=0,
         )
     )
     database_session.commit()
@@ -146,7 +149,7 @@ async def test_queued_coordinator_retries_abandoned_reservation_recovery(
         recoveries += 1
         if recoveries == 2:
             with Session(database_session.bind) as session:
-                reservation = session.get(SandboxBuildReservation, task.id)
+                reservation = session.get(SandboxBuildReservation, (task.id, task.started_at))
                 assert reservation is not None
                 session.delete(reservation)
                 session.commit()
@@ -155,6 +158,7 @@ async def test_queued_coordinator_retries_abandoned_reservation_recovery(
         return {task_row.task_id: _finish_task(database_session, task_row)}
 
     provider = Mock(spec=SandboxProvider, admission_pool_id="retry-recovery")
+    monkeypatch.setattr("tracker.utils.run_orchestration._POOL_RECOVERY_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover)
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process)
     monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=provider))
@@ -201,9 +205,12 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
                 task_row_id=oldest_pending.id,
                 attempt_started_at=oldest_pending.started_at - timedelta(seconds=1),
                 pool_id=provider_pool_id,
+                target_id="region-a",
+                sandbox_class="sysbox",
                 requested_vcpu=1,
                 requested_memory=1,
                 requested_disk=1,
+                requested_gpu=0,
             )
         )
         database_session.commit()
@@ -305,18 +312,24 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
         await coordinator_polls.get()
         await asyncio.wait_for(pending_contender_started.wait(), timeout=2)
 
-        assert len(pending_started) == 1
+        # Two free slots: both pending tasks contend at once, unless one is still reserved.
+        assert len(pending_started) == (1 if reserved_oldest else 2)
         assert reservation_selects
         if reserved_oldest:
             assert oldest_pending.task_id not in pending_started
-            assert database_session.get(SandboxBuildReservation, oldest_pending.id) is not None
+            assert (
+                database_session.get(
+                    SandboxBuildReservation, (oldest_pending.id, oldest_pending.started_at - timedelta(seconds=1))
+                )
+                is not None
+            )
         reservation_selects.clear()
 
         continue_coordinator.put_nowait(None)
         await coordinator_polls.get()
 
-        assert len(pending_started) == 1
-        assert reservation_selects == []
+        assert len(pending_started) == (1 if reserved_oldest else 2)
+        assert bool(reservation_selects) == reserved_oldest
     finally:
         run.cancel()
         try:
@@ -324,6 +337,87 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
                 await run
         finally:
             event.remove(Session, "do_orm_execute", observe_reservation_select)
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+@pytest.mark.parametrize("reserved", [False, True], ids=["legacy-bounded-contenders", "reserved-full-backlog"])
+async def test_queued_coordinator_prepares_backlog_only_for_reserved_queues(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_authority_kwargs: Any,
+    reserved: bool,
+) -> None:
+    task_ids = [f"pending_{index}" for index in range(15)]
+    request, benchmark = _queued_run(contract, database_session, task_ids, concurrency=20)
+    if reserved:
+        benchmark.arguments = benchmark.arguments.model_copy(
+            update={"queue_pool_id": reserved_queue_pool_id(queue_pool_id("coordinator-pool"))}
+        )
+        database_session.add(benchmark)
+        database_session.commit()
+    _add_tasks(database_session, benchmark, dict.fromkeys(task_ids, TaskStatus.PENDING))
+    pending_started: list[str] = []
+    started_count = {10: asyncio.Event(), 13: asyncio.Event(), 15: asyncio.Event()}
+    coordinator_polls: asyncio.Queue[None] = asyncio.Queue()
+    continue_coordinator: asyncio.Queue[None] = asyncio.Queue()
+    original_sleep = asyncio.sleep
+
+    async def process_task(task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, dict[str, Any] | None]:
+        pending_started.append(task_row.task_id)
+        if (reached := started_count.get(len(pending_started))) is not None:
+            reached.set()
+        await asyncio.Event().wait()
+        return {task_row.task_id: None}
+
+    async def controlled_sleep(seconds: float) -> None:
+        if seconds != 1.0:
+            await original_sleep(0)
+            return
+        coordinator_polls.put_nowait(None)
+        await continue_coordinator.get()
+
+    def set_status(task_ids_to_update: list[str], status: TaskStatus) -> None:
+        with Session(bind=database_session.bind) as session:
+            for task in session.exec(select(Task).where(col(Task.task_id).in_(task_ids_to_update))).all():
+                task.status = status
+            session.commit()
+
+    sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id="coordinator-pool")
+    monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", Mock(return_value=sandbox_provider))
+    monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", controlled_sleep)
+    authority_kwargs = executor_authority_kwargs(benchmark, session=database_session)
+    run = asyncio.create_task(
+        process_benchmark(execution_context_json=_context(request, benchmark, task_ids), **authority_kwargs)
+    )
+    try:
+        await asyncio.wait_for(coordinator_polls.get(), timeout=2)
+        if reserved:
+            await asyncio.wait_for(started_count[15].wait(), timeout=2)
+            assert pending_started == task_ids
+            return
+        await asyncio.wait_for(started_count[10].wait(), timeout=2)
+        await original_sleep(0)
+        assert pending_started == task_ids[:10]
+
+        # Nothing more while ten contenders are still pending.
+        continue_coordinator.put_nowait(None)
+        await asyncio.wait_for(coordinator_polls.get(), timeout=2)
+        await original_sleep(0)
+        assert pending_started == task_ids[:10]
+
+        # Three contenders got admitted: the next pass tops the queue back up to ten.
+        set_status(task_ids[:3], TaskStatus.BUILDING)
+        continue_coordinator.put_nowait(None)
+        await asyncio.wait_for(coordinator_polls.get(), timeout=2)
+        await asyncio.wait_for(started_count[13].wait(), timeout=2)
+        await original_sleep(0)
+        assert pending_started == task_ids[:13]
+    finally:
+        run.cancel()
+        with suppress(asyncio.CancelledError):
+            await run
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
@@ -502,7 +596,7 @@ async def test_queued_cancellation_errors_owned_work_and_preserves_pending_work(
     executor_authority_kwargs: Any,
 ) -> None:
     task_ids = ["active", "pending"]
-    request, benchmark = _queued_run(contract, database_session, task_ids)
+    request, benchmark = _queued_run(contract, database_session, task_ids, concurrency=1)
     task_started = asyncio.Event()
     started_task_id: str | None = None
 

@@ -24,9 +24,20 @@ TYPE_INDEX = TYPE_ROOT / "index.mdx"
 SDK_ERRORS = SDK_ROOT / "errors.mdx"
 
 STATIC_REDIRECTS = [
-    {"source": "/introduction", "destination": "/get-started/overview"},
+    {"source": "/introduction", "destination": "/introduction/what-is-valkyrie"},
+    # The overview and hosting pages merged into the introduction.
+    {"source": "/get-started/overview", "destination": "/introduction/what-is-valkyrie"},
+    {"source": "/get-started/hosting", "destination": "/introduction/what-is-valkyrie"},
     # The CDK infrastructure guide left the public docs with `infra/`.
-    {"source": "/self-hosting/infrastructure", "destination": "/get-started/hosting"},
+    {"source": "/self-hosting/infrastructure", "destination": "/introduction/what-is-valkyrie"},
+    # SDK error handling merged into the SDK quickstart.
+    {"source": "/sdk/errors", "destination": "/sdk/quickstart"},
+    # Contributor guides moved to DEVELOPMENT.md and the service READMEs.
+    {"source": "/contributing/local-development", "destination": "/self-hosting/local-tracker"},
+    {"source": "/contributing/tracker-service", "destination": "/self-hosting/local-tracker"},
+    {"source": "/contributing/database", "destination": "/self-hosting/local-tracker"},
+    # AWS self-hosting permissions moved to internal/tracker-operations.md.
+    {"source": "/self-hosting/aws-permissions", "destination": "/self-hosting/local-tracker"},
     # `config provider` and `config service` moved to `provider` and `benchmark service`.
     {"source": "/reference/cli/config/provider/set", "destination": "/reference/cli/provider#set"},
     {"source": "/reference/cli/config/provider/default", "destination": "/reference/cli/provider#default"},
@@ -50,11 +61,12 @@ GUIDE_LINKS = {
     "agent": "/agents/manage-agents",
     "benchmark": "/benchmarks/custom-services",
     "queue": "/runs/monitor#inspect-the-priority-queue",
+    "project": "/runs/start#put-the-run-in-a-project",
     "secret": "/get-started/sandbox-providers",
     "provider": "/get-started/sandbox-providers",
-    "login": "/get-started/configuration#log-in",
-    "token": "/get-started/configuration#access-keys-for-ci",
-    "org": "/get-started/configuration#organizations",
+    "login": "/get-started/configuration#sign-in",
+    "token": "/get-started/configuration#create-an-access-key-for-ci",
+    "org": "/get-started/configuration#join-an-organization",
     "ui": "/runs/monitor#browse-runs-in-the-terminal",
 }
 
@@ -66,6 +78,7 @@ CLI_CARDS = {
         "exporting the task IDs in a benchmark dataset and listing or saving benchmark services",
     ),
     "queue": ("list-ordered", "inspecting sandbox queue priorities, positions, and active tasks"),
+    "project": ("folder-kanban", "managing the projects runs are started in"),
     "secret": ("key-round", "storing, listing, and removing the secrets your runs reference"),
     "provider": ("server", "choosing the secret behind each sandbox provider and your default provider"),
     "login": ("log-in", "signing in, signing out, and checking which account your requests use"),
@@ -89,6 +102,7 @@ RESOURCE_CARDS = {
     "LogsResource": ("Logs", "scroll-text", "fetching, filtering, and following benchmark logs"),
     "SchedulerResource": ("Scheduler", "list-ordered", "inspecting queue positions and active tasks"),
     "SecretsResource": ("Secrets", "key-round", "storing, listing, and removing the secrets your runs reference"),
+    "ProjectsResource": ("Projects", "folder-kanban", "managing the projects runs are started in"),
     "ProvidersResource": ("Providers", "server", "choosing the secret behind each sandbox provider"),
     "SettingsResource": (
         "Settings",
@@ -106,6 +120,7 @@ TYPE_CARDS = {
     "Config": ("sliders-horizontal", "validated SDK configuration and field aliases"),
     "Logs": ("scroll-text", "benchmark log events and paginated responses"),
     "Scheduler": ("list-ordered", "sandbox queue totals, positions, and active task responses"),
+    "Projects": ("folder-kanban", "projects and the spend fields their runs share"),
     "Secrets": ("key-round", "stored secret names and references"),
     "Settings": ("sliders-horizontal", "sandbox provider mappings and saved run settings"),
 }
@@ -129,6 +144,7 @@ READ_ONLY_COMMANDS = frozenset(
         ("run", "results"),
         ("run", "status"),
         ("queue", "status"),
+        ("project", "list"),
         ("secret", "list"),
         ("provider", "list"),
         ("ui",),

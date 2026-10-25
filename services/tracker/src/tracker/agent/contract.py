@@ -77,12 +77,10 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
         return AgentContractRequest(
             name=agent_contract.name,
             model=agent_config.model,
-            # Preserve the validated values independently of the rendered
-            # command. Trusted benchmark setup may need selected non-secret
-            # settings (for example a reasoning-effort variant) before the
-            # agent command is launched.
+            # Keep validated values for task setup and final command binding.
             kwargs={key: str(value) for key, value in validated_kwargs.items()},
-            run_cmd=agent_contract.format_run_cmd(validated_kwargs),
+            run_cmd=agent_contract.run_cmd,
+            turns=agent_contract.turns,
             install_cmd=agent_contract.install_cmd,
             final_output=str(agent_contract.final_output) if agent_contract.final_output is not None else None,
             output_artifacts=agent_contract.output_artifacts,

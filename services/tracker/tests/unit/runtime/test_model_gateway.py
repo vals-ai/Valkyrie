@@ -26,11 +26,11 @@ def _scoped(env: dict[str, str], **overrides: Any) -> Any:
     kwargs: dict[str, Any] = {
         "run_id": "run-1",
         "task_id": "task_0",
+        "attempt_id": "attempt-1",
         "attested_model": MODEL,
         "companion_models": None,
         "identity": IDENTITY,
         "org_name": "vals.ai",
-        "agent_timeout": 600,
     }
     kwargs.update(overrides)
     return task_scoped_gateway_key(env, **kwargs)
@@ -41,6 +41,9 @@ class RecordingGateway:
         self.mint_status = mint_status
         self.revoke_status = revoke_status
         self.requests: list[tuple[str, dict[str, Any], str | None]] = []
+        self.session_headers: list[str | None] = []
+        self.control_headers: list[str | None] = []
+        self.urls: list[str] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(self))
@@ -48,6 +51,9 @@ class RecordingGateway:
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.url.path, json.loads(request.content), request.headers.get("Authorization")))
+        self.session_headers.append(request.headers.get("X-SSP-Session-ID"))
+        self.control_headers.append(request.headers.get("X-SSP-Control-Token"))
+        self.urls.append(str(request.url))
         if request.url.path == "/service-auth":
             return httpx.Response(
                 self.mint_status, json={"token": TOKEN, "lease_id": "lease-1", "expires_at": 1_800_000_000.0}
@@ -84,12 +90,15 @@ async def test_scoped_credential_replaces_the_static_key_and_is_revoked(
     assert gateway.payload_for("/service-auth") == {
         "run_id": "run-1",
         "task_id": "task_0",
+        "attempt_id": "attempt-1",
         "allowed_models": [MODEL],
         "identity": IDENTITY,
-        "ttl_seconds": 600 + 2 * 60 * 60,
+        "ttl_seconds": 7 * 24 * 60 * 60,
     }
     assert gateway.payload_for("/service-auth/revoke") == {"lease_id": "lease-1"}
     assert {authorization for _, _, authorization in gateway.requests} == {f"Bearer {STATIC_KEY}"}
+    assert gateway.session_headers == [None, None]
+    assert gateway.urls == ["https://gateway.test/service-auth", "https://gateway.test/service-auth/revoke"]
 
 
 async def test_companion_models_are_allowed_alongside_the_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,23 +193,22 @@ async def test_the_gateway_stays_reachable_for_every_tenant(monkeypatch: pytest.
     assert gateway.paths == ["/service-auth", "/service-auth/revoke"]
 
 
-@pytest.mark.parametrize(
-    "agent_timeout,expected",
-    [
-        (600, 600 + 2 * 60 * 60),
-        (5 * 24 * 60 * 60, 5 * 24 * 60 * 60 + 2 * 60 * 60),
-        # Unbounded tasks use the gateway ceiling.
-        (None, 7 * 24 * 60 * 60),
-        (30 * 24 * 60 * 60, 7 * 24 * 60 * 60),
-    ],
-)
-async def test_the_credential_follows_the_benchmark_timeout(
-    monkeypatch: pytest.MonkeyPatch, agent_timeout: float | None, expected: int
-) -> None:
+async def test_native_mint_and_revoke_never_send_ssp_control_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     gateway = RecordingGateway()
     gateway.install(monkeypatch)
 
-    async with _scoped(_env(), agent_timeout=agent_timeout):
-        pass
+    async with _scoped(_env()) as scoped:
+        assert scoped["MODEL_GATEWAY_API_KEY"] == TOKEN
 
-    assert gateway.payload_for("/service-auth")["ttl_seconds"] == expected
+    assert gateway.urls == ["https://gateway.test/service-auth", "https://gateway.test/service-auth/revoke"]
+    assert gateway.session_headers == [None, None]
+    assert gateway.control_headers == [None, None]
+    assert [authorization for _, _, authorization in gateway.requests] == [f"Bearer {STATIC_KEY}"] * 2
+
+
+async def test_mint_names_the_task_attempt_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    gateway = RecordingGateway()
+    gateway.install(monkeypatch)
+    async with _scoped(_env(), attempt_id="attempt-7"):
+        pass
+    assert gateway.payload_for("/service-auth")["attempt_id"] == "attempt-7"

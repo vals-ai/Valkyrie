@@ -62,9 +62,7 @@ def test_server_configuration_selects_execution_mode(
         assert release is not None
         assert release.artifact_uri == source_executor_artifact_uri(Path(serve.__file__).resolve().parents[1])
         assert os.environ["EXECUTOR_LAUNCHER"] == "local"
-        assert os.environ["EXECUTOR_SOURCE_ROOT"] == str(Path(serve.__file__).resolve().parents[1])
         assert len(base64.b64decode(os.environ["EXECUTOR_PAYLOAD_LOCAL_KEY"])) == 32
-        assert Path(os.environ["EXECUTOR_CACHE_DIR"]).is_dir()
         assert os.environ["DB_NAME"] == "tracker"
 
 

@@ -1,90 +1,97 @@
 ---
-title: Manage a run
-description: Update concurrency, stop work, and resume or retry tasks.
+title: "Manage a run"
+description: "Change a run's concurrency, stop it, shed load, and rerun stopped or failed tasks."
 ---
 
-Resume pending work with an optional concurrency override.
+Change a run while it goes, stop it, and rerun the tasks that didn't finish. Every command
+is in the [`valkyrie run` reference](/reference/cli/run). To do the same from Python, see
+[Manage runs with Python](/sdk/runs).
 
-<CodeGroup>
+In the commands on this page, replace *`RUN_ID`* with the run's ID, which
+`valkyrie run start` prints.
 
-```bash CLI
-valkyrie run resume <run-id> --concurrency 20
-```
-
-```python Python SDK
-await client.runs.resume(run_id, concurrency=20)
-```
-
-</CodeGroup>
-
-Full syntax for each command below is in the [`run update`](/reference/cli/run#update), [`run stop`](/reference/cli/run#stop), [`run shed`](/reference/cli/run#shed), [`run resume`](/reference/cli/run#resume), and [`run retry`](/reference/cli/run#retry) reference, and in [`client.runs.resume`](/reference/sdk/runs#resume) and [`client.runs.retry`](/reference/sdk/runs#retry) for Python.
-
-## Update concurrency
+## Change concurrency
 
 ```bash
-valkyrie run update <run-id> --concurrency 20
+valkyrie run update RUN_ID --concurrency 20
 ```
 
-The tracker picks up the new limit the next time it refreshes the run. Raising it lets more tasks in, while lowering it leaves work that already started alone and simply holds back new tasks until usage drops below the limit.
+Raising the limit starts more tasks. Lowering it lets running tasks finish and holds back
+new ones until the run is under the limit. Only a run in progress can be updated.
 
-The value has to be positive, and a completed, stopped, or failed run cannot be updated at all. Each `process_benchmark` executor applies the limit on its own, so two overlapping executors can briefly run more tasks than the stored value.
-
-## Stop work
-
-Stop a whole run, or name the tasks to stop:
+## Stop a run
 
 ```bash
-valkyrie run stop <run-id>
-valkyrie run stop <run-id> --task-ids task-a,task-b
+valkyrie run stop RUN_ID
 ```
 
-A plain stop leaves work that already started running to completion. Add `--force` to also delete the sandboxes of in-progress and evaluating tasks and mark those tasks stopped:
+The Valkyrie CLI asks you to confirm. Tasks that haven't started, and tasks being set up or graded,
+stop. Agents that are already running finish their task. The run shows `STOPPING` until
+they do, then `STOPPED`.
+
+To stop only some tasks and let the rest of the run go on, name them:
 
 ```bash
-valkyrie run stop <run-id> --force
+valkyrie run stop RUN_ID --task-ids task-a,task-b
+```
+
+`--force` also stops running agents and deletes the sandboxes:
+
+```bash
+valkyrie run stop RUN_ID --force
 ```
 
 <Warning>
-  Force-stopping deletes running sandboxes and cannot be undone. The CLI asks for confirmation first.
+
+A forced stop deletes the run's sandboxes, or the named tasks' sandboxes, with whatever
+they hold. You can't undo it.
+
 </Warning>
 
-## Shed load from a running run
+## Shed load when a model hits rate limits
 
-When a model starts hitting rate limits, lowering concurrency alone waits for running tasks to finish. `run shed` lowers the limit and then force-stops the newest building or in-progress tasks until the run is back at the new limit. The most recently admitted tasks have done the least work, so less is lost:
-
-```bash
-valkyrie run shed <run-id> --concurrency 10 --dry-run
-valkyrie run shed <run-id> --concurrency 10
-```
-
-The new limit must be below the current one; the tracker rejects a shed that would keep or raise it. "Newest" means the latest `started_at`, which is when a task was queued or last retried, not when its sandbox came up; tasks are admitted in that order, so it is a close approximation rather than an exact record of how much work each task has done. Evaluating tasks still count toward the limit but are never stopped: the tracker lowers the limit, picks the tasks, and stops them in one locked transaction, so a task that has moved on to evaluating since the preview is left alone. Stopped tasks can be rerun with `run retry` once the rate limits clear; they restart from the beginning.
-
-## Choose resume or retry
-
-`resume` admits work that never ran. `retry` re-runs tasks that ended in `ERROR`:
+Lowering concurrency waits for running tasks to finish. `run shed` lowers it and stops the
+most recently started tasks at once, which have done the least work, until the run is at
+the new limit:
 
 ```bash
-valkyrie run resume <run-id>
-valkyrie run retry <run-id>
+valkyrie run shed RUN_ID --concurrency 10
 ```
 
-Either accepts a task subset, a concurrency override, and `--connect` to stream afterwards. Three overrides change what the retried work uses:
+The CLI lists the tasks to stop and asks you to confirm; `--dry-run` only lists
+them. The new limit must be lower than the current one. Tasks being graded count toward
+the limit but are never stopped. After the rate limits clear, rerun the stopped tasks with
+`valkyrie run retry`. They start over.
 
-- `--update-agent` refreshes the frozen agent from its current published bundle, so a re-pushed agent takes effect. Stop a run that is still in progress before using it.
-- `--from-scratch` clears stored evaluation resume state, so a task is graded again from the beginning.
-- `--benchmark-url` replaces the benchmark-service URL stored on the run, which a tunnelled service needs after its URL changes.
-
-`-s` merges a secret mapping into the stored contract, which is how a rotated credential reaches resumed tasks.
-
-Which task IDs you can name depends on the run's state. On a run that has already reached a terminal state, a valid task ID with no row yet is created as new `PENDING` work; on a run still in progress, a retry rejects any ID that is not already in `ERROR`.
-
-## Export benchmark task IDs
+## Resume or retry
 
 ```bash
-valkyrie benchmark tasks swebench --dataset default --output tasks.txt
+# Rerun the run's stopped tasks
+valkyrie run resume RUN_ID
+
+# Rerun the run's stopped and failed tasks
+valkyrie run retry RUN_ID
 ```
 
-The output path is optional. Pass the file to `--task-ids-file` on start, stop, resume, or retry.
+- On a finished or stopped run, `resume` reruns tasks in `STOPPED`, and `retry` reruns tasks
+  in `STOPPED` or `ERROR`.
+- With `--task-ids` or `--task-ids-file` on a finished or stopped run, `retry` reruns
+  exactly those tasks, whatever their status, and `resume` reruns them along with the
+  stopped tasks. A dataset task the run never had is added to it.
+- On a run in progress, `retry` reruns failed and stopped tasks, and `resume` only applies a
+  new `--concurrency`.
+- A run that is `STOPPING` can't be resumed or retried until it stops.
 
+These options change what the rerun uses:
 
-Python callers can change an active run's limit with `await client.runs.update_concurrency(run_id, concurrency=10)`. Lowering the limit lets existing tasks finish and limits new admissions; see the [SDK method](/reference/sdk/runs#update-concurrency).
+| Option | Effect |
+| --- | --- |
+| `--update-agent` | Uses the agent's current files in your library, so a code fix you pushed takes effect. The run keeps the contract it started with, so changes to `run_cmd`, `install_cmd`, or parameters don't. Not allowed while the run is in progress. |
+| `--from-scratch` | Grades each task from the beginning, discarding saved grading progress. |
+| `--benchmark-url` | Sends the rerun to a new benchmark service URL, for example after a tunnel restarts. |
+| `-s ENV_VAR SECRET` | Adds or replaces a secret mapping, for example after you rotate a key. |
+| `-H NAME VALUE` | Sends a header to the benchmark service. |
+| `--concurrency` | Sets a new concurrency. |
+| `--connect` | Streams progress after the rerun starts. |
+
+A rerun that restarts the agent gives the task a fresh [wall limit](/runs/time-limits#wall-limit).

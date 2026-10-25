@@ -1,9 +1,9 @@
 """Canonical transaction owners for executor dispatch lifecycle."""
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, NamedTuple
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.executor.dispatch_payload import SealedPayload, open_payload
 from tracker.executor.release_control import (
     ReleaseControlError,
     create_executor_dispatch,
@@ -42,6 +43,8 @@ _ACTIVE_DISPATCH_STATUSES = (
     ExecutorDispatchStatus.QUEUED,
     ExecutorDispatchStatus.RUNNING,
 )
+DISPATCH_CLAIM_WINDOW = timedelta(seconds=120)
+LOCAL_DISPATCH_LEASE = timedelta(minutes=5)
 
 
 class EnqueueFailureResolution(str, Enum):
@@ -153,8 +156,8 @@ def terminalize_active_dispatches(
     benchmark_id: UUID,
     *,
     except_dispatch_id: UUID | None = None,
-) -> None:
-    """Fail every active dispatch except an optional selected owner.
+) -> list[str]:
+    """Fail every active dispatch except an optional selected owner; return their ECS task ARNs.
 
     Callers changing benchmark lifecycle state must lock the benchmark row first.
     """
@@ -165,12 +168,13 @@ def terminalize_active_dispatches(
     )
     if except_dispatch_id is not None:
         dispatches = dispatches.where(col(ExecutorDispatch.id) != except_dispatch_id)
-    session.exec(
+    task_arns = session.exec(
         dispatches.values(
             status=ExecutorDispatchStatus.FAILED,
             finished_at=datetime.now(ZoneInfo("UTC")),
-        )
-    )
+        ).returning(col(ExecutorDispatch.ecs_task_arn))
+    ).scalars()
+    return [task_arn for task_arn in task_arns if task_arn is not None]
 
 
 def active_dispatch_exists(session: Session, benchmark_id: UUID) -> bool:
@@ -184,6 +188,97 @@ def active_dispatch_exists(session: Session, benchmark_id: UUID) -> bool:
 
 
 @dataclass(frozen=True)
+class ClaimedDispatch:
+    dispatch_id: UUID
+    benchmark_id: UUID
+    release_id: str
+    assigned_task_ids: list[str]
+    payload: dict[str, Any]
+
+
+def dispatch_now(session: Session) -> datetime:
+    return session.exec(select(func.current_timestamp())).one().replace(tzinfo=None)
+
+
+def claim_dispatch(session: Session, dispatch_id: UUID, *, task_arn: str | None) -> ClaimedDispatch | None:
+    """Move a queued dispatch to RUNNING and consume its sealed payload; None once it is no longer claimable.
+
+    The dispatch row lock orders this against stop and recovery, which only fail dispatches that are still QUEUED.
+    """
+    now = dispatch_now(session)
+    dispatch = session.exec(
+        select(ExecutorDispatch)
+        .join(Benchmark, col(Benchmark.id) == col(ExecutorDispatch.benchmark_id))
+        .where(col(ExecutorDispatch.id) == dispatch_id)
+        .where(ExecutorDispatch.status == ExecutorDispatchStatus.QUEUED)
+        .where(ExecutorDispatch.created_at > now - DISPATCH_CLAIM_WINDOW)
+        .where(Benchmark.status == BenchmarkStatus.IN_PROGRESS)
+        .where(Benchmark.current_execution_release_id == ExecutorDispatch.executor_release_id)
+        .with_for_update(of=ExecutorDispatch)
+    ).one_or_none()
+    if dispatch is None:
+        return None
+    sealed = session.exec(
+        select(ExecutorDispatchPayload).where(ExecutorDispatchPayload.dispatch_id == dispatch_id).with_for_update()
+    ).one()
+    payload = open_payload(dispatch_id, SealedPayload(sealed.ciphertext, sealed.encrypted_data_key, sealed.nonce))
+    session.delete(sealed)
+    dispatch.status = ExecutorDispatchStatus.RUNNING
+    dispatch.started_at = datetime.now(ZoneInfo("UTC"))
+    if task_arn is not None:
+        dispatch.ecs_task_arn = task_arn
+    else:
+        dispatch.lease_expires_at = now + LOCAL_DISPATCH_LEASE
+    session.add(dispatch)
+    return ClaimedDispatch(
+        dispatch.id, dispatch.benchmark_id, dispatch.executor_release_id, dispatch.assigned_task_ids or [], payload
+    )
+
+
+def renew_local_dispatch(session: Session, dispatch_id: UUID) -> bool:
+    now = dispatch_now(session)
+    return (
+        session.exec(
+            update(ExecutorDispatch)
+            .where(col(ExecutorDispatch.id) == dispatch_id)
+            .where(col(ExecutorDispatch.status) == ExecutorDispatchStatus.RUNNING)
+            .where(col(ExecutorDispatch.lease_expires_at) > now)
+            .values(lease_expires_at=now + LOCAL_DISPATCH_LEASE)
+            .returning(col(ExecutorDispatch.id))
+        ).first()
+        is not None
+    )
+
+
+def finish_dispatch(session: Session, claimed: ClaimedDispatch) -> None:
+    """Mark the running dispatch FINISHED; a benchmark the executor left non-terminal with no sibling is finalized."""
+    benchmark = session.exec(select(Benchmark).where(Benchmark.id == claimed.benchmark_id).with_for_update()).one()
+    dispatch = session.exec(
+        select(ExecutorDispatch)
+        .where(ExecutorDispatch.id == claimed.dispatch_id)
+        .where(col(ExecutorDispatch.status) == ExecutorDispatchStatus.RUNNING)
+        .with_for_update()
+    ).one_or_none()
+    if dispatch is None:
+        return
+    now = datetime.now(ZoneInfo("UTC"))
+    dispatch.status = ExecutorDispatchStatus.FINISHED
+    dispatch.finished_at = now
+    session.add(dispatch)
+    session.flush()
+    if not active_dispatch_exists(session, benchmark.id):
+        if benchmark.status == BenchmarkStatus.IN_PROGRESS:
+            benchmark.status = BenchmarkStatus.ERROR
+            benchmark.finished_at = now
+            benchmark.error_message = "Executor exited without finalizing the benchmark"
+            session.add(benchmark)
+        elif benchmark.status == BenchmarkStatus.STOPPING:
+            benchmark.status = BenchmarkStatus.STOPPED
+            benchmark.finished_at = now
+            session.add(benchmark)
+
+
+@dataclass(frozen=True)
 class _DispatchError:
     error_message: str
     producer: str
@@ -191,29 +286,6 @@ class _DispatchError:
     error_type: str
     category: FailureCategory
     cause_code: str | None = None
-
-
-class _Expiry(NamedTuple):
-    deadline: Any
-    reason: str
-    message: str
-    error_type: str
-
-
-_EXPIRIES = {
-    ExecutorDispatchStatus.RUNNING: _Expiry(
-        col(ExecutorDispatch.lease_expires_at),
-        "LEASE_EXPIRED",
-        "Executor dispatch lease expired",
-        "ExecutorDispatchLeaseExpired",
-    ),
-    ExecutorDispatchStatus.QUEUED: _Expiry(
-        col(ExecutorDispatch.claim_deadline_at),
-        "CLAIM_DEADLINE_EXPIRED",
-        "Executor dispatch claim deadline expired",
-        "ExecutorDispatchClaimDeadlineExpired",
-    ),
-}
 
 
 def stop_unclaimed_dispatches(session: Session, benchmark: Benchmark) -> tuple[bool, list[str]]:
@@ -299,7 +371,7 @@ def record_dispatch_failure(
     cause_code: str | None = None,
     failure_reason: str | None = None,
     dispatch_status: ExecutorDispatchStatus = ExecutorDispatchStatus.RUNNING,
-    only_if_expired: bool = False,
+    expired_before: datetime | None = None,
 ) -> bool:
     """Record a dispatch failure without overwriting newer admitted work.
 
@@ -315,12 +387,12 @@ def record_dispatch_failure(
 
     dispatch_query = (
         select(ExecutorDispatch)
-        .where(ExecutorDispatch.id == dispatch_id)
+        .where(col(ExecutorDispatch.id) == dispatch_id)
         .where(ExecutorDispatch.benchmark_id == benchmark_id)
         .where(ExecutorDispatch.status == dispatch_status)
     )
-    if only_if_expired:
-        dispatch_query = dispatch_query.where(_EXPIRIES[dispatch_status].deadline <= func.current_timestamp())
+    if expired_before is not None:
+        dispatch_query = dispatch_query.where(col(ExecutorDispatch.lease_expires_at) <= expired_before)
     dispatch = session.exec(dispatch_query.with_for_update()).one_or_none()
     if dispatch is None:
         return False
@@ -352,35 +424,6 @@ def record_dispatch_failure(
     return True
 
 
-def reconcile_expired_dispatches(session: Session) -> int:
-    """Fail running or queued dispatches whose database-time owner window expired."""
-    recovered_count = 0
-    for status, expiry in _EXPIRIES.items():
-        expired_dispatches = session.exec(
-            select(ExecutorDispatch.id, ExecutorDispatch.benchmark_id, col(ExecutorDispatch.assigned_task_ids))
-            .where(ExecutorDispatch.status == status)
-            .where(expiry.deadline <= func.current_timestamp())
-            .order_by(expiry.deadline, col(ExecutorDispatch.id))
-        ).all()
-        for dispatch_id, benchmark_id, assigned_task_ids in expired_dispatches:
-            recovered_count += record_dispatch_failure(
-                session,
-                benchmark_id=benchmark_id,
-                dispatch_id=dispatch_id,
-                task_ids=assigned_task_ids or [],
-                error_message=expiry.message,
-                producer="executor_dispatch",
-                operation="dispatch_reconciliation",
-                error_type=expiry.error_type,
-                category=FailureCategory.INFRASTRUCTURE,
-                cause_code=expiry.reason,
-                failure_reason=expiry.reason,
-                dispatch_status=status,
-                only_if_expired=True,
-            )
-    return recovered_count
-
-
 def resolve_enqueue_failure(
     session: Session,
     *,
@@ -397,7 +440,7 @@ def resolve_enqueue_failure(
     ).one()
     dispatch = session.exec(
         select(ExecutorDispatch)
-        .where(ExecutorDispatch.id == dispatch_id)
+        .where(col(ExecutorDispatch.id) == dispatch_id)
         .where(ExecutorDispatch.benchmark_id == benchmark_id)
         .execution_options(populate_existing=True)
         .with_for_update()

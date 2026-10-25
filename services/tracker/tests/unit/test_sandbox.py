@@ -4,11 +4,21 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 """
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import os
 import re
 import shlex
+import signal
+import subprocess
+import sys
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
+from pathlib import Path
 from typing import Any, Literal, Never, cast
 from unittest.mock import AsyncMock, Mock, call
 
@@ -16,7 +26,9 @@ import pytest
 from benchmark_service import (
     ComposeSandbox,
     ComposeSource,
+    Episode,
     ExecResult,
+    GenerationContainment,
     ImageSource,
     Resources,
     SandboxNotFoundError,
@@ -27,20 +39,31 @@ from benchmark_service import (
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
+from tenacity import wait_none
 
+from tracker.external_service_gateway import (
+    AccountingSnapshot,
+    GenerationAccountingSummary,
+    ExternalServiceDeadlineController,
+)
 from tracker import sandbox as sandbox_module
+from tracker.generation_plan import GenerationPlan
 from tracker.aws.runtime import AWSRuntime
 from tracker.runtime.storage import ObjectStore
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
+    AgentTurns,
     MAX_OUTPUT_ARTIFACT_BYTES,
     OutputArtifact,
 )
 from tracker.egress import EgressPolicy
 from tracker.exceptions import (
     AgentRunFailedError,
+    ControlledGenerationError,
+    ControlledGenerationTerminationUnconfirmedError,
     DependencySetupExhaustedError,
+    GenerationTerminationUnconfirmedError,
     InvalidSandboxConfigurationError,
     OutputArtifactError,
     SSLConnectionError,
@@ -48,7 +71,9 @@ from tracker.exceptions import (
     SandboxSetupError,
 )
 from tracker.sandbox import (
+    sandbox_resolves,
     OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
+    _stream_controlled_output,  # pyright: ignore[reportPrivateUsage]
     SandboxCreationState,
     create_sandbox,
     run_agent,
@@ -110,6 +135,7 @@ _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
 _apply_egress_policy = getattr(sandbox_module, "apply_egress_policy")
+_run_egress_operation = getattr(sandbox_module, "_run_egress_operation")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
 _install_agent_dependencies_with_retries = getattr(sandbox_module, "_install_agent_dependencies_with_retries")
 _install_agent_dependencies_once = getattr(sandbox_module, "_install_agent_dependencies_once")
@@ -626,62 +652,159 @@ class TestArchiveAndUploadOutput:
         assert exec_commands[-1].startswith("rm -f ")
 
 
+def _signed_stage_frame(key: bytes, seq: int, event: str, container: str | None) -> str:
+    payload = json.dumps({"seq": seq, "event": event, "container": container}, separators=(",", ":")).encode()
+    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    mac = hmac.new(key, encoded.encode(), hashlib.sha256).hexdigest()
+    return f"VALKYRIE-STAGE/1 {encoded} {mac}\n"
+
+
+class _CompletedControlledWorkload:
+    def __init__(self, exit_code: int, absence_confirmed_at: float) -> None:
+        self.result = ExecResult(exit_code=exit_code)
+        self.absence_confirmed_at = absence_confirmed_at
+
+
+class _FakeControlledWorkload:
+    def __init__(
+        self,
+        *,
+        exit_code: int = 0,
+        wait_error: BaseException | None = None,
+        wait_release: asyncio.Event | None = None,
+        kill_release: asyncio.Event | None = None,
+        natural: bool = True,
+        absence_confirmed_at: float | None = None,
+    ) -> None:
+        self.exit_code = exit_code
+        self.wait_error = wait_error
+        self.wait_release = wait_release
+        self.kill_release = kill_release
+        self.absence_confirmed_at = absence_confirmed_at
+        self.agent_absence_confirmed_at: float | None = None
+        self.closed = asyncio.Event()
+        self.wait_finished = asyncio.Event()
+        self.output_started = asyncio.Event()
+        self.output_drain_started = asyncio.Event()
+        self.output_finished = asyncio.Event()
+        self.kill_started = asyncio.Event()
+        self.kill_calls = 0
+        self.kill_error: BaseException | None = None
+        self.output_error: BaseException | None = None
+        self.block_kill = False
+        if natural:
+            self.closed.set()
+
+    async def output(self) -> AsyncIterator[str]:
+        try:
+            self.output_started.set()
+            yield "agent output"
+            await self.closed.wait()
+            self.output_drain_started.set()
+            if self.output_error is not None:
+                raise self.output_error
+        finally:
+            self.output_finished.set()
+
+    async def wait(self) -> _CompletedControlledWorkload:
+        try:
+            if self.wait_release is not None:
+                await self.wait_release.wait()
+            if self.wait_error is not None:
+                raise self.wait_error
+            confirmed_at = self.absence_confirmed_at
+            if confirmed_at is None:
+                confirmed_at = asyncio.get_running_loop().time()
+            if self.agent_absence_confirmed_at is None:
+                self.agent_absence_confirmed_at = confirmed_at
+            return _CompletedControlledWorkload(self.exit_code, confirmed_at)
+        finally:
+            self.wait_finished.set()
+
+    async def kill(self) -> None:
+        self.kill_calls += 1
+        self.kill_started.set()
+        if self.block_kill:
+            await asyncio.Event().wait()
+        if self.kill_release is not None:
+            await self.kill_release.wait()
+        if self.kill_error is not None:
+            raise self.kill_error
+        self.closed.set()
+        if self.agent_absence_confirmed_at is None:
+            self.agent_absence_confirmed_at = asyncio.get_running_loop().time()
+        if self.wait_release is not None:
+            self.wait_release.set()
+
+
+class _FakeControlledSandbox:
+    id = "sandbox-123"
+    name = "task-alias"
+    state = "started"
+    generation_containment: GenerationContainment | None
+
+    def __init__(self, workload: _FakeControlledWorkload) -> None:
+        self.workload = workload
+        self.generation_containment = GenerationContainment(type="linux_cgroup_v2", version=1)
+        self.probe_calls = 0
+        self.controlled_calls: list[tuple[str, str | None, Mapping[str, str] | None]] = []
+
+    async def probe_generation_containment(self) -> None:
+        self.probe_calls += 1
+
+    async def exec(self, command: str) -> ExecResult:
+        assert command == "cat /proc/$$/task/$$/children >/dev/null"
+        return ExecResult(exit_code=0)
+
+    def controlled_workload(
+        self, command: str, *, cwd: str | None = None, env_vars: Mapping[str, str] | None = None
+    ) -> _FakeControlledWorkload:
+        self.controlled_calls.append((command, cwd, env_vars))
+        return self.workload
+
+
+class _StageFrameWorkload(_FakeControlledWorkload):
+    def __init__(self, frame: str) -> None:
+        super().__init__(wait_release=asyncio.Event(), natural=False)
+        self.frame = frame
+
+    async def output(self) -> AsyncIterator[str]:
+        try:
+            self.output_started.set()
+            yield self.frame
+            await self.closed.wait()
+            self.output_drain_started.set()
+        finally:
+            self.output_finished.set()
+
+
+def _accounting_snapshot(*, overhead_ms: int = 0, revision: int = 0) -> AccountingSnapshot:
+    return AccountingSnapshot(accounting_id="session-1", cumulative_neutral_overhead_ms=overhead_ms, revision=revision)
+
+
+class _FakeAccountingClient:
+    def __init__(self, *, overhead_ms: int = 0, read_error: BaseException | None = None) -> None:
+        self.overhead_ms = overhead_ms
+        self.read_error = read_error
+        self.read_calls = 0
+
+    async def read_counter(self, _accounting_id: str) -> AccountingSnapshot:
+        self.read_calls += 1
+        if self.read_error is not None:
+            raise self.read_error
+        return _accounting_snapshot(overhead_ms=self.overhead_ms, revision=self.read_calls)
+
+
+def _controlled_contract() -> AgentContractRequest:
+    return AgentContractRequest(
+        name="test-agent",
+        install_cmd="",
+        run_cmd="echo done",
+    )
+
+
 class TestRunAgent:
     """Agent execution, output collection, and runtime command construction."""
-
-    async def test_run_agent_uploads_declared_output_artifacts(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AWSRuntime,
-    ) -> None:
-        store = _mock_object_store()
-        contract = AgentContractRequest(
-            name="test-agent",
-            install_cmd="",
-            run_cmd="echo done",
-            final_output="/logs",
-            output_artifacts=["artifacts/result.json"],
-        )
-        artifact_calls: list[str] = []
-
-        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command.startswith("mkdir -p") or command == "test -e /logs":
-                return ExecResult(exit_code=0, output="")
-            raise AssertionError(f"unexpected command: {command}")
-
-        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
-            return None, 0.0
-
-        async def fake_upload_output_artifacts(
-            _sandbox: Any,
-            artifacts: list[str],
-            benchmark_id: str,
-            task_id: str,
-            _aws_runtime: AWSRuntime,
-            _execution_is_current: Any,
-        ) -> None:
-            artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
-
-        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
-        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", fake_upload_output_artifacts)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-
-        await run_agent(
-            mock_sandbox,
-            contract,
-            "/tmp/problem.txt",
-            "task_0",
-            lambda _msg: None,
-            "/testbed",
-            object_store=store,
-            benchmark_id="benchmark-123",
-        )
-
-        assert artifact_calls == ["benchmark-123:task_0:artifacts/result.json"]
 
     async def test_run_agent_collects_outputs_before_reraising_agent_error(
         self,
@@ -708,11 +831,13 @@ class TestRunAgent:
             raise AgentRunFailedError("agent exited 23")
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_agent)
+        monkeypatch.setattr(sandbox_module, "_stream_controlled_output", fail_agent)
         monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive_output)
         monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
 
         sandbox = Mock(id="sandbox-123", name="task-alias")
+        sandbox.generation_containment = GenerationContainment(type="linux_process_group", version=1)
+        sandbox.probe_generation_containment = AsyncMock()
         with pytest.raises(AgentRunFailedError, match="agent exited 23"):
             await run_agent(
                 sandbox,
@@ -722,8 +847,10 @@ class TestRunAgent:
                 _ignore_output,
                 "/testbed",
                 object_store=store,
+                plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
                 agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
                 benchmark_id="benchmark-123",
+                deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=None),
             )
 
         archive_output.assert_awaited_once()
@@ -753,7 +880,7 @@ class TestRunAgent:
             raise AgentRunFailedError("agent exited 23")
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_agent)
+        monkeypatch.setattr(sandbox_module, "_stream_controlled_output", fail_agent)
         monkeypatch.setattr(
             sandbox_module,
             "archive_and_upload_output",
@@ -762,6 +889,8 @@ class TestRunAgent:
         monkeypatch.setattr(sandbox_module, "upload_output_artifacts", upload_artifacts)
 
         sandbox = Mock(id="sandbox-123", name="task-alias")
+        sandbox.generation_containment = GenerationContainment(type="linux_process_group", version=1)
+        sandbox.probe_generation_containment = AsyncMock()
         with pytest.raises(AgentRunFailedError, match="agent exited 23"):
             await run_agent(
                 sandbox,
@@ -771,16 +900,17 @@ class TestRunAgent:
                 _ignore_output,
                 "/testbed",
                 object_store=store,
+                plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
                 agent_output_s3_key="benchmarks/benchmark-123/task_0/agent_output.tar.gz",
                 benchmark_id="benchmark-123",
+                deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=None),
             )
 
         upload_artifacts.assert_awaited_once()
 
-    async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
+    async def test_run_agent_revoked_authority_skips_archive(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AWSRuntime,
     ) -> None:
         store = _mock_object_store()
         contract = AgentContractRequest(
@@ -789,35 +919,26 @@ class TestRunAgent:
             run_cmd="echo done",
             final_output="/tmp/agent_output",
         )
-        archive_calls: list[str] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command.startswith("mkdir -p") or command.startswith("test -e"):
                 return ExecResult(exit_code=0)
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        async def fake_controlled_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             return None, 0.0
 
-        async def fake_archive_and_upload_output(
-            _sandbox: Any,
-            output_path: str,
-            _s3_key: str,
-            _aws_runtime: AWSRuntime,
-            *,
-            benchmark_id: str | None = None,
-            task_id: str | None = None,
-            execution_is_current: Callable[[], bool] | None = None,
-        ) -> None:
-            archive_calls.append(f"{benchmark_id}:{task_id}:{output_path}")
+        archive_output = AsyncMock()
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
-        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", fake_archive_and_upload_output)
+        monkeypatch.setattr(sandbox_module, "_stream_controlled_output", fake_controlled_output)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive_output)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.generation_containment = GenerationContainment(type="linux_process_group", version=1)
+        mock_sandbox.probe_generation_containment = AsyncMock()
 
         await run_agent(
             mock_sandbox,
@@ -827,130 +948,2941 @@ class TestRunAgent:
             lambda _msg: None,
             "/testbed",
             object_store=store,
-            agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
-            benchmark_id="benchmark-123",
-        )
-
-        assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
-
-        archive_calls.clear()
-        await run_agent(
-            mock_sandbox,
-            contract,
-            "/tmp/problem.txt",
-            "task_0",
-            lambda _msg: None,
-            "/testbed",
-            object_store=store,
+            plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
             benchmark_id="benchmark-123",
             execution_is_current=lambda: False,
+            deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=None),
         )
-        assert archive_calls == []
+        archive_output.assert_not_awaited()
 
-    async def test_run_agent_uses_compose_runtime_sandbox(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AWSRuntime,
+    async def test_run_agent_without_deadline_uses_controlled_wait_output_and_finalize(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        store = _mock_object_store()
-        """Agent execution uses the Compose runtime wrapper selected by the lifecycle owner."""
-        contract = AgentContractRequest(
-            name="test-agent",
-            install_cmd="",
-            run_cmd="echo done",
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event())
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={
+                "run_cmd": "FOO=bar echo {model} && echo {task_id} {problem_statement_path} && echo finished",
+                "kwargs": {"model": "gpt-4o"},
+            }
         )
-        observed_sandboxes: list[Any] = []
+        output: list[str] = []
+        finalized = AsyncMock()
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=None)
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
 
-        async def fake_exec(sandbox: Any, command: str) -> ExecResult:
-            observed_sandboxes.append(sandbox)
-            assert command == "mkdir -p /workspace"
-            return ExecResult(exit_code=0)
+        async def release_after_output() -> None:
+            await workload.output_started.wait()
+            await asyncio.sleep(0.02)
+            workload.wait_release.set()
 
-        async def fake_stream_command_output(
-            sandbox: Any, command: str, _log_output: Any, **_kwargs: Any
-        ) -> tuple[None, float]:
-            observed_sandboxes.append(sandbox)
-            assert command == "cd /workspace && PYTHONSAFEPATH=1 echo done"
-            return None, 0.0
+        release_task = asyncio.create_task(release_after_output())
 
-        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-        mock_sandbox.state = "started"
-
-        agent_sandbox = sandbox_module.runtime_sandbox(
-            mock_sandbox,
-            ComposeSource(
-                outer=ImageSource(image="docker:28.3.3-dind"),
-                compose_command="docker compose -f /harbor/compose.yaml",
-            ),
-        )
-
-        await run_agent(
-            agent_sandbox,
+        reason, duration = await run_agent(
+            cast(Any, sandbox),
             contract,
             "/tmp/problem.txt",
             "task_0",
-            lambda _msg: None,
+            output.append,
             "/workspace",
-            object_store=store,
+            object_store=_mock_object_store(),
+            plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
+            deadline_controller=controller,
+            on_external_service_finalized=finalized,
         )
 
-        assert observed_sandboxes
-        assert all(isinstance(sandbox, ComposeSandbox) for sandbox in observed_sandboxes)
+        await release_task
+        assert reason is None
+        assert duration >= 0.02
+        assert output == ["Running agent test-agent", "agent output"]
+        assert workload.kill_calls == 0
+        assert workload.closed.is_set() and workload.output_finished.is_set()
+        assert controller.deadline(asyncio.get_running_loop().time()) is None
+        finalized.assert_awaited_once()
+        assert sandbox.controlled_calls == [
+            (
+                "PYTHONSAFEPATH=1 FOO=bar echo gpt-4o && echo task_0 /tmp/problem.txt && echo finished",
+                "/workspace",
+                None,
+            )
+        ]
 
-    async def test_run_agent_shell_wraps_agent_timeout_command(
+    async def test_ordinary_generation_uses_ssp_only_in_controlled_child(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        requests: list[str] = []
+
+        async def endpoint(label: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readuntil(b"\r\n\r\n")
+            requests.append(label)
+            body = label.encode()
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\nConnection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        native = await asyncio.start_server(lambda r, w: endpoint("native", r, w), "127.0.0.1", 0)
+        ssp = await asyncio.start_server(lambda r, w: endpoint("ssp", r, w), "127.0.0.1", 0)
+        native_url = f"http://127.0.0.1:{native.sockets[0].getsockname()[1]}"
+        ssp_url = f"http://127.0.0.1:{ssp.sockets[0].getsockname()[1]}"
+        monkeypatch.setenv("MODEL_GATEWAY_URL", native_url)
+        child_code = (
+            "import os, urllib.request; print(urllib.request.urlopen(os.environ['MODEL_GATEWAY_URL']).read().decode())"
+        )
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+        messages: list[str] = []
+
+        class LocalWorkload:
+            def __init__(self, env_vars: Mapping[str, str]) -> None:
+                self.agent_absence_confirmed_at: float | None = None
+                self.process = subprocess.Popen(
+                    ["sh", "-c", command],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    env={**os.environ, **env_vars},
+                )
+
+            async def output(self) -> AsyncIterator[str]:
+                assert self.process.stdout is not None
+                while line := await asyncio.to_thread(self.process.stdout.readline):
+                    yield line.decode()
+
+            async def wait(self) -> _CompletedControlledWorkload:
+                exit_code = await asyncio.to_thread(self.process.wait)
+                self.agent_absence_confirmed_at = asyncio.get_running_loop().time()
+                return _CompletedControlledWorkload(exit_code, self.agent_absence_confirmed_at)
+
+            async def kill(self) -> None:
+                self.process.kill()
+                await asyncio.to_thread(self.process.wait)
+                self.agent_absence_confirmed_at = asyncio.get_running_loop().time()
+
+        class LocalSandbox:
+            def controlled_workload(
+                self, _command: str, *, cwd: str | None = None, env_vars: Mapping[str, str]
+            ) -> LocalWorkload:
+                return LocalWorkload(env_vars)
+
+        try:
+            reason, _ = await _stream_controlled_output(
+                cast(Any, LocalSandbox()),
+                command,
+                "/workspace",
+                messages.append,
+                ExternalServiceDeadlineController(base_allowance_seconds=None),
+                generation_gateway_url=ssp_url,
+                on_accounting_failure=AsyncMock(),
+            )
+            assert reason is None
+            assert messages == ["ssp\n"]
+            evaluation = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                child_code,
+                stdout=asyncio.subprocess.PIPE,
+            )
+            output, _ = await evaluation.communicate()
+            assert evaluation.returncode == 0
+            assert output == b"native\n"
+            assert requests == ["ssp", "native"]
+        finally:
+            native.close()
+            ssp.close()
+            await native.wait_closed()
+            await ssp.wait_closed()
+
+    async def test_run_agent_timeout_collects_only_after_confirmed_kill(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AWSRuntime,
     ) -> None:
-        store = _mock_object_store()
-        """Task timeouts should apply to the full shell-form agent command.
-
-        Test cases:
-        - A command with environment assignment and shell chaining is passed to timeout through sh -c.
-        """
-        run_cmd = "FOO=bar python run.py && echo done"
-        contract = AgentContractRequest(
-            name="test-agent",
-            install_cmd="",
-            run_cmd=run_cmd,
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={"final_output": "/logs", "egress_allowlist": ["example.com"]}
         )
-        observed_commands: list[str] = []
+        archive = AsyncMock()
+        staged_policy = ["example.com"]
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+        await _apply_egress_policy(controlled_sandbox, staged_policy)
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            assert command == "mkdir -p /workspace"
+            if command == "test -e /logs":
+                assert workload.kill_calls == 1
+                assert workload.closed.is_set()
+                controlled_sandbox.modify_egress_rules.assert_awaited_once_with(staged_policy)
+                controlled_sandbox.clear_egress_rules.assert_not_awaited()
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(
-            _sandbox: Any, command: str, _log_output: Any, **_kwargs: Any
-        ) -> tuple[None, float]:
-            observed_commands.append(command)
-            return None, 0.0
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
 
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-
-        await run_agent(
-            mock_sandbox,
+        reason, _ = await run_agent(
+            controlled_sandbox,
             contract,
             "/tmp/problem.txt",
             "task_0",
-            lambda _msg: None,
+            _ignore_output,
             "/workspace",
-            object_store=store,
-            agent_timeout=2.5,
+            object_store=_mock_object_store(),
+            agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+            plan=GenerationPlan(
+                allowance_seconds=0.001,
+                staged=False,
+                episode=None,
+            ),
+            deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=0.001),
         )
 
-        assert observed_commands == [f"cd /workspace && PYTHONSAFEPATH=1 timeout 2.5 sh -c {shlex.quote(run_cmd)}"]
+        assert reason == AgentCausedExitReason.TIMEOUT
+        archive.assert_awaited_once()
+        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(staged_policy)
+        controlled_sandbox.clear_egress_rules.assert_not_awaited()
+
+    async def test_run_agent_unconfirmed_timeout_preserves_run_policy_and_suppresses_collection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.block_kill = True
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={"final_output": "/logs", "egress_allowlist": ["example.com"]}
+        )
+        archive = AsyncMock()
+        staged_policy = ["example.com"]
+        controlled_sandbox = cast(Any, sandbox)
+        controlled_sandbox.modify_egress_rules = AsyncMock()
+        controlled_sandbox.clear_egress_rules = AsyncMock()
+        await _apply_egress_policy(controlled_sandbox, staged_policy)
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.01)
+
+        with pytest.raises(GenerationTerminationUnconfirmedError):
+            await run_agent(
+                controlled_sandbox,
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                plan=GenerationPlan(
+                    allowance_seconds=0.001,
+                    staged=False,
+                    episode=None,
+                ),
+                deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=0.001),
+            )
+
+        archive.assert_not_awaited()
+        controlled_sandbox.modify_egress_rules.assert_awaited_once_with(staged_policy)
+        controlled_sandbox.clear_egress_rules.assert_not_awaited()
+
+    async def test_controlled_nonzero_exit_collects_outputs_after_finalize(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workload = _FakeControlledWorkload(exit_code=23)
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={"final_output": "/logs", "output_artifacts": ["artifacts/result.json"]}
+        )
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        finalized: list[GenerationAccountingSummary] = []
+
+        async def save_summary(summary: GenerationAccountingSummary) -> None:
+            finalized.append(summary)
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -e /logs":
+                assert workload.closed.is_set()
+                assert len(finalized) == 1
+            return ExecResult(exit_code=0)
+
+        async def collect_after_finalize(*_args: Any, **_kwargs: Any) -> None:
+            assert len(finalized) == 1
+            assert workload.closed.is_set()
+
+        archive = AsyncMock(side_effect=collect_after_finalize)
+        artifacts = AsyncMock(side_effect=collect_after_finalize)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", artifacts)
+
+        with pytest.raises(AgentRunFailedError, match="exit code 23"):
+            await run_agent(
+                cast(Any, sandbox),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                benchmark_id="benchmark-123",
+                plan=GenerationPlan(
+                    allowance_seconds=10.0,
+                    staged=False,
+                    episode=None,
+                ),
+                deadline_controller=controller,
+                on_external_service_finalized=save_summary,
+            )
+
+        assert len(finalized) == 1
+        archive.assert_awaited_once()
+        artifacts.assert_awaited_once()
+
+    async def test_accounting_persistence_failure_collects_available_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        contract = _controlled_contract().model_copy(
+            update={"final_output": "/logs", "output_artifacts": ["artifacts/result.json"]}
+        )
+
+        async def collect_after_stop(*_args: Any, **_kwargs: Any) -> None:
+            assert workload.closed.is_set()
+
+        archive = AsyncMock(side_effect=collect_after_stop)
+        artifacts = AsyncMock(side_effect=collect_after_stop)
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persistence_error = RuntimeError("summary persistence failed")
+
+        async def fail_persistence(
+            _summary: GenerationAccountingSummary,
+        ) -> None:
+            raise persistence_error
+
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        monkeypatch.setattr(sandbox_module, "upload_output_artifacts", artifacts)
+
+        with pytest.raises(RuntimeError, match="summary persistence failed") as raised:
+            await run_agent(
+                cast(Any, sandbox),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                benchmark_id="benchmark-123",
+                plan=GenerationPlan(
+                    allowance_seconds=10.0,
+                    staged=False,
+                    episode=None,
+                ),
+                deadline_controller=controller,
+                on_external_service_finalized=fail_persistence,
+            )
+
+        assert raised.value is persistence_error
+        archive.assert_awaited_once()
+        artifacts.assert_awaited_once()
+
+    async def test_run_agent_rejects_unsupported_effective_sandbox_before_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = _FakeControlledSandbox(_FakeControlledWorkload())
+        sandbox.generation_containment = None
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+
+        with pytest.raises(InvalidSandboxConfigurationError, match="does not support"):
+            await run_agent(
+                cast(Any, sandbox),
+                _controlled_contract(),
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                plan=GenerationPlan(
+                    allowance_seconds=10.0,
+                    staged=False,
+                    episode=None,
+                ),
+                deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+            )
+
+        assert sandbox.controlled_calls == []
+
+    @pytest.mark.parametrize(
+        ("updates", "message"),
+        [
+            ({}, "Parallel episode agent run_cmd requires {slot_dir}"),
+            (
+                {"run_cmd": "echo {slot_dir}", "final_output": "/logs"},
+                "Parallel episode final_output requires {slot_dir}",
+            ),
+            (
+                {"run_cmd": "echo {slot_dir}", "turns": AgentTurns(container_name="worker")},
+                "Parallel episode does not support container_name",
+            ),
+        ],
+    )
+    async def test_run_agent_rejects_parallel_episode_contract_before_provisioning(
+        self, monkeypatch: pytest.MonkeyPatch, updates: dict[str, Any], message: str
+    ) -> None:
+        sandbox = _FakeControlledSandbox(_FakeControlledWorkload())
+        upload = AsyncMock()
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        contract = _controlled_contract().model_copy(update=updates)
+
+        with pytest.raises(InvalidSandboxConfigurationError) as captured:
+            await run_agent(
+                cast(Any, sandbox),
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                plan=GenerationPlan(
+                    allowance_seconds=10.0,
+                    staged=True,
+                    episode=Episode(command="stage", parallel_agents=2),
+                ),
+                deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+            )
+
+        assert str(captured.value) == f"Sandbox error: {message}"
+        assert sandbox.probe_calls == 0
+        assert sandbox.controlled_calls == []
+        upload.assert_not_awaited()
+
+    async def test_run_agent_runs_two_cbs_slots_and_resumes_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        stage = tmp_path / "stage"
+        slots = tmp_path / "slots"
+        stage.mkdir()
+        orchestrator = """
+import json
+import os
+import time
+from pathlib import Path
+from benchmark_service.valkyrie_stage import Agents
+agents = Agents()
+agents.start("a", "/tmp/first-observation")
+agents.start("b", "/tmp/first-observation")
+for slot in ("a", "b"):
+    while not (Path(os.environ["TEST_SLOTS_ROOT"]) / slot / "agent" / "ready").exists():
+        time.sleep(0.02)
+# CBS stop signals release both ready turns only after overlap is established.
+first = agents.stop("a")
+second = agents.stop("b")
+agents.start("a", "/tmp/next-observation")
+continued = agents.wait_any()
+print(json.dumps({"slots": [first.slot, second.slot, continued.slot], "reasons": [first.reason, second.reason, continued.reason]}), flush=True)
+"""
+
+        class LocalWorkload:
+            def __init__(self) -> None:
+                self.started = asyncio.create_task(
+                    asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-c",
+                        orchestrator,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=dict(os.environ, VALKYRIE_STAGE_DIR=str(stage), TEST_SLOTS_ROOT=str(slots)),
+                        start_new_session=True,
+                    )
+                )
+
+            async def output(self) -> AsyncIterator[str]:
+                process = await asyncio.shield(self.started)
+                assert process.stdout is not None
+                async for line in process.stdout:
+                    yield line.decode()
+
+            async def wait(self) -> _CompletedControlledWorkload:
+                process = await asyncio.shield(self.started)
+                exit_code = await process.wait()
+                return _CompletedControlledWorkload(exit_code, asyncio.get_running_loop().time())
+
+            async def kill(self) -> None:
+                process = await asyncio.shield(self.started)
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
+
+        class LocalSandbox:
+            id = "local-episode"
+            name = "local-episode"
+            state = "started"
+            generation_containment = GenerationContainment(type="linux_cgroup_v2", version=1)
+            workload: LocalWorkload | None = None
+            probe_calls = 0
+
+            async def probe_generation_containment(self) -> None:
+                self.probe_calls += 1
+
+            async def exec(self, command: str) -> ExecResult:
+                assert command == "cat /proc/$$/task/$$/children >/dev/null"
+                process = await asyncio.create_subprocess_shell(command)
+                return ExecResult(exit_code=await process.wait())
+
+            async def upload_file(self, path: str, content: bytes) -> None:
+                if path.startswith(f"{sandbox_module._STAGE_DIR}/ack/"):
+                    acknowledgements.append(path.rsplit("/", 1)[1])
+                target = stage / Path(path).relative_to(sandbox_module._STAGE_DIR)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.name == "agent.json":
+                    config = json.loads(content)
+                    assert config["slots_root"] == "/workspace/.valkyrie/slots"
+                    # Translate the sandbox's slot root into this task-owned host directory.
+                    config["slots_root"] = str(slots)
+                    content = json.dumps(config).encode()
+                target.write_bytes(content)
+
+            def controlled_workload(
+                self, command: str, *, cwd: str | None = None, env_vars: Mapping[str, str] | None = None
+            ) -> LocalWorkload:
+                self.workload = LocalWorkload()
+                return self.workload
+
+        acknowledgements: list[str] = []
+        sandbox = LocalSandbox()
+        archive = AsyncMock()
+        persisted = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        contract = _controlled_contract().model_copy(
+            update={
+                "run_cmd": (
+                    "echo $$ > {slot_dir}/group.pid; echo task-{task_id} > {slot_dir}/first; "
+                    "touch {slot_dir}/ready; timeout 30 sh -c 'while :; do sleep 0.05; done'"
+                ),
+                "turns": AgentTurns(continue_cmd="echo resumed > {slot_dir}/continued"),
+            }
+        )
+        output: list[str] = []
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=10.0)
+        completed = False
+        try:
+            async with asyncio.timeout(20):
+                reason, _duration = await run_agent(
+                    cast(Any, sandbox),
+                    contract,
+                    "/tmp/problem.txt",
+                    "task_0",
+                    output.append,
+                    "/workspace",
+                    object_store=_mock_object_store(),
+                    agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                    plan=GenerationPlan(
+                        allowance_seconds=10.0,
+                        staged=True,
+                        episode=Episode(command="python3 /run/valkyrie-stage/orchestrator.py", parallel_agents=2),
+                    ),
+                    deadline_controller=controller,
+                    on_external_service_finalized=persisted,
+                )
+                completed = True
+        finally:
+            if not completed and sandbox.workload is not None:
+                try:
+                    for group_file in slots.glob("*/agent/group.pid"):
+                        with suppress(ProcessLookupError):
+                            os.killpg(int(group_file.read_text()), signal.SIGKILL)
+                finally:
+                    await sandbox.workload.kill()
+
+        assert reason is None
+        assert (slots / "a" / "agent" / "first").read_text().strip() == "task-task_0"
+        assert (slots / "b" / "agent" / "first").read_text().strip() == "task-task_0"
+        assert (slots / "a" / "agent" / "continued").read_text().strip() == "resumed"
+        assert any(
+            json.loads(message) == {"slots": ["a", "b", "a"], "reasons": ["stopped", "stopped", "exited"]}
+            for message in output
+            if message.startswith("{")
+        )
+        assert acknowledgements == ["1", "2", "3", "4"]
+        assert sandbox.probe_calls == 1
+        assert controller.elapsed_seconds(asyncio.get_running_loop().time()) > 0.0
+        persisted.assert_awaited_once()
+        archive.assert_awaited_once()
+        assert archive.await_args.args[1] == "/workspace/.valkyrie/slots"
+
+    async def test_run_agent_probe_failure_prevents_controlled_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox = _FakeControlledSandbox(_FakeControlledWorkload())
+        probe = AsyncMock(side_effect=ProviderSandboxError("probe failed"))
+        monkeypatch.setattr(sandbox, "probe_generation_containment", probe)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", AsyncMock())
+
+        with pytest.raises(ProviderSandboxError, match="probe failed"):
+            await run_agent(
+                cast(Any, sandbox),
+                _controlled_contract(),
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                plan=GenerationPlan(
+                    allowance_seconds=10.0,
+                    staged=False,
+                    episode=None,
+                ),
+                deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+            )
+
+        assert sandbox.controlled_calls == []
+
+    async def test_controlled_completion_at_deadline_runs_timeout_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_loop = asyncio.get_running_loop()
+        started_at = real_loop.time()
+        clock = Mock()
+        clock.time.return_value = started_at
+        monkeypatch.setattr(sandbox_module.asyncio, "get_running_loop", lambda: clock)
+
+        workload = _FakeControlledWorkload(absence_confirmed_at=started_at + 1.0)
+        sandbox = _FakeControlledSandbox(workload)
+        persisted: list[GenerationAccountingSummary] = []
+
+        async def persist(summary: GenerationAccountingSummary) -> None:
+            persisted.append(summary)
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            ExternalServiceDeadlineController(base_allowance_seconds=1.0),
+            persist,
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration == 1.0
+        assert persisted[0].generation_elapsed_seconds == duration
+
+    async def test_controlled_timeout_freezes_cause_over_losing_os_kill(self) -> None:
+        workload = _FakeControlledWorkload(exit_code=137, wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            ExternalServiceDeadlineController(base_allowance_seconds=0.001),
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration > 0
+        assert workload.kill_calls == 1
+
+    @pytest.mark.parametrize(
+        ("exit_code", "expected"),
+        [(0, None), (137, AgentCausedExitReason.OS_KILLED)],
+    )
+    async def test_controlled_predeadline_exit_classification(
+        self, exit_code: int, expected: AgentCausedExitReason | None
+    ) -> None:
+        workload = _FakeControlledWorkload(exit_code=exit_code)
+        sandbox = _FakeControlledSandbox(workload)
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason == expected
+        assert workload.kill_calls == 0
+
+    async def test_controlled_natural_exit_124_is_not_timeout(self) -> None:
+        workload = _FakeControlledWorkload(exit_code=124)
+        sandbox = _FakeControlledSandbox(workload)
+
+        with pytest.raises(AgentRunFailedError, match="exit code 124"):
+            await _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+                on_accounting_failure=AsyncMock(),
+            )
+
+    async def test_controlled_report_preparation_does_not_consume_generation_allowance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=10.0)
+        prep_entered = asyncio.Event()
+        release_prep = asyncio.Event()
+        messages: list[str] = []
+        finalized = AsyncMock()
+
+        async def gated_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p "):
+                prep_entered.set()
+                await release_prep.wait()
+            return ExecResult(exit_code=0)
+
+        monkeypatch.setattr(sandbox_module, "_exec", gated_exec)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                messages.append,
+                controller,
+                finalized,
+                on_accounting_failure=AsyncMock(),
+                redact_error=lambda error: error,
+            )
+        )
+        try:
+            async with asyncio.timeout(1):
+                await prep_entered.wait()
+                assert controller.active_since is None
+                assert controller.active_elapsed_seconds == 0
+                release_prep.set()
+                reason, _ = await task
+        finally:
+            release_prep.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert reason is None
+        assert workload.kill_calls == 0
+        assert messages == ["agent output"]
+        finalized.assert_awaited_once()
+        assert controller.active_since is None
+
+    async def test_controlled_creation_consumes_generation_allowance(self) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        original_factory = sandbox.controlled_workload
+
+        def delayed_factory(
+            command: str, *, cwd: str | None = None, env_vars: Mapping[str, str] | None = None
+        ) -> _FakeControlledWorkload:
+            time.sleep(0.02)
+            return original_factory(command, cwd=cwd, env_vars=env_vars)
+
+        sandbox.controlled_workload = delayed_factory  # type: ignore[method-assign]
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            ExternalServiceDeadlineController(base_allowance_seconds=0.001),
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+
+    @pytest.mark.parametrize("exit_code", [0, 23], ids=["success", "agent-error"])
+    async def test_predeadline_agent_absence_collects_delayed_real_result(
+        self, monkeypatch: pytest.MonkeyPatch, exit_code: int
+    ) -> None:
+        workload = _FakeControlledWorkload(exit_code=exit_code, wait_release=asyncio.Event(), natural=False)
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=0.08)
+        cutoff_seen = asyncio.Event()
+        original_freeze = controller.freeze_credit
+
+        def freeze_at_cutoff() -> None:
+            original_freeze()
+            cutoff_seen.set()
+
+        monkeypatch.setattr(controller, "freeze_credit", freeze_at_cutoff)
+        persisted: list[GenerationAccountingSummary] = []
+
+        async def persist(summary: GenerationAccountingSummary) -> None:
+            persisted.append(summary)
+
+        sandbox = _FakeControlledSandbox(workload)
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        task = asyncio.create_task(
+            run_agent(
+                cast(Any, sandbox),
+                _controlled_contract(),
+                "/tmp/problem.txt",
+                "task_0",
+                _ignore_output,
+                "/workspace",
+                object_store=_mock_object_store(),
+                plan=GenerationPlan(allowance_seconds=0.08, staged=False, episode=None),
+                deadline_controller=controller,
+                on_external_service_finalized=persist,
+            )
+        )
+        try:
+            await asyncio.wait_for(workload.output_started.wait(), 1)
+            started_at = controller.active_since
+            assert started_at is not None
+            receipt_at = asyncio.get_running_loop().time()
+            workload.agent_absence_confirmed_at = receipt_at
+            await asyncio.wait_for(cutoff_seen.wait(), 1)
+            assert not task.done()
+            assert workload.kill_calls == 0
+            assert workload.wait_release is not None
+            workload.wait_release.set()
+            workload.closed.set()
+            if exit_code:
+                with pytest.raises(AgentRunFailedError, match="exit code 23"):
+                    await asyncio.wait_for(task, 1)
+            else:
+                reason, duration = await asyncio.wait_for(task, 1)
+                assert reason is None
+                assert duration == pytest.approx(receipt_at - started_at, abs=0.005)
+            assert len(persisted) == 1
+            assert persisted[0].generation_elapsed_seconds == receipt_at - started_at
+            assert workload.kill_calls == 0
+            assert workload.wait_finished.is_set() and workload.output_finished.is_set()
+        finally:
+            workload.closed.set()
+            if workload.wait_release is not None:
+                workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.parametrize("overhead_ms", [100, 0], ids=["extended", "late-after-cutoff"])
+    async def test_credit_refresh_observes_agent_absence_during_counter_read(self, overhead_ms: int) -> None:
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+
+        class DelayedCredit(_FakeAccountingClient):
+            async def read_counter(self, _accounting_id: str) -> AccountingSnapshot:
+                self.read_calls += 1
+                if self.read_calls == 1:
+                    return _accounting_snapshot(revision=1)
+                refresh_started.set()
+                await release_refresh.wait()
+                return _accounting_snapshot(overhead_ms=overhead_ms, revision=self.read_calls)
+
+        client = DelayedCredit()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.05,
+            credit_cap_seconds=0.1,
+        )
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        persisted: list[GenerationAccountingSummary] = []
+
+        async def persist(summary: GenerationAccountingSummary) -> None:
+            persisted.append(summary)
+
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persist,
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(refresh_started.wait(), 1)
+            started_at = controller.active_since
+            assert started_at is not None
+            receipt_at = asyncio.get_running_loop().time()
+            workload.agent_absence_confirmed_at = receipt_at
+            workload.closed.set()
+            release_refresh.set()
+            assert workload.wait_release is not None
+            workload.wait_release.set()
+            reason, duration = await asyncio.wait_for(task, 1)
+            assert reason == (None if overhead_ms else AgentCausedExitReason.TIMEOUT)
+            assert duration == pytest.approx(receipt_at - started_at, abs=0.005)
+            assert persisted[0].generation_elapsed_seconds == receipt_at - started_at
+            assert persisted[0].external_service_credit_applied_seconds == overhead_ms / 1000
+            assert client.read_calls >= 2
+            assert workload.kill_calls == (0 if overhead_ms else 1)
+        finally:
+            release_refresh.set()
+            if workload.wait_release is not None:
+                workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_predeadline_absence_without_full_result_fails_at_collection_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.02)
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=0.04)
+        persisted = AsyncMock()
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(workload.output_started.wait(), 1)
+            workload.agent_absence_confirmed_at = asyncio.get_running_loop().time()
+            workload.closed.set()
+            with pytest.raises(
+                ControlledGenerationTerminationUnconfirmedError, match="result, output, or workload cleanup"
+            ):
+                await asyncio.wait_for(task, 1)
+            persisted.assert_not_awaited()
+            assert workload.kill_calls == 0
+            assert workload.wait_finished.is_set() and workload.output_finished.is_set()
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_cancellation_during_result_collection_joins_owned_work(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=0.04)
+        cutoff_seen = asyncio.Event()
+        original_freeze = controller.freeze_credit
+
+        def freeze_at_cutoff() -> None:
+            original_freeze()
+            cutoff_seen.set()
+
+        monkeypatch.setattr(controller, "freeze_credit", freeze_at_cutoff)
+        persisted: list[GenerationAccountingSummary] = []
+
+        async def persist(summary: GenerationAccountingSummary) -> None:
+            persisted.append(summary)
+
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persist,
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(workload.output_started.wait(), 1)
+            started_at = controller.active_since
+            assert started_at is not None
+            receipt_at = asyncio.get_running_loop().time()
+            workload.agent_absence_confirmed_at = receipt_at
+            workload.closed.set()
+            await asyncio.wait_for(cutoff_seen.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            assert workload.kill_calls == 1
+            assert workload.wait_finished.is_set() and workload.output_finished.is_set()
+            assert len(persisted) == 1
+            assert persisted[0].generation_elapsed_seconds == receipt_at - started_at
+        finally:
+            if workload.wait_release is not None:
+                workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_natural_completion_drains_buffered_tail_output(self) -> None:
+        class CompletedProducerWithTail(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__()
+                self.buffered_output: asyncio.Queue[str] = asyncio.Queue()
+
+            async def output(self) -> AsyncIterator[str]:
+                await self.wait_finished.wait()
+                await asyncio.sleep(0.02)
+                while not self.buffered_output.empty():
+                    yield self.buffered_output.get_nowait()
+
+        workload = CompletedProducerWithTail()
+        workload.buffered_output.put_nowait("already-buffered tail")
+        messages: list[str] = []
+        reason, _ = await asyncio.wait_for(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                messages.append,
+                ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+                on_accounting_failure=AsyncMock(),
+            ),
+            timeout=0.2,
+        )
+
+        assert reason is None
+        assert messages == ["already-buffered tail"]
+        assert workload.kill_calls == 0
+
+    async def test_confirmed_timeout_drains_buffered_output_before_finalize(self) -> None:
+        class BufferedOutputAfterKill(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__(wait_release=asyncio.Event(), natural=False)
+                self.buffered_output: asyncio.Queue[str] = asyncio.Queue()
+
+            async def output(self) -> AsyncIterator[str]:
+                self.output_started.set()
+                try:
+                    await self.closed.wait()
+                    await asyncio.sleep(0.02)
+                    while not self.buffered_output.empty():
+                        yield self.buffered_output.get_nowait()
+                finally:
+                    self.output_finished.set()
+
+        workload = BufferedOutputAfterKill()
+        workload.buffered_output.put_nowait("queued before confirmed kill")
+        messages: list[str] = []
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=0.0,
+        )
+        finalized: list[GenerationAccountingSummary] = []
+
+        async def persist_summary(summary: GenerationAccountingSummary) -> None:
+            assert messages == ["queued before confirmed kill"]
+            finalized.append(summary)
+
+        reason, _ = await asyncio.wait_for(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                messages.append,
+                controller,
+                persist_summary,
+                on_accounting_failure=AsyncMock(),
+            ),
+            timeout=0.2,
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        assert len(finalized) == 1
+
+    async def test_controlled_deadline_kill_succeeds_within_absolute_grace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), kill_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        real_timeout_at = asyncio.timeout_at
+        timeout_calls: list[tuple[float, float]] = []
+
+        def observed_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_calls.append((when, asyncio.get_running_loop().time()))
+            return real_timeout_at(when)
+
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", observed_timeout_at)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=0.001),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        await workload.kill_started.wait()
+        assert timeout_calls
+        absolute_deadline, kill_started_at = timeout_calls[0]
+        generation_deadline = absolute_deadline - sandbox_module.GENERATION_TERMINATION_GRACE_SECONDS
+        while asyncio.get_running_loop().time() <= generation_deadline:
+            await asyncio.sleep(0)
+        assert workload.kill_release is not None
+        workload.kill_release.set()
+        reason, duration = await task
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration > 0
+        assert absolute_deadline > kill_started_at
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    async def test_controlled_deadline_requires_kill_confirmation_within_grace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.block_kill = True
+        sandbox = _FakeControlledSandbox(workload)
+        original_factory = sandbox.controlled_workload
+        real_timeout_at = asyncio.timeout_at
+        timeout_calls: list[tuple[float, float]] = []
+
+        def delayed_factory(
+            command: str, *, cwd: str | None = None, env_vars: Mapping[str, str] | None = None
+        ) -> _FakeControlledWorkload:
+            time.sleep(0.02)
+            return original_factory(command, cwd=cwd, env_vars=env_vars)
+
+        def observed_timeout_at(when: float | None) -> asyncio.Timeout:
+            assert when is not None
+            timeout_calls.append((when, asyncio.get_running_loop().time()))
+            return real_timeout_at(when)
+
+        sandbox.controlled_workload = delayed_factory  # type: ignore[method-assign]
+        monkeypatch.setattr(sandbox_module.asyncio, "timeout_at", observed_timeout_at)
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.01)
+
+        with pytest.raises(GenerationTerminationUnconfirmedError):
+            await _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=0.001),
+                on_accounting_failure=AsyncMock(),
+            )
+
+        assert len(timeout_calls) == 1
+        absolute_deadline, kill_started_at = timeout_calls[0]
+        assert absolute_deadline < kill_started_at
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    async def test_refresh_credit_extends_from_immutable_start(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        client = _FakeAccountingClient(overhead_ms=20)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.01,
+            credit_cap_seconds=0.02,
+        )
+
+        reason, duration = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            controller,
+            AsyncMock(),
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert duration > 0.02
+        assert client.read_calls >= 1
+
+    async def test_timeout_persists_cutoff_counter_even_if_ssp_grows_after_stop(self) -> None:
+        client = _FakeAccountingClient()
+        reads_at_stop: list[int] = []
+
+        class LaterCounterGrowth(_FakeControlledWorkload):
+            async def kill(self) -> None:
+                reads_at_stop.append(client.read_calls)
+                await super().kill()
+                client.overhead_ms = 9000
+
+        workload = LaterCounterGrowth(wait_release=asyncio.Event(), natural=False)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.005,
+            credit_cap_seconds=10.0,
+        )
+        persisted: list[GenerationAccountingSummary] = []
+
+        async def persist(summary: GenerationAccountingSummary) -> None:
+            persisted.append(summary)
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            controller,
+            persist,
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert client.read_calls == reads_at_stop[0]
+        assert persisted[0].external_service_overhead_seconds == 0.0
+        assert persisted[0].external_service_credit_applied_seconds == 0.0
+        assert persisted[0].external_service_credit_revision == reads_at_stop[0]
+
+    async def test_transient_refresh_error_retries_within_lead_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+
+        class TransientRefreshClient(_FakeAccountingClient):
+            async def read_counter(self, _accounting_id: str) -> AccountingSnapshot:
+                self.read_calls += 1
+                if self.read_calls == 1:
+                    raise RuntimeError("transient refresh")
+                return _accounting_snapshot(revision=self.read_calls)
+
+        client = TransientRefreshClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.01,
+            credit_cap_seconds=1.0,
+        )
+        monkeypatch.setattr(sandbox_module, "EXTERNAL_SERVICE_REFRESH_RETRY_SECONDS", 0.0)
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            controller,
+            AsyncMock(),
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason == AgentCausedExitReason.TIMEOUT
+        assert client.read_calls >= 2
+
+    async def test_failed_refresh_task_cannot_defeat_natural_completion(self) -> None:
+        workload = _FakeControlledWorkload()
+
+        class CancelledRefreshClient(_FakeAccountingClient):
+            async def read_counter(self, accounting_id: str) -> AccountingSnapshot:
+                if self.read_calls == 0:
+                    self.read_calls += 1
+                    raise asyncio.CancelledError()
+                return await super().read_counter(accounting_id)
+
+        client = CancelledRefreshClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted = AsyncMock()
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, _FakeControlledSandbox(workload)),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            controller,
+            persisted,
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason is None
+        assert workload.kill_calls == 0
+        persisted.assert_awaited_once()
+
+    async def test_accounting_termination_error_is_not_masked_by_cleanup(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.kill_error = ProviderSandboxError("kill failed")
+        client = _FakeAccountingClient(read_error=RuntimeError("refresh failed"))
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.005,
+            credit_cap_seconds=1.0,
+        )
+
+        with pytest.raises(ControlledGenerationTerminationUnconfirmedError) as raised:
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                AsyncMock(),
+                on_accounting_failure=AsyncMock(),
+            )
+
+        assert isinstance(raised.value.__cause__, GenerationTerminationUnconfirmedError)
+
+    async def test_natural_completion_finalizes_before_return(self) -> None:
+        workload = _FakeControlledWorkload()
+        sandbox = _FakeControlledSandbox(workload)
+        client = _FakeAccountingClient(overhead_ms=5)
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted: list[GenerationAccountingSummary] = []
+
+        async def persist_natural(
+            summary: GenerationAccountingSummary,
+        ) -> None:
+            persisted.append(summary)
+
+        reason, _ = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "echo done",
+            "/workspace",
+            _ignore_output,
+            controller,
+            persist_natural,
+            on_accounting_failure=AsyncMock(),
+        )
+
+        assert reason is None
+        assert workload.wait_finished.is_set()
+        assert workload.kill_calls == 0
+        assert persisted[0].external_service_overhead_seconds == 0.005
+
+    async def test_deadline_control_error_kills_then_propagates_raw_error(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        control_error = RuntimeError("gateway unavailable")
+
+        class FailingCounterClient(_FakeAccountingClient):
+            async def read_counter(self, _accounting_id: str) -> AccountingSnapshot:
+                raise control_error
+
+        client = FailingCounterClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.001,
+            credit_cap_seconds=1.0,
+        )
+
+        with pytest.raises(RuntimeError) as raised:
+            await _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                AsyncMock(),
+                on_accounting_failure=AsyncMock(),
+            )
+
+        assert raised.value is control_error
+        assert workload.closed.is_set()
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    @pytest.mark.parametrize("frame_case", ["begin", "end", "invalid", "success"])
+    async def test_staged_frame_handling_and_normal_tail(
+        self,
+        frame_case: Literal["begin", "end", "invalid", "success"],
+    ) -> None:
+        key = b"stage-test-key"
+        release_frame = asyncio.Event()
+        frame_sent = asyncio.Event()
+        output_release = asyncio.Event()
+        wait_release = asyncio.Event()
+        acknowledgements: list[str] = []
+        messages: list[str] = []
+        loss = SandboxNotFoundError("wait lost")
+        end_sent_at: float | None = None
+        end_fed_at: float | None = None
+
+        class FramedWorkload(_FakeControlledWorkload):
+            async def output(self) -> AsyncIterator[str]:
+                nonlocal end_sent_at, end_fed_at
+                self.output_started.set()
+                try:
+                    if frame_case == "begin":
+                        wait_release.set()
+                    yield _signed_stage_frame(key, 1, "begin", None)
+                    await release_frame.wait()
+                    if frame_case in ("end", "success"):
+                        end_sent_at = asyncio.get_running_loop().time()
+                        yield _signed_stage_frame(key, 2, "end", None)
+                        end_fed_at = asyncio.get_running_loop().time()
+                        if frame_case == "end":
+                            wait_release.set()
+                    elif frame_case == "invalid":
+                        yield _signed_stage_frame(key, 3, "end", None)
+                    frame_sent.set()
+                    await output_release.wait()
+                    if frame_case == "success":
+                        yield "tail output"
+                finally:
+                    self.output_finished.set()
+
+        class FramedSandbox(_FakeControlledSandbox):
+            async def upload_file(self, path: str, _data: bytes) -> None:
+                acknowledgements.append(path)
+
+        workload = FramedWorkload(
+            wait_release=wait_release, wait_error=None if frame_case == "success" else loss, natural=False
+        )
+        sandbox = FramedSandbox(workload)
+
+        class ReceiptController(ExternalServiceDeadlineController):
+            end_receipt_at: float | None = None
+
+            def end_generation(self, now: float) -> None:
+                self.end_receipt_at = now
+                super().end_generation(now)
+
+        controller = ReceiptController(base_allowance_seconds=10.0)
+        finalized = AsyncMock()
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                messages.append,
+                controller,
+                finalized,
+                on_accounting_failure=AsyncMock(),
+                stage_key=key,
+            )
+        )
+        try:
+            async with asyncio.timeout(1) as watchdog:
+                if frame_case == "begin":
+                    await workload.wait_finished.wait()
+                else:
+                    while not acknowledgements:
+                        await asyncio.sleep(0)
+                    assert acknowledgements == ["/run/valkyrie-stage/ack/1"]
+                release_frame.set()
+                await frame_sent.wait()
+                if frame_case == "success":
+                    while "/run/valkyrie-stage/ack/2" not in acknowledgements:
+                        await asyncio.sleep(0)
+                    assert acknowledgements == ["/run/valkyrie-stage/ack/1", "/run/valkyrie-stage/ack/2"]
+                    workload.closed.set()
+                    wait_release.set()
+                    output_release.set()
+                    reason, _ = await asyncio.shield(task)
+                    assert reason is None
+                    assert messages == ["tail output"]
+                    assert controller.active_since is None
+                    assert end_sent_at is not None and end_fed_at is not None
+                    assert controller.end_receipt_at is not None
+                    assert end_sent_at <= controller.end_receipt_at <= end_fed_at
+                    finalized.assert_awaited_once()
+                    assert workload.kill_calls == 0
+                elif frame_case == "invalid":
+                    output_release.set()
+                    with pytest.raises(ControlledGenerationError, match="out of order"):
+                        await asyncio.shield(task)
+                    assert workload.kill_calls == 1
+                    assert messages == []
+                else:
+                    wait_release.set()
+                    with pytest.raises(SandboxNotFoundError) as raised:
+                        await asyncio.shield(task)
+                    assert raised.value is loss
+                    assert workload.kill_calls == 0
+                    assert not output_release.is_set()
+                    assert messages == []
+                    finalized.assert_awaited_once()
+                    if frame_case == "end":
+                        assert controller.active_since is None
+                        assert end_sent_at is not None and end_fed_at is not None
+                        assert controller.end_receipt_at is not None
+                        assert end_sent_at <= controller.end_receipt_at <= end_fed_at
+                    else:
+                        assert controller.active_since is None
+            assert not watchdog.expired()
+        finally:
+            release_frame.set()
+            output_release.set()
+            wait_release.set()
+            task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+
+    @pytest.mark.parametrize("late_end", [False, True], ids=["exhausted-end", "late-end"])
+    async def test_staged_end_deadline_while_wait_pending(
+        self, monkeypatch: pytest.MonkeyPatch, late_end: bool
+    ) -> None:
+        key = b"stage-test-key"
+        base_allowance = 1.0
+        real_monotonic = time.monotonic
+        offset = 0.0
+        held_at: float | None = None
+        ack_begin = asyncio.Event()
+        release_end = asyncio.Event()
+        release_wait = asyncio.Event()
+        messages: list[str] = []
+        acknowledgements: list[str] = []
+        end_fed_at: float | None = None
+
+        def shared_monotonic() -> float:
+            return held_at if held_at is not None else real_monotonic() + offset
+
+        class BoundaryWorkload(_FakeControlledWorkload):
+            active_at_kill: bool | None = None
+
+            async def kill(self) -> None:
+                self.active_at_kill = controller.active_since is not None
+                await super().kill()
+
+            async def output(self) -> AsyncIterator[str]:
+                nonlocal offset, held_at, end_fed_at
+                try:
+                    yield _signed_stage_frame(key, 1, "begin", None)
+                    await release_end.wait()
+                    assert controller.active_since is not None
+                    end_at = controller.active_since + base_allowance + (0.03125 if late_end else 0.0)
+                    assert end_at > shared_monotonic()
+                    held_at = end_at
+                    try:
+                        yield _signed_stage_frame(key, 2, "end", None)
+                    finally:
+                        if held_at is not None:
+                            offset = end_at - real_monotonic()
+                            held_at = None
+                    end_fed_at = end_at
+                    await self.closed.wait()
+                    yield "tail output"
+                finally:
+                    self.output_finished.set()
+
+        class BoundarySandbox(_FakeControlledSandbox):
+            async def upload_file(self, path: str, _data: bytes) -> None:
+                acknowledgements.append(path)
+                if path.endswith("/ack/1"):
+                    ack_begin.set()
+
+        class ReceiptController(ExternalServiceDeadlineController):
+            end_receipt_at: float | None = None
+            end_receipt_before_kill: float | None = None
+
+            def end_generation(self, now: float) -> None:
+                self.end_receipt_at = now
+                if workload.kill_calls == 0:
+                    self.end_receipt_before_kill = now
+                super().end_generation(now)
+
+        workload = BoundaryWorkload(
+            wait_release=release_wait, wait_error=SandboxNotFoundError("wait lost"), natural=False
+        )
+        controller = ReceiptController(base_allowance_seconds=base_allowance)
+        finalized = AsyncMock()
+        accounting_failed = AsyncMock()
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(time, "monotonic", shared_monotonic)
+            task = asyncio.create_task(
+                _stream_controlled_output(
+                    cast(Any, BoundarySandbox(workload)),
+                    "echo done",
+                    "/workspace",
+                    messages.append,
+                    controller,
+                    finalized,
+                    on_accounting_failure=accounting_failed,
+                    stage_key=key,
+                )
+            )
+            try:
+                async with asyncio.timeout(2) as watchdog:
+                    await ack_begin.wait()
+                    release_end.set()
+                    reason, _ = await asyncio.shield(task)
+                assert not watchdog.expired()
+                assert reason is AgentCausedExitReason.TIMEOUT
+                assert workload.wait_finished.is_set()
+                assert workload.output_finished.is_set()
+                assert end_fed_at is not None
+                if late_end:
+                    assert controller.end_receipt_before_kill is None
+                    assert workload.active_at_kill is True
+                    assert controller.end_receipt_at is not None
+                    assert controller.end_receipt_at > end_fed_at
+                    assert controller.active_elapsed_seconds > base_allowance
+                else:
+                    assert controller.end_receipt_before_kill == end_fed_at
+                    assert controller.active_elapsed_seconds == base_allowance
+                    assert workload.active_at_kill is False
+                assert workload.kill_calls == 1
+                assert acknowledgements == ["/run/valkyrie-stage/ack/1"]
+                assert messages == ["tail output"]
+                finalized.assert_awaited_once()
+                accounting_failed.assert_not_awaited()
+            finally:
+                if held_at is not None:
+                    offset = held_at - real_monotonic()
+                    held_at = None
+                release_wait.set()
+                release_end.set()
+                workload.closed.set()
+                task.cancel()
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+
+    async def test_staged_deadline_drains_output_after_confirmed_stop(self) -> None:
+        key = b"stage-test-key"
+        messages: list[str] = []
+        acknowledgements: list[str] = []
+
+        class DeadlineWorkload(_FakeControlledWorkload):
+            async def output(self) -> AsyncIterator[str]:
+                try:
+                    yield _signed_stage_frame(key, 1, "begin", None)
+                    await self.closed.wait()
+                    yield "deadline tail"
+                finally:
+                    self.output_finished.set()
+
+        class DeadlineSandbox(_FakeControlledSandbox):
+            async def upload_file(self, path: str, _data: bytes) -> None:
+                acknowledgements.append(path)
+
+        workload = DeadlineWorkload(wait_release=asyncio.Event(), natural=False)
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=0.001)
+        finalized = AsyncMock()
+        async with asyncio.timeout(1) as watchdog:
+            reason, _ = await _stream_controlled_output(
+                cast(Any, DeadlineSandbox(workload)),
+                "echo done",
+                "/workspace",
+                messages.append,
+                controller,
+                finalized,
+                on_accounting_failure=AsyncMock(),
+                stage_key=key,
+            )
+        assert not watchdog.expired()
+        assert reason is AgentCausedExitReason.TIMEOUT
+        assert acknowledgements == ["/run/valkyrie-stage/ack/1"]
+        assert messages == ["deadline tail"]
+        assert workload.kill_calls == 1
+        finalized.assert_awaited_once()
+
+    @pytest.mark.parametrize("failure", ["wait", "output", "kill"])
+    async def test_confirmed_sandbox_loss_finalizes_once_and_reaches_task_handler(
+        self, failure: Literal["wait", "output", "kill"]
+    ) -> None:
+        loss = SandboxNotFoundError("sandbox disappeared")
+        workload = _FakeControlledWorkload(
+            wait_error=(
+                ProviderSandboxError("wait failed") if failure == "kill" else loss if failure == "wait" else None
+            ),
+            natural=False,
+        )
+        if failure == "output":
+            workload.output_error = loss
+        if failure == "kill":
+            workload.kill_error = loss
+        workload.closed.set()
+        sandbox = _FakeControlledSandbox(workload)
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted = AsyncMock()
+
+        with pytest.raises(SandboxNotFoundError) as raised:
+            await _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                on_accounting_failure=AsyncMock(),
+            )
+
+        assert raised.value is loss
+        assert sandbox.controlled_calls == [("echo done", "/workspace", None)]
+        assert workload.kill_calls == (1 if failure == "kill" else 0)
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        assert client.read_calls >= 1
+        assert controller.credit_frozen
+        persisted.assert_awaited_once()
+        assert persisted.await_args_list[0].args[0].external_service_credit_revision == client.read_calls
+        assert persisted.await_args_list[0].args[0].generation_elapsed_seconds > 0
+        assert controller.active_since is None
+
+    async def test_staged_generic_wait_error_stops_drains_and_finalizes(self) -> None:
+        workload = _FakeControlledWorkload(wait_error=RuntimeError("wait transport failed"), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        messages: list[str] = []
+        finalized = AsyncMock()
+
+        async with asyncio.timeout(1) as watchdog:
+            with pytest.raises(ControlledGenerationError) as raised:
+                await _stream_controlled_output(
+                    cast(Any, sandbox),
+                    "echo done",
+                    "/workspace",
+                    messages.append,
+                    ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+                    finalized,
+                    on_accounting_failure=AsyncMock(),
+                    stage_key=b"stage-test-key",
+                )
+
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "wait transport failed"
+        assert not watchdog.expired()
+        assert workload.kill_calls == 1
+        assert workload.closed.is_set()
+        assert workload.output_finished.is_set()
+        assert messages == ["agent output"]
+        finalized.assert_awaited_once()
+
+    @pytest.mark.parametrize("failure", ["wait", "kill"])
+    async def test_confirmed_loss_finalizes_without_waiting_for_stalled_output(
+        self, failure: Literal["wait", "kill"]
+    ) -> None:
+        loss = SandboxNotFoundError("sandbox disappeared")
+        workload = _FakeControlledWorkload(
+            wait_error=loss if failure == "wait" else ProviderSandboxError("read failed"),
+            natural=False,
+        )
+        if failure == "kill":
+            workload.kill_error = loss
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted = AsyncMock()
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(workload.output_started.wait(), 1)
+            with pytest.raises(SandboxNotFoundError) as raised:
+                await asyncio.wait_for(asyncio.shield(task), 0.2)
+            assert raised.value is loss
+            assert not workload.closed.is_set()
+            assert workload.output_finished.is_set()
+            assert workload.kill_calls == (1 if failure == "kill" else 0)
+            assert client.read_calls >= 1
+            assert controller.credit_frozen
+            persisted.assert_awaited_once()
+            assert persisted.await_args_list[0].args[0].external_service_credit_revision == client.read_calls
+        finally:
+            workload.closed.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_out_of_order_stage_cleanup_loss_finalizes_without_draining_output(self) -> None:
+        key = b"stage-key"
+        wait_release = asyncio.Event()
+        wait_started = asyncio.Event()
+        emit_frame = asyncio.Event()
+        output_gate = asyncio.Event()
+        loss = SandboxNotFoundError("sandbox disappeared during cleanup kill")
+
+        frame = _signed_stage_frame(key, 2, "begin", "nested-1")
+
+        class OutOfOrderWorkload(_FakeControlledWorkload):
+            async def output(self) -> AsyncIterator[str]:
+                self.output_started.set()
+                try:
+                    await emit_frame.wait()
+                    yield frame
+                    await output_gate.wait()
+                    self.output_drain_started.set()
+                finally:
+                    self.output_finished.set()
+
+            async def wait(self) -> _CompletedControlledWorkload:
+                wait_started.set()
+                return await super().wait()
+
+        workload = OutOfOrderWorkload(wait_release=wait_release)
+        workload.kill_error = loss
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted = AsyncMock()
+        sandbox = _FakeControlledSandbox(workload)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                stage_key=key,
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(wait_started.wait(), 1)
+            await asyncio.wait_for(workload.output_started.wait(), 1)
+            assert not workload.wait_finished.is_set()
+            emit_frame.set()
+            with pytest.raises(SandboxNotFoundError) as raised:
+                await asyncio.wait_for(asyncio.shield(task), 1)
+            assert raised.value is loss
+            assert type(loss.__context__) is ControlledGenerationError
+            assert str(loss.__context__) == "Sandbox error: Stage frames arrived out of order"
+            assert workload.kill_calls == 1
+            assert workload.wait_finished.is_set()
+            assert workload.output_finished.is_set()
+            assert not workload.output_drain_started.is_set()
+            assert not output_gate.is_set()
+            assert controller.credit_frozen
+            persisted.assert_awaited_once()
+            summary = persisted.await_args_list[0].args[0]
+            assert summary.external_service_credit_revision == client.read_calls
+            assert summary.generation_elapsed_seconds == 0
+        finally:
+            wait_release.set()
+            emit_frame.set()
+            output_gate.set()
+            joined = asyncio.gather(task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(asyncio.shield(joined), 1)
+            except TimeoutError:
+                task.cancel()
+                await asyncio.wait_for(joined, 1)
+
+    async def test_staged_confirmed_wait_loss_finalizes_with_pending_output(self) -> None:
+        loss = SandboxNotFoundError("sandbox disappeared during wait")
+        workload = _FakeControlledWorkload(wait_error=loss, natural=False)
+        client = _FakeAccountingClient()
+        controller = ExternalServiceDeadlineController(
+            client=cast(Any, client),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=10.0,
+            credit_cap_seconds=1.0,
+        )
+        persisted = AsyncMock()
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                stage_key=b"stage-key",
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(workload.wait_finished.wait(), 1)
+            await asyncio.wait_for(workload.output_started.wait(), 1)
+            with pytest.raises(SandboxNotFoundError) as raised:
+                await asyncio.wait_for(asyncio.shield(task), 0.2)
+            assert raised.value is loss
+            assert not workload.closed.is_set()
+            assert workload.output_finished.is_set()
+            assert controller.credit_frozen
+            persisted.assert_awaited_once()
+        finally:
+            workload.closed.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_staged_confirmed_wait_loss_accounts_for_buffered_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        loss = SandboxNotFoundError("sandbox disappeared during wait")
+        key = b"stage-key"
+        ack = asyncio.Event()
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+        end_receipt_at: float | None = None
+        original_frame = sandbox_module._StageFrame
+
+        def capture_frame(seq: int, event: str, container: str | None, wire: str, received_at: float) -> Any:
+            nonlocal end_receipt_at
+            frame = original_frame(seq, event, container, wire, received_at)
+            if event == "end":
+                end_receipt_at = frame.received_at
+            return frame
+
+        monkeypatch.setattr(sandbox_module, "_StageFrame", capture_frame)
+        end_fed = asyncio.Event()
+
+        class AckGatedWorkload(_FakeControlledWorkload):
+            async def output(self) -> AsyncIterator[str]:
+                self.output_started.set()
+                try:
+                    yield _signed_stage_frame(key, 1, "begin", "nested-1")
+                    await ack.wait()
+                    await refresh_started.wait()
+                    yield _signed_stage_frame(key, 2, "end", "nested-1")
+                    end_fed.set()
+                    await self.closed.wait()
+                finally:
+                    self.output_finished.set()
+
+            async def wait(self) -> _CompletedControlledWorkload:
+                try:
+                    await end_fed.wait()
+                    raise loss
+                finally:
+                    self.wait_finished.set()
+
+        class AckSandbox(_FakeControlledSandbox):
+            async def upload_file(self, path: str, data: bytes) -> None:
+                assert path.endswith("/ack/1")
+                ack.set()
+
+        class DelayedRefreshClient(_FakeAccountingClient):
+            async def read_counter(self, _accounting_id: str) -> AccountingSnapshot:
+                self.read_calls += 1
+                if self.read_calls >= 2:
+                    refresh_started.set()
+                    await release_refresh.wait()
+                    return _accounting_snapshot(overhead_ms=1000, revision=self.read_calls)
+                return _accounting_snapshot(revision=self.read_calls)
+
+        class ReceiptController(ExternalServiceDeadlineController):
+            started_at: float | None = None
+            ended_at: float | None = None
+
+            def begin_generation(self, now: float | None = None) -> None:
+                super().begin_generation(now)
+                self.started_at = self.active_since
+
+            def end_generation(self, now: float) -> None:
+                self.ended_at = now
+                super().end_generation(now)
+
+        workload = AckGatedWorkload(natural=False)
+        controller = ReceiptController(
+            client=cast(Any, DelayedRefreshClient()),
+            snapshot=_accounting_snapshot(),
+            base_allowance_seconds=0.03,
+            credit_cap_seconds=1.0,
+        )
+        persisted = AsyncMock()
+        failure_upload = AsyncMock()
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, AckSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                stage_key=key,
+                on_accounting_failure=failure_upload,
+            )
+        )
+        try:
+            await asyncio.wait_for(refresh_started.wait(), 1)
+            await asyncio.wait_for(end_fed.wait(), 1)
+            await asyncio.wait_for(workload.wait_finished.wait(), 1)
+            received_before_refresh_release = asyncio.get_running_loop().time()
+            release_refresh.set()
+            with pytest.raises(SandboxNotFoundError) as raised:
+                await asyncio.wait_for(asyncio.shield(task), 0.2)
+            assert raised.value is loss
+            assert end_receipt_at is not None and end_receipt_at < received_before_refresh_release
+            assert controller.started_at is not None
+            assert controller.ended_at == end_receipt_at
+            assert workload.output_finished.is_set()
+            persisted.assert_awaited_once()
+            failure_upload.assert_not_awaited()
+            assert persisted.await_args.args[0].generation_elapsed_seconds == end_receipt_at - controller.started_at
+        finally:
+            release_refresh.set()
+            workload.closed.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_deadline_stop_propagates_confirmed_sandbox_loss(self) -> None:
+        loss = SandboxNotFoundError("sandbox disappeared during stop")
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.kill_error = loss
+        workload.closed.set()
+        persisted = AsyncMock()
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=0.001)
+
+        with pytest.raises(SandboxNotFoundError) as raised:
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                on_accounting_failure=AsyncMock(),
+            )
+
+        assert raised.value is loss
+        assert workload.kill_calls == 1
+        persisted.assert_awaited_once()
+        assert controller.active_since is None
+
+    async def test_unrelated_observation_and_kill_failures_remain_unconfirmed(self) -> None:
+        workload = _FakeControlledWorkload(wait_error=ProviderSandboxError("wait failed"), natural=False)
+        workload.kill_error = ProviderSandboxError("kill unavailable")
+        finalized = AsyncMock()
+
+        with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
+            await _stream_controlled_output(
+                cast(Any, _FakeControlledSandbox(workload)),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+                finalized,
+                on_accounting_failure=AsyncMock(),
+            )
+
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+        finalized.assert_not_awaited()
+
+    @pytest.mark.parametrize("failure", ["wait", "output"])
+    async def test_unconfirmed_failure_bounds_blocked_kill_without_finalizing(
+        self, monkeypatch: pytest.MonkeyPatch, failure: Literal["wait", "output"]
+    ) -> None:
+        monkeypatch.setattr(sandbox_module, "GENERATION_TERMINATION_GRACE_SECONDS", 0.01)
+        workload = _FakeControlledWorkload(
+            wait_error=ProviderSandboxError("wait failed") if failure == "wait" else None,
+            natural=failure == "output",
+        )
+        if failure == "output":
+            workload.output_error = ProviderSandboxError("output failed")
+        workload.block_kill = True
+        finalized = AsyncMock()
+
+        async with asyncio.timeout(1) as watchdog:
+            with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
+                await _stream_controlled_output(
+                    cast(Any, _FakeControlledSandbox(workload)),
+                    "echo done",
+                    "/workspace",
+                    _ignore_output,
+                    ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+                    finalized,
+                    on_accounting_failure=AsyncMock(),
+                )
+        assert not watchdog.expired()
+        assert workload.kill_calls == 1
+        if failure == "wait":
+            assert not workload.closed.is_set()
+        finalized.assert_not_awaited()
+
+    async def test_controlled_cancellation_kills_before_propagation(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        sandbox = _FakeControlledSandbox(workload)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        await workload.output_started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert workload.kill_calls == 1
+        assert workload.closed.is_set()
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    async def test_controlled_cancellation_joins_children_when_kill_fails(self) -> None:
+        workload = _FakeControlledWorkload(wait_release=asyncio.Event(), natural=False)
+        workload.kill_error = ProviderSandboxError("kill unavailable")
+        sandbox = _FakeControlledSandbox(workload)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "echo done",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=10.0),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        await workload.output_started.wait()
+
+        task.cancel()
+        with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
+            await task
+
+        assert workload.kill_calls == 1
+        assert workload.wait_finished.is_set()
+        assert workload.output_finished.is_set()
+
+    async def test_active_deadline_stops_and_finalizes_before_canceled_upload_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        monkeypatch.setattr(loop, "time", lambda: real_time() + offset)
+        key = b"k" * 32
+        workload = _StageFrameWorkload(_signed_stage_frame(key, 1, "begin", None))
+        sandbox = _FakeControlledSandbox(workload)
+        begin_acked = asyncio.Event()
+        notification_started = asyncio.Event()
+        canceled = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        persisted = asyncio.Event()
+        uploads: list[str] = []
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploads.append(path)
+            if path.endswith("/ack/1"):
+                begin_acked.set()
+            if path.endswith("/exhausted"):
+                notification_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    canceled.set()
+                    await release_cleanup.wait()
+                    raise RuntimeError("late upload cleanup")
+
+        async def persist(_summary: GenerationAccountingSummary) -> None:
+            assert workload.wait_finished.is_set() and workload.output_finished.is_set()
+            persisted.set()
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=1.0)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persist,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        observed = False
+        try:
+            await asyncio.wait_for(begin_acked.wait(), 1)
+            offset += 2.0
+            await asyncio.wait_for(notification_started.wait(), 1)
+            offset += sandbox_module.EPISODE_END_GRACE_SECONDS + 1.0
+            await asyncio.wait_for(canceled.wait(), 1)
+            await asyncio.wait_for(persisted.wait(), 1)
+            assert workload.kill_calls == 1
+            assert not task.done()
+            assert uploads == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+            observed = True
+        finally:
+            release_cleanup.set()
+            workload.closed.set()
+            workload.wait_release.set()
+            if not observed:
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        reason, _duration = task.result()
+        assert reason == AgentCausedExitReason.TIMEOUT
+
+    async def test_active_deadline_upload_error_is_not_deadline_expiry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        monkeypatch.setattr(loop, "time", lambda: real_time() + offset)
+        begin_acked = asyncio.Event()
+        key = b"k" * 32
+        workload = _StageFrameWorkload(_signed_stage_frame(key, 1, "begin", None))
+        sandbox = _FakeControlledSandbox(workload)
+        uploads: list[str] = []
+        persisted = AsyncMock()
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploads.append(path)
+            if path.endswith("/ack/1"):
+                begin_acked.set()
+            else:
+                raise ProviderSandboxError("upload unavailable")
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=1.0),
+                persisted,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(begin_acked.wait(), 1)
+            offset += 2.0
+            with pytest.raises(ProviderSandboxError, match="upload unavailable"):
+                await asyncio.wait_for(task, 1)
+        finally:
+            workload.closed.set()
+            workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        assert workload.kill_calls == 1
+        persisted.assert_awaited_once()
+        assert uploads == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+
+    @pytest.mark.parametrize("upload_error", [False, True])
+    async def test_notification_completion_before_cutoff_survives_delayed_waiter(
+        self, monkeypatch: pytest.MonkeyPatch, upload_error: bool
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+
+        def controlled_time() -> float:
+            return real_time() + offset
+
+        monkeypatch.setattr(loop, "time", controlled_time)
+        key = b"k" * 32
+        workload = _StageFrameWorkload(_signed_stage_frame(key, 1, "begin", None))
+        sandbox = _FakeControlledSandbox(workload)
+        begin_acked = asyncio.Event()
+        notification_uploaded = asyncio.Event()
+        uploaded: list[str] = []
+        persisted = AsyncMock()
+        original_error = ProviderSandboxError("early upload failure")
+
+        def advance_past_cutoff() -> None:
+            nonlocal offset
+            offset += sandbox_module.EPISODE_END_GRACE_SECONDS + 1.0
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploaded.append(path)
+            if path.endswith("/exhausted"):
+                notification_uploaded.set()
+                loop.call_soon(advance_past_cutoff)
+                if upload_error:
+                    raise original_error
+            else:
+                begin_acked.set()
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=1.0),
+                persisted,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(begin_acked.wait(), 1)
+            offset += 2.0
+            if upload_error:
+                with pytest.raises(ProviderSandboxError) as captured:
+                    await task
+                assert captured.value is original_error
+                assert uploaded == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+                assert workload.kill_calls == 1
+            else:
+                await asyncio.wait_for(notification_uploaded.wait(), sandbox_module.EPISODE_END_GRACE_SECONDS + 2.0)
+                assert uploaded == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+                assert workload.kill_calls == 0
+                workload.closed.set()
+                workload.wait_release.set()
+                await task
+            persisted.assert_awaited_once()
+        finally:
+            workload.closed.set()
+            workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.parametrize("after_cutoff", [0.0, 1.0])
+    async def test_exhausted_notification_at_or_after_cutoff_stops_without_further_ack(
+        self, monkeypatch: pytest.MonkeyPatch, after_cutoff: float
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        frozen = False
+        fixed_time = 0.0
+        origin = 0.0
+        begin_acked = asyncio.Event()
+        upload_started = asyncio.Event()
+        clock_resumed = asyncio.Event()
+        persisted_event = asyncio.Event()
+        key = b"k" * 32
+        workload = _StageFrameWorkload(_signed_stage_frame(key, 1, "begin", None))
+        sandbox = _FakeControlledSandbox(workload)
+        uploads: list[str] = []
+        persisted = AsyncMock(side_effect=lambda _summary: persisted_event.set())
+
+        def clock() -> float:
+            return fixed_time if frozen else real_time() + offset
+
+        def resume_clock() -> None:
+            nonlocal frozen, offset
+            offset = fixed_time - real_time()
+            frozen = False
+            clock_resumed.set()
+
+        async def upload(path: str, _content: bytes) -> None:
+            nonlocal fixed_time, frozen
+            uploads.append(path)
+            if path.endswith("/ack/1"):
+                begin_acked.set()
+            if path.endswith("/exhausted"):
+                fixed_time = origin + sandbox_module.EPISODE_END_GRACE_SECONDS + after_cutoff
+                frozen = True
+                upload_started.set()
+                loop.call_soon(resume_clock)
+                raise ProviderSandboxError("late upload failure")
+
+        monkeypatch.setattr(loop, "time", clock)
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=1.0)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        stopped = False
+        try:
+            await asyncio.wait_for(begin_acked.wait(), 1)
+            assert controller.active_since is not None
+            deadline = controller.deadline(loop.time())
+            assert deadline is not None
+            origin = deadline
+            offset += 2.0
+            await asyncio.wait_for(upload_started.wait(), sandbox_module.EPISODE_END_GRACE_SECONDS + 2.0)
+            await asyncio.wait_for(clock_resumed.wait(), 1)
+            await asyncio.wait_for(workload.kill_started.wait(), 1)
+            await asyncio.wait_for(persisted_event.wait(), 1)
+            assert uploads == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+            assert workload.kill_calls == 1
+            stopped = True
+        finally:
+            workload.closed.set()
+            workload.wait_release.set()
+            if not stopped:
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        reason, _duration = task.result()
+        assert reason == AgentCausedExitReason.TIMEOUT
+        persisted.assert_awaited_once()
+
+    async def test_repeated_cancellation_owns_terminal_counter_read_after_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key = b"k" * 32
+        workload = _StageFrameWorkload(_signed_stage_frame(key, 1, "begin", None))
+        sandbox = _FakeControlledSandbox(workload)
+        acked = asyncio.Event()
+        read_started = asyncio.Event()
+        read_release = asyncio.Event()
+        persisted = AsyncMock()
+
+        class BlockedCounterClient(_FakeAccountingClient):
+            async def read_counter(self, accounting_id: str) -> AccountingSnapshot:
+                read_started.set()
+                await read_release.wait()
+                return await super().read_counter(accounting_id)
+
+        async def upload(path: str, _content: bytes) -> None:
+            if path.endswith("/ack/1"):
+                acked.set()
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        controller = ExternalServiceDeadlineController(
+            base_allowance_seconds=None, client=cast(Any, BlockedCounterClient()), snapshot=_accounting_snapshot()
+        )
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                controller,
+                persisted,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        observed = False
+        try:
+            await asyncio.wait_for(acked.wait(), 1)
+            task.cancel()
+            await asyncio.wait_for(workload.kill_started.wait(), 1)
+            await asyncio.wait_for(read_started.wait(), 1)
+            task.cancel()
+            assert not task.done()
+            observed = True
+        finally:
+            read_release.set()
+            workload.closed.set()
+            workload.wait_release.set()
+            if not observed:
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        assert workload.wait_finished.is_set() and workload.output_finished.is_set()
+        persisted.assert_awaited_once()
+
+    async def test_episode_duration_excludes_async_factory_preparation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        loop = asyncio.get_running_loop()
+        clock = 100.0
+        monkeypatch.setattr(loop, "time", lambda: clock)
+        workload = _FakeControlledWorkload(absence_confirmed_at=200.0)
+        sandbox = _FakeControlledSandbox(workload)
+
+        async def prepare(
+            _sandbox: Any, _command: str, *, cwd: str | None = None, env_vars: Mapping[str, str] | None = None
+        ) -> _FakeControlledWorkload:
+            nonlocal clock
+            await asyncio.sleep(0)
+            clock = 200.0
+            return workload
+
+        monkeypatch.setattr(sandbox_module, "controlled_episode_workload", prepare)
+        reason, duration = await _stream_controlled_output(
+            cast(Any, sandbox),
+            "agent",
+            "/workspace",
+            _ignore_output,
+            ExternalServiceDeadlineController(base_allowance_seconds=1.0),
+            stage_key=b"k" * 32,
+            episode=Episode(command="stage", parallel_agents=1),
+            on_accounting_failure=AsyncMock(),
+        )
+        assert reason is None
+        assert duration == 0.0
+
+    async def test_episode_accepts_successive_aggregate_intervals(self) -> None:
+        key = b"k" * 32
+        acknowledgements: list[str] = []
+        acked = {seq: asyncio.Event() for seq in range(1, 5)}
+        controller = ExternalServiceDeadlineController(base_allowance_seconds=5.0)
+
+        class SlotIntervals(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__(wait_release=asyncio.Event(), natural=False)
+
+            async def output(self) -> AsyncIterator[str]:
+                try:
+                    for seq, event in enumerate(("begin", "end", "begin", "end"), start=1):
+                        yield _signed_stage_frame(key, seq, event, None)
+                        await acked[seq].wait()
+                        if seq == 2:
+                            assert controller.active_since is None
+                        if seq == 3:
+                            assert controller.active_since is not None
+                    yield "orchestrator evaluation output"
+                    self.closed.set()
+                    assert self.wait_release is not None
+                    self.wait_release.set()
+                finally:
+                    self.output_finished.set()
+
+        class EpisodeSandbox(_FakeControlledSandbox):
+            async def upload_file(self, path: str, _content: bytes) -> None:
+                acknowledgements.append(path)
+                acked[int(path.rsplit("/", 1)[1])].set()
+
+        workload = SlotIntervals()
+        messages: list[str] = []
+        persisted = AsyncMock()
+        async with asyncio.timeout(1):
+            reason, _duration = await _stream_controlled_output(
+                cast(Any, EpisodeSandbox(workload)),
+                "orchestrator",
+                "/workspace",
+                messages.append,
+                controller,
+                persisted,
+                on_accounting_failure=AsyncMock(),
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=2),
+            )
+        assert reason is None
+        assert controller.active_since is None
+        assert controller.active_elapsed_seconds > 0
+        assert acknowledgements == [f"{sandbox_module._STAGE_DIR}/ack/{seq}" for seq in range(1, 5)]
+        assert messages == ["orchestrator evaluation output"]
+        assert workload.kill_calls == 0
+        persisted.assert_awaited_once()
+
+    async def test_timely_notice_without_end_expires_second_grace_and_finalizes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        monkeypatch.setattr(loop, "time", lambda: real_time() + offset)
+        key = b"k" * 32
+        workload = _StageFrameWorkload(_signed_stage_frame(key, 1, "begin", None))
+        sandbox = _FakeControlledSandbox(workload)
+        begin_acked = asyncio.Event()
+        notice_uploaded = asyncio.Event()
+        uploads: list[str] = []
+        persisted = AsyncMock()
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploads.append(path)
+            if path.endswith("/ack/1"):
+                begin_acked.set()
+            if path.endswith("/exhausted"):
+                notice_uploaded.set()
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=1.0),
+                persisted,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(begin_acked.wait(), 1)
+            offset += 2.0
+            await asyncio.wait_for(notice_uploaded.wait(), 1)
+            await asyncio.sleep(0)
+            assert uploads == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+            assert workload.kill_calls == 0
+            assert not task.done()
+
+            offset += sandbox_module.EPISODE_END_GRACE_SECONDS + 1.0
+            reason, _duration = await asyncio.wait_for(task, 1)
+            assert reason == AgentCausedExitReason.TIMEOUT
+            assert workload.kill_calls == 1
+            assert workload.wait_finished.is_set()
+            assert workload.output_finished.is_set()
+            persisted.assert_awaited_once()
+            assert uploads == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+        finally:
+            workload.closed.set()
+            workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_run_agent_notice_then_nonzero_returns_timeout_and_archives(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        monkeypatch.setattr(loop, "time", lambda: real_time() + offset)
+        key = b"k" * 32
+        notice = asyncio.Event()
+        acked = asyncio.Event()
+        uploads: list[str] = []
+        finalized = AsyncMock()
+
+        class ExitingOrchestrator(_FakeControlledWorkload):
+            def __init__(self) -> None:
+                super().__init__(exit_code=42, wait_release=asyncio.Event(), natural=False)
+
+            async def output(self) -> AsyncIterator[str]:
+                try:
+                    yield _signed_stage_frame(key, 1, "begin", None)
+                    await notice.wait()
+                    await acked.wait()
+                    self.closed.set()
+                    assert self.wait_release is not None
+                    self.wait_release.set()
+                finally:
+                    self.output_finished.set()
+
+        workload = ExitingOrchestrator()
+        sandbox = _FakeControlledSandbox(workload)
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploads.append(path)
+            if path.endswith("/exhausted"):
+                notice.set()
+            if path.endswith("/ack/1"):
+                acked.set()
+
+        async def archive_after_finalization(*_args: Any, **_kwargs: Any) -> None:
+            assert workload.wait_finished.is_set() and workload.output_finished.is_set()
+            finalized.assert_awaited_once()
+
+        archive = AsyncMock(side_effect=archive_after_finalization)
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        monkeypatch.setattr(sandbox_module, "_provision_stage", AsyncMock(return_value=key))
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", archive)
+        messages: list[str] = []
+        task = asyncio.create_task(
+            run_agent(
+                cast(Any, sandbox),
+                _controlled_contract(),
+                "/tmp/problem.txt",
+                "task_0",
+                messages.append,
+                "/workspace",
+                object_store=_mock_object_store(),
+                agent_output_s3_key="benchmarks/run/task/output.tar.gz",
+                plan=GenerationPlan(
+                    allowance_seconds=1.0, staged=True, episode=Episode(command="stage", parallel_agents=1)
+                ),
+                deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=1.0),
+                on_external_service_finalized=finalized,
+            )
+        )
+        try:
+            await asyncio.wait_for(acked.wait(), 1)
+            offset += 2.0
+            await asyncio.wait_for(notice.wait(), 1)
+            reason, _duration = await asyncio.wait_for(task, 1)
+            assert reason is AgentCausedExitReason.TIMEOUT
+            assert uploads == [
+                f"{sandbox_module._STAGE_DIR}/agent.json",
+                f"{sandbox_module._STAGE_DIR}/ack/1",
+                f"{sandbox_module._STAGE_DIR}/exhausted",
+            ]
+            archive.assert_awaited_once()
+            assert archive.await_args.args[1] == "/workspace/.valkyrie/slots"
+            assert workload.kill_calls == 0
+            assert any("evaluation will proceed" in message for message in messages)
+        finally:
+            workload.closed.set()
+            assert workload.wait_release is not None
+            workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_timely_notification_and_end_allow_evaluation_past_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        monkeypatch.setattr(loop, "time", lambda: real_time() + offset)
+        key = b"k" * 32
+
+        emit_end = asyncio.Event()
+        continue_evaluation = asyncio.Event()
+
+        class EndThenEvaluate(_StageFrameWorkload):
+            async def output(self) -> AsyncIterator[str]:
+                try:
+                    self.output_started.set()
+                    yield _signed_stage_frame(key, 1, "begin", None)
+                    await emit_end.wait()
+                    yield _signed_stage_frame(key, 2, "end", None)
+                    await continue_evaluation.wait()
+                    yield "evaluation still running\n"
+                    await self.closed.wait()
+                    self.output_drain_started.set()
+                finally:
+                    self.output_finished.set()
+
+        workload = EndThenEvaluate("")
+        sandbox = _FakeControlledSandbox(workload)
+        ended = asyncio.Event()
+        begun = asyncio.Event()
+        evaluation_output = asyncio.Event()
+        uploads: list[str] = []
+        persisted = AsyncMock()
+
+        def observe_output(chunk: str) -> None:
+            if "evaluation still running" in chunk:
+                evaluation_output.set()
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploads.append(path)
+            if path.endswith("/ack/1"):
+                begun.set()
+            if path.endswith("/ack/2"):
+                ended.set()
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                observe_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=5.0),
+                persisted,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(begun.wait(), 1)
+            offset += 6.0
+            emit_end.set()
+            await asyncio.wait_for(ended.wait(), 1)
+            offset += sandbox_module.EPISODE_END_GRACE_SECONDS + 1.0
+            continue_evaluation.set()
+            await asyncio.wait_for(evaluation_output.wait(), 1)
+            assert f"{sandbox_module._STAGE_DIR}/exhausted" in uploads
+            assert workload.kill_calls == 0
+            assert not task.done()
+            workload.closed.set()
+            workload.wait_release.set()
+            reason, _duration = await asyncio.wait_for(task, 1)
+            assert reason == AgentCausedExitReason.TIMEOUT
+            persisted.assert_awaited_once()
+        finally:
+            emit_end.set()
+            continue_evaluation.set()
+            workload.closed.set()
+            workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_exhausted_end_checks_nested_container_before_ack_and_seal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        monkeypatch.setattr(loop, "time", lambda: real_time() + offset)
+        key = b"k" * 32
+        begin_ack = asyncio.Event()
+        end_ack = asyncio.Event()
+        emit_end = asyncio.Event()
+        confirming = asyncio.Event()
+        release_confirmation = asyncio.Event()
+        deadline_waiting = asyncio.Event()
+        release_deadline = asyncio.Event()
+        original_sleep = asyncio.sleep
+
+        async def sleep(delay: float) -> None:
+            if delay >= 4.0:
+                deadline_waiting.set()
+                await release_deadline.wait()
+            else:
+                await original_sleep(delay)
+
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        class EndAfterBegin(_StageFrameWorkload):
+            async def output(self) -> AsyncIterator[str]:
+                nonlocal offset
+                try:
+                    self.output_started.set()
+                    yield _signed_stage_frame(key, 1, "begin", "nested-live")
+                    await emit_end.wait()
+                    offset = 6.0
+                    yield _signed_stage_frame(key, 2, "end", "nested-live")
+                    await self.closed.wait()
+                    self.output_drain_started.set()
+                finally:
+                    self.output_finished.set()
+
+        workload = EndAfterBegin("")
+        sandbox = _FakeControlledSandbox(workload)
+        persisted = AsyncMock()
+        uploads: list[str] = []
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploads.append(path)
+            if path.endswith("/ack/1"):
+                begin_ack.set()
+            if path.endswith("/ack/2"):
+                end_ack.set()
+
+        async def exec_container_command(command: str) -> ExecResult:
+            if command == "cat /proc/$$/task/$$/children >/dev/null":
+                return ExecResult(exit_code=0)
+            if command == "docker rm -f nested-live":
+                confirming.set()
+                await release_confirmation.wait()
+                return ExecResult(exit_code=0, output="")
+            assert command == "docker container ls -a --format '{{.Names}}'"
+            return ExecResult(exit_code=0, output="nested-live\n")
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        monkeypatch.setattr(sandbox, "exec", exec_container_command, raising=False)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=5),
+                persisted,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        try:
+            await asyncio.wait_for(begin_ack.wait(), 1)
+            await asyncio.wait_for(deadline_waiting.wait(), 1)
+            emit_end.set()
+            confirmation_started = asyncio.create_task(confirming.wait())
+            end_acknowledged = asyncio.create_task(end_ack.wait())
+            done, pending = await asyncio.wait(
+                {confirmation_started, end_acknowledged}, timeout=10, return_when=asyncio.FIRST_COMPLETED
+            )
+            for waiter in pending:
+                waiter.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            assert confirmation_started in done, "END acknowledged before nested-container absence confirmation"
+            assert not end_ack.is_set()
+            persisted.assert_not_awaited()
+            release_confirmation.set()
+            with pytest.raises(ControlledGenerationTerminationUnconfirmedError):
+                await asyncio.wait_for(task, 10)
+            assert not end_ack.is_set()
+            persisted.assert_not_awaited()
+        finally:
+            release_deadline.set()
+            emit_end.set()
+            release_confirmation.set()
+            workload.closed.set()
+            workload.wait_release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_external_cancellation_owns_notification_until_after_stop_and_finalize(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        offset = 0.0
+        monkeypatch.setattr(loop, "time", lambda: real_time() + offset)
+        key = b"k" * 32
+        workload = _StageFrameWorkload(_signed_stage_frame(key, 1, "begin", None))
+        sandbox = _FakeControlledSandbox(workload)
+        begin_acked = asyncio.Event()
+        upload_started = asyncio.Event()
+        notification_cancelled = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        persisted = asyncio.Event()
+        uploads: list[str] = []
+
+        async def upload(path: str, _content: bytes) -> None:
+            uploads.append(path)
+            if path.endswith("/ack/1"):
+                begin_acked.set()
+                return
+            assert path.endswith("/exhausted")
+            upload_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                notification_cancelled.set()
+                await release_cleanup.wait()
+
+        async def persist(_summary: GenerationAccountingSummary) -> None:
+            assert workload.wait_finished.is_set() and workload.output_finished.is_set()
+            persisted.set()
+
+        monkeypatch.setattr(sandbox, "upload_file", upload, raising=False)
+        task = asyncio.create_task(
+            _stream_controlled_output(
+                cast(Any, sandbox),
+                "agent",
+                "/workspace",
+                _ignore_output,
+                ExternalServiceDeadlineController(base_allowance_seconds=1.0),
+                persist,
+                stage_key=key,
+                episode=Episode(command="stage", parallel_agents=1),
+                on_accounting_failure=AsyncMock(),
+            )
+        )
+        observed = False
+        try:
+            await asyncio.wait_for(begin_acked.wait(), 1)
+            offset += 2.0
+            await asyncio.wait_for(upload_started.wait(), 1)
+            task.cancel()
+            task.cancel()
+            await asyncio.wait_for(persisted.wait(), 1)
+            await asyncio.wait_for(notification_cancelled.wait(), 1)
+            assert workload.kill_calls == 1
+            assert not task.done()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), 0.05)
+            assert uploads == [f"{sandbox_module._STAGE_DIR}/ack/1", f"{sandbox_module._STAGE_DIR}/exhausted"]
+            observed = True
+        finally:
+            release_cleanup.set()
+            workload.closed.set()
+            workload.wait_release.set()
+            if not observed:
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
 
 
 class TestSandboxRetry:
@@ -981,16 +3913,14 @@ class TestSandboxRetry:
             run_cmd="echo done",
         )
         observed_commands: list[str] = []
-        setup_results: deque[tuple[AgentCausedExitReason | None, float]] = deque(
-            [(AgentCausedExitReason.TIMEOUT, 600.0), (None, 2.0)]
-        )
+        setup_results: deque[AgentCausedExitReason | None] = deque([AgentCausedExitReason.TIMEOUT, None])
 
         async def fake_stream_command_output(
             _sandbox: Any,
             command: str,
             _log_output: Any,
             **_kwargs: Any,
-        ) -> tuple[AgentCausedExitReason | None, float]:
+        ) -> AgentCausedExitReason | None:
             observed_commands.append(command)
 
             return setup_results.popleft()
@@ -1019,7 +3949,7 @@ class TestSandboxRetry:
                 AgentRunFailedError("setup failed 1"),
                 AgentRunFailedError("setup failed 2"),
                 AgentRunFailedError("setup failed 3"),
-                (None, 2.0),
+                None,
             ]
         )
         sleep = AsyncMock()
@@ -1396,8 +4326,21 @@ class TestSandboxLifecycle:
         set_sandbox_context.assert_called_once_with(mock_sandbox, image="snapshot")
         provider.delete_sandbox.assert_awaited_once_with(mock_sandbox.id)
 
-    async def test_create_sandbox_emits_error_metric(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        create_error = RuntimeError("create failed")
+    @pytest.mark.parametrize(
+        ("create_error", "expected_error", "metric_class"),
+        [
+            pytest.param(RuntimeError("create failed"), RuntimeError, "RuntimeError", id="unexpected"),
+            pytest.param(ProviderSandboxError("quota"), SandboxSetupError, "SandboxError", id="provider"),
+        ],
+    )
+    async def test_create_sandbox_emits_error_metric(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        create_error: Exception,
+        expected_error: type[Exception],
+        metric_class: str,
+    ) -> None:
+        """Provider creation failures become a fresh-sandbox retry; the metric still names the provider error."""
         increments: list[tuple[str, dict[str, str]]] = []
 
         async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Never:
@@ -1410,7 +4353,7 @@ class TestSandboxLifecycle:
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
 
         resources = Resources(vcpu=2, memory=4, disk=5)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(expected_error):
             async with create_sandbox(
                 provider=AsyncMock(),
                 sandbox_name="task-alias",
@@ -1421,7 +4364,7 @@ class TestSandboxLifecycle:
             ):
                 pass
 
-        assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "RuntimeError"})]
+        assert increments == [("valkyrie.sandbox.create.errors", {"error_class": metric_class})]
 
     async def test_create_sandbox_deletes_resource_when_cancelled_during_creation(
         self,
@@ -1784,7 +4727,7 @@ class TestSandboxCreationState:
         error = ProviderSandboxError("creation unknown")
         provider = AsyncMock()
         provider.create_sandbox.side_effect = error
-        with pytest.raises(ProviderSandboxError) as exc_info:
+        with pytest.raises(SandboxSetupError) as exc_info:
             async with create_sandbox(
                 provider=provider,
                 sandbox_name="unknown",
@@ -1794,7 +4737,7 @@ class TestSandboxCreationState:
                 creation_state=state,
             ):
                 pytest.fail("creation failed")
-        assert exc_info.value is error
+        assert exc_info.value.__cause__ is error
         assert state.cleanup_pending
         provider.delete_sandbox.assert_not_awaited()
 
@@ -1921,6 +4864,7 @@ class TestUploadAgentArtifacts:
             - Exit code 35 raises SandboxSetupError (retryable — triggers a new sandbox)
             - Other non-zero exit codes raise SandboxError but not SandboxSetupError (non-retryable)
         """
+        monkeypatch.setattr(upload_agent_artifacts.retry, "wait", wait_none())
         mock_sandbox = AsyncMock()
         mock_sandbox.name = "test-sandbox"
 
@@ -1937,6 +4881,20 @@ class TestUploadAgentArtifacts:
 
         if not retryable:
             assert not isinstance(exc_info.value, SandboxSetupError)
+
+    async def test_upload_agent_artifacts_keeps_sandbox_not_found_type(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        """A vanished sandbox must reach the sandbox-loss recovery path, not become a generic SandboxError."""
+        store = _mock_object_store()
+        store.temporary_download_url = AsyncMock(return_value="https://example.com/presigned")
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(side_effect=SandboxNotFoundError("gone")))
+
+        with pytest.raises(SandboxNotFoundError):
+            await upload_agent_artifacts(AsyncMock(), contract, "bench-123", store)
 
 
 class TestEgressPolicy:
@@ -1976,27 +4934,41 @@ class TestEgressPolicy:
         assert events == [expected_event]
 
     @pytest.mark.parametrize(
-        ("provider_error", "expected_error", "message"),
+        ("provider_error", "expected_error", "message", "attempts", "transient"),
         [
-            (ValueError("bad allowlist"), SandboxSetupError, "Failed to apply egress policy: bad allowlist"),
-            (ProviderSandboxError("provider failed"), SandboxError, "provider failed"),
+            (
+                ValueError("bad allowlist"),
+                InvalidSandboxConfigurationError,
+                "Failed to apply egress policy: bad allowlist",
+                1,
+                False,
+            ),
+            (ProviderSandboxError("provider failed"), SandboxError, "provider failed", 3, True),
         ],
     )
     async def test_apply_egress_policy_maps_provider_errors(
         self,
+        monkeypatch: pytest.MonkeyPatch,
         provider_error: Exception,
-        expected_error: type[Exception],
+        expected_error: type[SandboxError],
         message: str,
+        attempts: int,
+        transient: bool,
     ) -> None:
+        """Provider network failures are retried and stay transient; a rejected allowlist fails the same way anywhere."""
+        monkeypatch.setattr(_run_egress_operation.retry, "wait", wait_none())
         sandbox = Mock()
         sandbox.modify_egress_rules = AsyncMock(side_effect=provider_error)
 
-        with pytest.raises(expected_error, match=message):
+        with pytest.raises(expected_error, match=message) as exc_info:
             await _apply_egress_policy(sandbox, ["https://api.openai.com"])
+
+        assert exc_info.value.transient is transient
+        assert sandbox.modify_egress_rules.await_count == attempts
 
 
 class TestStreamCommandOutputAgentFailure:
-    """Agent command failure cleanup and error classification."""
+    """Agent command output and error classification."""
 
     async def _reported_failure(self, content: str, secret_values: tuple[str, ...] | None) -> tuple[str, list[str]]:
         commands: list[str] = []
@@ -2088,70 +5060,22 @@ class TestStreamCommandOutputAgentFailure:
 
         assert message.endswith("ValueError: no patch")
 
-    async def test_stream_command_output_uses_sandbox_timing_and_removes_files(self) -> None:
+    async def test_stream_command_output_forwards_output_and_returns_reason(self) -> None:
         observed_commands: list[str] = []
+        output: list[str] = []
 
         async def stream_command(command: str) -> AsyncIterator[str]:
             observed_commands.append(command)
             yield "done\n"
 
-        exec_commands: list[str] = []
-
-        async def exec_command(command: str) -> ExecResult:
-            exec_commands.append(command)
-            if command.startswith("cat ") and command.endswith(".start_ns"):
-                return ExecResult(exit_code=0, output="1000000000")
-            if command.startswith("cat ") and command.endswith(".end_ns"):
-                return ExecResult(exit_code=0, output="3000000000")
-            return ExecResult(exit_code=0)
-
         mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "test-sandbox"
-        mock_sandbox.state = "started"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = exec_command
 
-        exit_reason, duration = await sandbox_module.stream_command_output(
-            mock_sandbox, "run-agent.sh", on_output=lambda _: None
-        )
+        exit_reason = await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=output.append)
 
         assert exit_reason is None
-        assert duration == 2
-        # Timing is embedded in the sandbox command, not run raw.
-        assert observed_commands and "run-agent.sh" in observed_commands[0]
-        assert ".start_ns" in observed_commands[0]
-        assert exec_commands[-1].startswith("rm -f ")
-        assert ".start_ns" in exec_commands[-1]
-        assert ".end_ns" in exec_commands[-1]
-
-    async def test_stream_command_output_falls_back_when_timing_files_missing(self) -> None:
-        async def stream_command(_command: str) -> AsyncIterator[str]:
-            yield "done\n"
-
-        async def exec_command(command: str) -> ExecResult:
-            if command.startswith("cat "):
-                # `cat` on a missing file: non-zero exit and an error string on stdout.
-                return ExecResult(
-                    exit_code=1,
-                    output="cat: /tmp/.valkyrie/abc.end_ns: No such file or directory",
-                )
-            return ExecResult(exit_code=0)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "test-sandbox"
-        mock_sandbox.state = "started"
-        mock_sandbox.command = stream_command
-        mock_sandbox.exec = exec_command
-
-        exit_reason, duration = await sandbox_module.stream_command_output(
-            mock_sandbox, "run-agent.sh", on_output=lambda _: None
-        )
-
-        # No crash on int() of the cat error text; duration degrades to the monotonic fallback.
-        assert exit_reason is None
-        assert duration >= 0
+        assert observed_commands == ["run-agent.sh"]
+        assert output == ["done\n"]
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_prompt_free_agent_error_and_tags_exit_code(
@@ -2166,7 +5090,6 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(key: str, value: object) -> None:
             tagged[key] = str(value)
@@ -2197,7 +5120,6 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
         mock_sandbox.command = stream_command
-        mock_sandbox.exec = AsyncMock()
 
         def fake_set_tag(_key: str, _value: object) -> None:
             pass
@@ -2414,3 +5336,41 @@ class TestStreamCommandOutputAgentFailure:
             "Sandbox error: Dependency installation for contract my-agent failed with exit code 2: "
             "pip: No matching distribution found for torch==99"
         )
+
+
+@pytest.mark.parametrize(
+    ("exec_outcome", "expected"),
+    [
+        pytest.param(ExecResult(exit_code=0, output="93.184.216.34 gateway.example.com"), True, id="resolves"),
+        pytest.param(ExecResult(exit_code=2, output=""), False, id="not-found"),
+        pytest.param(ExecResult(exit_code=1, output="service is not running"), True, id="other-exit"),
+        pytest.param(ProviderSandboxError("exec failed"), True, id="exec-failed"),
+        pytest.param(SandboxNotFoundError("gone"), True, id="sandbox-gone"),
+        pytest.param(TimeoutError(), True, id="timed-out"),
+    ],
+)
+async def test_sandbox_resolves_reports_only_an_observed_dns_failure(
+    exec_outcome: ExecResult | Exception, expected: bool
+) -> None:
+    sandbox = AsyncMock()
+    if isinstance(exec_outcome, Exception):
+        sandbox.exec.side_effect = exec_outcome
+    else:
+        sandbox.exec.return_value = exec_outcome
+
+    assert await sandbox_resolves(sandbox, "gateway.example.com") is expected
+    (command,) = sandbox.exec.call_args.args
+    assert command == "[ -x /usr/bin/getent ] || exit 0; /usr/bin/getent ahosts gateway.example.com"
+
+
+async def test_sandbox_resolves_gives_up_on_a_hung_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tracker.sandbox._DNS_CHECK_TIMEOUT_SECONDS", 0.01)
+    sandbox = AsyncMock()
+
+    async def _hang(*_args: Any, **_kwargs: Any) -> ExecResult:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    sandbox.exec.side_effect = _hang
+
+    assert await sandbox_resolves(sandbox, "gateway.example.com") is True

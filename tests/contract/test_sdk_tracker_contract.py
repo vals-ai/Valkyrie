@@ -59,8 +59,13 @@ from tracker.types import (
     StartBenchmarkResponse,
     ShedBenchmarkRequest,
     ShedBenchmarkResponse,
+    SPEND_SUBCATEGORIES,
+    ProjectCreateRequest,
+    ProjectResponse,
+    ProjectsResponse,
     StopBenchmarkResponse,
     TaskArtifactsResponse,
+    TaskBreakdown,
     TasksResponse,
     TaskSummary,
 )
@@ -113,8 +118,13 @@ from valkyrie.sdk.models import (
     StartBenchmarkResponse as SDKStartBenchmarkResponse,
     ShedBenchmarkRequest as SDKShedBenchmarkRequest,
     ShedBenchmarkResponse as SDKShedBenchmarkResponse,
+    SPEND_SUBCATEGORIES as SDK_SPEND_SUBCATEGORIES,
+    ProjectCreateRequest as SDKProjectCreateRequest,
+    ProjectResponse as SDKProjectResponse,
+    ProjectsResponse as SDKProjectsResponse,
     StopBenchmarkResponse as SDKStopBenchmarkResponse,
     TaskArtifactsResponse as SDKTaskArtifactsResponse,
+    TaskBreakdown as SDKTaskBreakdown,
     TaskIDsResponse as SDKTaskIDsResponse,
     TasksResponse as SDKTasksResponse,
     TaskSummary as SDKTaskSummary,
@@ -125,6 +135,11 @@ ROUTES = (
     ("/benchmarks/filter-options", "get", ""),
     ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
     ("/benchmarks/{benchmark_id}/shed", "post", "benchmark_id"),
+    ("/benchmarks/{benchmark_id}/project", "post", "benchmark_id"),
+    ("/projects", "post", ""),
+    ("/projects", "get", ""),
+    ("/projects/{handle}", "put", "handle"),
+    ("/projects/{handle}", "delete", "handle"),
     ("/benchmarks/{benchmark_id}/artifacts", "get", "benchmark_id prefix cursor limit"),
     ("/benchmarks/{benchmark_id}/artifacts/download-url", "get", "benchmark_id path download"),
     ("/start-benchmark", "post", ""),
@@ -211,6 +226,11 @@ RESPONSE_MODELS = {
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
     ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
+    ("/benchmarks/{benchmark_id}/project", "post"): "ProjectResponse",
+    ("/projects", "post"): "ProjectResponse",
+    ("/projects", "get"): "ProjectsResponse",
+    ("/projects/{handle}", "put"): "ProjectResponse",
+    ("/projects/{handle}", "delete"): "ProjectResponse",
     ("/preview-results", "get"): "S3UploadResultsResponse",
 }
 MODEL_PAIRS = (
@@ -241,6 +261,9 @@ MODEL_PAIRS = (
     (StopBenchmarkResponse, SDKStopBenchmarkResponse),
     (ShedBenchmarkRequest, SDKShedBenchmarkRequest),
     (ShedBenchmarkResponse, SDKShedBenchmarkResponse),
+    (ProjectCreateRequest, SDKProjectCreateRequest),
+    (ProjectResponse, SDKProjectResponse),
+    (ProjectsResponse, SDKProjectsResponse),
     (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
     (BenchmarkStatusEntry, SDKBenchmarkStatusEntry),
     (BenchmarkStatusResponse, SDKBenchmarkStatusResponse),
@@ -252,6 +275,7 @@ MODEL_PAIRS = (
     (SingleBenchmarkResponse, SDKSingleBenchmarkResponse),
     (TaskSummary, SDKTaskSummary),
     (TasksResponse, SDKTasksResponse),
+    (TaskBreakdown, SDKTaskBreakdown),
     (SingleTaskResponse, SDKSingleTaskResponse),
     (TaskArtifactsResponse, SDKTaskArtifactsResponse),
     (AgentEntry, SDKAgentEntry),
@@ -268,6 +292,11 @@ MODEL_PAIRS = (
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
+    # Dashboard native previews use Tracker directly, not the Python SDK.
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}/native-output/files", "get"),
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}/native-output/file", "get"),
+    ("/costs/by-email", "get"),
+    ("/costs/by-project", "get"),
     ("/access-keys", "post"),
     ("/access-keys/{key_id}", "delete"),
     ("/auth/cli", "get"),
@@ -589,3 +618,24 @@ def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:
         assert isinstance(tracker_value, str)
         assert type(sdk_value) is type(tracker_value)
     assert sdk_evaluation.model_dump() == tracker_evaluation.model_dump(warnings=False)
+
+
+def test_sdk_and_tracker_allow_the_final_subcategories() -> None:
+    expected = {
+        "development": (
+            "new_benchmark_generation",
+            "new_benchmark_launch_runs",
+            "post_launch_benchmark_update",
+        ),
+        "customer": ("report", "paid_run", "eval_server", "platform"),
+        "internal": (
+            "unpaid_leaderboard_run",
+            "other_unpaid_run",
+            "fellows_interns",
+            "blog",
+            "miscellaneous",
+        ),
+    }
+
+    assert {spend_type.value: choices for spend_type, choices in SPEND_SUBCATEGORIES.items()} == expected
+    assert {spend_type.value: choices for spend_type, choices in SDK_SPEND_SUBCATEGORIES.items()} == expected

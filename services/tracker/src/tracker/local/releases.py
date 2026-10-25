@@ -37,7 +37,21 @@ def register_source_release(session: Session, source_root: Path) -> ExecutorRele
         artifact_uri=artifact_uri,
         artifact_digest=artifact_digest,
         protocol_version=SUPPORTED_PROTOCOL_VERSION,
-        readiness_verified=True,
     )
     register_release(session, candidate)
     return promote_release(session, candidate.id)
+
+
+def register_checkout_release() -> None:
+    """Activate the source release for the Tracker source tree that contains this module."""
+    from tracker.database.session import engine
+
+    source_root = Path(__file__).resolve().parents[2]
+    with Session(engine) as session:
+        release = register_source_release(session, source_root)
+        session.commit()
+        print(f"Executor source release ready: {release.id} ({source_root})")
+
+
+if __name__ == "__main__":
+    register_checkout_release()

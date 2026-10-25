@@ -6,6 +6,7 @@
       "model": "claude-sonnet",
       "install_cmd": "",
       "run_cmd": "",
+      "turns": null,
       "final_output": null,
       "output_artifacts": [
         {
@@ -36,7 +37,8 @@
     "ignore_custom_services": false,
     "service_headers": {},
     "sandbox_provider": "daytona",
-    "dataset_version": null
+    "dataset_version": null,
+    "project": "google-report-xyz"
   },
   "response": {
     "benchmark_name": "swebench",
@@ -53,6 +55,18 @@
     "executor_artifact_digest": null,
     "executor_protocol_version": null,
     "dataset_version": null,
-    "dataset_version_warning": null
+    "dataset_version_warning": null,
+    "project": {
+      "handle": "google-report-xyz",
+      "name": "Google Report XYZ",
+      "spend_type": "customer",
+      "subcategory": "report",
+      "customer": "google",
+      "extra_tags": {
+        "engagement": "q4"
+      },
+      "created_at": "2026-10-23T12:00:00+00:00",
+      "created_by_email": "researcher@vals.ai"
+    }
   }
 }

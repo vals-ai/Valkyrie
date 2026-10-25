@@ -1,57 +1,52 @@
 ---
-title: Configure sandbox providers
-description: Store sandbox-provider credentials and select a provider for runs.
+title: "Configure sandbox providers"
+sidebarTitle: "Sandbox providers"
+description: "Store your Daytona or Modal credentials and choose which provider your runs use."
 ---
 
-Valkyrie resolves sandbox-provider credentials from AWS Secrets Manager; a [local Tracker](/self-hosting/local-tracker) can read them from a `.env` file instead. Store them with [`valkyrie secret set`](/reference/cli/secret#set), which prints the reference to use, then map a provider name to that secret with [`valkyrie provider set`](/reference/cli/provider#set). The Tracker keeps the mapping for your organization, so every member's runs on that provider use it. The secret has to exist in your organization's secrets first; a self-hosted Tracker without authentication can map the name of a secret created directly in AWS. Full syntax is in the [`provider set`](/reference/cli/provider#set), [`provider list`](/reference/cli/provider#list), and [`provider default`](/reference/cli/provider#default) reference.
+Valkyrie creates each task's sandbox with your organization's own sandbox provider
+account. An organization sets up each provider once: store its credentials as an
+organization secret, then map the provider to that secret. Every member's runs on that
+provider use the mapping.
 
-## Select a provider
+## Set up Daytona
 
-A run uses the provider you pass with `--provider`, otherwise your default provider, otherwise `daytona`. Choose your own default with:
-
-```bash
-valkyrie provider default daytona
-```
-
-The default is yours alone in the current organization; it does not change what other members run on. `valkyrie provider list` shows each provider's secret and marks your default.
-
-Select a provider for one run:
-
-```bash
-valkyrie run start --agent sweagent --benchmark swebench --provider daytona
-```
-
-Provider secret schemas are provider-specific. Mapping a name does not make one provider's secret shape valid for another provider.
-
-## Daytona
-
-1. [Create a Daytona API key](https://app.daytona.io/dashboard/keys) with read, write, and delete access to sandboxes and snapshots.
-2. Choose a target from Daytona's [shared regions](https://www.daytona.io/docs/regions#shared-regions).
-3. Store the following JSON as a secret, for example with `valkyrie secret set daytona < daytona.json`:
+1. [Create a Daytona API key](https://app.daytona.io/dashboard/keys) with read, write, and
+   delete access to sandboxes and snapshots.
+2. Choose a target from Daytona's
+   [shared regions](https://www.daytona.io/docs/regions#shared-regions).
+3. Save the key, API URL, and target in `daytona.json`:
 
    ```json
    {
-     "DAYTONA_API_KEY": "...",
+     "DAYTONA_API_KEY": "API_KEY",
      "DAYTONA_API_URL": "https://app.daytona.io/api",
-     "DAYTONA_TARGET": "..."
+     "DAYTONA_TARGET": "us"
    }
    ```
 
-Map the provider to the secret by the name `secret set` printed:
+   Replace *`API_KEY`* with your Daytona API key.
 
-```bash
-valkyrie provider set daytona daytona
-```
+4. Store the file as a secret, then map the `daytona` provider to the reference that
+   `secret set` prints:
 
-## Modal
+   ```bash
+   valkyrie secret set daytona < daytona.json
 
-1. [Create an API token](https://modal.com/docs/reference/modal.config#authentication) under `Settings → Tokens → API tokens`, in the Modal workspace that should own the sandboxes. Modal shows the token once, as a CLI command:
+   valkyrie provider set daytona daytona
+   ```
+
+## Set up Modal
+
+1. [Create an API token](https://modal.com/docs/reference/modal.config#authentication) under
+   **Settings > Tokens > API tokens**, in the Modal workspace where you want the sandboxes to run.
+   Modal shows the token once, as a command:
 
    ```bash
    modal token set --token-id ak-... --token-secret as-...
    ```
 
-2. Store the token id and secret from that command as a secret, for example with `valkyrie secret set modal < modal.json`:
+2. Save the token ID and secret from that command in `modal.json`:
 
    ```json
    {
@@ -60,14 +55,38 @@ valkyrie provider set daytona daytona
    }
    ```
 
-Map the secret to the provider `modal`:
+3. Store the file as a secret and map it to the provider named `modal`:
+
+   ```bash
+   valkyrie secret set modal < modal.json
+
+   valkyrie provider set modal modal
+   ```
+
+The provider name selects the provider, so map Modal credentials to `modal`, never to
+another name.
+
+## Choose the provider for a run
+
+A run uses the provider you pass with `--provider`, otherwise your default provider,
+otherwise `daytona`:
 
 ```bash
-valkyrie provider set modal modal
+valkyrie run start --agent my-agent --benchmark swebench --provider modal --project my-project
 ```
 
-The provider name is sent to the benchmark service as the provider type, so Modal credentials must be mapped under `modal`.
+Set your own default with `valkyrie provider default modal`. The default is yours alone in
+the current organization and needs a login. `valkyrie provider list` shows each mapped
+provider's secret and marks your default.
 
-<Note>
-  Modal support comes from the benchmark service, not the CLI. The service must pin `create-benchmark-service` `v0.14.0` or later; earlier releases fail the run with `Modal sandbox provider is not implemented`.
-</Note>
+## Rotate or remove credentials
+
+To replace the credentials, run `valkyrie secret set` again with the new file. The mapping keeps pointing at the same secret. Remove a mapping with `valkyrie provider remove modal`.
+A run on a provider with no mapping fails with `No secret is set for provider modal`.
+
+## Limits
+
+- Modal sandboxes last at most 24 hours, so a longer task fails on Modal.
+- Benchmark services built with a create-benchmark-service version earlier than v0.14.0 can't create
+  Modal sandboxes. Their runs fail with `Modal sandbox provider is not implemented`.
+- Docker sandboxes are available only on a [local Tracker](/self-hosting/local-tracker#docker-sandboxes).

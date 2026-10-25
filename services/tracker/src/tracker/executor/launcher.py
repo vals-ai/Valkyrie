@@ -1,4 +1,4 @@
-"""Launch one pinned executor runner for an admitted dispatch."""
+"""Launch one executor task for an admitted dispatch."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from uuid import UUID
 
 import boto3
 from botocore.config import Config
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from tracker.database.models import ExecutorDispatch
+from tracker.database.models import ExecutorDispatch, ExecutorRelease
 from tracker.database.session import engine
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,16 @@ _ECS_RUNNER_PYTHON = "/app/.venv/bin/python"
 
 class DefinitiveLaunchFailure(Exception):
     """ECS rejected the launch without creating a task."""
+
+
+def _task_definition(dispatch: ExecutorDispatch) -> str:
+    with Session(engine) as session:
+        task_definition_arn = session.exec(
+            select(ExecutorRelease.task_definition_arn).where(ExecutorRelease.id == dispatch.executor_release_id)
+        ).one()
+    if task_definition_arn is None:
+        raise DefinitiveLaunchFailure(f"Executor release {dispatch.executor_release_id} has no task definition")
+    return task_definition_arn
 
 
 def _record_task_arn(dispatch_id: UUID, task_arn: str) -> None:
@@ -50,7 +60,7 @@ async def _record_task_arn_after_launch(dispatch_id: UUID, task_arn: str) -> Non
 async def launch_dispatch(dispatch: ExecutorDispatch) -> None:
     launcher = os.environ["EXECUTOR_LAUNCHER"]
     dispatch_id = str(dispatch.id)
-    command = [sys.executable, "-m", "tracker.executor.runner", "--dispatch-id", dispatch_id]
+    command = [sys.executable, "-m", "tracker.executor.entrypoint", "--dispatch-id", dispatch_id]
     if launcher == "local":
         subprocess.Popen(command, start_new_session=True, env=os.environ)
         return
@@ -59,7 +69,7 @@ async def launch_dispatch(dispatch: ExecutorDispatch) -> None:
 
     params = {
         "cluster": os.environ["EXECUTOR_RUNNER_CLUSTER"],
-        "taskDefinition": os.environ["EXECUTOR_RUNNER_TASK_DEFINITION"],
+        "taskDefinition": await asyncio.to_thread(_task_definition, dispatch),
         "launchType": "FARGATE",
         "count": 1,
         "clientToken": dispatch_id,
@@ -74,7 +84,7 @@ async def launch_dispatch(dispatch: ExecutorDispatch) -> None:
             "containerOverrides": [
                 {
                     "name": os.environ["EXECUTOR_RUNNER_CONTAINER"],
-                    "command": [_ECS_RUNNER_PYTHON, "-m", "tracker.executor.runner", "--dispatch-id", dispatch_id],
+                    "command": [_ECS_RUNNER_PYTHON, "-m", "tracker.executor.entrypoint", "--dispatch-id", dispatch_id],
                 }
             ]
         },

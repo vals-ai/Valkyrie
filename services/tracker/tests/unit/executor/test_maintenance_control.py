@@ -31,7 +31,6 @@ def _release(release_id: str = "maintenance-release") -> ExecutorRelease:
         artifact_digest="a" * 64,
         protocol_version="1",
         status=ExecutorReleaseStatus.ACTIVE,
-        readiness_verified=True,
     )
 
 

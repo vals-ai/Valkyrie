@@ -21,20 +21,18 @@ def test_retirement_loop_retires_a_blocker_free_release(
         database_session,
         ExecutorRelease(
             id="old",
-            artifact_uri="s3://artifacts/old.pex",
+            artifact_uri="source:///artifacts/old.pex",
             artifact_digest="a" * 64,
             protocol_version="1",
-            readiness_verified=True,
         ),
     )
     register_release(
         database_session,
         ExecutorRelease(
             id="active",
-            artifact_uri="s3://artifacts/active.pex",
+            artifact_uri="source:///artifacts/active.pex",
             artifact_digest="b" * 64,
             protocol_version="1",
-            readiness_verified=True,
         ),
     )
     promote_release(database_session, old_release.id)
@@ -142,9 +140,18 @@ async def test_tracker_lifespan_starts_and_stops_automatic_retirement(monkeypatc
             events.append("recovery stopped")
 
     monkeypatch.setattr(main_module, "AutomaticReleaseRetirement", FakeAutomaticReleaseRetirement)
+
+    class FakeAutomaticSandboxCost:
+        def start(self) -> None:
+            events.append("cost started")
+
+        def stop(self) -> None:
+            events.append("cost stopped")
+
     monkeypatch.setattr(main_module, "AutomaticDispatchRecovery", FakeAutomaticDispatchRecovery)
+    monkeypatch.setattr(main_module, "AutomaticSandboxCost", FakeAutomaticSandboxCost)
 
     async with main_module.tracker_lifespan(main_module.app):
-        assert events == ["started", "recovery started"]
+        assert events == ["started", "recovery started", "cost started"]
 
-    assert events == ["started", "recovery started", "recovery stopped", "stopped"]
+    assert events == ["started", "recovery started", "cost started", "cost stopped", "recovery stopped", "stopped"]

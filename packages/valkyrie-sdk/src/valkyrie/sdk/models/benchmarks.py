@@ -117,6 +117,22 @@ class TasksResponse(ResponseModel):
     total_count: int
 
 
+class TaskBreakdown(ResponseModel):
+    """Per-task runtime and generation accounting metadata."""
+
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+    accounting_id: str | None
+    base_generation_allowance_seconds: float | None
+    cumulative_time_credit_cap_seconds: float | None
+    external_service_overhead_seconds: float | None
+    external_service_credit_applied_seconds: float | None
+    external_service_credit_revision: int | None
+    generation_elapsed_seconds: float | None
+
+
 class SingleTaskResponse(ResponseModel):
     """Detailed state and evaluation output for one task."""
 
@@ -129,6 +145,7 @@ class SingleTaskResponse(ResponseModel):
     failure_category: FailureCategory | None = None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
+    task_breakdown: TaskBreakdown | None = None
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:

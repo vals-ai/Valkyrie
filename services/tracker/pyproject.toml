@@ -20,6 +20,7 @@ dependencies = [
   "opentelemetry-api>=1.20.0",
   "opentelemetry-sdk>=1.20.0",
   "cryptography>=44.0.0",
+  "aiodocker>=0.27.0",
   "alembic>=1.18.4",
   "descope>=0.9.0",
   "tenacity>=9.0.0",
@@ -53,7 +54,7 @@ prerelease = "allow"
 cache-keys = [{ file = "pyproject.toml" }, { file = "src/executor_protocol.py" }]
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "83acb6459bea219d701ddc5de244780e8f64973a" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "bd0d7d075eb8f53fa9624641a853a48906bc1479" }
 
 [tool.hatch.metadata]
 allow-direct-references = true

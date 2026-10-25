@@ -33,6 +33,7 @@ from tracker.auth import (
     find_org_by_tenant,
     get_current_identity,
     get_current_login,
+    get_current_runner,
     get_current_starter,
 )
 from tracker.aws.tenant_storage import TenantBucketError
@@ -430,6 +431,243 @@ class TestCurrentStarterResolution:
         assert (starter.email, starter.name) == ("alice@vals.ai", "Alice")
         assert starter.access_key_id == ("K2abc" if "x-api-key" in headers else None)
         assert mock_descope.mgmt.user.load_by_user_id.call_count == (0 if token_profile else 1)
+
+
+class TestCurrentRunnerResolution:
+    @pytest.fixture(autouse=True)
+    def hosted(self, mock_descope: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(auth_module, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(auth_module, "DESCOPE_MANAGEMENT_KEY", "management-key")
+        mock_descope.validate_session.return_value = {"sub": "U-alice", "tenants": {"test-tenant": {}}}
+        response = descope_access_key_response(user_id="U-alice")
+        token = response["sessionToken"]
+        assert isinstance(token, dict)
+        token["customClaims"] = {"user_id": "U-alice", "valkyrie_user_key": True}
+        mock_descope.exchange_access_key.return_value = response
+        mock_descope.mgmt.user.load_by_user_id.return_value = {
+            "user": {"email": "alice@vals.ai", "userTenants": [{"tenantId": "test-tenant", "roleNames": []}]}
+        }
+
+    @pytest.mark.parametrize(
+        ("headers", "access_key_id"),
+        [
+            ({"authorization": "Bearer login-token"}, None),
+            ({"x-api-key": "bound-key"}, "K2abc"),
+            ({"authorization": "Bearer exchanged-key"}, "K2abc"),
+            ({"authorization": "Bearer console-key-token"}, "K2abc"),
+        ],
+        ids=["login", "bound-key", "key-derived-bearer", "console-bound-bearer"],
+    )
+    def test_bound_credentials_use_the_same_live_user(
+        self,
+        mock_descope: MagicMock,
+        empty_database_session: Session,
+        test_org: Org,
+        headers: dict[str, str],
+        access_key_id: str | None,
+    ) -> None:
+        if headers.get("authorization") in {"Bearer exchanged-key", "Bearer console-key-token"}:
+            mock_descope.validate_session.return_value = {
+                "sub": "K2abc",
+                "tenants": {test_org.name: {}},
+                **(
+                    {"user_id": "U-alice", "valkyrie_user_key": True}
+                    if headers["authorization"] == "Bearer exchanged-key"
+                    else {"user_id": "U-alice"}
+                ),
+            }
+        identity = get_current_identity(MagicMock(headers=headers), empty_database_session)
+        runner = get_current_runner(identity)
+
+        assert (runner.org.id, runner.user_id, runner.access_key_id) == (test_org.id, "U-alice", access_key_id)
+        mock_descope.mgmt.user.load_by_user_id.assert_called_with("U-alice")
+
+    @pytest.mark.parametrize(
+        ("project_roles", "tenant_roles", "denied"),
+        [
+            (["valkyrie-no-start"], [], True),
+            ([], ["valkyrie-no-start"], True),
+            ([], [], False),
+        ],
+        ids=["project-role", "selected-tenant-role", "unrelated-tenant-role"],
+    )
+    def test_only_project_or_selected_tenant_role_denies(
+        self,
+        mock_descope: MagicMock,
+        empty_database_session: Session,
+        test_org: Org,
+        project_roles: list[str],
+        tenant_roles: list[str],
+        denied: bool,
+    ) -> None:
+        mock_descope.mgmt.user.load_by_user_id.return_value = {
+            "user": {
+                "roleNames": project_roles,
+                "userTenants": [
+                    {"tenantId": test_org.name, "roleNames": tenant_roles},
+                    {"tenantId": "elsewhere", "roleNames": ["valkyrie-no-start"]},
+                ],
+            }
+        }
+        identity = get_current_identity(
+            MagicMock(headers={"authorization": "Bearer login-token"}), empty_database_session
+        )
+        if denied:
+            with pytest.raises(HTTPException) as exc_info:
+                get_current_runner(identity)
+            assert (exc_info.value.status_code, exc_info.value.detail) == (
+                403,
+                "This user cannot start or retry benchmarks",
+            )
+        else:
+            assert get_current_runner(identity).user_id == "U-alice"
+        mock_descope.mgmt.user.load_by_user_id.assert_called_once_with("U-alice")
+
+    def test_cached_key_exchange_does_not_cache_role_membership(
+        self,
+        mock_descope: MagicMock,
+        empty_database_session: Session,
+        test_org: Org,
+    ) -> None:
+        user = {"userTenants": [{"tenantId": test_org.name, "roleNames": []}]}
+        mock_descope.mgmt.user.load_by_user_id.return_value = {"user": user}
+        headers = {"x-api-key": "bound-key"}
+
+        assert (
+            get_current_runner(get_current_identity(MagicMock(headers=headers), empty_database_session)).user_id
+            == "U-alice"
+        )
+        user["userTenants"][0]["roleNames"] = ["valkyrie-no-start"]
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_runner(get_current_identity(MagicMock(headers=headers), empty_database_session))
+        assert exc_info.value.status_code == 403
+        user["userTenants"][0]["roleNames"] = []
+        assert (
+            get_current_runner(get_current_identity(MagicMock(headers=headers), empty_database_session)).user_id
+            == "U-alice"
+        )
+        mock_descope.exchange_access_key.assert_called_once_with("bound-key")
+        assert mock_descope.mgmt.user.load_by_user_id.call_count >= 3
+
+    def test_console_key_without_bound_user_is_not_newly_prohibited(
+        self,
+        mock_descope: MagicMock,
+        empty_database_session: Session,
+        test_org: Org,
+    ) -> None:
+        mock_descope.exchange_access_key.return_value = descope_access_key_response()
+        mock_descope.mgmt.access_key.load.return_value = {"key": {"id": "K2abc"}}
+        identity = get_current_identity(MagicMock(headers={"x-api-key": "console-key"}), empty_database_session)
+
+        runner = get_current_runner(identity)
+        assert (runner.org.id, runner.access_key_id, runner.user_id) == (test_org.id, "K2abc", None)
+        mock_descope.mgmt.access_key.load.assert_called_once_with("K2abc")
+        mock_descope.mgmt.user.load_by_user_id.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "headers",
+        [{"x-api-key": "console-key"}, {"authorization": "Bearer key-jwt"}],
+        ids=["raw-key", "key-derived-bearer"],
+    )
+    @pytest.mark.parametrize(
+        ("key_lookup", "expected_status"),
+        [
+            ({"key": {"id": "K2abc"}}, None),
+            ({"key": {"id": "K2abc", "boundUserId": "U-alice"}}, 403),
+            (ReadTimeout(), 503),
+            (AuthException(404, "E", "missing"), 403),
+        ],
+        ids=["unbound", "missing-owner", "outage", "missing-key"],
+    )
+    def test_ambiguous_key_needs_exact_lookup_before_admission(
+        self,
+        mock_descope: MagicMock,
+        empty_database_session: Session,
+        test_org: Org,
+        key_lookup: object,
+        expected_status: int | None,
+        headers: dict[str, str],
+    ) -> None:
+        mock_descope.exchange_access_key.return_value = descope_access_key_response()
+        mock_descope.validate_session.return_value = {"sub": "K2abc", "tenants": {test_org.name: {}}}
+        mock_descope.mgmt.user.load_by_user_id.side_effect = AuthException(404, "E", "not found")
+        if isinstance(key_lookup, Exception):
+            mock_descope.mgmt.access_key.load.side_effect = key_lookup
+        else:
+            mock_descope.mgmt.access_key.load.return_value = key_lookup
+        identity = get_current_identity(MagicMock(headers=headers), empty_database_session)
+
+        if expected_status is not None:
+            with pytest.raises(HTTPException) as exc_info:
+                get_current_runner(identity)
+            assert exc_info.value.status_code == expected_status
+        else:
+            runner = get_current_runner(identity)
+            assert (runner.org.id, runner.access_key_id, runner.user_id) == (test_org.id, "K2abc", None)
+        looked_up_users = [call.args for call in mock_descope.mgmt.user.load_by_user_id.call_args_list]
+        assert looked_up_users == ([("K2abc",)] if "authorization" in headers else []) + (
+            [("U-alice",)] if isinstance(key_lookup, dict) and key_lookup["key"].get("boundUserId") else []
+        )
+        mock_descope.mgmt.access_key.load.assert_called_once_with("K2abc")
+
+    @pytest.mark.parametrize(
+        "headers",
+        [{"x-api-key": "bound-key"}, {"authorization": "Bearer key-jwt"}],
+        ids=["raw-key", "key-derived-bearer"],
+    )
+    def test_markerless_bound_key_uses_live_user_roles(
+        self, mock_descope: MagicMock, empty_database_session: Session, test_org: Org, headers: dict[str, str]
+    ) -> None:
+        mock_descope.exchange_access_key.return_value = descope_access_key_response()
+        mock_descope.validate_session.return_value = {"sub": "K2abc", "tenants": {test_org.name: {}}}
+        denied_user = {"user": {"roleNames": ["valkyrie-no-start"], "userTenants": [{"tenantId": test_org.name}]}}
+        allowed_user = {"user": {"roleNames": [], "userTenants": [{"tenantId": test_org.name}]}}
+        users: list[object] = [denied_user, allowed_user]
+        if "authorization" in headers:
+            users = [
+                AuthException(404, "E", "not found"),
+                denied_user,
+                AuthException(404, "E", "not found"),
+                allowed_user,
+            ]
+        mock_descope.mgmt.user.load_by_user_id.side_effect = users
+        mock_descope.mgmt.access_key.load.return_value = {"key": {"id": "K2abc", "boundUserId": "U-alice"}}
+        identity = get_current_identity(MagicMock(headers=headers), empty_database_session)
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_runner(identity)
+        assert exc_info.value.status_code == 403
+        if "authorization" in headers:
+            assert mock_descope.mgmt.user.load_by_user_id.call_args_list[0].args == ("K2abc",)
+            assert mock_descope.mgmt.user.load_by_user_id.call_args_list[1].args == ("U-alice",)
+        else:
+            assert mock_descope.mgmt.user.load_by_user_id.call_args_list[0].args == ("U-alice",)
+
+        runner = get_current_runner(identity)
+        assert (runner.org.id, runner.access_key_id, runner.user_id) == (test_org.id, "K2abc", "U-alice")
+        assert [call.args for call in mock_descope.mgmt.user.load_by_user_id.call_args_list] == (
+            [("K2abc",), ("U-alice",), ("K2abc",), ("U-alice",)]
+            if "authorization" in headers
+            else [("U-alice",), ("U-alice",)]
+        )
+        assert mock_descope.mgmt.access_key.load.call_count == 2
+
+    def test_management_unavailable_does_not_admit_bound_user(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_descope: MagicMock,
+        empty_database_session: Session,
+        test_org: Org,
+    ) -> None:
+        monkeypatch.setattr(auth_module, "DESCOPE_MANAGEMENT_KEY", "")
+        identity = get_current_identity(
+            MagicMock(headers={"authorization": "Bearer login-token"}), empty_database_session
+        )
+        assert identity.org.id == test_org.id
+        with pytest.raises(HTTPException) as exc_info:
+            get_current_runner(identity)
+        assert exc_info.value.status_code == 503
+        mock_descope.mgmt.user.load_by_user_id.assert_not_called()
 
 
 class TestMissingOrganization:

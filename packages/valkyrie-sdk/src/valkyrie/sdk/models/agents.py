@@ -96,6 +96,12 @@ OutputArtifacts = Annotated[list[OutputArtifactSpec], AfterValidator(_normalize_
 EgressPolicy = Literal["*"] | list[str]
 
 
+class AgentTurns(BaseModel):
+    continue_cmd: str | None = None
+    interrupt_grace_seconds: float | None = None
+    container_name: str | None = None
+
+
 class AgentContractRequest(BaseModel):
     """Agent definition submitted when starting a run."""
 
@@ -103,6 +109,7 @@ class AgentContractRequest(BaseModel):
     model: str | None = None
     install_cmd: str = ""
     run_cmd: str = ""
+    turns: AgentTurns | None = None
     final_output: str | None = None
     output_artifacts: OutputArtifacts = Field(default_factory=list)
     egress_allowlist: list[str] = Field(default_factory=list)
@@ -162,6 +169,7 @@ class AgentContract(BaseModel):
         description="The agent's own parameters, passed with -k. A name here overrides the same name in defaults.",
     )
     run_cmd: str
+    turns: AgentTurns | None = None
 
     @classmethod
     def from_directory(cls, agent_path: Path) -> "AgentContract":

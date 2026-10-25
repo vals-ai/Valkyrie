@@ -38,14 +38,27 @@ async def fetch_sandbox_provider_config(
     return sandbox_provider_config_from_secret(await secret_store.get(secret_name), provider_type)
 
 
+SANDBOX_PROVIDER_HEADER = "X-Vals-Sandbox-Provider"
+
+
 def create_benchmark_service_client(
     url: str,
     service_headers: dict[str, str] | None = None,
     dataset_version: DatasetVersion | None = None,
+    sandbox_provider: str | None = None,
 ) -> BenchmarkServiceClient:
-    """Create a BenchmarkServiceClient with benchmark-service headers."""
+    """Create a BenchmarkServiceClient with benchmark-service headers.
+
+    A run's client sends the run's sandbox provider, replacing any caller-supplied value.
+    """
     url = validate_service_url_syntax(url)
-    headers = dict(service_headers or {})
+    headers = {
+        name: value
+        for name, value in (service_headers or {}).items()
+        if sandbox_provider is None or name.lower() != SANDBOX_PROVIDER_HEADER.lower()
+    }
+    if sandbox_provider is not None:
+        headers[SANDBOX_PROVIDER_HEADER] = sandbox_provider
     validate_service_headers(headers)
 
     return BenchmarkServiceClient(

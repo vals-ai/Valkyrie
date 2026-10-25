@@ -35,6 +35,7 @@ from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.dependencies import TrackedBenchmarkId, bind_benchmark_id
 from tracker.api.dependencies import RunBenchmarkDependency, RunRuntimeDependency
+from tracker.api.costs import router as costs_router
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
 from tracker.api.scheduler_overview import router as scheduler_overview_router
@@ -43,12 +44,14 @@ from tracker.api.single_task import router as single_task_router
 from tracker.api.run_artifacts import router as run_artifacts_router
 from tracker.api.providers import provider_secrets, router as providers_router
 from tracker.api.run_settings import router as run_settings_router, user_run_settings
+from tracker.api.projects import find_project, router as projects_router
 from tracker.api.secrets import router as secrets_router, secret_store
 from tracker.auth import (
     RequestIdentity,
     forward_tracker_api_key,
     get_current_identity,
     get_current_org,
+    get_current_runner,
     get_current_starter,
 )
 from tracker.aws.resolver import (
@@ -97,6 +100,7 @@ from tracker.database.models import (
     Org,
     RetryMode,
     RunAccessKey,
+    RunProject,
     Task,
     TaskStatus,
 )
@@ -127,6 +131,7 @@ from tracker.middleware import LocalTrustedHostMiddleware, RequestContextMiddlew
 from tracker.observability import configure_observability
 from tracker.secret_access import resolve_secret_name, validate_secret_names
 from tracker.run_access_keys import IssuedKeys, IssuedRunKey, run_service_key
+from tracker.sandbox_cost import AutomaticSandboxCost
 from tracker.outbound_security import (
     validate_custom_service_destination,
     validate_service_headers,
@@ -144,8 +149,10 @@ from tracker.types import (
     FinalViewResponse,
     ManagedExecutionContext,
     Order,
+    ProjectResponse,
     RetrieveResultsResponse,
     RunExecutionRequest,
+    RunProjectRequest,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     ShedBenchmarkRequest,
@@ -200,11 +207,14 @@ def _operation_id(route: APIRoute) -> str:
 async def tracker_lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     retirement = AutomaticReleaseRetirement()
     dispatch_recovery = AutomaticDispatchRecovery()
+    sandbox_cost = AutomaticSandboxCost()
     retirement.start()
     dispatch_recovery.start()
+    sandbox_cost.start()
     try:
         yield
     finally:
+        sandbox_cost.stop()
         dispatch_recovery.stop()
         retirement.stop()
 
@@ -222,6 +232,7 @@ app.include_router(login_router)
 app.include_router(organizations_router)
 app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
+app.include_router(costs_router)
 app.include_router(filter_options_router)
 app.include_router(logs_router)
 app.include_router(scheduler_overview_router)
@@ -231,6 +242,7 @@ app.include_router(run_artifacts_router)
 app.include_router(providers_router)
 app.include_router(run_settings_router)
 app.include_router(secrets_router)
+app.include_router(projects_router)
 
 
 # Preserve health check log suppression after configure_logging() replaced handlers
@@ -508,7 +520,7 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest, object_store
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
     if request.contract.secrets:
         resolved.secrets = {**resolved.secrets, **request.contract.secrets}
-    # Kwargs were validated against the bundle's schema and rendered its command.
+    # Kwargs were validated against the bundle's schema and retained for launch-time binding.
     resolved.inference_settings_attested = True
     return resolved
 
@@ -578,6 +590,7 @@ def _commit_start(
     queue_pool_id: str | None,
     telemetry_context: ExecutorTelemetryContext,
     issued_keys: Sequence[IssuedRunKey] = (),
+    project_id: UUID | None = None,
 ) -> tuple[str, "AdmissionResult"]:
     payload_key = generate_payload_key(dispatch_id)
     with Session(bind, expire_on_commit=False) as session:
@@ -593,6 +606,14 @@ def _commit_start(
             payload = _process_benchmark_kwargs(benchmark, request, task_ids)
             _persist_dispatch_payload(session, dispatch, payload, telemetry_context, payload_key)
             session.add_all(RunAccessKey(key_id=key.key_id, benchmark_id=benchmark.id) for key in issued_keys)
+            if project_id is not None:
+                session.add(
+                    RunProject(
+                        benchmark_id=benchmark.id,
+                        project_id=project_id,
+                        created_by_email=benchmark.started_by_email,
+                    )
+                )
             session.commit()
             return benchmark.model_dump_json(), _admission_result(dispatch, task_ids)
         except Exception as exc:
@@ -610,7 +631,7 @@ async def start_benchmark(
     request: StartBenchmarkRequest,
     issued_keys: IssuedKeys,
     session: Session = Depends(get_session),
-    run_starter: RequestIdentity = Depends(get_current_starter),
+    run_starter: RequestIdentity = Depends(get_current_runner),
 ) -> StartBenchmarkResponse:
     """Start a benchmark run from an uploaded agent or a complete contract."""
     settings = await asyncio.to_thread(user_run_settings, session, run_starter)
@@ -622,6 +643,7 @@ async def start_benchmark(
         validate_service_headers(request.service_headers)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    project = find_project(session, run_starter.org.id, request.project) if request.project is not None else None
 
     bind = session.get_bind()
     session.close()
@@ -853,6 +875,7 @@ async def start_benchmark(
                 resolved_queue_pool_id,
                 telemetry_context,
                 issued_keys,
+                project.id if project is not None else None,
             )
         )
         (benchmark_json, result), cancellation = await _await_before_cancellation(commit_task)
@@ -943,6 +966,7 @@ async def start_benchmark(
         current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,
         executor_protocol_version=benchmark_row.executor_protocol_version,
+        project=ProjectResponse.from_row(project) if project is not None else None,
     )
 
 
@@ -1511,6 +1535,21 @@ def patch_benchmark_concurrency(
     )
 
 
+@app.post("/benchmarks/{benchmark_id}/project")
+def retag_benchmark(
+    benchmark_id: TrackedBenchmarkId,
+    request: RunProjectRequest,
+    session: Session = Depends(get_session),
+    identity: RequestIdentity = Depends(get_current_starter),
+) -> ProjectResponse:
+    """Put a run in another project, in any run state, by adding a link; earlier links are kept."""
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, identity.org)
+    project = find_project(session, identity.org.id, request.project)
+    session.add(RunProject(benchmark_id=benchmark_row.id, project_id=project.id, created_by_email=identity.email))
+    session.commit()
+    return ProjectResponse.from_row(project)
+
+
 @dataclass(frozen=True)
 class AdmissionResult:
     dispatch_json: str
@@ -1665,7 +1704,7 @@ async def _refresh_recovered_agent(
         ) from exc
 
 
-@app.post("/retry-or-resume-benchmark/{benchmark_id}")
+@app.post("/retry-or-resume-benchmark/{benchmark_id}", dependencies=[Depends(get_current_runner)])
 async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
@@ -1745,7 +1784,10 @@ async def retry_or_resume_benchmark(
     verified_task_ids = list(preparation.state.task_ids) if preparation.state is not None else []
     if verified_task_ids and not preparation.queued_recovery:
         service = create_benchmark_service_client(
-            preparation.benchmark_url, effective_headers, preparation.dataset_version
+            preparation.benchmark_url,
+            effective_headers,
+            preparation.dataset_version,
+            sandbox_provider=preparation.sandbox_provider,
         )
         try:
             verified = await service.verify_task_ids(
@@ -1758,6 +1800,8 @@ async def retry_or_resume_benchmark(
     library_store: ObjectStore | None = None
     if update_agent:
         if isinstance(preparation.properties, LocalResources):
+            from tracker.local.runtime import LocalRuntimeFactory
+
             # A local run's agent aliases and frozen bundle share its data root.
             library_store = LocalRuntimeFactory.create_runtime(preparation.properties, org_id).objects
         else:
@@ -2173,8 +2217,12 @@ async def fetch_benchmark_metadata(
         FetchBenchmarkMetadataResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    project = benchmark_row.fetch_project(session)
+    metadata = benchmark_row.benchmark_metadata.model_copy(
+        update={"project": ProjectResponse.from_row(project) if project is not None else None}
+    )
     if benchmark_row.arguments.environment == "local":
-        return benchmark_row.benchmark_metadata
+        return metadata
 
     assert not isinstance(benchmark_row.arguments.properties, LocalResources)
     aws_runtime = resolve_run_metadata_aws_runtime(
@@ -2182,7 +2230,7 @@ async def fetch_benchmark_metadata(
         org=org,
     )
 
-    return benchmark_row.benchmark_metadata.model_copy(
+    return metadata.model_copy(
         update={"storage_bucket": aws_runtime.resources.s3_bucket if aws_runtime is not None else None}
     )
 

@@ -16,6 +16,7 @@ from valkyrie.sdk.resources.agents import AgentsResource
 from valkyrie.sdk.resources.artifacts import ArtifactsResource
 from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from .resources.logs import LogsResource
+from valkyrie.sdk.resources.projects import ProjectsResource
 from valkyrie.sdk.resources.runs import RunsResource
 from valkyrie.sdk.resources.scheduler import SchedulerResource
 from valkyrie.sdk.resources.secrets import SecretsResource
@@ -53,6 +54,7 @@ class ValkyrieClient:
         self.secrets = SecretsResource(self)
         self.providers = ProvidersResource(self)
         self.settings = SettingsResource(self)
+        self.projects = ProjectsResource(self)
 
     async def __aenter__(self) -> ValkyrieClient:
         return self

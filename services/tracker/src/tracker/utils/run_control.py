@@ -70,7 +70,7 @@ def apply_stop_benchmark(
     if task_ids:
         task_update = task_update.where(col(Task.task_id).in_(task_ids))
 
-    result = session.exec(task_update.values(status=TaskStatus.STOPPED))
+    result = session.exec(task_update.values(status=TaskStatus.STOPPED, active_native_output=None))
 
     if force:
         active_tasks = session.exec(
@@ -85,7 +85,7 @@ def apply_stop_benchmark(
         ).one()
         if active_tasks == 0:
             benchmark_row.status = BenchmarkStatus.STOPPED
-            terminalize_active_dispatches(session, benchmark_row.id)
+            task_arns.extend(terminalize_active_dispatches(session, benchmark_row.id))
             session.add(benchmark_row)
     elif task_ids is None and (result.rowcount > 0 or stopped_unclaimed):
         if stopped_unclaimed and not active_dispatch_exists(session, benchmark_row.id):
@@ -116,6 +116,7 @@ def apply_shed_benchmark(benchmark_row: Benchmark, concurrency: int, session: Se
 
     for task in shed_tasks:
         task.status = TaskStatus.STOPPED
+        task.active_native_output = None
     benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
     session.add(benchmark_row)
     return [task.task_id for task in shed_tasks]
@@ -297,8 +298,9 @@ def reset_to_in_progress_status(
 ) -> list[str]:
     """Apply an externally verified retry inside the caller's locked transaction.
 
-    Retry resets error/stopped tasks; new valid task IDs receive fresh PENDING rows.
-    Benchmark becomes IN_PROGRESS; durable evaluation tasks retain EVALUATING.
+    Selected existing tasks restarting generation clear their old wall deadline; new valid
+    task IDs receive fresh PENDING rows. Durable evaluation continuations retain EVALUATING
+    and their original wall deadline. Benchmark becomes IN_PROGRESS.
     """
     try:
         # Serialize retries with final-score persistence for this benchmark.
@@ -337,6 +339,8 @@ def reset_to_in_progress_status(
                 if retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
                 else TaskStatus.PENDING
             )
+            if task.status == TaskStatus.PENDING:
+                task.credited_wall_deadline_at = None
             retry_started_at = datetime.now(ZoneInfo("UTC"))
             comparable_retry_started_at = retry_started_at
             if task.started_at.tzinfo is None and retry_started_at.tzinfo is not None:

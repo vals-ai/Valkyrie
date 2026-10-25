@@ -494,38 +494,6 @@ img.nav-logo {
   width: auto !important;
 }
 
-/* Wrap long code lines instead of clipping them at the content edge, since generated signatures
-   are wider than the content column and an unwrapped block hides its tail behind the copy button.
-
-   Shiki emits one span.line per source line. Making the code element a grid puts each line on
-   its own row and drops the newline text nodes between lines, so the padding and negative
-   indent below hang wrapped continuations without shifting the block's left edge. Grid rows
-   collapse when a line is empty, so blank lines need an explicit height.
-
-   The width clamps are required because the theme lets the code element size to its longest
-   line; without them the block still grows past the column and wrapping never happens.
-   !important is required where the theme sets the same property through a higher-specificity
-   selector, such as html:not(.dark) .codeblock-light pre.shiki code { display: block }. */
-pre {
-  max-width: 100% !important;
-}
-
-pre code {
-  display: grid !important;
-  grid-template-columns: minmax(0, 1fr);
-  width: 100% !important;
-  min-width: 0 !important;
-  max-width: 100% !important;
-  white-space: pre-wrap !important;
-  overflow-wrap: break-word !important;
-}
-
-pre code .line {
-  padding-left: 2ch;
-  text-indent: -2ch;
-  min-height: 1lh;
-}
-
 /* Keep the native right table of contents usable when a page lists many commands. Targets
    Mintlify's documented TOC ids rather than
    generated class names. The theme's own sticky positioning and active-item scrolling continue

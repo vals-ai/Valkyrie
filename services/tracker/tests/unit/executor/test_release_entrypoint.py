@@ -1,16 +1,14 @@
 """Run with `uv run pytest tests/unit/executor/test_release_entrypoint.py`."""
 
 import builtins
-import hashlib
 import json
 import os
 import subprocess
 import sys
-from io import BytesIO
 from typing import cast
 
-import boto3
 import pytest
+from botocore.exceptions import ClientError
 from pydantic import ValidationError
 from pytest import MonkeyPatch
 from sqlmodel import Session
@@ -105,14 +103,51 @@ class FakeSecretsManager:
         }
 
 
-class FakeS3Client:
-    def __init__(self, content: bytes) -> None:
-        self.content = content
+IMAGE_REPOSITORY = "123456789012.dkr.ecr.us-east-1.amazonaws.com/valkyrie-executor"
+REGISTERED_TASK_DEFINITION = "arn:aws:ecs:us-east-1:123456789012:task-definition/ValkyrieExecutorRunner:8"
 
-    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
-        assert Bucket == "releases"
-        assert Key == "releases/git-abc123-def456/executor.pex"
-        return {"Body": BytesIO(self.content)}
+
+class FakeEcrClient:
+    def __init__(self, *, published: bool = True) -> None:
+        self.published = published
+        self.describe_calls: list[dict[str, object]] = []
+
+    def describe_images(self, **kwargs: object) -> dict[str, object]:
+        self.describe_calls.append(kwargs)
+        if not self.published:
+            raise ClientError({"Error": {"Code": "ImageNotFoundException"}}, "DescribeImages")
+        return {"imageDetails": [{"imageDigest": "sha256:" + "a" * 64}]}
+
+
+class FakeEcsRegistry:
+    def __init__(self) -> None:
+        self.registered: list[dict[str, object]] = []
+
+    def describe_task_definition(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs == {"taskDefinition": "ValkyrieExecutorRunner"}
+        return {
+            "taskDefinition": {
+                "taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/ValkyrieExecutorRunner:7",
+                "family": "ValkyrieExecutorRunner",
+                "revision": 7,
+                "status": "ACTIVE",
+                "cpu": "1024",
+                "memory": "4096",
+                "runtimePlatform": {"cpuArchitecture": "ARM64"},
+                "taskRoleArn": "arn:aws:iam::123456789012:role/runner-task",
+                "executionRoleArn": "arn:aws:iam::123456789012:role/runner-execution",
+                "requiresAttributes": [{"name": "ecs.capability.execution-role-ecr-pull"}],
+                "compatibilities": ["FARGATE"],
+                "registeredAt": "2026-01-01T00:00:00Z",
+                "containerDefinitions": [
+                    {"name": "ExecutorRunnerContainer", "image": "tracker:deployed", "stopTimeout": 120}
+                ],
+            }
+        }
+
+    def register_task_definition(self, **kwargs: object) -> dict[str, object]:
+        self.registered.append(kwargs)
+        return {"taskDefinition": {"taskDefinitionArn": REGISTERED_TASK_DEFINITION}}
 
 
 class FakeEcsClient:
@@ -181,8 +216,7 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
             "database.internal",
             "5432",
             "tracker",
-            "releases",
-            "releases",
+            IMAGE_REPOSITORY,
             "arn:aws:ecs:us-east-1:123456789012:cluster/Valkyrie",
             "Tracker",
             "2",
@@ -190,8 +224,7 @@ def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" *
             "ValkyrieExecutorRunner",
             "activate",
             "git-abc123-def456",
-            "s3://releases/releases/git-abc123-def456/executor.pex",
-            artifact_digest,
+            f"{IMAGE_REPOSITORY}@sha256:{artifact_digest}",
             "1",
         ],
     )
@@ -201,9 +234,7 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     monkeypatch: MonkeyPatch,
     database_session: Session,
 ) -> None:
-    content = b"sealed executor artifact"
-    artifact_digest = hashlib.sha256(content).hexdigest()
-    _release_arguments(monkeypatch, artifact_digest=artifact_digest)
+    _release_arguments(monkeypatch)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "caller-credential")
     monkeypatch.setenv("AWS_ENDPOINT_URL_SECRETSMANAGER", "https://caller.invalid")
     monkeypatch.setenv("HTTPS_PROXY", "https://caller.invalid")
@@ -211,12 +242,10 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     client = FakeSecretsManager()
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: client)
     monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
-
-    def create_s3_client(service_name: str) -> FakeS3Client:
-        assert service_name == "s3"
-        return FakeS3Client(content)
-
-    monkeypatch.setattr(boto3, "client", create_s3_client)
+    ecr = FakeEcrClient()
+    ecs = FakeEcsRegistry()
+    monkeypatch.setattr(release_entrypoint, "create_ecr_client", lambda: ecr)
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
     real_import = builtins.__import__
 
     def assert_sealed_environment_before_import(
@@ -243,12 +272,53 @@ def test_release_entrypoint_uses_sealed_configuration_and_persists_active_releas
     assert "AWS_ACCESS_KEY_ID" not in os.environ
     assert "AWS_ENDPOINT_URL_SECRETSMANAGER" not in os.environ
     assert "HTTPS_PROXY" not in os.environ
-    assert os.environ["EXECUTOR_RELEASE_BUCKET"] == "releases"
     assert stored_release is not None
     assert stored_release.status == ExecutorReleaseStatus.ACTIVE
-    assert stored_release.readiness_verified
+    assert stored_release.task_definition_arn == REGISTERED_TASK_DEFINITION
     assert admission is not None
     assert admission.release_id == stored_release.id
+    assert ecr.describe_calls == [
+        {"repositoryName": "valkyrie-executor", "imageIds": [{"imageDigest": "sha256:" + "a" * 64}]}
+    ]
+    assert ecs.registered == [
+        {
+            "family": "ValkyrieExecutorRunner",
+            "cpu": "1024",
+            "memory": "4096",
+            "runtimePlatform": {"cpuArchitecture": "ARM64"},
+            "taskRoleArn": "arn:aws:iam::123456789012:role/runner-task",
+            "executionRoleArn": "arn:aws:iam::123456789012:role/runner-execution",
+            "containerDefinitions": [
+                {
+                    "name": "ExecutorRunnerContainer",
+                    "image": f"{IMAGE_REPOSITORY}@sha256:{'a' * 64}",
+                    "environment": [{"name": "SENTRY_RELEASE", "value": "git-abc123-def456"}],
+                    "stopTimeout": 120,
+                }
+            ],
+        }
+    ]
+
+
+def test_release_entrypoint_rerun_reuses_the_registered_task_definition(
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+) -> None:
+    _release_arguments(monkeypatch)
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: FakeSecretsManager())
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+    ecs = FakeEcsRegistry()
+    monkeypatch.setattr(release_entrypoint, "create_ecr_client", lambda: FakeEcrClient())
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
+
+    release_entrypoint.main()
+    release_entrypoint.main()
+
+    database_session.expire_all()
+    stored_release = database_session.get(ExecutorRelease, "git-abc123-def456")
+    assert stored_release is not None
+    assert stored_release.task_definition_arn == REGISTERED_TASK_DEFINITION
+    assert len(ecs.registered) == 1
 
 
 def test_maintenance_begin_drains_paginated_runner_tasks_before_finish(
@@ -257,7 +327,7 @@ def test_maintenance_begin_drains_paginated_runner_tasks_before_finish(
 ) -> None:
     target_sha = "b" * 40
     _release_arguments(monkeypatch)
-    sys.argv = sys.argv[:12] + ["maintenance-begin", target_sha]
+    sys.argv = sys.argv[:11] + ["maintenance-begin", target_sha]
     secrets = FakeSecretsManager()
     ecs = FakeEcsClient()
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: secrets)
@@ -285,7 +355,7 @@ def test_maintenance_begin_drains_paginated_runner_tasks_before_finish(
     assert ecs.describe_polls == 2
     assert ecs.waited_for == []
 
-    sys.argv = sys.argv[:12] + ["maintenance-finish", target_sha]
+    sys.argv = sys.argv[:11] + ["maintenance-finish", target_sha]
     release_entrypoint.main()
 
     database_session.expire_all()
@@ -311,7 +381,7 @@ def test_maintenance_begin_fails_loudly_if_runners_do_not_drain(
     database_session: Session,
 ) -> None:
     _release_arguments(monkeypatch)
-    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    sys.argv = sys.argv[:11] + ["maintenance-begin", "b" * 40]
     ecs = FakeEcsClient()
     monkeypatch.setattr(ecs, "list_tasks", lambda **_kwargs: {"taskArns": ["still-running"]})
     monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
@@ -331,7 +401,7 @@ def test_maintenance_begin_waits_for_previously_stopping_runner(
     monkeypatch: MonkeyPatch, database_session: Session
 ) -> None:
     _release_arguments(monkeypatch)
-    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    sys.argv = sys.argv[:11] + ["maintenance-begin", "b" * 40]
     ecs = FakeEcsClient()
     ecs.already_stopping_tasks.append("previously-stopping-runner")
     ecs.pending_polls = 1
@@ -352,7 +422,7 @@ def test_maintenance_begin_times_out_for_previously_stopping_runner(
     monkeypatch: MonkeyPatch, database_session: Session
 ) -> None:
     _release_arguments(monkeypatch)
-    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    sys.argv = sys.argv[:11] + ["maintenance-begin", "b" * 40]
     ecs = FakeEcsClient()
     ecs.already_stopping_tasks.append("previously-stopping-runner")
     ecs.pending_polls = 1
@@ -378,7 +448,7 @@ def test_maintenance_begin_treats_expired_historical_stopped_task_as_gone(
     monkeypatch: MonkeyPatch, database_session: Session
 ) -> None:
     _release_arguments(monkeypatch)
-    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    sys.argv = sys.argv[:11] + ["maintenance-begin", "b" * 40]
     ecs = FakeEcsClient()
     ecs.already_stopping_tasks.append("expired-runner")
     ecs.pending_polls = 1
@@ -417,7 +487,7 @@ def test_maintenance_begin_waits_for_listed_runner_missing_from_describe(
     monkeypatch: MonkeyPatch, database_session: Session
 ) -> None:
     _release_arguments(monkeypatch)
-    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    sys.argv = sys.argv[:11] + ["maintenance-begin", "b" * 40]
     ecs = FakeEcsClient()
     ecs.already_stopping_tasks.append("previously-stopping-runner")
     ecs.pending_polls = 1
@@ -445,7 +515,7 @@ def test_maintenance_begin_times_out_when_a_task_it_stopped_cannot_be_described(
     monkeypatch: MonkeyPatch, database_session: Session
 ) -> None:
     _release_arguments(monkeypatch)
-    sys.argv = sys.argv[:12] + ["maintenance-begin", "b" * 40]
+    sys.argv = sys.argv[:11] + ["maintenance-begin", "b" * 40]
     ecs = FakeEcsClient()
     monkeypatch.setattr(ecs, "describe_tasks", lambda **_kwargs: {"tasks": []})
     monkeypatch.setattr(release_entrypoint, "MAINTENANCE_DRAIN_TIMEOUT_SECONDS", 0)
@@ -458,31 +528,29 @@ def test_maintenance_begin_times_out_when_a_task_it_stopped_cannot_be_described(
     assert ecs.stopped_tasks
 
 
-def test_release_entrypoint_digest_failure_does_not_commit_release(
+def test_release_entrypoint_unpublished_image_registers_nothing_and_commits_no_release(
     monkeypatch: MonkeyPatch,
     database_session: Session,
 ) -> None:
-    _release_arguments(monkeypatch, artifact_digest=hashlib.sha256(b"expected").hexdigest())
+    _release_arguments(monkeypatch)
     client = FakeSecretsManager()
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: client)
     monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+    ecs = FakeEcsRegistry()
+    monkeypatch.setattr(release_entrypoint, "create_ecr_client", lambda: FakeEcrClient(published=False))
+    monkeypatch.setattr(release_entrypoint, "create_ecs_client", lambda: ecs)
 
-    def create_s3_client(service_name: str) -> FakeS3Client:
-        assert service_name == "s3"
-        return FakeS3Client(b"different")
-
-    monkeypatch.setattr(boto3, "client", create_s3_client)
-
-    with pytest.raises(SystemExit, match="Executor release activation failed:.*digest mismatch"):
+    with pytest.raises(ClientError, match="ImageNotFoundException"):
         release_entrypoint.main()
 
     database_session.expire_all()
+    assert ecs.registered == []
     assert database_session.get(ExecutorRelease, "git-abc123-def456") is None
 
 
 def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(monkeypatch: MonkeyPatch) -> None:
     _release_arguments(monkeypatch)
-    sys.argv[13] = "invalid release"
+    sys.argv[12] = "invalid release"
     monkeypatch.setattr(
         release_entrypoint,
         "create_secrets_manager_client",
@@ -496,8 +564,9 @@ def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(mon
 @pytest.mark.parametrize(
     ("argument_index", "invalid_value", "error"),
     [
-        (14, "s3://other/releases/git-abc123-def456/executor.pex", "configured S3 bucket"),
-        (16, "6", "Unsupported executor protocol"),
+        (13, f"{IMAGE_REPOSITORY}:git-abc123", "configured ECR repository"),
+        (13, f"{IMAGE_REPOSITORY}-other@sha256:{'a' * 64}", "configured ECR repository"),
+        (14, "999", "Unsupported executor protocol"),
     ],
 )
 def test_release_entrypoint_rejects_invalid_artifact_identity_before_reading_secret(

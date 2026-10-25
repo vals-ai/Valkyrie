@@ -7,6 +7,8 @@ description: Use when adding or changing Valkyrie public documentation, Mintlify
 
 Read this skill before editing `docs/`, the reference generator, documentation tests, or public behavior that changes documented commands, defaults, routes, SDK methods, or types.
 
+`docs/AGENTS.md` holds the binding rules: each navigation group's reader, the page types, what stays out of the site, and formatting. Read it before every docs change. Page types follow [Diátaxis](https://diataxis.fr), and style that the rules don't settle follows the [Google developer documentation style guide](https://developers.google.com/style).
+
 ## Canonical locations
 
 `docs/` is the only public end-user documentation source, published at `https://docs.valkyrie.vals.ai`. Repository files link readers to that site rather than restating or indexing its pages.
@@ -16,28 +18,20 @@ Read this skill before editing `docs/`, the reference generator, documentation t
 | Public end-user documentation | `docs/` |
 | Public CLI and Python SDK reference generator | `scripts/generate_reference.py` entry point over the `scripts/reference_docs/` package: `collect` reads the public surface, `model` holds the manifest and `STATIC_REDIRECTS` for handwritten routes, `render` writes MDX, `generate` orchestrates |
 | Generated reference tests | `tests/unit/docs/test_generate_reference.py` |
-| Contributor setup, tracker operation, database and migrations | `docs/contributing/`. `DEVELOPMENT.md` and the service READMEs are pointers to those pages |
+| Contributor setup and checks | `DEVELOPMENT.md` |
+| Tracker commands, tests and live-test settings | `services/tracker/README.md` |
+| Database and migrations | `services/tracker/src/tracker/database/README.md` |
+| Docs preview, generation and checks | `docs/README.md` |
 | Generic self-hosting | `docs/self-hosting/` |
+| Vals AI Tracker operations: Descope, organizations, buckets, tenant roles, scheduling | `internal/tracker-operations.md` |
+| Any other Vals AI-only writing: runbooks, design documents, specs, and plans | `internal/`, which the public sync never copies; see `internal/README.md` |
 | Vals-specific infrastructure operation | `infra/README.md` |
 
-Contributor setup and service operation belong in the `Contributing` group. Never publish Vals-specific operations, release activation, protected-environment instructions, incident procedures, break-glass access, or internal automation instructions in Mintlify.
+## Split guides from the reference
 
-Never reference a private repository, issue, URL, hostname, credential, or internal item from public documentation. This includes configuration an external reader cannot use: document the self-contained path instead, such as an inline allowlist rather than a Vals-internal catalog service.
-
-## Choose the document layer
-
-Use each layer for one job:
-
-| Layer | Job | Content |
-| --- | --- | --- |
-| Quickstart | Reach the first successful result | Shortest verified path only |
-| Task guide | Complete a real workflow | Decisions, lifecycle behavior, safety, cost, consequences, recovery |
-| Generated reference | Look up the complete public contract | Every argument, option, alias, default, constraint, signature, field, return, or enum value |
-| Repository runbook | Maintain or operate Valkyrie | Contributor and environment-specific procedures |
+The generated reference holds every argument, option, alias, default, constraint, signature, field, return, and enum value.
 
 Do not repeat exhaustive flags, parameters, signatures, or fields in handwritten guides. Link directly to the generated section anchor.
-
-Do not turn quickstarts into feature surveys. Remove alternate workflows, optional branches, and kitchen-sink commands unless the shortest successful path needs them.
 
 Do not remove unique lifecycle, safety, cost, consequence, or recovery guidance merely because a reference page exists.
 
@@ -45,16 +39,12 @@ Do not remove unique lifecycle, safety, cost, consequence, or recovery guidance 
 
 - Read the affected code and current documentation before editing.
 - Trace every behavioral claim to the source that implements it, and reread that source when the claim changes. Treat a README as a claim to verify, not a source.
-- Write no em dashes, in handwritten pages and in generator-rendered strings alike. Use a colon or a second sentence.
 - Correct the smallest block that became false. Do not rewrite adjacent prose without a separate reason.
-- Lead with the task outcome. Use concrete commands before abstract explanation.
-- Use current repository vocabulary and real names.
 - Verify every command shown to readers.
 - Run safe local commands in the state readers will use.
 - Use syntax checks or disposable environments when execution needs credentials.
 - Obtain explicit approval before production, destructive, cost-incurring, or live commands.
 - State prerequisites and recovery beside the failing step.
-- Document current behavior only. Put plans in issues, not documentation.
 - Search for stale names, routes, defaults, and links instead of relying on memory.
 
 ## Generated reference architecture
@@ -81,7 +71,7 @@ Use compact OpenAI-style rows:
 - Inline type, requirement, default, alias, and constraint metadata.
 - Descriptions below metadata only when needed.
 - Thin dividers between rows.
-- Natural wrapping without clipped code or horizontal document overflow.
+- Names and metadata that wrap naturally, code blocks that scroll inside their own box, and no horizontal document overflow.
 
 Keep index cards short, fully clickable, and limited to routing. Do not put exhaustive command or type lists inside cards. Mintlify equalizes card heights within a row; long card lists leave large blank areas in neighboring cards.
 
@@ -143,7 +133,7 @@ Verify:
 - Cards navigate from visible content after hydration.
 - Retired URLs resolve to exact anchors.
 - Public-type links land on exact type sections.
-- Long code, names, and metadata wrap without clipping.
+- Long names and metadata wrap without clipping, and long code lines scroll inside their block.
 
 Mintlify's `On this page` control can itself appear as an H2. Count content headings by expected IDs or source headings rather than asserting on every `main h2`.
 
@@ -157,7 +147,7 @@ Restart the preview server after deleting or consolidating generated routes. Hot
 
 ## Validation
 
-Read the current `Makefile`, `docs/contributing/local-development.mdx`, and documentation CI workflow before choosing commands. Do not copy tool versions or test counts into this skill.
+Read the current `Makefile`, `docs/README.md`, and documentation CI workflow before choosing commands. Do not copy tool versions or test counts into this skill.
 
 Before committing, run the current checks for:
 
@@ -170,7 +160,7 @@ Before committing, run the current checks for:
 
 A documentation-only change does not justify unrelated product tests. When documentation accompanies product code, run the smallest suites that own the changed behavior. Cross-layer changes need the union of their owning suites; live tests require explicit approval.
 
-Use the local preview command and runtime requirement currently documented in `docs/contributing/local-development.mdx`. Basic preview needs no Mintlify credentials. Login is optional for account-backed features.
+Use the local preview command and runtime requirement currently documented in `docs/README.md`. Basic preview needs no Mintlify credentials. Login is optional for account-backed features.
 
 Any CI workflow edit requires explicit human attention.
 

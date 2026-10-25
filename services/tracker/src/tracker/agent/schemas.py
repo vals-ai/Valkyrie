@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, create_model, field_validator, model_validator
 
-from tracker.database.models import OutputArtifact, OutputArtifactSpec
+from tracker.database.models import AgentTurns, OutputArtifact, OutputArtifactSpec
 from tracker.egress import EgressPolicy
 from tracker.exceptions import ContractValidationError
 
@@ -33,7 +33,7 @@ def validate_agent_name(name: str) -> str:
 
 
 class Defaults(str, Enum):
-    """Values auto injected into users run cmd if specified"""
+    """Task and problem-path command placeholders."""
 
     PROBLEM_STATEMENT_PATH = "problem_statement_path"
     TASK_ID = "task_id"
@@ -74,6 +74,7 @@ class AgentContract(BaseModel):
     defaults: dict[str, Parameter] = {}
     kwargs: dict[str, Parameter] = {}
     run_cmd: str
+    turns: AgentTurns | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -94,16 +95,6 @@ class AgentContract(BaseModel):
             raise ValueError(f"run_cmd must contain {{{Defaults.PROBLEM_STATEMENT_PATH.value}}}")
 
         return v
-
-    def format_run_cmd(self, kwargs: dict[str, Any]) -> str:
-        reference = self.run_cmd
-
-        defaults = {f"{{{value.value}}}": f"{{{value.value}}}" for value in Defaults}
-
-        for name, value in {**defaults, **kwargs}.items():
-            reference = reference.replace(f"{{{name}}}", str(value))
-
-        return reference
 
     def validate_kwargs(self, schema: dict[str, Parameter], values: dict[str, Any]) -> dict[str, Any]:
         if not schema:

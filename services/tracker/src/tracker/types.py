@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Literal, Self, cast
@@ -32,6 +33,8 @@ from tracker.database.models import (
     DocentReadingStatus,
     FailureCategory,
     FinalEvaluation,
+    Project,
+    SpendType,
     TaskStatus,
 )
 from tracker.outbound_security import validate_benchmark_name, validate_service_header_name, validate_service_url_syntax
@@ -87,6 +90,92 @@ class FetchBenchmarkTasksRequest(BaseModel):
         return None
 
 
+SPEND_SUBCATEGORIES: dict[SpendType, tuple[str, ...]] = {
+    SpendType.DEVELOPMENT: (
+        "new_benchmark_generation",
+        "new_benchmark_launch_runs",
+        "post_launch_benchmark_update",
+    ),
+    SpendType.CUSTOMER: ("report", "paid_run", "eval_server", "platform"),
+    SpendType.INTERNAL: (
+        "unpaid_leaderboard_run",
+        "other_unpaid_run",
+        "fellows_interns",
+        "blog",
+        "miscellaneous",
+    ),
+}
+
+PROJECT_HANDLE_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+PROJECT_HANDLE_MAX_LENGTH = 64
+
+
+def validate_project_handle(handle: str) -> str:
+    """Accept a handle of lowercase letters, digits and single hyphens, at most 64 characters."""
+    if len(handle) > PROJECT_HANDLE_MAX_LENGTH or not PROJECT_HANDLE_PATTERN.fullmatch(handle):
+        raise ValueError(
+            f"must be lowercase letters, digits and hyphens, at most {PROJECT_HANDLE_MAX_LENGTH} characters, "
+            "e.g. my-project"
+        )
+    return handle
+
+
+NonBlankText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+ProjectHandle = Annotated[str, StringConstraints(strip_whitespace=True), AfterValidator(validate_project_handle)]
+
+
+class ProjectCreateRequest(BaseModel):
+    """A new project: its immutable handle, its name, spend type and subcategory, and optional customer and extra tags."""
+
+    handle: ProjectHandle
+    name: NonBlankText
+    spend_type: SpendType
+    subcategory: str
+    customer: Annotated[str, StringConstraints(strip_whitespace=True)] | None = None
+    extra_tags: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_subcategory_and_customer(self) -> "ProjectCreateRequest":
+        allowed = SPEND_SUBCATEGORIES[self.spend_type]
+        if self.subcategory not in allowed:
+            choices = ", ".join(allowed)
+            raise ValueError(
+                f"subcategory '{self.subcategory}' is not allowed for spend type '{self.spend_type.value}'; "
+                f"allowed: {choices}"
+            )
+        if self.spend_type is SpendType.CUSTOMER and not self.customer:
+            raise ValueError("spend type 'customer' requires customer")
+        shadowed = sorted(set(self.extra_tags) & (set(type(self).model_fields) - {"extra_tags"}))
+        if shadowed:
+            raise ValueError(f"extra tag keys {shadowed} name core fields; set them as fields instead")
+        return self
+
+
+class ProjectResponse(BaseModel):
+    handle: str
+    name: str
+    spend_type: SpendType
+    subcategory: str | None = None
+    customer: str | None = None
+    extra_tags: dict[str, str] = Field(default_factory=dict)
+    created_at: UTCDateTime
+    created_by_email: str | None = None
+
+    @classmethod
+    def from_row(cls, row: Project) -> "ProjectResponse":
+        return cls.model_validate(row, from_attributes=True)
+
+
+class ProjectsResponse(BaseModel):
+    projects: list[ProjectResponse]
+
+
+class RunProjectRequest(BaseModel):
+    """The handle of the project a run now belongs to."""
+
+    project: NonBlankText
+
+
 class StartBenchmarkRequest(FetchBenchmarkTasksRequest):
     model_config = ConfigDict(hide_input_in_errors=True)
 
@@ -104,6 +193,7 @@ class StartBenchmarkRequest(FetchBenchmarkTasksRequest):
     sandbox_provider_secret_name: str | None = None
     service_auth_header_name: str | None = None
     service_auth_secret_name: str | None = None
+    project: NonBlankText | None = None
 
     @model_validator(mode="after")
     def validate_execution_environment(self) -> "StartBenchmarkRequest":
@@ -136,6 +226,7 @@ class StartBenchmarkRequest(FetchBenchmarkTasksRequest):
         return create_benchmark_service_client(
             url=benchmark_service_url,
             service_headers=self.service_headers,
+            sandbox_provider=self.sandbox_provider,
         )
 
 
@@ -153,6 +244,7 @@ class RunExecutionRequest(StartBenchmarkRequest):
             url=benchmark_service_url,
             service_headers=self.service_headers,
             dataset_version=self.resolved_dataset_version,
+            sandbox_provider=self.sandbox_provider,
         )
 
 
@@ -177,6 +269,7 @@ class StartBenchmarkResponse(BaseModel):
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
+    project: ProjectResponse | None = None
 
 
 class FetchBenchmarkResponse(BaseModel):
@@ -403,6 +496,7 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     executor_artifact_uri: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
+    project: ProjectResponse | None = None
 
 
 class AnalyzeBenchmarkRequest(BaseModel):
@@ -526,6 +620,22 @@ class TasksResponse(BaseModel):
     total_count: int
 
 
+class TaskBreakdown(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+    accounting_id: str | None
+    base_generation_allowance_seconds: float | None
+    cumulative_time_credit_cap_seconds: float | None
+    external_service_overhead_seconds: float | None
+    external_service_credit_applied_seconds: float | None
+    external_service_credit_revision: int | None
+    generation_elapsed_seconds: float | None
+
+
 class SingleTaskResponse(BaseModel):
     id: UUID
     task_id: str
@@ -536,6 +646,7 @@ class SingleTaskResponse(BaseModel):
     failure_category: FailureCategory | None = None
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
+    task_breakdown: TaskBreakdown | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -613,6 +724,16 @@ class SavedBenchmarkService(BaseModel):
 class RunSettingsResponse(BaseModel):
     default_provider: str | None
     benchmark_services: dict[str, SavedBenchmarkService]
+
+
+class NativeOutputFile(BaseModel):
+    path: str
+    size_bytes: int
+
+
+class NativeOutputFilesResponse(BaseModel):
+    generation: str
+    files: list[NativeOutputFile]
 
 
 class TaskArtifactsResponse(BaseModel):

@@ -5,6 +5,7 @@
 PYTHON_VERSION := 3.12
 PYTEST := uv run pytest
 COMPOSE := docker compose
+EXECUTOR_IMAGE ?= valkyrie-executor:local
 CONFIG ?= $(abspath ../../local-server.yaml)
 LOCAL_DATABASE_URL ?= postgresql://tracker:tracker@localhost:5432/tracker
 
@@ -36,6 +37,9 @@ install:
 build:
 	@echo "Building Docker images..."
 	@$(COMPOSE) build
+.PHONY: executor-image
+executor-image:
+	docker build --platform linux/arm64 -t "$(EXECUTOR_IMAGE)" .
 run:
 	@echo "Starting services with docker-compose..."
 	@$(COMPOSE) up -d
@@ -57,7 +61,7 @@ local-tracker: venv-check
 
 # --- Tests ---
 test: venv-check
-	$(PYTEST) tests/unit tests/integration/local --test-alembic --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml --cov-fail-under=85
+	$(PYTEST) tests/unit tests/integration/local --test-alembic -n 4 --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 test-unit: venv-check
 	$(PYTEST) tests/unit --test-alembic
 test-alembic: venv-check

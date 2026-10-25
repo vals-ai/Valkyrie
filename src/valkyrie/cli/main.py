@@ -32,6 +32,7 @@ class _ValkyrieCLI(LazyGroup):
             "Export the task IDs in a benchmark dataset, and save benchmark services.",
         ),
         "queue": ("valkyrie.cli.queue:queue", "Inspect your organization's sandbox scheduler."),
+        "project": ("valkyrie.cli.project:project", "Manage the projects runs are started in"),
         "secret": ("valkyrie.cli.secret:secret", "Store secrets that your runs reference"),
         "provider": (
             "valkyrie.cli.provider:provider",

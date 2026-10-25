@@ -1,12 +1,28 @@
 """Custom exceptions for the tracker service."""
 
+from typing import TYPE_CHECKING
+
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from tracker.database.models import FailurePhase
 
 
 class TrackerServiceError(Exception):
     """Base exception for all tracker service errors."""
 
     include_cause_in_task_error = True
+    #: Whether a retry is expected to succeed. ``None`` when the raiser cannot tell.
+    transient: bool | None = None
+
+    def __init__(self, *args: object, transient: bool | None = None) -> None:
+        super().__init__(*args)
+        if transient is not None:
+            self.transient = transient
+
+
+class CreditedTaskWallTimeExceeded(TrackerServiceError):
+    """A task exceeded its whole-task wall deadline."""
 
 
 class ExecutionAuthorityRevoked(TrackerServiceError):
@@ -51,9 +67,13 @@ class SandboxError(TrackerServiceError):
 class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
+    transient = False
+
 
 class OutputArtifactError(TrackerServiceError):
     """Exception raised when a declared output artifact is missing or invalid."""
+
+    transient = False
 
     def __str__(self) -> str:
         return "Output artifact error: " + super().__str__()
@@ -66,9 +86,35 @@ class AgentRunFailedError(SandboxError):
     and they should be triaged separately from real infra failures.
     """
 
+    transient = False
+
+
+class ControlledGenerationError(SandboxError):
+    """Controlled generation failed after workload construction and is not retryable."""
+
+
+class ControlledGenerationTerminationUnconfirmedError(ControlledGenerationError):
+    """Controlled generation termination could not be positively confirmed."""
+
+
+class GenerationTerminationUnconfirmedError(ControlledGenerationTerminationUnconfirmedError):
+    """The generation deadline expired without confirmed workload termination."""
+
+
+class SandboxDNSResolutionError(SandboxError):
+    """The sandbox could not resolve the agent's model gateway after the agent failed."""
+
+    transient = True
+
 
 class SandboxSetupError(SandboxError):
     """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
+
+    transient = True
+    #: Phase the attempt had reached, set by the task loop when it hands the task back for a fresh sandbox.
+    phase: "FailurePhase | None" = None
+    #: Cause of the failure that triggered the fresh sandbox, carried to the retry and final error rows.
+    cause_code: str | None = None
 
 
 class DependencySetupExhaustedError(SandboxSetupError):

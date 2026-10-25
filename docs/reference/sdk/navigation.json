@@ -9,6 +9,7 @@
   "reference/sdk/logs",
   "reference/sdk/scheduler",
   "reference/sdk/secrets",
+  "reference/sdk/projects",
   "reference/sdk/providers",
   "reference/sdk/settings",
   {
@@ -23,6 +24,7 @@
       "reference/sdk/models/config",
       "reference/sdk/models/logs",
       "reference/sdk/models/scheduler",
+      "reference/sdk/models/projects",
       "reference/sdk/models/secrets",
       "reference/sdk/models/settings",
       "reference/sdk/errors"

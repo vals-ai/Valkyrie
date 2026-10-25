@@ -174,51 +174,6 @@ class TestValidateKwargs:
         assert result == {"mode": "fast"}
 
 
-class TestFormatRunCmd:
-    def test_kwargs_substituted(self) -> None:
-        """
-        Validates that kwargs are substituted into the run command string.
-
-        Test Cases:
-        - {temperature} placeholder is replaced with the provided value
-        """
-        contract = _make_contract(
-            run_cmd="agent --task {problem_statement_path} --temp {temperature}",
-        )
-
-        result = contract.format_run_cmd({"temperature": 0.7})
-
-        assert result == "agent --task {problem_statement_path} --temp 0.7"
-
-    def test_defaults_preserved(self) -> None:
-        """
-        Validates that built-in placeholders are preserved after formatting.
-
-        Test Cases:
-        - {problem_statement_path} remains in the run command for runtime substitution
-        """
-        contract = _make_contract()
-
-        result = contract.format_run_cmd({})
-
-        assert "{problem_statement_path}" in result
-
-    def test_multiple_kwargs(self) -> None:
-        """
-        Validates that user kwargs and built-in placeholders coexist in the run command.
-
-        Test Cases:
-        - {temperature} is substituted, {problem_statement_path} and {task_id} are preserved
-        """
-        contract = _make_contract(
-            run_cmd="agent --task {problem_statement_path} --temp {temperature} --id {task_id}",
-        )
-
-        result = contract.format_run_cmd({"temperature": 0.5})
-
-        assert result == "agent --task {problem_statement_path} --temp 0.5 --id {task_id}"
-
-
 class TestOutputArtifactValidation:
     def test_accepts_relative_destination_path(self) -> None:
         request = AgentContractRequest(
@@ -330,12 +285,7 @@ class TestParseYamlContract:
         return p
 
     def test_defaults_applied(self, tmp_path: Path) -> None:
-        """
-        Validates that YAML kwargs defaults are resolved into the run command.
-
-        Test Cases:
-        - Temperature defaults to 0.7 and appears in the final AgentContractRequest run_cmd
-        """
+        """YAML defaults are validated and retained for launch-time binding."""
         path = self._write_yaml(
             tmp_path,
             """\
@@ -353,17 +303,10 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert isinstance(result, AgentContractRequest)
-        assert "--temp 0.7" in result.run_cmd
-        assert "{problem_statement_path}" in result.run_cmd
         assert result.kwargs == {"temperature": "0.7"}
 
     def test_cli_kwargs_override_defaults(self, tmp_path: Path) -> None:
-        """
-        Validates that CLI kwargs (-k) override YAML defaults in the final run command.
-
-        Test Cases:
-        - Temperature defaults to 0.7 in YAML but user passes 1.0 via AgentConfig
-        """
+        """CLI kwargs override YAML defaults without changing the raw template."""
         path = self._write_yaml(
             tmp_path,
             """\
@@ -380,7 +323,6 @@ class TestParseYamlContract:
 
         result = _parse_yaml_contract(path, AgentConfig(kwargs={"temperature": 1.0}))
 
-        assert "--temp 1.0" in result.run_cmd
         assert result.kwargs == {"temperature": "1.0"}
 
     def test_required_kwarg_missing_raises(self, tmp_path: Path) -> None:
@@ -567,12 +509,7 @@ class TestParseYamlContract:
         assert result.run_cmd == "agent --task {problem_statement_path}"
 
     def test_defaults_model_from_cli(self, tmp_path: Path) -> None:
-        """
-        Validates that --model is injected into defaults and substituted into run_cmd.
-
-        Test Cases:
-        - Model is defined in defaults as required, user passes --model on the CLI
-        """
+        """CLI --model is validated as a required default and retained for launch."""
         path = self._write_yaml(
             tmp_path,
             """\
@@ -588,7 +525,8 @@ class TestParseYamlContract:
 
         result = _parse_yaml_contract(path, AgentConfig(model="gpt-4o"))
 
-        assert "--model gpt-4o" in result.run_cmd
+        assert result.model == "gpt-4o"
+        assert result.kwargs == {"model": "gpt-4o"}
 
     def test_defaults_model_required_missing_raises(self, tmp_path: Path) -> None:
         """
@@ -614,12 +552,7 @@ class TestParseYamlContract:
             _parse_yaml_contract(path, AgentConfig())
 
     def test_defaults_merged_with_kwargs(self, tmp_path: Path) -> None:
-        """
-        Validates that defaults and kwargs are merged and both substituted into run_cmd.
-
-        Test Cases:
-        - Model comes from defaults via --model, temperature comes from kwargs default
-        """
+        """Model defaults and kwargs are validated independently of command binding."""
         path = self._write_yaml(
             tmp_path,
             """\
@@ -640,8 +573,8 @@ class TestParseYamlContract:
 
         result = _parse_yaml_contract(path, AgentConfig(model="gpt-4o"))
 
-        assert "--model gpt-4o" in result.run_cmd
-        assert "--temp 0.7" in result.run_cmd
+        assert result.model == "gpt-4o"
+        assert result.kwargs == {"model": "gpt-4o", "temperature": "0.7"}
 
     def test_provided_section_ignored(self, tmp_path: Path) -> None:
         """

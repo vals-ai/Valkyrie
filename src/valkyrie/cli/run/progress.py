@@ -17,6 +17,7 @@ from valkyrie.sdk.models import (
 )
 
 from valkyrie.cli.display import local_time, progress_percent, terminal_safe
+from valkyrie.cli.project import describe_run_spend
 from valkyrie.cli.run.snapshot import RunEvent, fetch_run_metadata, format_run_snapshot_json
 
 STATUS_COLORS = {
@@ -82,7 +83,7 @@ def _display_run_error(benchmark_response: FetchBenchmarkResponse) -> None:
         click.secho(f"Error: {safe_error}", fg="red")
 
 
-def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
+def format_benchmark_status(benchmark_response: FetchBenchmarkResponse, spend: str | None = None) -> None:
     """Format and display run status in a box with a progress bar."""
     details = benchmark_response.details
     progress_line, breakdown_line = _progress_lines(details)
@@ -93,6 +94,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
             ("Benchmark:", benchmark_response.benchmark_name),
             ("Run ID:", str(benchmark_response.benchmark_id)),
             ("Label:", benchmark_response.label),
+            ("Spend:", spend),
             ("Started at:", local_time(details.started_at)),
             (
                 "Final score:",
@@ -133,6 +135,7 @@ def format_run_identity(
             ("Label:", benchmark_response.label),
             ("Started by:", metadata.started_by_email),
             ("Max concurrency:", str(arguments.concurrency)),
+            ("Spend:", describe_run_spend(metadata)),
         ]
     rows.append(("Started at:", local_time(benchmark_response.details.started_at)))
 
@@ -184,7 +187,8 @@ async def stream_benchmark_status(
     initial = await client.runs.fetch(benchmark_id)
     jsonl = output_format == "jsonl"
     if not jsonl and initial.details.status in TERMINAL_STATUSES:
-        format_benchmark_status(initial)
+        spend = describe_run_spend(await fetch_run_metadata(client, benchmark_id)) if show_identity else None
+        format_benchmark_status(initial, spend)
         return
 
     metadata = await fetch_run_metadata(client, benchmark_id) if show_identity or jsonl else None
