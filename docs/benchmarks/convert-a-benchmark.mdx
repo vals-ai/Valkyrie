@@ -23,7 +23,8 @@ service. See the [quickstart](/get-started/quickstart).
 web service and the protocol Valkyrie speaks, so you write one `BenchmarkService` subclass.
 
 ```bash
-uv tool install git+https://github.com/vals-ai/create-benchmark-service.git@main
+uv tool install --exclude-newer "7 days" --exclude-newer-package certifi=false \
+  git+https://github.com/vals-ai/create-benchmark-service.git@main
 
 create-benchmark-service swebench
 

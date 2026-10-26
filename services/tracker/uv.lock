@@ -4,6 +4,11 @@ requires-python = "==3.12.*"
 
 [options]
 prerelease-mode = "allow"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P7D"
+
+[options.exclude-newer-package]
+certifi = false
 
 [[package]]
 name = "aioboto3"
@@ -406,8 +411,8 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.57.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=bd0d7d075eb8f53fa9624641a853a48906bc1479#bd0d7d075eb8f53fa9624641a853a48906bc1479" }
+version = "0.59.1"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?tag=v0.59.1#34f1d67408bb58d3d66e1d814e56bd79443de93d" }
 dependencies = [
     { name = "aiodocker" },
     { name = "certifi" },
@@ -2063,7 +2068,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "cachetools", specifier = ">=7.1.1,<8" },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=bd0d7d075eb8f53fa9624641a853a48906bc1479" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?tag=v0.59.1" },
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },

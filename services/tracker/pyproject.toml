@@ -49,12 +49,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
+required-version = ">=0.13.5"
+exclude-newer = "7 days"
+exclude-newer-package = { certifi = false }
 prerelease = "allow"
 # Editable installs copy force-included executor_protocol.py, so rebuild when it changes.
 cache-keys = [{ file = "pyproject.toml" }, { file = "src/executor_protocol.py" }]
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "bd0d7d075eb8f53fa9624641a853a48906bc1479" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", tag = "v0.59.1" }
 
 [tool.hatch.metadata]
 allow-direct-references = true

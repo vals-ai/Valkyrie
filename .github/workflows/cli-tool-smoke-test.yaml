@@ -20,6 +20,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
+          version: "0.13.5"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -31,7 +32,7 @@ jobs:
           echo "$RUNNER_TEMP/uv-tool-bin" >> "$GITHUB_PATH"
 
       - name: Install Valkyrie CLI as a uv tool
-        run: uv tool install --force . --prerelease=allow
+        run: uv tool install --exclude-newer "7 days" --exclude-newer-package certifi=false --force . --prerelease=allow
 
       - name: Smoke test CLI startup
         run: |

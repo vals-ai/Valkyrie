@@ -9,8 +9,11 @@ code. It needs Python 3.12 or later, and uses the same login and Tracker as the 
 
 ## Install
 
+With uv installed and a Python 3.12+ virtual environment activated:
+
 ```bash
-pip install "valkyrie-sdk @ git+https://github.com/vals-ai/Valkyrie@prod#subdirectory=packages/valkyrie-sdk"
+uv pip install --exclude-newer "7 days" --exclude-newer-package certifi=false \
+  "valkyrie-sdk @ git+https://github.com/vals-ai/Valkyrie@prod#subdirectory=packages/valkyrie-sdk"
 ```
 
 The SDK doesn't install the CLI. Sign in once with [`valkyrie login`](/get-started/configuration#sign-in),

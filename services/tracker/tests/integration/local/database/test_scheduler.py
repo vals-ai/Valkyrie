@@ -930,6 +930,7 @@ async def test_completed_run_finalizes_while_another_run_holds_pool_lock_during_
             sandbox_provider=context.provider,
             creation_semaphore=Semaphore(1),
             queue_context=context,
+            started_by_email=None,
             record_cancellation=lambda _attempts: None,
             authority=completing_authority,
         )

@@ -39,7 +39,7 @@ install:
 	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
 
 tool-install:
-	uv tool install -e .
+	uv tool install --exclude-newer "7 days" --exclude-newer-package certifi=false -e .
 
 build: venv_check
 	@echo "Building valkyrie CLI binary..."

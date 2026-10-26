@@ -85,7 +85,7 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
     stop_sandbox,
 )
-from tracker.utils.task_execution import handle_early_exit
+from tracker.utils.task_execution import handle_early_exit, task_attempt_id
 
 UTC = ZoneInfo("UTC")
 _NEVER_RELEASED = 1_000_000
@@ -1531,6 +1531,63 @@ class TestRunRecovery:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.EVALUATING
         assert task_row.eval_resume_state == {"job_id": "stale-job"}
+
+    async def test_process_task_names_its_execution_attempt_to_the_benchmark_service(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        executor_authority: Any,
+        runtime_services: RuntimeServices,
+    ) -> None:
+        """Grading spend is attributed per execution attempt, so each attempt's
+        benchmark-service requests must carry the same attempt identity the
+        sandbox receives as ATTEMPT_ID (a rerun advances started_at and gets a new one)."""
+        request = StartBenchmarkRequest(
+            benchmark_name="vcb",
+            contract=contract,
+            concurrency=1,
+            task_ids=["task_0"],
+            sandbox_provider="daytona",
+            sandbox_provider_secret_name="provider-secret",
+            properties=_RESOURCES,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        database_session.add(benchmark_row)
+        database_session.commit()
+        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+        database_session.add(task_row)
+        database_session.commit()
+        authority = executor_authority(benchmark_row, session=database_session)
+
+        service = AsyncMock(spec=BenchmarkServiceClient)
+
+        async def run_recovery(*_args: Any, **_kwargs: Any) -> Any:
+            return {"task_0": None}
+
+        service.run_with_sandbox_recovery.side_effect = run_recovery
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.TaskLogBuffer.buffer_logs", Mock())
+
+        await process_task(
+            task_row,
+            request,
+            cast(BenchmarkServiceClient, service),
+            benchmark_row.id,
+            task_row.task_id,
+            runtime_services,
+            self._test_org,
+            sandbox_provider_config=cast(DaytonaProviderConfig, object()),
+            sandbox_provider=cast(SandboxProvider, object()),
+            creation_semaphore=asyncio.Semaphore(1),
+            authority=authority,
+            started_by_email="starter@example.com",
+        )
+
+        recovery_kwargs = service.run_with_sandbox_recovery.await_args.kwargs
+        assert recovery_kwargs["run_id"] == str(benchmark_row.id)
+        assert recovery_kwargs["attempt_id"] == task_attempt_id(task_row.id, task_row.started_at)
+        assert recovery_kwargs["email"] == "starter@example.com"
 
     async def test_retry_or_resume_blocks_external_persisted_internal_destination(
         self,

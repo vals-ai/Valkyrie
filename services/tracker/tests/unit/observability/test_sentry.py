@@ -501,7 +501,13 @@ async def test_retry_attempt_clears_previous_sandbox_identity(
     ):
         with sentry_module.task_scope("task-0", attempt_started_at="2026-04-01T12:00:00+00:00"):
             result = await task_execution.process_task(
-                task_row=cast(Any, SimpleNamespace(started_at=datetime(2026, 4, 1, 12, tzinfo=UTC))),
+                task_row=cast(
+                    Any,
+                    SimpleNamespace(
+                        id=UUID("00000000-0000-0000-0000-000000000504"),
+                        started_at=datetime(2026, 4, 1, 12, tzinfo=UTC),
+                    ),
+                ),
                 start_benchmark_request=cast(
                     Any,
                     SimpleNamespace(

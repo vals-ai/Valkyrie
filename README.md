@@ -17,7 +17,7 @@ Guides, the CLI reference and the Python SDK reference are published at [docs.va
 Install the CLI:
 
 ```bash
-uv tool install git+https://github.com/vals-ai/Valkyrie@prod
+uv tool install --exclude-newer "7 days" --exclude-newer-package certifi=false git+https://github.com/vals-ai/Valkyrie@prod
 ```
 
 Sign in with your Vals account:

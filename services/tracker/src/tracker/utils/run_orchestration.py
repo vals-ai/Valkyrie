@@ -80,6 +80,7 @@ async def _run_queued_tasks(
     sandbox_provider: SandboxProvider,
     creation_semaphore: Semaphore,
     queue_context: SandboxQueueContext,
+    started_by_email: str | None,
     record_cancellation: Callable[[dict[UUID, datetime]], None],
     authority: ExecutionAuthority,
 ) -> None:
@@ -115,6 +116,7 @@ async def _run_queued_tasks(
                 creation_semaphore=creation_semaphore,
                 queue_context=queue_context,
                 authority=authority,
+                started_by_email=started_by_email,
             ),
             org,
             authority,
@@ -682,6 +684,7 @@ async def _process_benchmark(
         if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
             return
         queued_run = benchmark_row.arguments.queue_pool_id is not None
+        started_by_email = benchmark_row.started_by_email
 
     finalization_deferred = False
     post_task_finalization = False
@@ -817,6 +820,7 @@ async def _process_benchmark(
                 sandbox_provider=sandbox_provider,
                 creation_semaphore=creation_semaphore,
                 queue_context=queue_context,
+                started_by_email=started_by_email,
                 record_cancellation=record_queued_cancellation,
                 authority=authority,
             )
@@ -836,6 +840,7 @@ async def _process_benchmark(
                         sandbox_provider=sandbox_provider,
                         creation_semaphore=creation_semaphore,
                         authority=authority,
+                        started_by_email=started_by_email,
                     ),
                     org,
                     authority,

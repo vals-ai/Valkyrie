@@ -1,6 +1,6 @@
 [project]
 name = "valkyrie-sdk"
-version = "0.19.0"
+version = "0.19.1"
 description = "Async Python SDK for managing Valkyrie benchmark runs"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -63,3 +63,8 @@ reportUnknownMemberType = false
 reportUnknownVariableType = false
 reportGeneralTypeIssues = false
 enableTypeIgnoreComments = true
+
+[tool.uv]
+required-version = ">=0.13.5"
+exclude-newer = "7 days"
+exclude-newer-package = { certifi = false }

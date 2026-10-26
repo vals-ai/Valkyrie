@@ -720,6 +720,7 @@ async def process_task(
     *,
     sandbox_provider: SandboxProvider | None = None,
     queue_context: SandboxQueueContext | None = None,
+    started_by_email: str | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
     dependency_setup_recovery = _DependencySetupRecoveryState()
@@ -765,6 +766,8 @@ async def process_task(
     result = await benchmark_service.run_with_sandbox_recovery(
         task_id=task_id,
         run_id=str(benchmark_id),
+        attempt_id=task_attempt_id(task_row.id, task_row.started_at),
+        email=started_by_email,
         operation=run_attempt,
         dataset=start_benchmark_request.dataset,
         retryable_attempt_errors=(SandboxSetupError,),
