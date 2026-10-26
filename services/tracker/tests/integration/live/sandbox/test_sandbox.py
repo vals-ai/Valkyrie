@@ -219,6 +219,8 @@ class TestSandboxOperations:
                     lambda _message: None,
                     cwd="/",
                     object_store=object_store,
+                    plan=GenerationPlan(allowance_seconds=None, staged=False, episode=None),
+                    deadline_controller=ExternalServiceDeadlineController(base_allowance_seconds=None),
                     benchmark_id="live-error-preservation",
                     redact_error=create_agent_error_redactor([]),
                 )
